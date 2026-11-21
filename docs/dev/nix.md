@@ -55,7 +55,7 @@ runs the flake.
 | `packages.<system>.<board>` | The board's default image |
 | `packages.<system>.<board>-<value>` | One more image for each other value of a build option (`board.toml` `[[build_options]]`; the first value is the default) |
 | `packages.<system>.<image>.variants.<variant>` | The image built with `VARIANT=<variant>`, one for each `config/variants/<variant>.mk`. `nix flake show` doesn't list these |
-| `packages.<system>.default` | Every image in one directory, under the Makefile's file names, with a `SHA256SUMS` over them |
+| `packages.<system>.default` | Every image in one directory, under the Makefile's file names, with a `SHA256SUMS` over them. Each is the image's `out`: for a board with a stock download, the image with the codec ([The codec](#the-codec)) |
 | `packages.<system>.firmware-<toolchain id>` | The same, for the images one compiler builds |
 | `packages.<system>.toolchain-<toolchain id>` | The compiler, to build it ahead or to push it to a binary cache |
 | `devShells.<system>.default` | The shell with every compiler ([Development shells](#development-shells)) |
@@ -72,7 +72,8 @@ The packages are bare images, not release files: no manifest and no release file
 
 | Output | Holds |
 |---|---|
-| `out` | The one file to flash, under the name the Makefile gives it: `rfoundry_<image>_install.bin` (the first stage, then the application) for a board with a first stage, else `rfoundry_<image>.bin`. It refers to no other store path, so its closure is the image alone |
+| `out` | The one file to flash, under the name the Makefile gives it: `rfoundry_<image>_codec.bin` for a board with a stock download ([The codec](#the-codec)), else `rfoundry_<image>_install.bin` (the first stage, then the application) for a board with a first stage, else `rfoundry_<image>.bin`. It refers to no other store path, so its closure is the image alone |
+| `plain` | Only for a board with a stock download: the image without the codec, the file `out` would be without one |
 | `elf` | `rfoundry_<image>.elf`, for a debugger and `tools/crash_decode.py`. It names the compiler's store path, so its closure holds the compiler |
 
 The store name is `rfoundry-<image>[-<variant>]-<version>`. A variant's file has the default image's name.
@@ -82,9 +83,24 @@ The build fails when:
 | Condition | Why |
 |---|---|
 | The compiler or the linker prints a warning | `make` exits 0 on one; zero warnings is the rule |
-| `build/` holds an image with the codec | The codec must never be in the store, which a cache makes public |
+| A board with a stock download gets no codec image | The download is not a stock file the codec tool supports, and `make` only prints a line for that |
+| A board without one gets a codec image | A stock file came in untracked, through `path:` |
 | There isn't exactly one image to flash | The output must be the file a user flashes |
 | The image contains a store path | A consumer's closure would carry the compiler |
+
+### The codec
+
+DMR voice needs the maker's AMBE+2 codec, which the repository never holds ([codecs/README.md](../../codecs/README.md)).
+A board whose `board.toml` `[codec]` has a `download` ([Board registry](board-registry.md#codec)) names its maker's
+own download of a stock file the codec tool supports, by URL and SHA-256. Its packages fetch that file, put the stock
+file alone in `codecs/` (anything else there is removed first) and let `make` merge the codec, as a local build does. `out` is then the merged image. Which radios
+have a download: the `[codec]` tables under `boards/`.
+
+| Point | What it means |
+|---|---|
+| Network | The first build of such a board fetches the download. A changed or removed file fails the fetch with a hash mismatch: update `url` and `sha256`, and check that the codec tool supports the new stock file |
+| The store | The merged image, the codec in it, and the download are store paths. Keep them off a binary cache others can read, as the release images are kept off it |
+| `nix flake check` | Its `firmware` check builds these images too, so it fetches the downloads |
 
 ## Development shells
 
@@ -196,8 +212,8 @@ An assertion runs when something that needs it is evaluated. `nix flake check --
 | Build date | The clock | The commit's time; the locked nixpkgs' date for a flake that is no git tree |
 | Release name | From a release tag on the commit | None: the build passes `RELEASE=` |
 | Build source | `local` or `fork` and the repository's name, in a clone (`tools/build_source.py`) | `unknown` and no repository: the sandbox has no git |
-| Codec | Merged into `<image>_codec.bin` when `codecs/` holds the stock file | Never: the source has no stock file, and the build fails if a codec image appears |
-| Files kept | `.elf`, `.bin`, `.map` and the rest of `build/<image>/` | `out` and `elf` ([above](#an-image-package)). No `.map`: with LTO it lists the compiler's temporary files, whose names are random |
+| Codec | Merged into `<image>_codec.bin` when `codecs/` holds the stock file | Merged from the board's stock download, when it has one ([The codec](#the-codec)); never from a file in `codecs/` |
+| Files kept | `.elf`, `.bin`, `.map` and the rest of `build/<image>/` | `out`, `elf` and, with a codec, `plain` ([above](#an-image-package)). No `.map`: with LTO it lists the compiler's temporary files, whose names are random |
 | Warnings | Printed | Fail the build |
 
 With those inputs made equal, `make` in the shell writes the same bytes as the package. Checked on a board of each
@@ -212,7 +228,9 @@ cmp build/t-nix/rfoundry_<board>.bin "$(nix build --no-link --print-out-paths .#
 ```
 
 `GIT_DIR=/nonexistent` hides the repository from `tools/build_source.py`, as in the sandbox. For a board with a first
-stage the file to compare is `rfoundry_<board>_install.bin`.
+stage the file to compare is `rfoundry_<board>_install.bin`. For a board with a stock download, compare with
+`.#<board>.plain`; the merged image equals `tools/<codec tool>.py --board <board> --stock <the stock file> --image <plain
+image> -o <file>` (checked on a board without a first stage and on one with it).
 `nix build --rebuild '.#<board>^*'` builds an image a second time and fails when either output differs; it passed
 for a board of each toolchain.
 

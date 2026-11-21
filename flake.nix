@@ -272,8 +272,13 @@
           )
         );
       };
+      # A board whose board.toml [codec] has a download (the maker's stock firmware, by URL and SHA-256) gets the
+      # image with the codec merged from it, as make merges it from a file in codecs/
       firmware =
         pkgs: image: variant:
+        let
+          download = (toml (./boards + "/${image.board}/board.toml")).codec.download or null;
+        in
         pkgs.callPackage ./nix/firmware.nix {
           inherit (image) board;
           inherit
@@ -286,6 +291,15 @@
           flags = image.flags ++ lib.optional (variant != null) "VARIANT=${variant}";
           src = firmwareSrc;
           toolchainEnv = toolchainEnv pkgs [ image.toolchainId ];
+          stock =
+            if download == null then
+              null
+            else
+              pkgs.fetchurl {
+                inherit (download) url sha256;
+                name = "${image.board}-stock-firmware" + lib.optionalString (download ? file) ".zip";
+              };
+          stockFile = download.file or null;
         };
       # .#<image>, and .#<image>.variants.<variant> for the same image as a release variant
       # (config/variants/<variant>.mk). Other switches are not packages: nix develop -c make BOARD=<board> CONFIG_X=n
