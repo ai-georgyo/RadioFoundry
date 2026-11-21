@@ -138,7 +138,8 @@ make -C tests/host          # host tests
 tools/ci.sh                 # everything a pull request must pass
 ```
 
-Toolchains, make targets and each radio's flashing route: [building](docs/dev/building.md).
+Toolchains, make targets and each radio's flashing route: [building](docs/dev/building.md). With Nix, `nix develop`
+gives a shell with the pinned compilers: [building with Nix](docs/dev/nix.md).
 
 ## Documentation
 

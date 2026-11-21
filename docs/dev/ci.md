@@ -75,6 +75,19 @@ since the CK803 port is in `platform/hrc7000/freertos/`. After a submodule bump,
 clones up to date ([tools/ci-runner/README.md](../../tools/ci-runner/README.md)); until then the new commits come over
 the network. A new submodule also goes in the Dockerfile's `SUBMODULE_URLS`.
 
+`flake.lock` records each submodule's commit a second time, for the Nix builds ([Building with Nix](nix.md)). The
+`licenses` step of `tools/ci.sh`, which the `checks` job runs, compares the two with `tools/check_flake_pins.py`. It
+needs git and Python, not Nix:
+
+| Result | Line |
+|---|---|
+| Every link under `third_party/` has a flake input of its name, at the link's commit in `flake.nix` and in `flake.lock`, from the repository `.gitmodules` names | `ci: ok    flake pins: <n> submodules` |
+| A difference | One line for each, then `set the commit and the repository in flake.nix inputs to the link's, then run: nix flake lock` and `ci: FAIL  flake pins: flake.nix, flake.lock and the submodule links differ (tools/check_flake_pins.py)` |
+| A tree without the links (the Nix build sandbox) | `ci: skip  flake pins: no submodule links in this tree` |
+
+So a submodule bump also moves the commit in `flake.nix` and `flake.lock`
+([Bumping a submodule](nix.md#bumping-a-submodule)); the `checks` job fails until it does.
+
 ## Pull request checks: `pr-tests.yml`
 
 Every pull request runs `ci.yml`'s jobs (`unit tests`, `firmware (Arm)` and `firmware (C-SKY)` for every board
@@ -236,15 +249,27 @@ tools/docker/csky-toolchain/run.sh tools/ci.sh --quick --steps firmware --board 
 | `registry` | Every `board.toml` and `platform.toml` is well formed and agrees with `board.mk`, the linker scripts and `board_t`; `tools/rfoundry/rfoundry/registry.json` is current; the loader's self-test (`tools/boards.py`) |
 | `host` | `make -C tests/host`, with each board's own tests (`boards/<b>/tests/host.mk`) |
 | `bench` | Each bench tool with a Makefile under `tools/bench/*/` (built from the `core/` sources, such as the P25 and NXDN tools), with zero warnings |
-| `python` | Every Python file parses, the HIL test collection, rfoundry's tests, every tool's `--self-test` (found by searching `tools/` and `stub/`, so a new tool needs no ci.sh change), doc links, the glossary, the web site build and the flasher's tests |
+| `python` | Every Python file parses, the HIL test collection, rfoundry's tests, every tool's `--self-test` (found by searching `tools/` and `stub/`, so a new tool needs no ci.sh change), doc links, the glossary, the web site build, the flasher's tests, and the cases of the runner's job gate and of `RFOUNDRY_CI_SKIP_OK` (`tools/ci-runner/job-gate-test.sh`, `tools/ci-skip-test.sh`) |
 | `firmware` | Every board whose compiler is installed: the default build, each build option value (`board.toml` `[[build_options]]`, such as a band), each `[ci] extra` configuration, the feature matrix, and the flash stubs of each built platform (`platform.toml` `stubs`) |
-| `licenses` | `tools/license_grep.sh` and `reuse lint` |
+| `licenses` | `tools/license_grep.sh`, `third_party/` holds submodule links only, each link's commit is the one `flake.lock` pins ([Submodules](#submodules)), and `reuse lint` |
 | `similarity` | `tools/similarity_scan.py`, only with `RFOUNDRY_SIMILARITY_REFS` set |
 
 Every step but `host` and `bench` needs Python 3.11 or later for the registry's TOML. `tools/rfoundry_python.sh` finds it:
 `$RFOUNDRY_PYTHON`, else the newest `python3.N` on `PATH`. A board whose compiler is missing is skipped with the command
 that installs it (its platform's `toolchain.build`). `--quick` builds each board's default and maximal configurations,
 `--matrix` the feature matrix.
+
+A skipped step doesn't fail the run: ci.sh prints `ci: skip  <text>`, lists the skips at the end and exits 0 when
+nothing failed. `RFOUNDRY_CI_SKIP_OK` makes a skip a failure, for a run that must not pass with a tool missing. The
+Nix checks set it ([Building with Nix](nix.md#checks)).
+
+| `RFOUNDRY_CI_SKIP_OK` | A skipped step |
+|---|---|
+| Not set | Is listed; the run can pass |
+| `'<regex>'` | Fails the run with `ci: FAIL  skipped: <text>`, unless the whole `<text>` matches that extended regular expression |
+| Set to nothing | Always fails the run |
+
+`tools/ci-skip-test.sh` holds the cases; the `python` step runs it.
 
 The `python` step also checks the HIL tests without a radio:
 

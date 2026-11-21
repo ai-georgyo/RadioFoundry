@@ -12,6 +12,7 @@ tooling and link the specs for behavior; they don't repeat them. Users read [doc
 | 1. Rules | [Contributing](contributing.md) | Branches, pull requests, clean-room rules, code, tests and docs a change needs |
 | 2. Layout | [Architecture](architecture.md) | The layers (core, hal, drivers, platform, boards), the tasks, where each feature lives |
 | 3. Build | [Building](building.md) | Toolchains, make targets, feature switches, build options, image size, flashing your own build |
+| | [Building with Nix](nix.md) | The flake: image packages, shells with the pinned compilers, the pull request gate as `nix flake check` |
 | 4. Test | [Testing](testing.md) | Host tests, the UI simulator and gallery, sanitizers, fuzzing, HIL and the SDR bench |
 | 5. CI | [CI](ci.md) | The workflows per push, per pull request and nightly; running each piece locally; coverage |
 | | [CI runners and images](ci-runners.md) | The Gitea and GitHub runners, the csky-elf image, the HIL runner |
