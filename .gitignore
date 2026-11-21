@@ -40,3 +40,7 @@ personal_notes.md
 # Local agent notes and settings (machine-specific; may name private hosts)
 *.local.md
 .claude/
+
+# Nix build results (docs/dev/nix.md)
+/result
+/result-*
