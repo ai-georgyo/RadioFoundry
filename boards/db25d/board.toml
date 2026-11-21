@@ -132,6 +132,9 @@ tool = "hrc7000_codec"
 profile = "db25d-018"
 stock_version = "018 (2024-05-09 or later)"
 sources = ["DB25-D PRO 909E.Dx.EARSAB.018 stock files", "a program flash read of the radio"]
+# Radioddity's 2025-02-10 update package (docs/spec/radios.md), with the newest stock file in it: the Nix build merges
+# its codec
+download = { url = "https://radioddity.s3.amazonaws.com/2025-02-10_DB25-D_firmware_update_release_2025-02-10.zip", sha256 = "391522d5a286d6974c3bdf88248df49e84a39ab4a418f2fbbb4d78fc695d0870", file = "DB25-D PRO 909E.Dx.EARSAB.018_2025-01-21.bin" }
 
 # How the site draws the radio
 [frame]
