@@ -248,9 +248,12 @@ BOARD_SCHEMA = {
                       "spi": _opt({"bus": _req(int), "mode": _req(int), "hz": _req(int)}),
                       "idle_cs": _opt(STR_LIST)}),
     }),
-    # stock_version: the stock firmware version whose file carries the codec, as the web flasher asks for the file
+    # stock_version: the stock firmware version whose file carries the codec, as the web flasher asks for the file.
+    # download: the maker's own download of a stock file the codec tool supports, which the Nix build merges the codec
+    # from (docs/dev/nix.md): url, sha256 of the download, file the path of the stock file inside it when it is a zip
     "codec": _req({"tool": _req(CODEC_TOOLS), "stock": _opt(STR_LIST), "profile": _opt(str), "sources": _opt(STR_LIST),
-                   "installed": _opt(STR_LIST), "stock_version": _opt(str)}),
+                   "installed": _opt(STR_LIST), "stock_version": _opt(str),
+                   "download": _opt({"url": _req(str), "sha256": _req(str), "file": _opt(str)})}),
     "frame": _req({"shape": _req(str), "body": _req(str), "accent": _req(str), "lens": _req(RANGE)}),
     # tests/hil: what the health checks expect (test_health.py), and the features built here but not working yet
     # (tools/bringup.py, which checks the feature ids; what the hardware lacks is config.mk's BOARD_UNSUPPORTED, code
@@ -1302,6 +1305,20 @@ def check(root=ROOT):
                     bad("codec.%s comes from the stock files' profiles when codec.stock is set" % k)
         if not os.path.isfile(os.path.join(root, "tools", d["codec"]["tool"] + ".py")):
             bad("codec.tool tools/%s.py doesn't exist" % d["codec"]["tool"])
+        dl = d["codec"].get("download")
+        if dl is not None:
+            if not re.fullmatch(r"https://\S+", dl["url"]):
+                bad("codec.download.url must be an https:// URL")
+            if not re.fullmatch(r"[0-9a-f]{64}", dl["sha256"]):
+                bad("codec.download.sha256 is the download's SHA-256 (64 lowercase hex digits)")
+            is_zip = dl["url"].lower().endswith(".zip")
+            if "file" in dl and not is_zip:
+                bad("codec.download.file names a file inside a zip, and the url is no .zip")
+            if is_zip and not dl.get("file"):
+                bad("codec.download.file is needed for a .zip: the stock file's path inside it")
+            # unzip reads the name as a pattern
+            if re.search(r"[][*?\\]", dl.get("file", "")):
+                bad("codec.download.file can't hold [ ] * ? or \\ (unzip takes them as a pattern)")
         if codec is not None and not codec["profile"].startswith(bid + "-"):
             bad("codec.profile %r must start with %r: the firmware reports <id>-<stock tag> (RFOUNDRY_BOARD_ID)"
                 % (codec["profile"], bid + "-"))
@@ -2191,6 +2208,39 @@ def self_test():
                 ok(any(want in q for q in got), "check finds %s (%s)" % (what, got[:2]))
             with open(sp, "w", encoding="utf-8") as f:
                 f.write(st_good)
+        # codec.download, which the Nix build fetches: an https URL, the download's SHA-256, file only in a zip
+        dlb = next((b for b in board_dirs(tmp) if not re.search(r"(?m)^download = ", open(os.path.join(
+            tmp, "boards", b, "board.toml")).read())), None)
+        if dlb:
+            dp = os.path.join(tmp, "boards", dlb, "board.toml")
+            dl_good = open(dp, encoding="utf-8").read()
+            sha = "ab" * 32
+            put = lambda dl: dl_good.replace("\n[codec]\n", "\n[codec]\ndownload = %s\n" % dl, 1)
+            for dl, what, want in (('{ url = "https://example.org/fw.zip", sha256 = "%s", file = "a/fw.bin" }' % sha,
+                                    None, None),
+                                   ('{ url = "http://example.org/fw.bin", sha256 = "%s" }' % sha,
+                                    "a codec.download over plain http", "https:// URL"),
+                                   ('{ url = "https://example.org/fw.bin", sha256 = "ABC" }',
+                                    "a codec.download sha256 that isn't a SHA-256", "download's SHA-256"),
+                                   ('{ url = "https://example.org/fw.bin", sha256 = "%s", file = "fw.bin" }' % sha,
+                                    "a codec.download file outside a zip", "no .zip"),
+                                   ('{ url = "https://example.org/fw.bin" }',
+                                    "a codec.download without sha256", "sha256"),
+                                   ('{ url = "https://example.org/fw.zip", sha256 = "%s" }' % sha,
+                                    "a codec.download zip without file", "needed for a .zip"),
+                                   ('{ url = "https://example.org/fw.zip", sha256 = "%s", file = "" }' % sha,
+                                    "a codec.download with an empty file", "needed for a .zip"),
+                                   ('{ url = "https://example.org/fw.zip", sha256 = "%s", file = "fw[1].bin" }' % sha,
+                                    "a codec.download file with a pattern character", "as a pattern")):
+                with open(dp, "w", encoding="utf-8") as f:
+                    f.write(put(dl))
+                got = check(tmp)
+                if want is None:
+                    ok(not any("download" in q for q in got), "check passes a good codec.download (%s)" % got[:2])
+                else:
+                    ok(any(want in q for q in got), "check finds %s (%s)" % (what, got[:2]))
+            with open(dp, "w", encoding="utf-8") as f:
+                f.write(dl_good)
         # the build view's file names against the Makefile's
         mkf = os.path.join(tmp, "Makefile")
         mkf_good = open(mkf, encoding="utf-8").read()

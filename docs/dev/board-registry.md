@@ -262,6 +262,7 @@ firmware keeps its own rules for what it writes (the CPS shim refuses its areas,
 | `profile` | The codec id the firmware reports, for a codec in a linker slot |
 | `sources` | Where a slot codec comes from, for messages |
 | `installed` | Stock versions that leave exactly this codec in place |
+| `download` | Optional: the maker's own download of a stock file the codec tool supports, `{ url, sha256, file }`. `url` is https, `sha256` the download's SHA-256, `file` the stock file's path inside it, needed for a zip and only there (no `[ ] * ? \`: `unzip` takes it as a pattern). The Nix build merges the codec from it ([nix.md](nix.md#the-codec)) |
 
 A board has either `stock`, or `profile` with a linker codec slot. With `stock`, the profile and sources come from the
 stock files' profiles. The files must hold the same codec; each may put its tables at other addresses. The board's
