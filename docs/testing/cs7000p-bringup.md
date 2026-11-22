@@ -60,7 +60,7 @@ and the table at the end has one row per open question.
 | The LCD board is the OEM's 2018 board, with an ST7735-class controller | 5 | 10 |
 | The channel selector's code table: none, so the selector makes no steps | 5 | 11 |
 | The I2S data direction: probed, never assumed; anything but `ok` or `swapped` stops the stage | 8 | 8 |
-| The HR_C6000 keeps its reference hold (4:0x25 = 0x26) through a DMR transmission | 8, 11 | 1 |
+| The HR_C6000 keeps its reference hold (4:0x25 = 0x0C) through a DMR transmission; what the DAC does in a DMR TX slot is not measured | 8, 11 | 1 |
 | The reference oscillator's bias: which register, the coding, the on-frequency level | 9, 11 | 1, 35 |
 | The first LO is below the signal | 9 | 2 |
 | The lock line reads unlocked at once after new synthesizer words; the DAC carries the tuning value about 100 us after a burst | 11 | 3, 25, 33 |
@@ -334,13 +334,14 @@ the maker's software, return to RadioFoundry, back up again and compare the two 
 | Look for | Proves | If not |
 |---|---|---|
 | `board.hrc`: init ok, 4:0x10 reads 0x80 in FM receive (0x6E in DMR) | the configuration port, the sleep line's polarity, the 29.4912 MHz clock (question 32) | 0xFF with init not ok is a silent bus: the sleep bit (`EXP_DMR_SLEEP`), the port's pins. The port's transfer always reports success, so the read-back is what finds a chip that does not answer. With init not ok there is no DMR and no FM transmit |
-| 4:0x25 reads 0x26 while receiving | the reference hold was written | 0x00 or 0xFF with a working 0x10: the register does not read back (its address is not in the chip's register table). The hold is then judged by the carrier frequency in stage 9, not by this reading |
+| 4:0x25 reads 0x0C while receiving (`board.hrc` `r25=0x0c`) | the reference hold was written; the register reads back (seen on one radio) | Another value: a set-up ran after the hold. With the hold missing the receiver sits about 10 kHz high at 433 MHz and the squelch never opens on channel |
 | **Once, on a scope:** the configuration port's clock, 1 to 2 MHz | the bus delay on this core | |
 | `board.i2s`: the two probe counts, and **`dir=ok` or `dir=swapped`** | the chip clocks its I2S port, and which pad the block drives (question 8) | **Anything else: stop.** `busy`: something drives PC11. `none`: neither sense drove the pad; the chip may not be the port's master, or the clock polarity is wrong (`ckpol` in `audio_cs7000p.c`). `unknown`: no clock seen yet. A scope on PC11 and PC12 confirms the verdict once |
 | Then a beep from the speaker while receiving | PCM to the chip's line out, the amplifier and speaker switches | No beep with `dir=ok`: `EXP_AMP`, `EXP_SPK_INT_OFF`; underrun and overrun counts in `board.i2s`. Beeps are silent while the receive rail is off: a known limit |
 
-DMR bursts go out with 4:0x25 = 0x26 (the hold stays through a DMR transmission) and FM transmit with 0x0E. Neither
-is checked on a radio; it belongs to the reference measurements of question 1.
+DMR bursts go out with 4:0x25 = 0x0C (the hold stays through a DMR transmission) and FM transmit with 0x0E. In FM
+receive the hold is measured, and 0x0E is measured on with analog transmit enabled; a DMR TX slot is not, and it
+belongs to the reference measurements of question 1.
 
 ## 9. Receive
 
@@ -468,7 +469,7 @@ checked above, and what to change.
 
 | # | Assumption in the port | Stage | Change |
 |---|---|---|---|
-| 1 | Reference offset 0; the hold value 4:0x25 = 0x26; the bias registers as the driver writes them | 9, 11 | `CS7000P_REF_OFFSET`, `rfcal_cs7000p.c`, the reference trim |
+| 1 | Reference offset 0 (the hold value 4:0x25 = 0x0C is measured in FM receive); the DAC in a DMR TX slot | 9, 11 | `CS7000P_REF_OFFSET`, `rfcal_cs7000p.c`, the reference trim |
 | 2 | First LO below the signal; I/Q order to match | 9 | `reg 3 3`, `CS7000P_LO_HIGH` |
 | 3 | Phase detector gain 31, lock within 5 ms, three agreeing samples of the lock pin, lock over the whole band | 9 | `rfplan_cs7000p.c` |
 | 4 | PC8 idles at 50 % duty, 93.75 kHz | 9 | `reg 3 2` |

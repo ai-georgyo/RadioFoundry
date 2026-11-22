@@ -10,11 +10,13 @@
 
 // 4:0x25, the DAC control word (docs/spec/hrc6000-registers.md 3.22, 5.1): bits 3 and 2 hand the two modulation DACs
 // to the chip's TX slot timing, bits 5 and 4 let the MCU switch them. Every set-up of the driver that writes it
-// leaves 0x0E. The hold is that value with bit 5 set and bit 3 clear: the DAC that reaches the reference oscillator
-// stays on outside the TX slots, at the level of the two-point bias (4:0x47 / 0x48). Written whole, not read and
-// modified: the manual's register table omits the address, so nothing says it reads back
+// leaves 0x0E, and with that the DAC on pin 75 is on only while the chip transmits. The hold is that value with
+// bit 1 clear, 0x0C: measured on a radio whose reference oscillator hangs on that pin (the registers page has the
+// table), the DAC is on while receiving exactly with bit 3 set and bits 5 and 1 clear, and sits at mid-scale, moved by
+// the offset in 4:0x04. The manual's own recipe (bit 5 set, bit 3 clear, the level in 4:0x47 / 0x48) does nothing on
+// that pin. Written whole, not read and modified
 #define DAC_CTL_SETUP	0x0Eu
-#define DAC_CTL_HOLD	((uint8_t)((DAC_CTL_SETUP | 0x20u) & ~0x08u))
+#define DAC_CTL_HOLD	((uint8_t)(DAC_CTL_SETUP & ~0x02u))
 
 // hrc6000_fm_tx_t.uhf: the deviation table's band
 #define UHF_FROM_HZ	300000000u

@@ -740,6 +740,20 @@ ADC; the output path K1 drives LINEOUT1 / LINEOUT2. Table 4.3 says 0xE3 is "the 
 | 0xD9-0xDB, 0xDE, 0xDF | (not stated) |
 | 0xE1, 0xE7-0xFF | (not stated) |
 
+**0x25, measured on one radio** (not from the manual). The radio's reference oscillator takes its control voltage
+from the DAC on pin 75 (DAC_IVOUT), so whether that DAC is on shows as a receive frequency shift of about 10 kHz at
+433 MHz. All 64 values of bits 5-0 were written with analog transmit off and on (0x60 = 0x00, 0x80), in FM receive:
+
+| 0x60 | The pin 75 DAC is on when | Examples |
+|---|---|---|
+| 0x00 (receiving) | bit 3 = 1, bit 1 = 0 and bit 5 = 0 | 0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1C, 0x1D |
+| 0x80 (analog transmit on) | bit 1 = 1, unless bits 5 and 3 are both 1 | 0x02, 0x06, 0x0E, 0x16, 0x26, 0x36; not 0x2E, 0x3E |
+
+Bits 4, 2 and 0 made no difference to this DAC. When on with no modulation it sits at mid-scale; 0x04 moves it (a
+visible shift at 0x7F and 0x80), 0x02 and 0x47 / 0x48 do not. So on this pin the manual's "bit 5 = 1 and bit 3 = 0
+keeps the DAC on, at the level of 0x47 / 0x48" does nothing; it may describe the other DAC (pin 74), which this
+measurement cannot see. A DMR TX slot was not measured.
+
 ---
 
 ## 4. Auxiliary parameter table (附属参数配置表, OPMode 001)

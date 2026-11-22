@@ -772,11 +772,13 @@ Unverified on a radio.
 below it. The answer is compared with the order the driver holds, so a board may change its LO side on one frequency.
 
 **Receive hold** (`ref_dac_hold`), for a board whose reference oscillator takes its control voltage from the chip's
-modulation DAC. The driver's set-ups leave 0x25 = 0x0E: the chip switches both DACs by TX slot. The hold writes
-0x25 = 0x26 (bit 5 set, bit 3 clear): that DAC stays on while receiving, at the level of the two-point bias 0x47 / 0x48
-([hrc6000-registers.md](hrc6000-registers.md) 3.22, 5.1). It is written whole, not read and modified: the manual's
-register table omits 0x25, so nothing says it reads back. An FM transmission keeps the driver's 0x0E; a DMR
-transmission keeps the hold (nothing in the DMR entry or the slot engine writes 0x25). Without the option 0x25 is
+modulation DAC on pin 75. The driver's set-ups leave 0x25 = 0x0E: with it that DAC is on only while the chip
+transmits. The hold writes 0x25 = 0x0C (the same with bit 1 clear): measured on a radio, the DAC is then on while
+receiving, at mid-scale, moved by the offset in 0x04 ([hrc6000-registers.md](hrc6000-registers.md) 3.22). The manual's
+recipe (bit 5 set, bit 3 clear, the level in 0x47 / 0x48) does nothing on that pin. The word is written whole, not read
+and modified; it reads back. An FM transmission keeps the driver's 0x0E, which the same measurement shows on with
+analog transmit enabled (0x60 = 0x80); a DMR transmission keeps the hold (nothing in the DMR entry or the slot engine
+writes 0x25), and what the DAC does in a DMR TX slot under either word is not measured. Without the option 0x25 is
 never written by the host.
 
 **Codec inputs** (`e0_set`, `e0_clear`), for a board whose microphone is not on LINEIN1. The DMR entry and the FM TX

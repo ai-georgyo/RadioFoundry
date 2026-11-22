@@ -183,7 +183,7 @@ static void fake_reset(void)
 
 static bool held(uint8_t r25)
 {
-	return (r25 & 0x28u) == 0x20u;	// bit 5 set, bit 3 clear
+	return (r25 & 0x2Au) == 0x08u;	// bit 3 set, bits 5 and 1 clear: the DAC on in receive, as measured
 }
 
 // 4:0x47, 0x48 and 0x04 as hrc6000_set_ref_offset leaves them for a receive offset
@@ -263,8 +263,8 @@ static void test_init_hold(void)
 	CHECK(regs[4][0x01] == 0xB0);			// straight
 	CHECK(ref_is(-5));
 	CHECK(held(regs[4][0x25]) && h.r25 == regs[4][0x25]);
-	// the hold is the driver's value with the two bits changed, whatever the driver writes
-	CHECK(regs[4][0x25] == (uint8_t)((plain_25 | 0x20u) & ~0x08u));
+	// the hold is the driver's value with bit 1 clear, whatever the driver writes: 0x0C from its 0x0E
+	CHECK(regs[4][0x25] == (uint8_t)(plain_25 & ~0x02u) && regs[4][0x25] == 0x0Cu);
 	// the level is there before the hold opens the DAC
 	CHECK(seq_w[0x47] < seq_w[0x25] && seq_w[0x48] < seq_w[0x25] && seq_w[0x04] < seq_w[0x25]);
 
