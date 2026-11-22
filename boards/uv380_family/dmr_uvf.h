@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// UV380 family DMR modem: the shared STM32 HR_C6000 glue (platform/stm32f4/hrc/dmr_glue.h) runs the slot engine, the
+// UV380 family DMR modem: the shared STM32 HR_C6000 glue (platform/stm32/hrc/dmr_glue.h) runs the slot engine, the
 // interrupts and the deferred event task; radio_uvf.c gives it the per-burst RF switch below.
 #ifndef DMR_UVF_H
 #define DMR_UVF_H

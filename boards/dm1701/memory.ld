@@ -9,7 +9,7 @@
  * 0x080F6A28).
  *
  * The application gets sectors 3-9 (__app_start, board.mk APP_BASE, up to 0x080BFFFF: 720 KB in one piece) and never
- * links into sectors 10 and 11. The layout is the platform's (platform/stm32f4/common.ld). */
+ * links into sectors 10 and 11. The layout is the platform's (platform/stm32/common.ld). */
 
 MEMORY
 {

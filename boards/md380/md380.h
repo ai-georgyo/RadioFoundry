@@ -90,7 +90,7 @@ const char *md380_cal_source(void);	// "factory", "factory/grid" (band ends unre
 const char *md380_cal_why(void);	// why the table was refused, for the diagnostics page
 uint8_t md380_cal_byte(uint16_t offset);
 
-// GPS (gps_md380.c): the module is listened for at start-up (platform/stm32f4/gps_uart/gps_uart.h has the rest)
+// GPS (gps_md380.c): the module is listened for at start-up (platform/stm32/gps_uart/gps_uart.h has the rest)
 void md380_gps_init(void);
 
 // Radio diagnostics (radio_md380.c; cached values, no bus traffic)

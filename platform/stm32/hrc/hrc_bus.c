@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// HR_C6000 configuration and voice ports on STM32F4 GPIO and SPI (hrc_bus.h; docs/spec/hardware-dm1701.md 4.2, 4.3,
+// HR_C6000 configuration and voice ports on STM32 GPIO and SPI (hrc_bus.h; docs/spec/hardware-dm1701.md 4.2, 4.3,
 // hardware-md9600.md 4.1)
 #include <stddef.h>
 #include "hrc/hrc_bus.h"
 #include "hal_time.h"
 #include "FreeRTOS.h"
 
-// About 110 ns at 72 MHz on top of the GPIO writes, keeping the clock near the 1-2 MHz the chip is known to take
+// A half period of the bit-banged clock on top of the GPIO writes, keeping it near the 1-2 MHz the chip is known to
+// take: the family's wait for its core clock (stm32_family.h)
 static inline void bus_delay(void)
 {
-	__NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+	STM32_HRC_BUS_DELAY();
 }
 
 static inline void line(GPIO_TypeDef *port, uint16_t pin, bool level)

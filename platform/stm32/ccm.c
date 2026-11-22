@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 /*
- * The CCM: 64 KB of zero wait state RAM on the CPU's data bus, off the bus the audio, ADC and display DMA use. No DMA
- * reaches it, so nothing there may be a DMA buffer: the DMA buffers are statics in main RAM. In link order
- * (common.ld):
+ * The CPU-only RAM, the linker's CCMRAM region (the F4's CCM, 64 KB; the H7's DTCM): zero wait state RAM on the CPU's
+ * data bus, off the bus the audio, ADC and display DMA use. No DMA reaches it, so nothing there may be a DMA buffer:
+ * the DMA buffers are statics in main RAM. In link order (common.ld):
  *
  *   .ccmdata  RFOUNDRY_CPU_DATA, hot tables, copied from flash
  *   .ccmbss   RFOUNDRY_CPU_RAM, zeroed
@@ -22,7 +22,7 @@
 extern uint32_t _sccmdata[], _eccmdata[], _siccmdata[], _sccmbss[], _eccmbss[];
 extern uint8_t _sccmheap[], _eccmheap[];
 
-// From __libc_init_array, before main and before any interrupt (the CCM clock is on from reset), and before anything
+// From __libc_init_array, before main and before any interrupt (the RAM's clock is on from reset), and before anything
 // allocates
 static void ccm_init(void)
 {

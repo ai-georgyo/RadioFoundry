@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// STM32F4 system services (hal_system.h): chip identity and option bytes, memory reads, SoC registers, reboot, and the
+// STM32 system services (hal_system.h): chip identity and option bytes, memory reads, SoC registers, reboot, and the
 // software entry to the MCU's ROM bootloader (docs/spec/hardware-dm1701.md "Software entry to a bootloader").
 //
 // ROM DFU entry: the request stores a flag in an RTC backup register (kept through a system reset, unlike RAM, which
-// the stock bootloader runs in before the application) and resets. The stock bootloader then starts the application
-// as usual, and stm32_sysboot_check(), first thing in main(), finds the flag, clears it (so a failed entry boots
-// normally next time), puts the board in its reset-time pin state (board_sysboot_prepare: the power latch stays
-// high), returns clocks and peripherals to their reset state, maps system memory at 0 and jumps to the ROM's reset
-// vector.
+// a bootloader below the image may use before the application starts) and resets. The next start reaches main() as
+// usual (through that bootloader where the board keeps one), and stm32_sysboot_check(), first thing in main(), finds
+// the flag, clears it (so a failed entry boots normally next time), puts the board in its reset-time pin state
+// (board_sysboot_prepare: the power latch stays high) and enters the ROM the family's way (sysboot_soc.h,
+// stm32_rom_enter: on the F4 clocks and peripherals back to their reset state, system memory mapped at 0, then the
+// ROM's reset vector).
+//
+// What differs between the families is in stm32_family.h (the STM32_* names), in sysboot_soc.h (where the ROM is and
+// the way into it) and in mem_window.h (what the debug link may read and write).
 #include <string.h>
 #include "config.h"
 #include "platform.h"
@@ -20,10 +24,6 @@
 #endif
 
 #define SYSBOOT_MAGIC		0xB007DF11u	// in RTC_BKP19R: enter the ROM bootloader on the next start
-#define SYSMEM_BASE		0x1FFF0000u
-#define SYSMEM_END		0x1FFF7800u
-#define UID_BASE_ADDR		0x1FFF7A10u
-#define FLASH_SIZE_ADDR		0x1FFF7A22u
 #define SPIN_LIMIT		1000000u
 
 __attribute__((weak)) void board_sysboot_prepare(void)
@@ -33,12 +33,12 @@ __attribute__((weak)) void board_sysboot_prepare(void)
 static bool chip(hal_chip_t *c)
 {
 	c->idcode = DBGMCU->IDCODE;
-	c->flash_kb = *(volatile const uint16_t *)FLASH_SIZE_ADDR;
-	c->uid[0] = *(volatile const uint32_t *)(UID_BASE_ADDR + 0u);
-	c->uid[1] = *(volatile const uint32_t *)(UID_BASE_ADDR + 4u);
-	c->uid[2] = *(volatile const uint32_t *)(UID_BASE_ADDR + 8u);
-	c->optcr = FLASH->OPTCR;
-	c->family = HAL_CHIP_STM32F4;
+	c->flash_kb = *(volatile const uint16_t *)FLASHSIZE_BASE;
+	c->uid[0] = *(volatile const uint32_t *)(UID_BASE + 0u);
+	c->uid[1] = *(volatile const uint32_t *)(UID_BASE + 4u);
+	c->uid[2] = *(volatile const uint32_t *)(UID_BASE + 8u);
+	c->optcr = STM32_OPTBYTES();
+	c->family = STM32_CHIP_FAMILY;
 	return true;
 }
 
@@ -59,7 +59,7 @@ static void read(uint32_t addr, void *dst, size_t n)
 
 static bool mem_window(unsigned i, hal_mem_window_t *w)
 {
-	return stm32_mem_window_for(i, w, *(volatile const uint16_t *)FLASH_SIZE_ADDR);
+	return stm32_mem_window_for(i, w, *(volatile const uint16_t *)FLASHSIZE_BASE);
 }
 
 #if CONFIG_DEBUGLINK
@@ -67,8 +67,9 @@ static bool mem_window(unsigned i, hal_mem_window_t *w)
 
 // CHIP_REG's SoC registers (mem_window.h). The write and its read back run at priority -1 (FAULTMASK), so no handler
 // changes the register between them, and with data bus faults ignored there (CCR.BFHFNMIGN): a reserved address inside
-// the windows is refused instead of crashing the radio. The write goes around the write buffer (ACTLR.DISDEFWBUF), so
-// its fault, if any, is precise and lands here rather than after FAULTMASK is lifted
+// the windows is refused instead of crashing the radio. The write goes around the write buffer where the core has
+// the switch (STM32_REG_WRITE_PRECISE: ACTLR.DISDEFWBUF on the Cortex-M4), so its fault, if any, is precise and lands
+// here rather than after FAULTMASK is lifted; an imprecise one is still caught by the flag test after the barrier
 static bool reg(uint32_t addr, uint32_t *val, bool write)
 {
 	if (!stm32_reg_allowed(addr)) {
@@ -81,12 +82,12 @@ static bool reg(uint32_t addr, uint32_t *val, bool write)
 	__DSB();
 	__ISB();
 	if (write) {
-		SCnSCB->ACTLR |= SCnSCB_ACTLR_DISDEFWBUF_Msk;
+		STM32_REG_WRITE_PRECISE(true);
 		__DSB();
 		__ISB();
 		*(volatile uint32_t *)(uintptr_t)addr = *val;
 		__DSB();
-		SCnSCB->ACTLR &= ~SCnSCB_ACTLR_DISDEFWBUF_Msk;
+		STM32_REG_WRITE_PRECISE(false);
 	}
 	uint32_t v = *(volatile const uint32_t *)(uintptr_t)addr;
 	__DSB();
@@ -108,28 +109,43 @@ static bool reg(uint32_t addr, uint32_t *val, bool write)
 
 static void backup_write(uint32_t v)
 {
-	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-	(void)RCC->APB1ENR;
-	PWR->CR |= PWR_CR_DBP;
+	STM32_BACKUP_CLOCK_ON();
+	STM32_BACKUP_UNLOCK();
 	RTC->BKP19R = v;
 	(void)RTC->BKP19R;
 }
 
+// The modes reboot() takes. Also hal_system_t.reboot_ok, which the debug link asks before it answers: one rule, so
+// what it is told and what reboot() does can't differ. The ROM entry only where the board allows it (on some the
+// ROM's pins meet other outputs)
+static bool reboot_ok(uint8_t mode)
+{
+	if (mode == HAL_REBOOT_ROM_DFU) {
+		return STM32_ROM_ENTRY_OK();
+	}
+	return mode == HAL_REBOOT_NORMAL;
+}
+
 static bool reboot(uint8_t mode)
 {
+	if (!reboot_ok(mode)) {
+		return false;
+	}
 	if (mode == HAL_REBOOT_ROM_DFU) {
 		backup_write(SYSBOOT_MAGIC);
 		if (RTC->BKP19R != SYSBOOT_MAGIC) {
 			return false;
 		}
-	} else if (mode != HAL_REBOOT_NORMAL) {
-		return false;
 	}
 	__disable_irq();
 	board_rf_safe();	// a reset leaves the pins floating until the next start drives them: transmitter off first
 #if CONFIG_CRASH_LOG
 	hal_crash_soft_mark();	// asked for: not the watchdog (crash-log.md 1.3)
 #endif
+	STM32_RESET_PREPARE();	// a board whose outputs outlive an MCU reset puts them in their reset state
+	// Last before the reset: what was just written to the RAM a reset keeps (the soft mark; a crash record on the
+	// way to its restart, hal_crash_restart) is in it for certain. Every asked-for reset and crash restart passes here
+	STM32_KEPT_RAM_FLUSH();
 	NVIC_SystemReset();
 	return false;	// not reached
 }
@@ -150,6 +166,7 @@ const hal_system_t stm32_system = {
 	.read = read,
 	.mem_window = mem_window,
 	.reboot = reboot,
+	.reboot_ok = reboot_ok,
 	.irq_stack_free = stm32_irq_stack_free,	// irq_stack.c
 #if CONFIG_DEBUGLINK
 	.reg = reg,
@@ -165,21 +182,17 @@ const hal_system_t stm32_system = {
 #endif
 };
 
-static void spin_until(volatile uint32_t *reg, uint32_t mask, uint32_t want)
-{
-	for (uint32_t i = 0; i < SPIN_LIMIT && (*reg & mask) != want; i++) {
-	}
-}
+// The family's half: stm32_rom_enter(), the way into the ROM bootloader, and what that needs (it may use SPIN_LIMIT)
+#include "sysboot_soc.h"
 
 void stm32_sysboot_check(void)
 {
-	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-	(void)RCC->APB1ENR;
+	STM32_BACKUP_CLOCK_ON();
 	if (RTC->BKP19R != SYSBOOT_MAGIC) {
 		return;
 	}
 	backup_write(0);
-	PWR->CR &= ~PWR_CR_DBP;
+	STM32_BACKUP_LOCK();
 	if (RTC->BKP19R != 0) {
 		return;	// can't clear it: entering anyway would loop into the ROM on every start
 	}
@@ -196,51 +209,6 @@ void stm32_sysboot_check(void)
 		NVIC->ICPR[i] = 0xFFFFFFFFu;
 	}
 
-	// Clocks back to HSI 16 MHz, HSE and the PLLs off and at their reset values (the stock bootloader leaves
-	// HSE/PLL running; the ROM sets its own clocks up)
-	RCC->CR |= RCC_CR_HSION;
-	spin_until(&RCC->CR, RCC_CR_HSIRDY, RCC_CR_HSIRDY);
-	RCC->CFGR = 0;
-	spin_until(&RCC->CFGR, RCC_CFGR_SWS, 0);
-	RCC->CR &= ~(RCC_CR_PLLON | RCC_CR_PLLI2SON | RCC_CR_CSSON);
-	spin_until(&RCC->CR, RCC_CR_PLLRDY | RCC_CR_PLLI2SRDY, 0);
-	RCC->CR &= ~RCC_CR_HSEON;
-	spin_until(&RCC->CR, RCC_CR_HSERDY, 0);
-	RCC->CR &= ~RCC_CR_HSEBYP;
-	RCC->PLLCFGR = 0x24003010u;
-	RCC->PLLI2SCFGR = 0x20003000u;
-	RCC->CIR = 0x00FF0000u;	// clear the ready flags, interrupts off
-	RCC->CIR = 0;
-	FLASH->ACR = 0;		// 0 wait states is right for 16 MHz; caches off
-
-	// Peripherals to their reset state, except the GPIO ports (the board's pin levels above, the power latch)
-	RCC->AHB1RSTR = RCC_AHB1RSTR_DMA1RST | RCC_AHB1RSTR_DMA2RST | RCC_AHB1RSTR_OTGHRST | RCC_AHB1RSTR_CRCRST;
-	RCC->AHB2RSTR = 0xFFFFFFFFu;
-	RCC->AHB3RSTR = 0xFFFFFFFFu;
-	RCC->APB1RSTR = 0xFFFFFFFFu;
-	RCC->APB2RSTR = 0xFFFFFFFFu;
-	RCC->AHB1RSTR = 0;
-	RCC->AHB2RSTR = 0;
-	RCC->AHB3RSTR = 0;
-	RCC->APB1RSTR = 0;
-	RCC->APB2RSTR = 0;
-	RCC->AHB1ENR &= 0x000001FFu;	// GPIOA..GPIOI only
-	RCC->AHB2ENR = 0;
-	RCC->AHB3ENR = 0;
-	RCC->APB1ENR = 0;
-	RCC->APB2ENR = RCC_APB2ENR_SYSCFGEN;
-	(void)RCC->APB2ENR;
-
-	uint32_t sp = *(volatile const uint32_t *)SYSMEM_BASE;
-	uint32_t pc = *(volatile const uint32_t *)(SYSMEM_BASE + 4u);
-	if (sp < 0x20000000u || sp > 0x20020000u || pc < SYSMEM_BASE || pc >= SYSMEM_END) {
-		NVIC_SystemReset();	// not a ROM vector table: boot normally (the flag is gone)
-	}
-	SYSCFG->MEMRMP = SYSCFG_MEMRMP_MEM_MODE_0;	// system flash at 0
-	SCB->VTOR = 0;
-	__DSB();
-	__ISB();
-	__enable_irq();		// the reset state; nothing can interrupt now (NVIC cleared, SysTick off)
-	__asm volatile("msr msp, %0\n\tbx %1" : : "r"(sp), "r"(pc) : "memory");
+	stm32_rom_enter();
 	__builtin_unreachable();
 }

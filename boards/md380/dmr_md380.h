@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// MD-380 DMR modem: the shared STM32 HR_C6000-family glue (platform/stm32f4/hrc/dmr_glue.h) runs the slot engine in
+// MD-380 DMR modem: the shared STM32 HR_C6000-family glue (platform/stm32/hrc/dmr_glue.h) runs the slot engine in
 // its HR_C5000 variant, the interrupts and the deferred event task; radio_md380.c gives it the per-burst RF switch.
 #ifndef DMR_MD380_H
 #define DMR_MD380_H

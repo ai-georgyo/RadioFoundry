@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright (c) 2026 The RadioFoundry Authors */
-/* STM32F4 application layout, INCLUDEd by each board's memory.ld after its MEMORY (FLASH, RAM, CCMRAM). The image
- * starts with the vector table at ORIGIN(FLASH) (board.mk APP_BASE, where the bootloader starts the application).
+/* STM32 application layout, INCLUDEd by each board's memory.ld after its MEMORY (FLASH, RAM, and CCMRAM: the CPU-only
+ * RAM, the F4's CCM, the H7's DTCM). The image starts with the vector table at ORIGIN(FLASH) (board.mk APP_BASE, where
+ * the bootloader starts the application).
  *
  * The board's FLASH region ends where the codec's first flash sector starts (docs/spec/codec-placement.md, "STM32
  * radios"): whole sectors stay free of our code, so the flashing tool can update the firmware without erasing the
@@ -15,7 +16,7 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);
 _Min_Heap_Size = 0x1000;
 _Min_Stack_Size = 0x800;	/* main stack: start-up and interrupts (at least this much RAM stays free for it) */
 _Min_Task_Heap = 24K;		/* the RTOS heap: every task stack (about 20 KB with DMR), queues */
-_Ccm_Spare = 256;		/* CCM the heap leaves free, so the build's memory report shows what the statics use */
+_Ccm_Spare = 256;		/* CPU-only RAM the heap leaves free, so the build's memory report shows what the statics use */
 
 SECTIONS
 {
@@ -60,9 +61,10 @@ SECTIONS
 		__bss_end__ = _ebss;
 	} >RAM
 
-	/* CCM: CPU only (no DMA can reach it); ccm.c sets it up before main. .ccmdata (RFOUNDRY_CPU_DATA) is copied from
-	 * flash like .data, .ccmbss (RFOUNDRY_CPU_RAM) zeroed like .bss; .ccmram (RFOUNDRY_CPU_RAM_NOINIT: the codec state)
-	 * is left as it is and must be written before it's read. The RTOS heap, with every task stack, is the rest */
+	/* CPU-only RAM (the F4's CCM, the H7's DTCM: no DMA can reach it); ccm.c sets it up before main. .ccmdata
+	 * (RFOUNDRY_CPU_DATA) is copied from flash like .data, .ccmbss (RFOUNDRY_CPU_RAM) zeroed like .bss; .ccmram
+	 * (RFOUNDRY_CPU_RAM_NOINIT: the codec state) is left as it is and must be written before it's read. The RTOS heap,
+	 * with every task stack, is the rest */
 	_siccmdata = LOADADDR(.ccmdata);
 	.ccmdata : { . = ALIGN(4); _sccmdata = .; *(.ccmdata) *(.ccmdata*) . = ALIGN(4); _eccmdata = .; } >CCMRAM AT> FLASH
 	/* the end of the .bin (the last section copied into it): the support info's image hash runs __app_base .. here */

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // MD-380 data flash: a Winbond W25Q on SPI1 (PB3 SCK, PB4 MISO, PB5 MOSI, AF5), mode 0, APB2/16, chip select PD7
-// (docs/spec/hardware-md380.md 12), through the shared driver (platform/stm32f4/spi_flash). Early radios are reported
+// (docs/spec/hardware-md380.md 12), through the shared driver (platform/stm32/spi_flash). Early radios are reported
 // with 1 MB parts, later ones with 16 MB: the size is probed, and the core gets the 16 MB STM32 layout on a 16 MB part
 // and its first megabyte (small_map) on a 1 MB one.
 #include "md380.h"

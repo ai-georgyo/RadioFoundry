@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// PCM audio over I2S3 to the built-in codec of an HR_C6000 or HR_C5000, shared by the STM32F4 radios with one of
-// them: the stream behind hal_audio_t's start and stop (i2s_pcm.c). The chip is the I2S master; SPI3 receives the
-// microphone on PC12 (I2S3_SD), I2S3ext sends speaker PCM on PC11 (I2S3ext_SD), CK on PC10 and WS on PA15. The pins are
-// the same on every such board. The board keeps the speaker routing (hal_audio_t.speaker_pcm).
+// PCM audio over I2S3 to the built-in codec of an HR_C6000 or HR_C5000, shared by the STM32 radios with one of
+// them: the stream behind hal_audio_t's start and stop (i2s_pcm.c). The chip is the I2S master: CK on PC10, WS on PA15,
+// the two data lines on PC12 and PC11 (which block and which direction on each: the family's hrc/i2s_pcm_soc.h). The
+// pins are the same on every such board. The board keeps the speaker routing (hal_audio_t.speaker_pcm).
 #ifndef STM32_I2S_PCM_H
 #define STM32_I2S_PCM_H
 

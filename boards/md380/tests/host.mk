@@ -21,7 +21,7 @@ md380PanelTest: $(HERE)md380PanelTest.c $(HERE)../panel_md380.c $(HERE)../panel_
 # The calibration reader on a synthetic table (calibration_md380.c, hardware-md380.md 11)
 TESTS   += md380CalTest
 md380CalTest: $(HERE)md380CalTest.c $(HERE)../calibration_md380.c $(HERE)../md380.h $(CORE)/radio/cal_curve.h
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -I$(ROOT)/platform/stm32f4 -I$(dir $<).. -Wshadow -o $@ $(filter %.c,$^)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I$(ROOT)/platform/stm32 -I$(ROOT)/platform/stm32f4 -I$(dir $<).. -Wshadow -o $@ $(filter %.c,$^)
 
 run-boards:: md380RfbusTest md380PanelTest md380CalTest
 	./md380RfbusTest

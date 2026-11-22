@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // MD-9600 GPS: an optional module's NMEA on USART1 RX (PA10), detected at run time (docs/spec/hardware-md9600.md 13),
-// through the shared STM32 GPS receiver (platform/stm32f4/gps_uart). The module's supply is PA9, which also powers the
+// through the shared STM32 GPS receiver (platform/stm32/gps_uart). The module's supply is PA9, which also powers the
 // hand mic, so it stays on whatever the GPS setting says while the radio runs (off in standby, power_md9600.c); the
 // setting off stops the USART (no power hook). 9600 baud first (8N1, receive only), then the other usual rates: a line
 // that stays silent for the first window ends the search, so a radio without a module listens once and turns the UART

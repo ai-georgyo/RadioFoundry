@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// DMR modem glue shared by the STM32F4 radios with an HR_C6000 or HR_C5000: the slot engine
+// DMR modem glue shared by the STM32 radios with an HR_C6000 or HR_C5000: the slot engine
 // (drivers/modem/hrc_common/hrc6000_dmr.c) on the chip's three interrupt lines, the deferred event task that calls the
 // DMR stack, the hal_dmr_modem_t over them and the bring-up counters (docs/spec/dmr-modem.md 6). The three lines are
-// pins 0, 1 and 2 of one port (EXTI0-2) on every one of these boards. A board supplies what differs: how its RF side
-// switches for each burst (stm32_hrc_dmr_board_t). A board adds platform/stm32f4/hrc to BOARD_DIRS to use it.
+// pins 0, 1 and 2 of one port unless the board says otherwise (hrc_lines.h). A board supplies what differs: how its RF
+// side switches for each burst (stm32_hrc_dmr_board_t). A board adds platform/stm32/hrc to BOARD_DIRS to use it.
 #ifndef STM32_HRC_DMR_GLUE_H
 #define STM32_HRC_DMR_GLUE_H
 
@@ -18,7 +18,7 @@
 #include "modem/hrc_common/hrc6000_dmr.h"
 
 typedef struct {
-	// The port whose pins 0, 1, 2 carry the timeslot, system and RF TX interrupts (falling edge)
+	// The port whose pins (0, 1, 2 by default: hrc_lines.h) carry the timeslot, system and RF TX interrupts (falling edge)
 	GPIO_TypeDef *int_port;
 	// Per-burst RF switch, from the modem interrupts (never blocks): tx = key the PA for our burst, else the PA off and
 	// the RF side back to receive. False when it could not be done now; the engine counts it

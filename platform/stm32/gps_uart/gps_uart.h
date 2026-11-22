@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// A GPS module's NMEA output on a receive-only STM32F4 USART, shared by the radios with an optional module: the
+// A GPS module's NMEA output on a receive-only STM32 USART, shared by the radios with an optional module: the
 // receive interrupt, the task that drains it through drivers/gps/gps_rx, run-time detection and the
 // rate hunt (gps_baud.h). The same image runs with and without a module: one checksum-valid sentence makes it
 // present and every sentence then goes to the position service (core/position); a silent line, or no valid sentence
 // at any rate of the board's list, switches the USART off again and ends the task. Once heard, the module follows
 // Settings > Location > GPS (hal_gps_t.enable, drivers/gps/gps_rx/gps_power): off stops the USART and, through the
-// board's power hook, the module's supply. A board adds platform/stm32f4/gps_uart, drivers/gps/nmea_line and
+// board's power hook, the module's supply. A board adds platform/stm32/gps_uart, drivers/gps/nmea_line and
 // drivers/gps/gps_rx to BOARD_DIRS and calls stm32_gps_irq() from its USART's handler.
 #ifndef STM32_GPS_UART_H
 #define STM32_GPS_UART_H

@@ -2,7 +2,7 @@
 /* Copyright (c) 2026 The RadioFoundry Authors */
 /* TYT MD-9600 / RT90, STM32F405VGT6, application behind the 48 KB TYT bootloader (docs/spec/hardware-md9600.md 1.3).
  * The bootloader starts the application at 0x0800C000 like the other STM32F4 radios' bootloaders, so the vector table, stack
- * rule and start-up are the same (platform/stm32f4/common.ld).
+ * rule and start-up are the same (platform/stm32/common.ld).
  *
  * Codec (docs/spec/codec-md9600.md "Hosting", docs/spec/codec-placement.md "Layouts"): the merge on the user's machine
  * puts the stock build's table window, moved as one block, at the start of sector 10 (0x080C0000 plus its stock address

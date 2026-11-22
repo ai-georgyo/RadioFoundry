@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The family's GPS line, through the shared STM32 GPS receiver (platform/stm32f4/gps_uart): NMEA on USART1 RX (PA10),
+// The family's GPS line, through the shared STM32 GPS receiver (platform/stm32/gps_uart): NMEA on USART1 RX (PA10),
 // module power on PA9, high = on. A factory module on the MD-UV380 G models (hardware-mduv380.md 9); the DM-1701 has the
 // same two pins and no module, but an owner can fit one there (hardware-dm1701.md 14). Radios with and without a module
 // share an image, so the module is powered for the listen window only and switched off again when nothing is heard. A

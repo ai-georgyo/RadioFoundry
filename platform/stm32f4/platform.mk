@@ -52,9 +52,18 @@ TUSB_SRC := $(TUSB)/tusb.c $(TUSB)/common/tusb_fifo.c $(TUSB)/device/usbd.c \
 	$(TUSB)/class/cdc/cdc_device.c $(TUSB)/portable/synopsys/dwc2/dcd_dwc2.c $(TUSB)/portable/synopsys/dwc2/dwc2_common.c \
 	$(if $(filter y,$(CONFIG_USB_NETWORK)),$(TUSB)/class/net/ncm_device.c)
 
-PLATFORM_DIRS := platform/stm32f4
-PLATFORM_INC := -I$(HALDIR)/Inc -I$(CMSIS_DEV)/Include -I$(CMSIS_CORE)/Include -I$(RTOS)/include -I$(RTOS)/portable/GCC/ARM_CM4F \
-	-I$(TUSB) -Idrivers/usb
+# platform/stm32 is what every STM32 platform shares; this directory has the STM32F4's own files and its halves of the
+# shared ones (stm32_family.h, sysboot_soc.h, hrc/i2s_pcm_soc.h, gps_uart/gps_uart_soc.h)
+PLATFORM_DIRS := platform/stm32 platform/stm32f4
+# One source set in two directories, built in file-name order across both: the order the single directory had, so the
+# split moves no code (gotchas 13.10). A file name must not exist in both
+PLATFORM_SRC := $(foreach f,$(sort $(notdir $(wildcard $(addsuffix /*.c,$(PLATFORM_DIRS))))),$(wildcard $(addsuffix /$(f),$(PLATFORM_DIRS))))
+# The shared linker script (common.ld), after this directory on the linker's search path
+PLATFORM_LD_DIRS := platform/stm32
+# The file with file-scope assembly, kept out of link time optimization (the Makefile's LTO_EXCLUDE)
+LTO_EXCLUDE := platform/stm32f4/codec_call.c
+PLATFORM_INC := -Iplatform/stm32 -I$(HALDIR)/Inc -I$(CMSIS_DEV)/Include -I$(CMSIS_CORE)/Include -I$(RTOS)/include \
+	-I$(RTOS)/portable/GCC/ARM_CM4F -I$(TUSB) -Idrivers/usb
 
 PLATFORM_3P_SRC := $(MCU_STARTUP) \
 	$(CMSIS_DEV)/Source/Templates/system_stm32f4xx.c \

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The crash log on the STM32F4 (hal_crash.h, docs/spec/crash-log.md 2.1). The fault entry takes the exception frame
+// The crash log on an STM32 (hal_crash.h, docs/spec/crash-log.md 2.1). The fault entry takes the exception frame
 // from the stack the CPU pushed it on (MSP or a task's PSP), moves to a stack of its own (the old one may be the
 // problem) and fills the record with the frame, r4-r11 and the fault status registers. The record lives in the 4 KB
 // backup SRAM: a system reset leaves the backup domain alone, and the stock bootloader, which runs in main RAM before
@@ -18,12 +18,7 @@
 #define FAULT_STACK_BYTES	1024		// the same, for the entry's assembly
 #define STR_(x)			#x
 #define STR(x)			STR_(x)
-#define FLASH_LO		0x08000000u
-#define FLASH_HI		0x08100000u	// 1 MB (STM32F405xG)
-#define SRAM_LO			0x20000000u
-#define SRAM_HI			0x20020000u
-#define CCM_LO			0x10000000u
-#define CCM_HI			0x10010000u
+#define FLASH_LO		0x08000000u	// to the family's STM32_FLASH_HI; its RAM is STM32_IS_RAM (stm32_family.h)
 #define FRAME_FPU_BIT		0x10u		// EXC_RETURN bit 4 clear: the frame has the FPU registers too
 #define XPSR_ALIGN_BIT		0x200u		// stacked xPSR bit 9: the CPU padded the frame by a word
 
@@ -32,12 +27,10 @@ _Static_assert(sizeof stm32_fault_stack == FAULT_STACK_BYTES, "the entry's stack
 
 crash_record_t *hal_crash_store(void)
 {
-	RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-	(void)RCC->APB1ENR;
-	PWR->CR |= PWR_CR_DBP;			// backup domain writable (sysboot.c sets the same bit)
-	RCC->AHB1ENR |= RCC_AHB1ENR_BKPSRAMEN;
-	(void)RCC->AHB1ENR;
-	return (crash_record_t *)BKPSRAM_BASE;
+	STM32_BACKUP_CLOCK_ON();
+	STM32_BACKUP_UNLOCK();			// backup domain writable (sysboot.c sets the same bit)
+	STM32_BKPSRAM_ON();
+	return (crash_record_t *)STM32_BKPSRAM_BASE;
 }
 
 uint8_t hal_crash_arch(void)
@@ -47,12 +40,12 @@ uint8_t hal_crash_arch(void)
 
 bool hal_crash_ram_addr(uint32_t a)
 {
-	return (a >= SRAM_LO && a < SRAM_HI) || (a >= CCM_LO && a < CCM_HI);
+	return STM32_IS_RAM(a);
 }
 
 bool hal_crash_code_addr(uint32_t a)
 {
-	return a >= FLASH_LO && a < FLASH_HI;
+	return a >= FLASH_LO && a < STM32_FLASH_HI;
 }
 
 // The instruction before pc ends a kernel wait: the yield's ISB (portmacro.h), or the MSR BASEPRI of a critical
@@ -86,33 +79,28 @@ uint32_t hal_crash_task_where(const void *task)
 	return ((ret != 0 ? ret : pc) & ~1u) | 1u;
 }
 
-#if CONFIG_STUB_ENTRY
-#include "../../stub/stm32f4/f4stub_header.h"
-_Static_assert(F4STUB_SOFT_MARK_ADDR == BKPSRAM_BASE + sizeof(crash_record_t) + offsetof(crash_boot_t, soft) &&
-	       F4STUB_SOFT_MARK == CRASH_BOOT_SOFT, "the stub's RESET mark (f4stub_header.h)");
-#endif
-
 crash_boot_t *hal_crash_boot(void)
 {
 	return (crash_boot_t *)((uint8_t *)hal_crash_store() + sizeof(crash_record_t));	// backup SRAM, after the record
 }
 
-// RCC_CSR (RM0090 7.3.21). Every reset also drives the NRST pin, so PINRSTF alone is the pin; a power-on sets BORRSTF
-// too, so POR before BOR. The stock bootloader runs first and is not known to clear or add to them
+// The family's reset flags (stm32_family.h: RCC_CSR on the F4, RM0090 7.3.21). Every reset also drives the NRST pin,
+// so PINRSTF alone is the pin; a power-on sets BORRSTF too, so POR before BOR. The stock bootloader runs first and is
+// not known to clear or add to them
 uint8_t hal_crash_reset_flags(uint32_t *raw)
 {
-	const uint32_t csr = RCC->CSR;
+	const uint32_t csr = STM32_RESET_FLAGS;
 	*raw = csr;
-	RCC->CSR |= RCC_CSR_RMVF;
-	if (csr & (RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF))
+	STM32_RESET_FLAGS_CLEAR();
+	if (csr & STM32_RSTF_WATCHDOG)
 		return CRASH_RESET_WATCHDOG;
-	if (csr & RCC_CSR_SFTRSTF)
+	if (csr & STM32_RSTF_SOFTWARE)
 		return CRASH_RESET_SOFTWARE;
-	if (csr & RCC_CSR_PORRSTF)
+	if (csr & STM32_RSTF_POWER)
 		return CRASH_RESET_POWER;
-	if (csr & RCC_CSR_BORRSTF)
+	if (csr & STM32_RSTF_BROWNOUT)
 		return CRASH_RESET_BROWNOUT;
-	if (csr & RCC_CSR_PINRSTF)
+	if (csr & STM32_RSTF_PIN)
 		return CRASH_RESET_PIN;
 	return CRASH_RESET_UNKNOWN;
 }
@@ -211,7 +199,8 @@ __attribute__((naked, used)) void HardFault_Handler(void)
 }
 
 // Off unless SCB->SHCSR enables them (they then escalate no more): the same capture. The NMI too (the clock security
-// system, if it is ever turned on): the startup file's default handler would spin with the transmitter as it was
+// system, which the STM32H7's clock set-up turns on with the crystal; cause 2): the startup file's default handler
+// would spin with the transmitter as it was
 void NMI_Handler(void) __attribute__((alias("HardFault_Handler")));
 void MemManage_Handler(void) __attribute__((alias("HardFault_Handler")));
 void BusFault_Handler(void) __attribute__((alias("HardFault_Handler")));
