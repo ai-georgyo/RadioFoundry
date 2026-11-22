@@ -103,7 +103,8 @@ class Writers(unittest.TestCase):
         import random
         import struct
         from rfoundry import fakedfu, stockfw
-        self.base = next(b for b in boards.BOARDS.values() if b.dfu_ids)		# a board on the DFU route
+        # a board on the keyed DFU route: the fake below is its bootloader, and the image reaches its third sector
+        self.base = next(b for b in boards.BOARDS.values() if b.family == "usb-dfu")
         self.b = copy.copy(self.base)
         sec = self.b.sectors[2]		# the third sector the bootloader erases
         self.b.protect = [{"mem": "progmem", "start": sec.addr - self.b.rom_base, "end": sec.end - self.b.rom_base,

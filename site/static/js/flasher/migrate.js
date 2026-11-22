@@ -117,14 +117,20 @@ const countsOf = (img) => {
 };
 
 // The converted codeplug written through the radio's codeplug interface (codeplug/transport.js CpsSerial, which adds
-// the radio's base on the wire): the settings area claimed when another firmware's data is there, the radio's codeplug
-// read, the bytes that differ written and read back, the radio's codeplug counted again. ask(counts): whether to
+// the radio's base on the wire): the settings area claimed when another firmware's data is there (refused with
+// nothing written on a board that claims only after a backup of the whole memory chip: this reads the codeplug
+// alone), the radio's codeplug read, the bytes that differ written and read back, the radio's codeplug counted again.
+// ask(counts): whether to
 // replace a codeplug with channels already on the radio; false writes nothing. The VFO pair keeps the radio's (a read
 // shows the live VFOs there). progress(what, done, total), what "reading" | "writing" | "checking".
 // {written, ok, have}: have the counts the radio holds afterwards (before, when nothing was written)
 export async function writeConverted(tr, radios, conv, { ask = async () => true, progress = () => {} } = {}) {
 	await tr.identify(radios);
-	if ((await tr.storage())?.region === "foreign" && !(await tr.claimStorage())) throw new Error("the settings area could not be claimed");
+	const st = await tr.storage();
+	if (st?.region === "foreign") {
+		if (st.claimFirst) throw new Error("the settings area holds another firmware's data and is claimed only after a backup of the whole memory chip: nothing was written");
+		if (!(await tr.claimStorage())) throw new Error("the settings area could not be claimed");
+	}
 	const have = await tr.read({ iddb: false, progress: (d, n) => progress("reading", d, n) });
 	const now = countsOf(have);
 	if (now?.channels && !(await ask(now))) return { written: false, ok: false, have: now };

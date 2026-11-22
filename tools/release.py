@@ -68,7 +68,9 @@ def check_no_codec(board, image):
     that), and the codec must not be where a merged image puts it: an STM32 radio's code window (its first word), or
     the stock address, where merges from before the codec moved put it (the stock code, by its SHA-256: the image's
     own code reaches past those addresses now, and the codec's first word, a push, is common there), an HR_C7000
-    radio's codec slot (the build's _codec.bin)."""
+    radio's codec slot (the build's _codec.bin). A board without a codec route has no window a codec could be in."""
+    if not board.codec.windows:
+        return
     off = board.codec.windows[0][0] - board.app_base
     if board.codec_slot is None:	# a codec merged from a stock file at the stock placement
         stock = {(p["code"][0] - board.app_base, p["code"][1], p["code"][2]) for p in stockfw.PROFILES.values() if p["board"] == board.id}
@@ -167,8 +169,9 @@ def main(argv=None):
         f.writelines(old)
         f.write(mf.sha256sums_line(bin_name, whole))
         f.write(mf.sha256sums_line(json_name, text.encode("utf-8")))
-    print("release: %s (%d bytes, sectors %s; codec %s in sectors %s, not included)"
-          % (bin_name, len(whole), man["sectors"], man["codec"]["profile"], man["codec"]["sectors"]))
+    codec = ("codec %s in sectors %s, not included" % (man["codec"]["profile"], man["codec"]["sectors"])
+             if board.has_codec else "no codec for this radio")
+    print("release: %s (%d bytes, sectors %s; %s)" % (bin_name, len(whole), man["sectors"], codec))
     print("release: %s, SHA256SUMS in %s" % (json_name, args.out))
     return 0
 

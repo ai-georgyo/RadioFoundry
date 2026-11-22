@@ -12,11 +12,16 @@ import { h, t, button, download, filePicker } from "./dom.js";
 
 export class KitError extends Error {}
 
-// How rfoundry installs a radio (registry.json family): "dfu" over USB, "serial" over the programming cable, null where
-// rfoundry has no install (a radio installed through the RAM stub: the web flasher or stub/stubtool.py)
+// How rfoundry installs a radio (registry.json family): "dfu" over USB with the bootloader's key, "serial" over the
+// programming cable, "dfuse" over USB through the processor's own ROM bootloader (plain: no key, no stock file, and a
+// first install that needs --unprotect), null where rfoundry has no install (a radio installed through the RAM stub:
+// the web flasher or stub/stubtool.py)
 export function kitRoute(radio) {
-	return { "usb-dfu": "dfu", "serial-loader": "serial" }[radio?.flash?.family] || null;
+	return { "usb-dfu": "dfu", "serial-loader": "serial", dfuse: "dfuse" }[radio?.flash?.family] || null;
 }
+
+// The routes that reach the radio as a USB DFU device: their setup is the WinUSB driver and the udev rule
+const usbRoute = (route) => route === "dfu" || route === "dfuse";
 
 // The browser API an install step needs that this browser lacks: "usb" or "serial", else null. step: the step about
 // to be drawn; stub: the install goes through the STM32F4 loader (serial) rather than the bootloader (USB)
@@ -24,6 +29,7 @@ export function missingApi(radio, task, step, { usb, serial, stub = false }) {
 	if (task !== "install") return null;
 	const backend = radio?.flash?.backend;
 	if (backend === "anyroad-dfu" && step === "write") return stub ? (serial ? null : "serial") : usb ? null : "usb";
+	if (backend === "dfuse" && step === "write") return usb ? null : "usb";
 	if (backend === "c7000-stub" && step === "connect") return serial ? null : "serial";
 	return null;
 }
@@ -77,11 +83,15 @@ export function kitSetup(route, board) {
 		"    installer tick \"Add python.exe to PATH\", then click Install Now.",
 		"  - In the folder's address bar type cmd and press Enter. Check the version, then make the venv:",
 		"      py --version", ...pip("py")];
-	if (route === "dfu") L.push(
+	// the keyed bootloader's device name is the board's, or the one its family shares; a ROM bootloader's name is in the
+	// board's data only once it was read on a radio, so without one the device is found by its USB ID
+	const device = route === "dfuse" && !board?.dfu_product ? `the device with USB ID ${usbId.replace(":", " ")}`
+		: `"${board?.dfu_product || "Digital Radio in USB mode"}" (USB ID ${usbId.replace(":", " ")})`;
+	if (usbRoute(route)) L.push(
 		"  - The radio's bootloader needs the WinUSB driver, once:",
 		"      1. Download Zadig from https://zadig.akeo.ie and run it.",
 		"      2. Put the radio in its bootloader (the steps under INSTALL below) and plug it in.",
-		`      3. In Zadig's list pick "${board?.dfu_product || "Digital Radio in USB mode"}" (USB ID ${usbId.replace(":", " ")}).`,
+		`      3. In Zadig's list pick ${device}.`,
 		"         Not listed: Options > List All Devices.",
 		"      4. Choose WinUSB and click Install Driver (or Replace Driver).",
 		"      5. Unplug the radio, put it back in its bootloader and connect again.");
@@ -98,7 +108,7 @@ export function kitSetup(route, board) {
 		`  - Python ${PYTHON_MIN} or later comes with the system. Debian, Ubuntu: sudo apt install python3-venv first.`,
 		"  - In a terminal, in the folder:",
 		"      python3 --version", ...pip("python3"));
-	if (route === "dfu") L.push(
+	if (usbRoute(route)) L.push(
 		`  - Let your user reach the bootloader (${usbId.toLowerCase()}), once:`,
 		`      echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="${hex4(vid).toLowerCase()}", ATTRS{idProduct}=="${hex4(pid).toLowerCase()}", MODE="0666"' | sudo tee /etc/udev/rules.d/50-rfoundry-dfu.rules`,
 		"      sudo udevadm control --reload-rules && sudo udevadm trigger");
@@ -114,6 +124,7 @@ export function kitSetup(route, board) {
 export function kitReadme(o) {
 	const route = kitRoute(o.radio);
 	if (!route) throw new KitError(`rfoundry does not install the ${o.radio.name}`);
+	if (route === "dfuse") return plainReadme(o);
 	const name = o.radio.name, m = o.manifest || {};
 	const img = `firmware/${o.base}.bin`;
 	const files = stockFiles(o.board);
@@ -189,6 +200,72 @@ export function kitReadme(o) {
 	return L.join("\n") + "\n";
 }
 
+// README.txt for the "dfuse" route: no stock file, no codec and no key, so no --stock anywhere. What it must say that
+// the other routes' README doesn't: a first install erases the radio's whole program memory, its original firmware and
+// that firmware's bootloader with it (rfoundry stops and says so until --unprotect is given), and going back is the
+// maker's procedure. The bootloader used is the processor's own, which nothing can write
+function plainReadme(o) {
+	const name = o.radio.name, m = o.manifest || {};
+	const img = `firmware/${o.base}.bin`;
+	const docs = (page, anchor = "") => `${o.site}docs/user/${page}.html${anchor ? "#" + anchor : ""}`;
+	const both = (args) => [`  Windows:        venv\\Scripts\\python ${args}`, `  macOS, Linux:   venv/bin/python ${args}`];
+	const cmd = `rfoundry.py flash ${q(img)}`;
+	const steps = o.radio.flash.bootloader || [];
+	const enter = steps.length ? steps.map((s, i) => `  ${i + 1}. ${s}`) : [`  rfoundry names the keys to hold. Your radio's section: ${docs("23-radios")}`];
+	const L = [`RadioFoundry for the ${name}: manual install kit`, "",
+		`Made ${o.date} by ${o.site}flash/ (RadioFoundry ${o.git || "?"}).`,
+		"This kit installs RadioFoundry from the command line with rfoundry, the tool the web installer is built on.",
+		"Use it where the web installer can't: a browser without WebUSB or Web Serial (Safari, Firefox), or an install",
+		"that keeps failing.", "",
+		"WHAT'S INSIDE", "",
+		`  ${img.padEnd(40)} the firmware you chose (${[m.version, m.variant].filter(Boolean).join(", ") || "RadioFoundry"})`,
+		`  ${`firmware/${o.base}.json`.padEnd(40)} its manifest: rfoundry checks the image against it`,
+		`  ${"rfoundry.py".padEnd(40)} starts rfoundry from this folder, nothing to install`,
+		`  ${"tools/, stub/".padEnd(40)} rfoundry and the tools it uses`,
+		`  ${"requirements.txt".padEnd(40)} the Python packages rfoundry needs`,
+		`  ${"LICENSE".padEnd(40)} MIT`, "",
+		...wrap(`The ${name} is installed through its processor's own bootloader, which is part of the chip and can't be erased: that update mode always stays available. No stock firmware file is needed, and none is used.`), "",
+		"READ THIS BEFORE A FIRST INSTALL", "",
+		"A radio on its original firmware is read protected, and its bootloader writes nothing until the protection is",
+		"removed. Removing it (a Read Unprotect) erases the radio's whole program memory: the original firmware and",
+		"that firmware's bootloader. rfoundry can't put them back. Going back to the original firmware is the maker's",
+		"own recovery procedure, with the maker's files: have them, and save your channels with the maker's",
+		"programming software, before you install.",
+		...(o.radio.flash.notice ? ["", ...wrap(o.radio.flash.notice)] : []), "",
+		"1. SET UP (ONCE)", "", ...kitSetup("dfuse", o.board), "",
+		"2. CHECK FIRST (WRITES NOTHING)", "", ...both(`${cmd} --dry-run`), "",
+		"rfoundry checks the image against its manifest and prints exactly what it would erase and write.", "",
+		"3. INSTALL", "", ...both(cmd), "",
+		"rfoundry asks you to put the radio in its bootloader:", ...enter, "",
+		"It then asks the radio whether it is read protected. A radio that already runs RadioFoundry is not: rfoundry",
+		"writes, the radio restarts, and rfoundry checks what it reports. Keep the cable in until it says it is done.", "",
+		"4. A FIRST INSTALL: REMOVE THE READ PROTECTION", "",
+		"On a protected radio the command above writes nothing: it stops and says what a Read Unprotect erases. To go",
+		"on, run it with --unprotect:", "", ...both(`${cmd} --unprotect`), "",
+		"rfoundry asks you to confirm, sends the Read Unprotect and waits for the erase: at least a minute, until the",
+		"radio has left USB. Nothing shows on the radio: leave it on and connected until rfoundry says to switch it",
+		"off. Then switch the radio off, put it in its bootloader again as above, and rfoundry installs. A radio that",
+		"is back in its bootloader by itself is installed at once, and rfoundry says so: leave it on.", "",
+		"IF IT FAILS", "",
+		"  - Run the same command again. The processor's bootloader is never written, so it can always be reached.",
+		`  - Command line troubleshooting: ${docs("20-troubleshooting", "command-line-installs-advanced")}`,
+		`  - rfoundry on the command line: ${docs("02-installing", "advanced-rfoundry-on-the-command-line")}`];
+	if (o.community) L.push(`  - Ask the community: ${o.community}`);
+	if (o.repo) L.push(`  - Report a bug: ${o.repo}/issues (paste what rfoundry printed)`);
+	return L.join("\n") + "\n";
+}
+
+// A paragraph as README lines of at most 110 characters
+function wrap(text, width = 110) {
+	const out = [];
+	let line = "";
+	for (const w of String(text).split(/\s+/).filter(Boolean)) {
+		if (line && line.length + 1 + w.length > width) { out.push(line); line = w; } else line = line ? `${line} ${w}` : w;
+	}
+	if (line) out.push(line);
+	return out;
+}
+
 // rfoundry from this site: downloads/rfoundry-tool.zip, refused unless its size and SHA-256 are site.json's (a
 // cached or damaged copy of another build would refuse this firmware's manifest, or worse, accept a wrong board)
 export async function toolEntries(site, root = "", fetchFn = globalThis.fetch) {
@@ -203,11 +280,12 @@ export async function toolEntries(site, root = "", fetchFn = globalThis.fetch) {
 }
 
 // Every file of the kit, in order: [{name, data}]. tool: toolEntries(); fw: {manifest, image}; stock: {name, data} or
-// null; text: kitReadme()
-export function kitEntries(tool, fw, base, stock, text) {
+// null; text: kitReadme(). stockFolder false: a route that uses no stock file gets no stock folder
+export function kitEntries(tool, fw, base, stock, text, { stockFolder = true } = {}) {
 	const out = [{ name: "README.txt", data: text.replace(/\n/g, "\r\n") }];	// CRLF: Notepad of any age
 	out.push({ name: `firmware/${base}.bin`, data: fw.image }, { name: `firmware/${base}.json`, data: JSON.stringify(fw.manifest, null, 1) + "\n" });
-	if (stock) out.push({ name: `stock/${stock.name}`, data: stock.data });
+	if (!stockFolder) { /* nothing of a stock file */ }
+	else if (stock) out.push({ name: `stock/${stock.name}`, data: stock.data });
 	else out.push({ name: "stock/PUT-YOUR-STOCK-FILE-HERE.txt", data: "Copy your stock firmware file (or program flash read) here. README.txt says which.\r\n" });
 	for (const [name, data] of tool) out.push({ name, data });
 	return out;
@@ -219,11 +297,12 @@ export async function makeKit(o, fetchFn = globalThis.fetch) {
 	if (!o.firmware?.image) throw new KitError("no firmware yet: choose and build it first");
 	const when = o.when || new Date();
 	const base = kitBase(o.firmware.manifest, o.radio.flash.board);
-	const stock = o.stock?.data ? { name: o.stock.name.split(/[\\/]/).pop(), data: o.stock.data } : null;
+	const plain = kitRoute(o.radio) === "dfuse";	// no stock file on this route, even if one was picked for another radio
+	const stock = o.stock?.data && !plain ? { name: o.stock.name.split(/[\\/]/).pop(), data: o.stock.data } : null;
 	const text = kitReadme({ radio: o.radio, board: o.board, base, manifest: o.firmware.manifest, stock: stock?.name || null,
 		site: o.url, repo: o.site?.repo, community: o.site?.community, git: o.site?.git, date: day(when) });
 	const tool = await toolEntries(o.site, o.root, fetchFn);
-	return { name: kitName(o.radio, when), bytes: await zip(kitEntries(tool, o.firmware, base, stock, text), when) };
+	return { name: kitName(o.radio, when), bytes: await zip(kitEntries(tool, o.firmware, base, stock, text, { stockFolder: !plain }), when) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -259,7 +338,8 @@ export function kitPanel(args, api, { pickStock = null } = {}) {
 	}
 	const status = h("p", { class: "small", "aria-live": "polite" });
 	const files = stockFiles(o.board);
-	const stockPart = o.stock?.data
+	// the plain route uses no stock file: said, and no picker
+	const stockPart = route === "dfuse" ? h("li", {}, t("flash.dfuse.kit_plain")) : o.stock?.data
 		? h("li", {}, t("flash.kit.has_stock", { name: o.stock.name }))
 		: files.length ? h("li", {}, t("flash.kit.no_stock", { files: files.slice(0, 3).join(", ") }),
 			pickStock ? filePicker(t("flash.codec.stock_pick"), ".bin,.zip", pickStock) : null)

@@ -312,3 +312,20 @@ test("writeConverted: a codeplug with channels on the radio is replaced only whe
 	assert.deepEqual(decode(CodeplugImage.from(foreign.spi.slice(0x700000, 0x700000 + 0x120000))).channels.map((c) => c.name),
 		["Repeater", "DMR TS2", "DMR TS1", "GMRS"]);
 });
+
+// A board whose memory chip is claimed only after a backup of all of it (STORAGE INFO's claim-first flag): this step
+// read the codeplug alone, so it neither claims nor writes, as every client on such a board (settings-store.md 5)
+test("writeConverted: a foreign settings area on a board that claims first is neither claimed nor written", async () => {
+	const conv = convertPagedStock(sample().read());
+	for (const claimFirst of [true, false]) {
+		const radio = new FakeCpsRadio({ board: "DM-32UV", base: 0x700000, end: 0xF00000, cable: true, foreign: true, claimFirst });
+		const run = writeConverted(new CpsSerial(radio.stream(), { cable: true }), RADIOS, conv, { ask: async () => true });
+		if (!claimFirst) {
+			assert.equal((await run).written, true, "the flag clear: claimed and written");
+			assert.equal(radio.foreign, false);
+			continue;
+		}
+		await assert.rejects(run, /claimed only after a backup of the whole memory chip: nothing was written/);
+		assert.deepEqual([radio.foreign, radio.claims ?? 0, radio.writes.length], [true, 0, 0]);
+	}
+});

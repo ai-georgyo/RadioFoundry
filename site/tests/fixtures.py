@@ -20,6 +20,8 @@ Python it was ported from (site/tests/flasher.test.mjs):
   - for the STM32F4 loader: each radio's board record from stub/f4stub.py config_record(), and the HELLO replies its
     simulated stub (FakeF4) gives before and after CONFIG, so f4stub.js sends and parses the Python tool's bytes; and
     f4stub's test profile, a board with other SPI wiring
+  - for the wait after a Read Unprotect: rfoundry's own waits (cli.unprotect_wait) for a row of mass erase times and
+    for every board written through a processor's ROM bootloader, so dfuse.js waits what rfoundry waits
   - for the codeplug editor: the radio's own codeplug code on the host (tests/host/cpsSim), a codeplug it stored
     and what it reads back, so site/tests/codeplug.test.mjs checks the JavaScript decoder and encoder against it
 
@@ -32,6 +34,7 @@ import random
 import struct
 import subprocess
 import sys
+import types
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "rfoundry"))
@@ -205,10 +208,22 @@ def no_codec(out, rng):
 	return {"sha256": sha, "real_sha256": real, "message": msg}
 
 
+def unprotect_waits(out):
+	"""rfoundry's waits after a Read Unprotect: the two floors, [mass erase time, least, most] for a row of times on
+	both sides of the floors, and {board: [least, most]} for every board of the plain DfuSe family"""
+	from rfoundry import cli
+	row = [[n, *cli.unprotect_wait(types.SimpleNamespace(name="x", mass_erase_max_s=n))] for n in (1, 13, 26, 30, 31, 45, 120)]
+	doc = {"min_s": cli.UNPROTECT_MIN_S, "wait_s": cli.UNPROTECT_WAIT_S, "bounds": row,
+	       "boards": {b.id: list(cli.unprotect_wait(b)) for b in boards.BOARDS.values() if b.family == "dfuse"}}
+	with open(os.path.join(out, "unprotect-wait.json"), "w") as f:
+		json.dump(doc, f, indent=1)
+
+
 def main(out):
 	os.makedirs(out, exist_ok=True)
 	codec_map_vectors(out)
 	f4_vectors(out)
+	unprotect_waits(out)
 	rng = random.Random(42)
 	key = synthetic_key(1701)
 	stock, profiles, code, tables = stockfw.build_synthetic_stock(key, rng)

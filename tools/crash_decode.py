@@ -10,25 +10,51 @@
 
 REPORT is the packed report as received (the UDP payload, section 4) in a binary file, the same as hex text, or the
 debug link's crash view (`rfoundry_debug.py crash`: crash.* lines). '-' reads standard input. With --elf, pc, lr and the
-return addresses go through addr2line: arm-none-eabi-addr2line for a Cortex-M4 record, csky-elf-addr2line for a
+return addresses go through addr2line: arm-none-eabi-addr2line for a Cortex-M record, csky-elf-addr2line for a
 CK803S one, or --addr2line / $RFOUNDRY_ADDR2LINE. The record's build must match the ELF's commit.
 """
 import argparse
+import json
 import os
 import shutil
 import struct
 import subprocess
 import sys
 
-ARCHS = {1: "Cortex-M4", 2: "CK803S"}
+# Architecture 1 is every ARMv7-M core (Cortex-M4 and M7): one exception frame, the same fault status registers
+ARCHS = {1: "Cortex-M (ARMv7-M)", 2: "CK803S"}
 ADDR2LINE = {1: "arm-none-eabi-addr2line", 2: "csky-elf-addr2line"}
-CODE = {1: [(0x08000000, 0x08100000)], 2: [(0x03000000, 0x04000000)]}  # flash (CK803S: XIP; RAM code isn't known here)
+STM32_FLASH = 0x08000000
+STM32_FLASH_END = 0x08200000    # the largest STM32 program flash this tool was written with: used without a registry
+REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rfoundry", "rfoundry", "registry.json")
+
+
+def stm32_flash_end(registry=REGISTRY):
+    """Where program flash ends on the largest board whose flash starts at the STM32's base, from the board registry
+    (tools/boards.py writes it). Only the crash view needs it, to pick return address candidates out of the stack
+    words: an address past a smaller part's flash is never in its stack by chance alone often enough to matter"""
+    try:
+        with open(registry, encoding="utf-8") as f:
+            ends = [b["flash_end"] for b in json.load(f)["boards"].values() if b["rom_base"] == STM32_FLASH]
+        return max(ends)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return STM32_FLASH_END
+
+
+# flash (CK803S: XIP; RAM code isn't known here)
+CODE = {1: [(STM32_FLASH, stm32_flash_end())], 2: [(0x03000000, 0x04000000)]}
 KINDS = {1: "Fault", 2: "Stack overflow", 3: "Out of memory", 4: "Assert", 5: "Hang", 6: "Stall"}
 FLAGS = [(0x01, "in an interrupt handler"), (0x02, "build had local changes"), (0x04, "stack copied"),
          (0x08, "seen"), (0x10, "sent")]
 CK803_VECTORS = {1: "misaligned access", 2: "access error", 3: "divide by zero", 4: "illegal instruction",
                  7: "breakpoint", 8: "unrecoverable error"}
-# CFSR (the Cortex-M4's configurable fault status): MemManage, BusFault and UsageFault bits
+# A Cortex-M fault record's cause is the exception number (IPSR). 2 is the NMI, which on the MCUs of architecture 1
+# here has one source, the clock security system (the external oscillator failed while it was the clock): the record's
+# pc is then whatever code the interrupt found, so the words say it is no culprit
+CORTEX_M_VECTORS = {2: "NMI: the clock security system, the external oscillator failed; pc is only where it was "
+                       "interrupted, not the cause",
+                    3: "HardFault", 4: "MemManage", 5: "BusFault", 6: "UsageFault"}
+# CFSR (ARMv7-M's configurable fault status): MemManage, BusFault and UsageFault bits
 CFSR = [(0, "IACCVIOL instruction access violation"), (1, "DACCVIOL data access violation"),
         (3, "MUNSTKERR MemManage on unstacking"), (4, "MSTKERR MemManage on stacking"),
         (5, "MLSPERR MemManage in FP lazy state"), (7, "MMARVALID MMFAR holds the address"),
@@ -131,7 +157,7 @@ def describe(rep, elf=None, addr2line=None):
     lines = [f"{KINDS.get(rep['kind'], 'Crash')} on {ARCHS.get(arch, f'arch {arch}')}"]
     cause = rep["cause"]
     if rep["kind"] == 1:
-        why = CK803_VECTORS.get(cause, "") if arch == 2 else ("HardFault" if cause == 3 else "")
+        why = (CK803_VECTORS if arch == 2 else CORTEX_M_VECTORS).get(cause, "")
         lines.append(f"  exception {cause}" + (f" ({why})" if why else ""))
     elif rep["kind"] == 4:
         lines.append(f"  assertion at line {cause} (configASSERT: see the caller below)")
@@ -201,9 +227,18 @@ def self_test():
         assert r["kind"] == 1 and r["count"] == 2 and r["task"] == "radio" and r["returns"] == rets, r
         assert r["pc"] == 0x0802C4A9 and r["status"][3] == 0xDEADBEEF and r["r"][3] == 0x1003, r
     text = describe(read_report(pkt))
-    for want in ("Fault on Cortex-M4", "exception 3 (HardFault)", "task radio", "build 34c825a6",
+    for want in ("Fault on Cortex-M (ARMv7-M)", "exception 3 (HardFault)", "task radio", "build 34c825a6",
                  "PRECISERR", "BFARVALID", "FORCED", "BFAR deadbeef", "MMFAR (not valid)", "pc 0802c4a9", "lr 0803082d", "#0 0801234b"):
         assert want in text, (want, text)
+    # The cause is the exception number: the NMI says what it is and that pc is not the culprit; one without a name
+    # stays a bare number
+    def caused(n):
+        return describe(read_report(pkt[:16] + struct.pack("<I", n) + pkt[20:])).splitlines()[1]
+    nmi = caused(2)
+    assert nmi.startswith("  exception 2 (NMI: the clock security system") and "not the cause" in nmi, nmi
+    assert [caused(n) for n in (3, 4, 5, 6, 11)] == ["  exception 3 (HardFault)", "  exception 4 (MemManage)",
+                                                     "  exception 5 (BusFault)", "  exception 6 (UsageFault)",
+                                                     "  exception 11"], [caused(n) for n in (3, 4, 5, 6, 11)]
 
     view = "\n".join(["crash.built=1", "crash.valid=1", "crash.arch=2", "crash.kind=4", "crash.cause=712",
                       "crash.flags=0x5", "crash.count=1", "crash.pc=0x03012a40", "crash.lr=0x03012a10",
@@ -232,6 +267,33 @@ def self_test():
         except ReportError:
             continue
         raise AssertionError(f"accepted {bad[:16]!r}")
+
+    # The code range of architecture 1 follows the registry's largest STM32 flash, and stands without a registry
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "registry.json")
+        boards = {"a": {"rom_base": STM32_FLASH, "flash_end": 0x08100000},
+                  "b": {"rom_base": 0x03000000, "flash_end": 0x03400000}}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"boards": boards}, f)
+        assert stm32_flash_end(path) == 0x08100000
+        boards["c"] = {"rom_base": STM32_FLASH, "flash_end": 0x08200000}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"boards": boards}, f)
+        assert stm32_flash_end(path) == 0x08200000
+        for broken in ("{}", '{"boards": {}}', '{"boards": {"a": {}}}', "not json"):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(broken)
+            assert stm32_flash_end(path) == STM32_FLASH_END, broken
+        assert stm32_flash_end(os.path.join(d, "none.json")) == STM32_FLASH_END
+    lo, hi = CODE[1][0]
+    assert lo == STM32_FLASH and hi >= 0x08100000 and is_code(1, lo) and is_code(1, hi - 1) and not is_code(1, hi)
+    assert not is_code(1, 0x20000000) and not is_code(1, 0x24000000) and not is_code(2, lo) and is_code(2, 0x03000000)
+    # A Cortex-M view: stack words inside the flash are the return address candidates, RAM words are not
+    arm = view.replace("crash.arch=2", "crash.arch=1").replace("03001235", "08012345").replace("03fffffe", "24000001")
+    r = read_report(arm.encode())
+    assert r["arch"] == 1 and r["returns"] == [0x08012345], r
+    assert "Assert on Cortex-M (ARMv7-M)" in describe(r), describe(r)
     print("crash_decode self-test: ok")
 
 

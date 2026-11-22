@@ -14,7 +14,7 @@ export function releaseMatch(sha256, releases) {
 	return /^[0-9a-f]{64}$/.test(h) ? (releases || []).filter((r) => String(r.sha256 || "").toLowerCase() === h) : [];
 }
 
-const FAMILY = ["STM32F4", "HR_C7000"];
+const FAMILY = ["STM32F4", "HR_C7000", "STM32H7"];
 
 // data: {site, browser, at (Date), version (VERSION kv), chip (Link.chip(), or null), support (SUPPORT INFO kv, or null:
 // firmware without it), hwopts (Link.hwopts(), or null), sha256 (hex, or null)}

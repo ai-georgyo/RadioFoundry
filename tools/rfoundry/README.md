@@ -9,6 +9,12 @@ radio's stock firmware file. Radios: the boards of the [board registry](../../do
 radio flashes over USB, the others over their programming cable (below). A radio installed through the RAM stub
 (`[flash] family = "serial-iap"`) uses the web flasher or `stub/stubtool.py`.
 
+| `[flash] family` | Route |
+|---|---|
+| `usb-dfu` | USB, the radio maker's DFU bootloader: every block encrypted with the bootloader key |
+| `dfuse` | USB, the bootloader in the radio's processor (ROM), plain DfuSe: no key, no codec step, and a read protection to remove on the first install ([below](#the-processors-own-bootloader)) |
+| `serial-loader` | the programming cable ([below](#the-dm-1801-pro)) |
+
 ## Install
 
 - **Executable:** download `rfoundry-<version>-<os>-<arch>` from the release page. One file, nothing else to install
@@ -36,6 +42,10 @@ rfoundry download --release v26.11 -o DIR               just fetch and verify th
 rfoundry merge rfoundry-dm1701.bin --stock FILE -o merged.bin  a merged image for other flashing tools
 rfoundry flash build/dm1801pro/rfoundry_dm1801pro.bin --board dm1801pro --port /dev/ttyUSB0
                                                         a DM-1801 Pro over its programming cable (below)
+rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --unprotect
+                                                        a first install through the processor's own bootloader:
+                                                        removes the read protection, which erases the original
+                                                        firmware and its bootloader for good (below)
 ```
 
 `rfoundry flash` does, in order: load the image and check it against its manifest (SHA-256, the radio model, the
@@ -111,6 +121,43 @@ That read takes a few minutes, in a `--dry-run` too: rfoundry tries each layout 
 the first that matches. It says so first, then adds a dot for each segment read. There is no percentage, because how many
 layouts it needs isn't known in advance.
 
+### The processor's own bootloader
+
+A radio with `[flash] family = "dfuse"` (the CS7000 M17 PLUS) has no bootloader of its maker's that RadioFoundry
+keeps: the image starts at the first byte of the program flash and is written through the bootloader in the
+processor's ROM, by plain DfuSe. There is no bootloader key and no codec step (`--key`, `--stock`, `--stock-installed`
+and `--codec` are refused), and `rfoundry flash` does, in order:
+
+1. Load and check the image, print the plan (`--dry-run` stops here). An image that reaches past the application's
+   part of the program flash is refused: it is not this radio's, and the bootloader must not erase flash the build
+   keeps unused.
+2. Wait for the bootloader (the board's key at power-on; rfoundry says which).
+3. Check the device before it sends anything: not a radio maker's keyed bootloader (they share the USB IDs), and a
+   flash layout that is this radio's chip. Anything else is refused.
+4. Probe the read protection: a read of 4 bytes, which changes nothing.
+5. Protected, without `--unprotect`: stop and explain. Nothing was changed.
+6. Protected, with `--unprotect`: ask (`--yes` answers), then send Read Unprotect. **The processor erases its whole
+   program memory: the original firmware and its bootloader are gone for good**, and going back is the maker's own
+   recovery procedure with the maker's files. Nothing shows on the screen. Leave the radio on and connected until
+   rfoundry says to switch it off: it waits at least 60 s and until the radio has left USB (at most 120 s), then
+   asks you to switch it off and put it in its bootloader again. Both waits come from the processor's longest mass
+   erase in the registry (`mass_erase_max_s`): at least twice that time, and at most twice the first wait; 60 s
+   and 120 s are the least they can be. A radio that is back in its bootloader by itself is written at once, and
+   rfoundry says to leave it on.
+7. Erase the image's sectors, the one with the vector table first. Write everything but the vector table's block
+   and read it back, then write the vector table and read it back, then start the image. An install cut short
+   leaves no vector table, so the radio starts nothing at a normal power-on until the same command has run again; a
+   vector table whose write fails or that does not read back has its sector erased again. A block that reads back
+   different stops the install with the image not started (the bootloader reports no error for a write it didn't
+   carry out): run the same command again. If the radio shows nothing afterwards, switch it off and on.
+
+`rfoundry detect` with the radio in its bootloader names the radios the device can be and says whether it is read
+protected. An update of a radio that already runs RadioFoundry is the same command without `--unprotect` (the
+protection is gone after the first install). Use rfoundry or the web flasher for these radios: both fill the image
+to whole 32-byte flash words, which another DfuSe tool may not do. Nothing writes the processor's option bytes: rfoundry
+never selects the bootloader's second alternate setting, and never sends an address outside the program flash. The
+design is in [docs/dev/release.md](../../docs/dev/release.md#the-rom-bootloader-route).
+
 ### The DM-1801 Pro
 
 The DM-1801 Pro has no USB data port: rfoundry talks to it over the programming cable (a USB-serial cable, found by
@@ -139,7 +186,7 @@ has flashed a radio yet; the tools it wraps have.
 |---|---|
 | macOS | nothing |
 | Linux | a udev rule for the bootloader (0483:DF11), which rfoundry prints when access is denied; for the radio's serial port, membership of the `dialout` group (`sudo usermod -aG dialout $USER`, then log in again) |
-| Windows | bind the bootloader ("Digital Radio in USB mode", 0483:DF11) to WinUSB with Zadig, once ([steps](../../docs/user/02-installing.md#windows-the-bootloader-driver)); rfoundry prints them when it can't open the bootloader. The radio's serial port needs no driver |
+| Windows | bind the bootloader ("Digital Radio in USB mode", 0483:DF11; a processor's own bootloader has the same USB ID and another name) to WinUSB with Zadig, once ([steps](../../docs/user/02-installing.md#windows-the-bootloader-driver)); rfoundry prints them when it can't open the bootloader. The radio's serial port needs no driver |
 
 ## For developers
 
@@ -149,16 +196,18 @@ has flashed a radio yet; the tools it wraps have.
 | `rfoundry/plan.py` | which sectors to erase and write for an image and a codec mode |
 | `rfoundry/manifest.py` | release manifests: generate (used by `tools/release.py`) and verify |
 | `rfoundry/stockfw.py` | the STM32 radios' stock files: container, decryption, codec extraction and merge (also from a flash readout), key derivation (also used by `tools/codec_extract.py`) |
-| `rfoundry/dfu.py` | the AnyRoad DFU bootloader: find, open, run a plan |
+| `rfoundry/dfu.py` | the USB DFU bootloaders: find, open, run a plan. With a key the AnyRoad bootloader; without one (`Dfu.run(plan)`) plain DfuSe to a processor's ROM bootloader, with `probe_protected` and `read_unprotect` |
 | `rfoundry/debuglink.py` | VERSION / INFO_CHIP / READ_MEM over the debug link (read only) |
 | `rfoundry/codecsave.py` | the codec read back from a radio that runs RadioFoundry (where stock keeps it, or where the merge placed it), checked by hash, saved in the config directory and written back where the radio's codec can't be kept or checked |
 | `rfoundry/bootkey.py` | the bootloader key from a radio that runs RadioFoundry, found in its bootloader by the key's hash |
-| `rfoundry/fakedfu.py` | a fake bootloader with a flash model, for the tests and `--simulate` |
+| `rfoundry/fakedfu.py` | fake bootloaders with a flash model, for the tests and `--simulate`: `FakeAnyRoad`, and `FakeRom` with its read protection and its option bytes alternate setting |
 | `rfoundry/serialflash.py` | the HR_C7000 radios over the programming cable: the route choice, the codec slot, and the calls into `stub/stubtool.py` and `tools/serial_loader.py` |
 | `rfoundry/release.py`, `state.py`, `cli.py` | GitHub downloads, the remembered probe, the commands |
 
 Tests: `python3 -m unittest discover -s tools/rfoundry/tests -v` (no USB, no serial port; `tools/ci.sh` runs them).
 `test_serialflash.py` runs both serial routes against the wrapped tools' own simulated radios. A whole flash
 against the fake bootloader: `rfoundry flash IMAGE --simulate rfoundry-codec` (or `stock` with `--stock-installed "V02.06
-CSV"`, or `rfoundry-nocodec --stock synthetic`). A local build without a manifest: `rfoundry flash
+CSV"`, or `rfoundry-nocodec --stock synthetic`). The processor's own bootloader: `rfoundry flash --board cs7000p
+--simulate` stops at the read protection, `--simulate --unprotect` runs the whole install, `--simulate blank` a radio
+that isn't protected; without an image file a simulation makes one up. A local build without a manifest: `rfoundry flash
 build/dm1701/rfoundry_dm1701.bin --board dm1701`. Design and the sector map: [docs/dev/release.md](../../docs/dev/release.md).

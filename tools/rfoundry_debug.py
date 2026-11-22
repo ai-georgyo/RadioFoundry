@@ -38,7 +38,10 @@
     rfoundry_debug.py watchdog load H L [RST]        HR_C7000: re-arm with raw OT_LOAD_H / OT_LOAD_L (RST_LOAD), then starve
     rfoundry_debug.py storage info                   the settings / journal region: ours or foreign, its addresses
     rfoundry_debug.py storage dump --out DIR         the region and the calibration copy (SPI flash) to files outside git
-    rfoundry_debug.py storage claim --out DIR        dump first, then let the firmware erase a foreign region and use it
+    rfoundry_debug.py storage claim --out DIR        dump first, then let the firmware erase a foreign region and use it.
+                                                On a claim-first board (storage info says so) it first saves the
+                                                whole data flash, read twice, and claims only when all of it came
+                                                back; --skip-full-backup leaves that out (you hold one already)
     rfoundry_debug.py aprobe OP [ARG...]             audio probe (CONFIG_AUDIO_PROBE builds; docs/spec/hardware-dm1701.md 21.3):
                                                 status | reg PAGE REG | wreg PAGE REG VAL | start [HZ [AMP [spk]]] |
                                                 stop | samples [-o FILE.raw] | ram PAGE ADDR LEN [-o FILE] |
@@ -170,6 +173,8 @@ APRS_REGIONS = {"na": 0, "eu": 1, "au": 2, "nz": 3, "jp": 4, "cn": 5, "custom": 
 APRS_POS_SRCS = {"auto": 0, "gps": 1, "host": 2, "fixed": 3}
 APRS_VIAS = {"rf": 0, "dmr": 1, "both": 2}
 STORAGE_OP_INFO, STORAGE_OP_READ, STORAGE_OP_CLAIM = range(3)
+STORAGE_FLAG_CLAIM_FIRST = 0x01   # INFO's flags byte (debuglink.md 3.13)
+FULL_BACKUP_BLOCK = 32768         # the longest CPS read reply (cps-protocol.md 2.2)
 AUDIO_PROBE = 0x10
 (PROBE_STATUS, PROBE_REG_READ, PROBE_REG_WRITE, PROBE_START, PROBE_STOP, PROBE_SAMPLES, PROBE_RAM_READ,
  PROBE_RAM_WRITE, PROBE_WATCH, PROBE_MUSIC, PROBE_MOD, PROBE_RAMFEED, PROBE_PIN_TONE, PROBE_PIN_SCAN, PROBE_PIN_PWM) = range(15)
@@ -194,12 +199,17 @@ ST_REFUSED = 7
 MEM_READ_MAX = 1000
 REBOOT_NORMAL, REBOOT_ROM_DFU = 0, 1
 REBOOT_REASONS = {1: "wrong confirmation token (not the chip UID's low word)",
-                  2: "RDP is not level 0: the ROM bootloader would refuse flash access and its unprotect mass-erases "
-                     "everything, the stock bootloader included",
-                  3: "transmitting", 4: "chip info unreadable", 5: "could not arm the ROM DFU flag"}
+                  2: "no ROM DFU on this chip, or RDP is not level 0: the ROM bootloader would refuse flash access and "
+                     "its unprotect mass-erases everything, a stock bootloader included",
+                  3: "transmitting", 4: "chip info unreadable",
+                  5: "the platform can't do this mode: this board does not allow the software entry to the ROM "
+                     "bootloader (its hardware page has the way in it does allow)"}
 # STM32F405 sectors: (start, size)
 F4_SECTORS = [(0x08000000 + i * 0x4000, 0x4000) for i in range(4)] + [(0x08010000, 0x10000)] + \
     [(0x08020000 + i * 0x20000, 0x20000) for i in range(7)]
+# STM32H742/743/753 sectors (RM0433 Table 15): sixteen of 128 KB, eight a bank. The index here runs on through bank 2;
+# the chip's own sector number starts again at 0 there
+H7_SECTORS = [(0x08000000 + i * 0x20000, 0x20000) for i in range(16)]
 ST_OK, ST_BAD_ARG, ST_BUSY, ST_UNAVAILABLE = 0, 2, 3, 4
 SHOT_LZ4 = 3            # SCREENSHOT's packed form (debuglink.md 3.3)
 SHOT_HDR = 28           # its reply bytes before the palette, status included
@@ -561,11 +571,15 @@ class DebugLink:
         return bytes(r[4:])
 
     def storage_info(self):
-        """STORAGE INFO: region state and the (address, size) of the settings ring, journal, calibration copy"""
+        """STORAGE INFO: region state and the (address, size) of the settings ring, journal, calibration copy.
+        claim_first: the board's data flash holds another firmware's data until the claim (the flags byte; older
+        builds don't send it: False)"""
         _, r = self.request(STORAGE, bytes([STORAGE_OP_INFO]))
         region, pending = r[0], r[1]
         sa, ss, ja, js, ca, cs = struct.unpack_from("<6I", r, 2)
+        flags = r[26] if len(r) > 26 else 0
         return {"region": REGIONS.get(region, str(region)), "claim_pending": bool(pending),
+                "claim_first": bool(flags & STORAGE_FLAG_CLAIM_FIRST),
                 "ranges": {"settings": (sa, ss), "journal": (ja, js), "calibration": (ca, cs)}}
 
     # ── audio probe (CONFIG_AUDIO_PROBE, docs/spec/debuglink.md 3.14) ──
@@ -2421,15 +2435,28 @@ def cmd_data(link, a):
     return 0
 
 
-CHIP_STM32F4, CHIP_HRC7000 = 0, 1   # INFO_CHIP's family byte (debuglink.md 3.9)
+CHIP_STM32F4, CHIP_HRC7000, CHIP_STM32H7 = 0, 1, 2   # INFO_CHIP's family byte (debuglink.md 3.9)
+CHIP_NAMES = {CHIP_STM32F4: "STM32F4", CHIP_HRC7000: "HR_C7000", CHIP_STM32H7: "STM32H7"}
+# Families with the DBGMCU ID, the flash size word and an option word whose bits 15:8 are the RDP byte. Their ROM
+# bootloader speaks USB DfuSe, usable at RDP level 0 only
+CHIP_RDP_FAMILIES = (CHIP_STM32F4, CHIP_STM32H7)
+# DBGMCU device IDs (IDCODE bits 11:0) by family, and the STM32H7's revision letters (RM0433 DBGMCU_IDC)
+CHIP_DEV_IDS = {CHIP_STM32F4: {0x413: "STM32F405/407"}, CHIP_STM32H7: {0x450: "STM32H742/743/753"}}
+H7_REVISIONS = {0x1001: "Z", 0x1003: "Y", 0x2001: "X", 0x2003: "V"}
 
 
 def decode_chip(r):
+    """INFO_CHIP's reply after the status. rdp and rdp_byte are None on a family without the RDP byte; wrp, bor and
+    user are None on any family but the STM32F4 (the radio sends 0xFF for each field it does not decode)"""
     idcode, flash_kb, u0, u1, u2, optcr, rdp, rdp_byte, wrp, bor, user = struct.unpack_from("<IH3IIBBHBB", r)
     family = r[28] if len(r) > 28 else CHIP_STM32F4    # older firmware: the STM32F4 was the only one answering
+    if family not in CHIP_RDP_FAMILIES:
+        rdp = rdp_byte = None
+    if family != CHIP_STM32F4:
+        wrp = bor = user = None
     return {"family": family, "idcode": idcode, "dev_id": idcode & 0xFFF, "rev_id": idcode >> 16, "flash_kb": flash_kb,
             "uid": (u0, u1, u2), "token": u0, "optcr": optcr, "rdp": rdp, "rdp_byte": rdp_byte, "wrp": wrp,
-            "wrp_sectors": [i for i in range(12) if wrp & (1 << i)], "bor": bor, "user": user}
+            "wrp_sectors": [i for i in range(12) if wrp is not None and wrp & (1 << i)], "bor": bor, "user": user}
 
 
 def decode_iddb(r):
@@ -2444,6 +2471,8 @@ def decode_iddb(r):
 MEM_WINDOWS = {
     CHIP_STM32F4: [(0x08000000, 0x08100000, False), (0x1FFF0000, 0x1FFF7800, False), (0x1FFF7800, 0x1FFF7A10, False),
                    (0x1FFFC000, 0x1FFFC010, False), (0xE000ED00, 0xE000ED40, True)],
+    CHIP_STM32H7: [(0x08000000, 0x08200000, False), (0x1FF00000, 0x1FF1E800, False), (0x1FF1E800, 0x1FF1E900, False),
+                   (0xE000ED00, 0xE000ED40, True)],
     CHIP_HRC7000: [(0x03000000, 0x03200000, False), (0x00010000, 0x00058000, False), (0x18000000, 0x18008000, False),
                    (0x11000000, 0x11000060, True), (0x14020000, 0x14020080, True), (0x14100000, 0x14100080, True),
                    (0x14110000, 0x14110080, True), (0x17000000, 0x17000034, True), (0x1700003C, 0x17000040, True),
@@ -2496,39 +2525,59 @@ def dump_path_ok(path):
     return True, ""
 
 
-def print_chip(c):
-    if c["family"] != CHIP_STM32F4:
-        name = {CHIP_HRC7000: "HR_C7000"}.get(c["family"], f"family {c['family']}")
-        print(f"chip     {name} (no ID or option byte registers)")
-        print(f"uid      {c['uid'][2]:08X}{c['uid'][1]:08X}{c['uid'][0]:08X} (token 0x{c['token']:08X}; the data flash's unique ID)")
-        return
+def chip_lines(c):
+    """(lines, notes, warnings) for the chip command: what INFO_CHIP said, by chip family"""
+    family = c["family"]
+    uid = f"{c['uid'][2]:08X}{c['uid'][1]:08X}{c['uid'][0]:08X} (token 0x{c['token']:08X}"
+    if family == CHIP_HRC7000:
+        return ([f"chip     {CHIP_NAMES[family]} (no ID or option byte registers)",
+                 f"uid      {uid}; the data flash's unique ID)"], [], [])
+    if family not in CHIP_RDP_FAMILIES:
+        return ([f"chip     family {family} (newer than this tool: nothing but the UID is read)", f"uid      {uid})"],
+                [], [])
+    f4 = family == CHIP_STM32F4
     rdp_names = {0: "level 0 (0xAA, no protection)", 1: f"LEVEL 1 (0x{c['rdp_byte']:02X}: read protection)",
                  2: "LEVEL 2 (0xCC: permanent, ROM bootloader and debug disabled)"}
     idc = f"0x{c['idcode']:08X}"
     if c["idcode"] == 0:
-        idc += " (reads 0 without a debugger on some STM32F40x revisions)"
+        idc += " (reads 0 without a debugger on some STM32F40x revisions)" if f4 else " (not read)"
     else:
-        idc += f" (dev 0x{c['dev_id']:03X}{' STM32F405/407' if c['dev_id'] == 0x413 else ''}, rev 0x{c['rev_id']:04X})"
-    print(f"idcode   {idc}")
-    print(f"flash    {c['flash_kb']} KB")
-    print(f"uid      {c['uid'][2]:08X}{c['uid'][1]:08X}{c['uid'][0]:08X} (token 0x{c['token']:08X})")
-    print(f"optcr    0x{c['optcr']:08X}")
-    print(f"rdp      {rdp_names[c['rdp']]}")
-    print(f"wrp      {'sectors ' + ','.join(map(str, c['wrp_sectors'])) if c['wrp_sectors'] else 'none'}")
-    print(f"bor      level {['3 (2.7 V)', '2 (2.4 V)', '1 (2.1 V)', 'off'][c['bor']]}")
-    u = c["user"]
-    print(f"user     WDG_SW={u & 1} nRST_STOP={(u >> 1) & 1} nRST_STDBY={(u >> 2) & 1}")
-    if c["rdp"] == 1:
+        part = CHIP_DEV_IDS[family].get(c["dev_id"])
+        rev = "" if f4 else H7_REVISIONS.get(c["rev_id"])
+        idc += (f" (dev 0x{c['dev_id']:03X}{' ' + part if part else ''}, rev 0x{c['rev_id']:04X}"
+                f"{' = ' + rev if rev else ''})")
+    lines = [f"chip     {CHIP_NAMES[family]}", f"idcode   {idc}", f"flash    {c['flash_kb']} KB", f"uid      {uid})",
+             # the option word: FLASH_OPTCR on the STM32F4, FLASH_OPTSR_CUR on the STM32H7
+             f"{'optcr' if f4 else 'optsr'}    0x{c['optcr']:08X}", f"rdp      {rdp_names[c['rdp']]}"]
+    notes, warnings = [], []
+    if f4:
+        lines.append(f"wrp      {'sectors ' + ','.join(map(str, c['wrp_sectors'])) if c['wrp_sectors'] else 'none'}")
+        lines.append(f"bor      level {['3 (2.7 V)', '2 (2.4 V)', '1 (2.1 V)', 'off'][c['bor']]}")
+        u = c["user"]
+        lines.append(f"user     WDG_SW={u & 1} nRST_STOP={(u >> 1) & 1} nRST_STDBY={(u >> 2) & 1}")
+    if c["rdp"] == 1 and f4:
         # the usual state of a radio as it ships: RadioFoundry's loaders don't need level 0, only the ROM bootloader does
-        print("note     RDP level 1 is normal for a stock radio. The ROM bootloader route (reboot --rom-dfu) stays "
-              "closed:\n         leaving level 1 mass-erases all flash, the stock bootloader too", file=sys.stderr)
+        notes.append("RDP level 1 is normal for a stock radio. The ROM bootloader route (reboot --rom-dfu) stays "
+                     "closed:\n         leaving level 1 mass-erases all flash, the stock bootloader too")
+    elif c["rdp"] == 1:
+        notes.append("RDP level 1: the ROM bootloader refuses flash access until a read-unprotect, which erases all "
+                     "of the\n         program flash. reboot --rom-dfu stays closed")
     elif c["rdp"] != 0:
-        print("\n*** WARNING: RDP level 2 is permanent: the ROM bootloader and the debug port are disabled for good. "
-              "Report this\n*** to the owner before doing anything else. ***", file=sys.stderr)
+        warnings.append("RDP level 2 is permanent: the ROM bootloader and the debug port are disabled for good. "
+                        "Report this\n*** to the owner before doing anything else.")
     app_wrp = [s for s in c["wrp_sectors"] if s >= 3]
     if app_wrp:
-        print(f"\n*** WARNING: application sectors {app_wrp} are write protected: no loader can rewrite them ***",
-              file=sys.stderr)
+        warnings.append(f"application sectors {app_wrp} are write protected: no loader can rewrite them")
+    return lines, notes, warnings
+
+
+def print_chip(c):
+    lines, notes, warnings = chip_lines(c)
+    print("\n".join(lines))
+    for n in notes:
+        print(f"note     {n}", file=sys.stderr)
+    for w in warnings:
+        print(f"\n*** WARNING: {w} ***", file=sys.stderr)
 
 
 def cmd_dump(link, a):
@@ -2549,7 +2598,9 @@ def cmd_dump(link, a):
         f.write(data)
     import hashlib
     print(f"{out}: {len(data)} bytes from 0x{addr:08X}, sha256 {hashlib.sha256(data).hexdigest()}")
-    if addr < 0x0800C000 and addr >= 0x08000000:
+    # The STM32F4 radios' stock bootloader sits below the application. Firmware from before the family byte reads as
+    # an STM32F4 (decode_chip); a radio whose chip info cannot be read gets the note too, which costs nothing
+    if addr < 0x0800C000 and addr >= 0x08000000 and chip_family(link) in (None, CHIP_STM32F4):
         print("note: this holds the proprietary stock bootloader: never commit or publish it")
     return 0
 
@@ -2632,6 +2683,90 @@ def storage_dump(link, out_dir, info=None):
     return paths
 
 
+def cps_client_module():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import cps_client
+    return cps_client
+
+
+class LinkPortBytes:
+    """The debug link's port as a cps_client transport: the CPS shim answers on the same port, and a debug link
+    frame between its requests is still answered (cps-protocol.md 1). close() leaves the port to the link"""
+
+    def __init__(self, link):
+        self.link = link
+
+    def write(self, b):
+        self.link.s.write(b)
+
+    def read(self, n, timeout):
+        end = time.monotonic() + timeout
+        out = bytearray()
+        while len(out) < n and time.monotonic() < end:
+            out += self.link.s.read(n - len(out))
+        return bytes(out)
+
+    def close(self):
+        pass
+
+
+def data_flash_backup(link, out_dir):
+    """The whole data flash into one file in out_dir (never inside a git tree), read through the CPS shim's area 1
+    (physical addresses, cps-protocol.md 2.2), every block twice and compared. The size is the radio's own (CPS radio
+    info). Raises DebugLinkError when a block is refused, short or read differently twice, or the size is unknown:
+    then no file is left behind, so a file there is always a whole chip. Returns the path"""
+    import hashlib
+    cc = cps_client_module()
+    c = link.chip()
+    cps = cc.Cps(LinkPortBytes(link), timeout=2 * link.timeout)
+    link.buf.clear()        # a debug link frame's leftovers are no CPS reply
+    try:
+        flash_id = cps.info()["flash_id"]
+    except cc.CpsError as e:
+        raise DebugLinkError(f"no CPS radio info ({e}): this build can't read its data flash for a backup")
+    code = flash_id & 0xFF
+    if not 0x10 <= code <= 0x1C:    # the W25Q capacity code: 64 KB to 256 MB
+        raise DebugLinkError(f"the radio reports no data flash size (flash id 0x{flash_id:X})")
+    size = 1 << code
+    path = os.path.join(out_dir, f"dataflash_{c['uid'][0]:08X}_{time.strftime('%Y%m%d-%H%M%S')}_000000-{size:06X}.bin")
+    ok, why = dump_path_ok(path)
+    if not ok:
+        raise DebugLinkError(f"refusing: {why}")
+    os.makedirs(out_dir, exist_ok=True)
+    part = path + ".part"
+    sha = hashlib.sha256()
+    print(f"reading the whole data flash, {size // 1024} KB, twice", file=sys.stderr)
+    try:
+        with open(part, "wb") as f:
+            for addr in range(0, size, FULL_BACKUP_BLOCK):
+                n = min(FULL_BACKUP_BLOCK, size - addr)
+                try:
+                    data = cps.read(1, addr, n)
+                    again = cps.read(1, addr, n)
+                except cc.CpsError as e:
+                    raise DebugLinkError(f"data flash 0x{addr:06X}: {e}")
+                if len(data) != n or again != data:
+                    raise DebugLinkError(f"data flash 0x{addr:06X}: two reads differ")
+                f.write(data)
+                sha.update(data)
+                if (addr + n) % 0x100000 == 0 or addr + n == size:
+                    print(f"\r  {(addr + n) * 100 // size}%", end="", file=sys.stderr, flush=True)
+        print(file=sys.stderr)
+        try:
+            cps.control(5)          # end the CPS session (it also ends after 10 s without a byte)
+        except cc.CpsError:
+            pass
+        os.replace(part, path)
+    except BaseException:
+        if os.path.exists(part):
+            os.remove(part)
+        raise
+    print(f"{path}: {size} bytes, the whole data flash from 0x000000, sha256 {sha.hexdigest()}")
+    return path
+
+
 def cmd_storage(link, a):
     if a.op != "info" and not a.out:
         print("rfoundry_debug: storage dump and claim need --out DIR (outside any git tree)", file=sys.stderr)
@@ -2641,6 +2776,12 @@ def cmd_storage(link, a):
         print(f"region   {info['region']}{' (claim pending)' if info['claim_pending'] else ''}")
         for name, (addr, size) in info["ranges"].items():
             print(f"{name:<11}0x{addr:06X} + 0x{size:X}")
+        # a board property (debuglink.md 3.13): set after the claim too, when only the region says what is left to do
+        if info["claim_first"] and info["region"] == "foreign":
+            print("claim first: the data flash holds another firmware's data until the claim; back up all of it first "
+                  "(storage claim does)")
+        elif info["claim_first"]:
+            print(f"claim first: yes (region {info['region']}: nothing to claim)")
         return 0
     if a.op == "dump":
         storage_dump(link, a.out, info)
@@ -2649,6 +2790,16 @@ def cmd_storage(link, a):
     if info["region"] != "foreign":
         print(f"rfoundry_debug: the region is {info['region']}: nothing to claim", file=sys.stderr)
         return 1
+    # On a claim-first board the claim opens the whole flash map to writes on a chip whose other data nobody can
+    # place, so the backup that matters is of the whole chip, not of the region (settings-store.md 5)
+    if info["claim_first"] and not getattr(a, "skip_full_backup", False):
+        try:
+            data_flash_backup(link, a.out)
+        except DebugLinkError as e:
+            print(f"rfoundry_debug: the whole data flash backup failed, nothing was claimed: {e}", file=sys.stderr)
+            return 1
+    elif info["claim_first"]:
+        print("claim first: no whole data flash backup taken (--skip-full-backup)", file=sys.stderr)
     storage_dump(link, a.out, info)
     try:
         link.storage_claim(link.chip()["token"])
@@ -2964,12 +3115,18 @@ def cmd_air(link, a):
     return 0
 
 
+def rom_dfu_allowed(c):
+    """The host's half of REBOOT's ROM DFU gate (debuglink.md 3.11): a chip family with a ROM USB bootloader, at RDP
+    level 0. The radio checks the same, and its board may still refuse the entry"""
+    return c["family"] in CHIP_RDP_FAMILIES and c["rdp"] == 0
+
+
 def cmd_reboot(link, a):
     c = link.chip()
     print_chip(c)
     mode = REBOOT_ROM_DFU if a.rom_dfu else REBOOT_NORMAL
-    if mode == REBOOT_ROM_DFU and (c["family"] != CHIP_STM32F4 or c["rdp"] != 0):
-        print("rfoundry_debug: refusing ROM DFU: not an STM32F4 at RDP level 0", file=sys.stderr)
+    if mode == REBOOT_ROM_DFU and not rom_dfu_allowed(c):
+        print("rfoundry_debug: refusing ROM DFU: not an STM32 at RDP level 0", file=sys.stderr)
         return 1
     try:
         link.reboot(mode, c["token"])
@@ -2979,8 +3136,14 @@ def cmd_reboot(link, a):
             return 1
         raise
     if mode == REBOOT_ROM_DFU:
-        print("rebooting into the ROM bootloader: look for USB 0483:DF11 'STM32 BOOTLOADER' "
-              "(then tools/stm32_dfu.py --rom IMAGE.bin)")
+        # The ROM bootloader speaks ST's plain DfuSe, no key: tools/stm32_dfu.py (the stock bootloader's protocol)
+        # does not write through it. rfoundry does, for a radio whose registry family is the ROM bootloader's
+        # the radio checks the gate again just before the reset (debuglink.md 3.11): an OK here can still stay up
+        print("rebooting into the ROM bootloader: look for USB 0483:DF11 'STM32 BOOTLOADER'. A radio that is installed "
+              "through\nit takes `rfoundry flash` from there; a power cycle leaves it. If the radio stays up instead, "
+              "`rfoundry_debug.py log`\nsays why: \"reboot 1 aborted (N)\", a check failed again at the reset (N as "
+              "for a refusal: 3 a transmission\nstarted, 5 the board no longer allows the entry), or \"reboot 1 failed "
+              "(5)\", the request could not be stored")
     else:
         print("rebooting")
     return 0
@@ -3077,6 +3240,66 @@ def self_test():
           not mem_allowed(0x14030000, 4, CHIP_HRC7000) and not mem_allowed(0x00010000, 4, CHIP_STM32F4) and
           mem_allowed(0xE000ED00, 4, CHIP_STM32F4) and not mem_allowed(0xE000ED02, 2, CHIP_STM32F4),
           "READ_MEM windows by family")
+    h7 = CHIP_STM32H7
+    check(mem_allowed(0x08000000, 1000, h7) and mem_allowed(0x081FFC18, 1000, h7) and
+          not mem_allowed(0x081FFC19, 1000, h7) and not mem_allowed(0x08100000, 4, CHIP_STM32F4),
+          "STM32H7: 2 MB of flash, the STM32F4 1 MB")
+    check(mem_allowed(0x1FF00000, 1000, h7) and mem_allowed(0x1FF1E800, 12, h7) and mem_allowed(0x1FF1E880, 2, h7) and
+          not mem_allowed(0x1FF1E7FF, 2, h7) and not mem_allowed(0x1FF1E900, 1, h7) and
+          not mem_allowed(0x1FFF0000, 4, h7), "STM32H7: system memory and the ID words, each its own window")
+    check(not mem_allowed(0x24000000, 4, h7) and not mem_allowed(0x20000000, 4, h7) and
+          not mem_allowed(0x38800000, 4, h7) and not mem_allowed(0x58024400, 4, h7), "STM32H7: no RAM, no peripherals")
+    check(mem_allowed(0xE000ED00, 0x40, h7) and not mem_allowed(0xE000ED01, 4, h7) and
+          not mem_allowed(0xE000ED40, 4, h7), "STM32H7: SCB in whole words")
+    # The sector tables tile each family's flash window
+    for fam, sectors in ((CHIP_STM32F4, F4_SECTORS), (CHIP_STM32H7, H7_SECTORS)):
+        lo, hi, _ = MEM_WINDOWS[fam][0]
+        check(sectors[0][0] == lo and sectors[-1][0] + sectors[-1][1] == hi and
+              all(a + n == b for (a, n), (b, _) in zip(sectors, sectors[1:])),
+              f"{CHIP_NAMES[fam]}: {len(sectors)} sectors tile the flash window")
+
+    # INFO_CHIP by family (debuglink.md 3.9): the reply after the status, as core/debuglink builds it
+    def info(family, idcode, flash_kb, optcr, decoded, with_family=True):
+        return struct.pack("<IH3II", idcode, flash_kb, 0x11111111, 0x22222222, 0x33333333, optcr) + bytes(decoded) + \
+            (bytes([family]) if with_family else b"")
+
+    c = decode_chip(info(CHIP_STM32F4, 0x10076413, 1024, 0x0FF855E5, [1, 0x55, 0x07, 0x00, 1, 7]))
+    check((c["family"], c["rdp"], c["rdp_byte"], c["wrp_sectors"], c["bor"], c["user"], c["token"]) ==
+          (CHIP_STM32F4, 1, 0x55, [0, 1, 2], 1, 7, 0x11111111), "INFO_CHIP: an STM32F4, every field")
+    lines, notes, warnings = chip_lines(c)
+    check(lines[0] == "chip     STM32F4" and "STM32F405/407" in lines[1] and "rev 0x1007)" in lines[1] and
+          lines[4].startswith("optcr ") and any(x.startswith("wrp      sectors 0,1,2") for x in lines) and
+          len(notes) == 1 and "stock radio" in notes[0] and not warnings, "chip: STM32F4 lines, the RDP 1 note")
+    c = decode_chip(info(CHIP_STM32F4, 0, 1024, 0x0E07AAED, [0, 0xAA, 0xF8, 0x01, 3, 7], with_family=False))
+    lines, notes, warnings = chip_lines(c)
+    check(c["family"] == CHIP_STM32F4 and rom_dfu_allowed(c) and "reads 0" in lines[1] and not notes and
+          len(warnings) == 1 and "[3, 4, 5, 6, 7, 8]" in warnings[0],
+          "chip: firmware before the family byte is an STM32F4; protected application sectors warned about")
+    c = decode_chip(info(CHIP_STM32H7, 0x20036450, 2048, 0x03C6AAF0, [0, 0xAA, 0xFF, 0xFF, 0xFF, 0xFF]))
+    lines, notes, warnings = chip_lines(c)
+    check((c["rdp"], c["rdp_byte"], c["wrp"], c["wrp_sectors"], c["bor"], c["user"]) == (0, 0xAA, None, [], None, None),
+          "INFO_CHIP: an STM32H7 has the RDP level and byte, nothing else decoded")
+    check(lines[0] == "chip     STM32H7" and "dev 0x450 STM32H742/743/753, rev 0x2003 = V" in lines[1] and
+          lines[2] == "flash    2048 KB" and lines[4] == "optsr    0x03C6AAF0" and
+          lines[5].startswith("rdp      level 0") and len(lines) == 6 and not notes and not warnings,
+          "chip: STM32H7 lines, no write protection, BOR or user line")
+    check(rom_dfu_allowed(c), "ROM DFU: an STM32H7 at RDP level 0")
+    c = decode_chip(info(CHIP_STM32H7, 0x10036450, 2048, 0x03C655F0, [1, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]))
+    lines, notes, warnings = chip_lines(c)
+    check(not rom_dfu_allowed(c) and "rev 0x1003 = Y" in lines[1] and len(notes) == 1 and
+          "read-unprotect" in notes[0] and "stock" not in notes[0] and not warnings,
+          "ROM DFU: refused at RDP level 1, with the family's own note")
+    c = decode_chip(info(CHIP_STM32H7, 0x20036450, 2048, 0x03C6CCF0, [2, 0xCC, 0xFF, 0xFF, 0xFF, 0xFF]))
+    check(not rom_dfu_allowed(c) and len(chip_lines(c)[2]) == 1, "ROM DFU: refused at RDP level 2, with the warning")
+    c = decode_chip(info(CHIP_HRC7000, 0, 0, 0, [0xFF] * 6))
+    lines, notes, warnings = chip_lines(c)
+    check(not rom_dfu_allowed(c) and c["rdp"] is None and c["wrp_sectors"] == [] and len(lines) == 2 and
+          lines[0].startswith("chip     HR_C7000") and "data flash" in lines[1] and not notes and not warnings,
+          "chip: an HR_C7000 has the UID only, and no ROM DFU")
+    c = decode_chip(info(9, 0x12345678, 64, 0x0000AA00, [0xFF] * 6))
+    lines, notes, warnings = chip_lines(c)
+    check(not rom_dfu_allowed(c) and c["rdp"] is None and lines[0].startswith("chip     family 9") and len(lines) == 2,
+          "chip: a family newer than the tool: the UID, no ROM DFU whatever its option word says")
     # Restart and write commands never guess between radios: a serial cable may carry one too
     saved = (find_ports, find_cables, find_network_radios, os.environ.pop("RFOUNDRY_PORT", None))
     g = globals()
@@ -3112,6 +3335,113 @@ def self_test():
         if saved[3] is not None:
             os.environ["RFOUNDRY_PORT"] = saved[3]
 
+    # storage claim on a claim-first board (debuglink.md 3.13): the whole data flash first, through the CPS shim on
+    # the same port, and no claim unless all of it came back
+    class FakeStorage(DebugLink):
+        """STORAGE and INFO_CHIP as core/debuglink answers them, and the port the CPS shim answers on (R area 1 and 9,
+        C): a 128 KB data flash. flags None: firmware before the flags byte. bad_at: area 1 reads from there are
+        refused; flaky_at: the second read of that block differs; cps False: a build without the CPS shim"""
+
+        def __init__(self, flags=STORAGE_FLAG_CLAIM_FIRST, bad_at=None, flaky_at=None, cps=True):
+            self.timeout, self.seq, self.buf, self.s = 0.05, 0, bytearray(), self
+            self.flags, self.bad_at, self.flaky_at, self.cps = flags, bad_at, flaky_at, cps
+            self.flash = bytes((i * 7 + (i >> 9)) & 0xFF for i in range(0x20000))
+            self.region, self.claims, self.reads, self.pending = 2, 0, {}, bytearray()
+
+        def request(self, cmd, payload=b"", **kw):
+            if cmd == INFO_CHIP:
+                return 0, info(CHIP_STM32H7, 0x20036450, 2048, 0x03C6AAF0, [0, 0xAA, 0xFF, 0xFF, 0xFF, 0xFF])
+            op = payload[0]
+            if op == STORAGE_OP_INFO:
+                r = bytes([self.region, 0]) + struct.pack("<6I", 0x11000, 0x8000, 0x19000, 0x2000, 0, 0)
+                return 0, r + (bytes([self.flags]) if self.flags is not None else b"")
+            if op == STORAGE_OP_READ:
+                addr, n = struct.unpack_from("<IH", payload, 1)
+                return 0, struct.pack("<I", addr) + self.flash[addr:addr + n]
+            if self.region != 2:
+                raise DebugLinkError("unavailable", ST_UNAVAILABLE)
+            self.claims += 1
+            self.region = 1
+            return 0, b"\x00"
+
+        def write(self, b):
+            if not self.cps:
+                return
+            if b[0] == 0x43:
+                self.pending += b"-"
+                return
+            area, addr, n = b[1], int.from_bytes(b[2:6], "big"), int.from_bytes(b[6:8], "big")
+            if area == 9:
+                d = bytearray(46)
+                d[0], d[4], d[40:44] = 3, 6, struct.pack("<I", 0x4000 | 17)
+                self.pending += b"R" + len(d).to_bytes(2, "big") + d
+            elif area == 1 and addr + n <= len(self.flash) and not (self.bad_at is not None and addr >= self.bad_at):
+                d = bytearray(self.flash[addr:addr + n])
+                self.reads[addr] = self.reads.get(addr, 0) + 1
+                if addr == self.flaky_at and self.reads[addr] == 2:
+                    d[5] ^= 1
+                self.pending += b"R" + n.to_bytes(2, "big") + d
+            else:
+                self.pending += b"-"
+
+        def read(self, n=1):
+            out = bytes(self.pending[:n])
+            del self.pending[:n]
+            return out
+
+    import contextlib
+    import io
+    import tempfile
+
+    def claim(link, skip=False):
+        out = tempfile.mkdtemp(prefix="rfoundry-claim-")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = cmd_storage(link, argparse.Namespace(op="claim", out=out, skip_full_backup=skip))
+        names = sorted(os.listdir(out))
+        whole = [n for n in names if n.startswith("dataflash_")]
+        with open(os.path.join(out, whole[0]), "rb") if len(whole) == 1 else contextlib.nullcontext() as f:
+            data = f.read() if f else None
+        for n in names:
+            os.remove(os.path.join(out, n))
+        os.rmdir(out)
+        return rc, names, data, err.getvalue()
+
+    check(FakeStorage(flags=None).storage_info()["claim_first"] is False and
+          FakeStorage(flags=0).storage_info()["claim_first"] is False and
+          FakeStorage().storage_info()["claim_first"] is True, "STORAGE INFO: the claim-first flag; older firmware: off")
+    def info_text(link):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cmd_storage(link, argparse.Namespace(op="info", out=None))
+        return out.getvalue()
+
+    ours = FakeStorage()
+    ours.region = 1
+    check("back up all of it first" in info_text(FakeStorage()) and
+          "claim first: yes (region ours: nothing to claim)" in info_text(ours) and
+          "back up all of it first" not in info_text(ours) and "claim first" not in info_text(FakeStorage(flags=0)),
+          "storage info: the claim-first warning only while the region is foreign; a claimed region says so")
+    r = FakeStorage()
+    rc, names, data, _ = claim(r)
+    check(rc == 0 and r.claims == 1 and data == r.flash and len(names) == 3 and
+          names[0].endswith("_000000-020000.bin") and not any(n.endswith(".part") for n in names),
+          "claim first: the whole data flash saved and the region dumped, then claimed")
+    check(len(r.reads) == 4 and all(v == 2 for v in r.reads.values()), "claim first: every 32 KB block read twice")
+    for what, link in (("a refused block", FakeStorage(bad_at=0x18000)),
+                       ("two reads that differ", FakeStorage(flaky_at=0x8000)), ("no CPS shim", FakeStorage(cps=False))):
+        rc, names, data, err = claim(link)
+        check(rc == 1 and link.claims == 0 and not names and "nothing was claimed" in err,
+              f"claim first, {what}: no claim and no file left")
+    r = FakeStorage()
+    rc, names, data, err = claim(r, skip=True)
+    check(rc == 0 and r.claims == 1 and data is None and not r.reads and len(names) == 2 and
+          "--skip-full-backup" in err, "claim first with --skip-full-backup: the region dump only, and it says so")
+    for flags in (0, None):
+        r = FakeStorage(flags=flags)
+        rc, names, data, _ = claim(r)
+        check(rc == 0 and r.claims == 1 and data is None and not r.reads and len(names) == 2,
+              f"not claim first ({'flag clear' if flags == 0 else 'older firmware'}): the region dump, then the claim")
     # A detour's steps (debuglink.md 7.4): the RADIO and PTT requests the radio command would make, and waits
     items = detour_steps(["radio freq 461.0875", "wait 500", "ptt 2"])
     check(items == [(RADIO, bytes([5]) + struct.pack("<I", 461087500)), (0, 500), (PTT, struct.pack("<BH", 1, 2300)),
@@ -3292,6 +3622,9 @@ def main(argv=None):
     p = sub.add_parser("storage", help="the settings / journal region: info, dump, claim (docs/spec/settings-store.md 5)")
     p.add_argument("op", choices=["info", "dump", "claim"])
     p.add_argument("--out", help="dump directory outside any git tree (required for dump and claim)")
+    p.add_argument("--skip-full-backup", action="store_true",
+                   help="claim: on a claim-first board, claim without first saving the whole data flash (only when "
+                        "you already hold a complete backup of this radio's data flash)")
     p = sub.add_parser("aprobe", help="audio probe: chip registers and PCM levels (CONFIG_AUDIO_PROBE builds)")
     p.add_argument("op", choices=["status", "reg", "wreg", "start", "stop", "samples", "ram", "wram", "watch", "music",
                                      "mod"])

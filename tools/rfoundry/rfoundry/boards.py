@@ -34,7 +34,8 @@ class Sector:
 
 class CodecProfile:
     """A stock codec at fixed flash addresses. windows: [(addr, length)]. installed: the stock firmware versions
-    that leave exactly this codec at these addresses when they are installed on the radio (so "keep" is safe)."""
+    that leave exactly this codec at these addresses when they are installed on the radio (so "keep" is safe). A board
+    without a codec route (Board.has_codec False) has the empty one: id None and three empty lists."""
 
     def __init__(self, id, windows, installed, sources):
         self.id = id
@@ -49,7 +50,8 @@ def _tuple(v):
 
 class Board:
     """One registry entry. e: the board's object in registry.json (tools/boards.py rfoundry_view), whose keys are this
-    class's attributes; only the ones that are richer than JSON are converted here."""
+    class's attributes; only the ones that are richer than JSON are converted here. Two are added: has_codec (False
+    for a board with codec_none, the reason it has no codec route) and codec (a CodecProfile, the empty one then)."""
 
     def __init__(self, e):
         self.__dict__.update(e)
@@ -68,7 +70,11 @@ class Board:
         self.codec_layouts = {}
         self.codec_former = []
         self.codec_codes = [self.codec_code] if self.codec_code is not None else []
-        if c["id"] is None:
+        # no codec route ([codec] none, its value the reason): no windows, no stock files, nothing to keep or merge
+        self.has_codec = self.codec_none is None
+        if not self.has_codec:
+            c.update(windows=[], installed=[], sources=[])
+        elif c["id"] is None:
             # a stock-file placement (STM32): each listed stock file puts its codec where its own layout says. The board's
             # windows are the union of them all: what the image must stay out of and what keeping the codec protects. A
             # merge plans against the layout of the file it merges (merge_windows)
@@ -118,7 +124,9 @@ class Board:
         with a stock-file placement (STM32) has the one id of its profile. A board with a codec slot (codec_tool
         hrc7000_codec) reports "<board>-<tag>", the tag being the build number of the stock file the slot was made from
         (<board>-049, <board>-050): every build's slot holds a working codec, so any tag counts, and
-        "<board>-unknown" (no valid slot) does not."""
+        "<board>-unknown" (no valid slot) does not. A board without a codec route has none to report."""
+        if not self.has_codec:		# its codec id is None, and so is the report of a build that names no codec
+            return False
         if reported == self.codec.id:
             return True
         return bool(self.codec_tool == "hrc7000_codec" and isinstance(reported, str)
