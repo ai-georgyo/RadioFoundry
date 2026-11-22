@@ -6,7 +6,7 @@
  * right after them and the descriptor that says where at 0x080FFF80. The code runs in place.
  *
  * The application gets sectors 3-9 (__app_start, board.mk APP_BASE, up to 0x080BFFFF: 720 KB in one piece) and never
- * links into sectors 10 and 11. The layout is the platform's (platform/stm32f4/common.ld). */
+ * links into sectors 10 and 11. The layout is the platform's (platform/stm32/common.ld). */
 
 MEMORY
 {

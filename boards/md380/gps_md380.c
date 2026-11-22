@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // MD-380G / MD-390G / RT3 GPS: the module's NMEA output on USART3 RX (PD9), detected at run time
-// (docs/spec/hardware-md380.md 13), through the shared STM32 GPS receiver (platform/stm32f4/gps_uart).
+// (docs/spec/hardware-md380.md 13), through the shared STM32 GPS receiver (platform/stm32/gps_uart).
 //
 // Radios with and without the module share the board. PD8 is the module's power switch on the G models but is
 // reported as a flash chip select on others, so nothing drives it until NMEA has been heard: the UART listens for

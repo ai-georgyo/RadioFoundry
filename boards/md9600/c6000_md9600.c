@@ -2,7 +2,7 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // MD-9600 HR_C6000: power-up, the DMR receive path, the PCM audio stream and the speaker routing
 // (docs/spec/hardware-md9600.md 4, 6). The chip and its glue are the shared STM32 code: the configuration and voice
-// ports (platform/stm32f4/hrc/hrc_bus.c; MOSI is PE5 and MISO PE4 here, the voice port SPI1), the slot engine and its
+// ports (platform/stm32/hrc/hrc_bus.c; MOSI is PE5 and MISO PE4 here, the voice port SPI1), the slot engine and its
 // three interrupt lines (dmr_glue.c, PC0-PC2), the I2S3 PCM stream (i2s_pcm.c) and the codec host (vocoder.c).
 //
 // Unlike on radios with an HR_C6000 in the FM path, the chip is not in the FM receive path: FM audio comes from the IF chip, and 4:0x36 (the FM

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // Millisecond clock from the DWT cycle counter, so it runs before the scheduler and inside critical sections.
-// The 32-bit cycle counter wraps every 59 s at 72 MHz; every read folds the cycles since the last one into microsecond
+// The 32-bit cycle counter wraps (59 s at 72 MHz); every read folds the cycles since the last one into microsecond
 // and millisecond counts (32 bits, the remainders carried: no 64-bit division), and the RTOS tick hook reads it every
 // millisecond, so no wrap is missed.
 #include "config.h"
@@ -44,6 +44,7 @@ static void fold(void)
 void stm32_time_init(void)
 {
 	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	STM32_DWT_UNLOCK();	// a core whose DWT has a software lock takes no write before it
 	DWT->CYCCNT = 0;
 	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 	last = 0;

@@ -21,5 +21,5 @@ MCU_DEFS   += -DMD9600_REV_PROBE=$(MD9600_REV_PROBE)
 # The board revision is a hardware option (hwopt_md9600.c, hal/hal_hwopt.h)
 BOARD_HWOPTS := y
 BOARD_DIRS := boards/md9600 drivers/display/st7567 drivers/flash/spi_nor drivers/input/keymatrix drivers/input/quadrature \
-	drivers/cal/calblock drivers/input/adckeys platform/stm32f4/hrc platform/stm32f4/spi_flash drivers/modem/hrc6000 drivers/modem/hrc_common \
-	drivers/gps/nmea_line drivers/gps/gps_rx platform/stm32f4/gps_uart drivers/rf/subaudio
+	drivers/cal/calblock drivers/input/adckeys platform/stm32/hrc platform/stm32f4/hrc platform/stm32/spi_flash drivers/modem/hrc6000 drivers/modem/hrc_common \
+	drivers/gps/nmea_line drivers/gps/gps_rx platform/stm32/gps_uart drivers/rf/subaudio

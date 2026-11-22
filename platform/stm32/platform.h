@@ -1,26 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// STM32F4 platform services for boards built on it
-#ifndef PLATFORM_STM32F4_H
-#define PLATFORM_STM32F4_H
+// STM32 platform services for boards built on one of the STM32 platforms. The code behind them is shared
+// (platform/stm32) or the family's own (platform/<family>: clock.c, spi.c, usb.c); what differs between the families
+// inside the shared code is in the family's stm32_family.h: its ST HAL, the clock table (stm32_clock_t) and the
+// STM32_* names
+#ifndef PLATFORM_STM32_H
+#define PLATFORM_STM32_H
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "stm32f4xx_hal.h"
+#include "stm32_family.h"
 #include "hal_system.h"
 
-typedef struct {
-	uint32_t hse_hz;
-	bool hse_bypass;	// external clock fed in, no crystal
-	uint8_t pll_m, pll_p, pll_q;
-	uint16_t pll_n;
-	uint32_t ahb_div, apb1_div, apb2_div;	// RCC_SYSCLK_DIVx / RCC_HCLK_DIVx values
-	uint32_t flash_latency;			// FLASH_LATENCY_x
-	bool lse;				// 32.768 kHz crystal fitted
-} stm32_clock_t;
-
-// Switch to HSI first (the bootloader may leave HSE/PLL running, and HSE can't be changed while it is in use), then
-// bring up HSE and the PLL from the table. Returns false and stays on HSI if the HSE or PLL never locks
+// The board's clock tree from its table (the family's clock.c; the table's fields are the family's). Switch to HSI
+// first (the bootloader may leave HSE/PLL running, and HSE can't be changed while it is in use), then bring up HSE and
+// the PLL from the table. Returns false and stays on HSI if the HSE or PLL never locks
 bool stm32_clock_init(const stm32_clock_t *c);
 
 // System services for board.system (sysboot.c): chip info, memory reads, reboot incl. the ROM DFU entry
@@ -52,7 +46,8 @@ void stm32_watchdog_stretch(void);
 // Enable the clock of a GPIO port by its base address
 void stm32_gpio_clock(GPIO_TypeDef *port);
 
-// Simple pin set-up helpers
+// Simple pin set-up helpers. A pin nobody configured is a floating input on the F4; on the H7 it is in analog mode
+// after reset and reads 0. The outputs' slope is the family's (STM32_GPIO_SPEED)
 // For board_rf_safe: the port's clock on, the level, then push-pull output, with plain register writes (no HAL). Safe
 // in a fault handler and before the clocks are set up
 void stm32_pin_force(GPIO_TypeDef *port, uint16_t pins, bool level);
@@ -61,7 +56,8 @@ void stm32_pin_in(GPIO_TypeDef *port, uint16_t pins, uint32_t pull);
 void stm32_pin_af(GPIO_TypeDef *port, uint16_t pins, uint8_t af, bool open_drain, uint32_t pull);
 void stm32_pin_analog(GPIO_TypeDef *port, uint16_t pins);
 
-// SPI master on the registers (spi.c): mode from cpol / cpha, clock PCLK / 2^(br + 1), software chip select
+// SPI master on the registers (spi.c): mode from cpol / cpha, clock = the block's clock / 2^(br + 1) (PCLK on the F4,
+// the SPI kernel clock on the H7), software chip select
 void stm32_spi_master_init(SPI_TypeDef *spi, bool cpol, bool cpha, uint8_t br);
 // Byte at a time, polled: tx NULL sends 0xFF, rx NULL discards. False on a stuck peripheral
 bool stm32_spi_xfer(SPI_TypeDef *spi, const uint8_t *tx, uint8_t *rx, uint32_t len);
@@ -88,6 +84,30 @@ static inline void stm32_pin_write(GPIO_TypeDef *port, uint16_t pins, bool level
 static inline bool stm32_pin_read(GPIO_TypeDef *port, uint16_t pin)
 {
 	return (port->IDR & pin) != 0;
+}
+
+// OSPEEDR of pins (the register is the same on both families): for a bus faster than the family's default slope.
+// speed is a GPIO_SPEED_FREQ_* value. A read-modify-write of the port's register: from the code that sets the port up
+static inline void stm32_pin_speed(GPIO_TypeDef *port, uint16_t pins, uint32_t speed)
+{
+	uint32_t ospeedr = port->OSPEEDR;
+	for (uint32_t n = 0; n < 16u; n++) {
+		if (pins & (1u << n)) {
+			ospeedr = (ospeedr & ~(3u << (2u * n))) | (speed << (2u * n));
+		}
+	}
+	port->OSPEEDR = ospeedr;
+}
+
+// Busy wait of at least ns on the CPU cycle counter (time.c starts it: valid after stm32_time_init()). For bit-banged
+// bus timing: a counted loop is 1 to 3 cycles a pass depending on the core, a cycle count is not. Up to 5 ms (ns
+// times the core clock in MHz must fit 32 bits: 8.9 ms at 480 MHz). Both divisions round up: never shorter than ns
+static inline void stm32_wait_ns(uint32_t ns)
+{
+	uint32_t cycles = (ns * ((SystemCoreClock + 999999u) / 1000000u) + 999u) / 1000u;
+	uint32_t start = DWT->CYCCNT;
+	while (DWT->CYCCNT - start < cycles) {
+	}
 }
 
 #endif

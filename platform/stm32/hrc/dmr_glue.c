@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The HR_C6000 / HR_C5000 DMR glue the STM32F4 radios share (dmr_glue.h): the slot engine on the chip's three
+// The HR_C6000 / HR_C5000 DMR glue the STM32 radios share (dmr_glue.h): the slot engine on the chip's three
 // interrupt lines and the deferred event task that calls the DMR stack (docs/spec/dmr-modem.md 6).
 //
-// What runs where:
+// What runs where (the pins are the board's, hrc_lines.h; these are the defaults):
 //   EXTI0 (pin 0, timeslot, priority 5)  the board's service hook, drop the PA of the burst that ended, set up the next
 //                                        slot (TX burst or receive), slot tick event
 //   EXTI1 (pin 1, system, priority 5)    copy out a received burst (status, page 2 payload or the 27-byte voice frame
@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "hrc/dmr_glue.h"
+#include "hrc/hrc_lines.h"
 
 #if CONFIG_DMR	// the whole file: DMR only
 #include "FreeRTOS.h"
@@ -34,10 +35,15 @@
 #define DMR_TASK_PRIORITY	(configMAX_PRIORITIES - 2)
 #define DMR_TASK_STACK		512	// words: the stack's callback runs on it
 #define DMR_POLL_MS		10
-// The three lines on pins 0-2 of the board's port: EXTI0-2
-#define INT_TS		GPIO_PIN_0
-#define INT_SYS		GPIO_PIN_1
-#define INT_RFTX	GPIO_PIN_2
+// The three lines on the board's port (hrc_lines.h: INT_TS, INT_SYS, INT_RFTX; pins 0-2 unless the board says
+// otherwise). Each has an EXTI vector of its own: its interrupt number and its handler, named from the line's number
+#define EXTI_IRQN_(n)		EXTI##n##_IRQn
+#define EXTI_IRQN(n)		EXTI_IRQN_(n)
+#define EXTI_HANDLER_(n)	EXTI##n##_IRQHandler
+#define EXTI_HANDLER(n)		EXTI_HANDLER_(n)
+#define IRQ_TS			EXTI_IRQN(STM32_HRC_LINE_TS)
+#define IRQ_SYS			EXTI_IRQN(STM32_HRC_LINE_SYS)
+#define IRQ_RFTX		EXTI_IRQN(STM32_HRC_LINE_RFTX)
 #define MODEM_IRQ_PRIORITY	5	// the chips' three lines, one level; must stay >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY
 #define R_INT_FLAGS		0x82	// the chip's system interrupt flags (modem-hrc6000.md 4.2)
 #define SYS_EDGE_US		5	// a system line seen low gets this long for its handler to run before it counts as lost
@@ -176,8 +182,8 @@ static hrc6000_dmr_ops_t ops = {
 // handler, or one whose edge was missed, keeps it low for good and no later request interrupts. Those are serviced
 // late (the timeslot ISR takes a low line, the task pends the handler) rather than dropped, but each one held a request
 // back, so they are counted, once per low stretch of the line. The first loss of either kind keeps four words:
-// the chip's 0x82 flags, EXTI_PR, the interrupt port's IDR (the lines on pins 0-2, low = asserted) and the three lines'
-// NVIC enable, pending and active bits (bits 0-2, 8-10, 16-18: timeslot, system, RF TX)
+// the chip's 0x82 flags, the EXTI pending register, the interrupt port's IDR (the lines on their pins, low = asserted)
+// and the three lines' NVIC enable, pending and active bits (bits 0-2, 8-10, 16-18: timeslot, system, RF TX)
 
 static volatile uint32_t sys_stuck;
 static bool sys_low_counted;	// the system line's current low stretch is counted already
@@ -185,15 +191,20 @@ static uint32_t lost_seen;	// tx_stalls + sys_stuck at the last check
 static uint32_t lost_ms;	// the first loss's time (never 0 once set) and words
 static uint32_t lost_regs[4];
 
+// EXTI0-4 are IRQs 6-10: one word
 static uint32_t nvic_lines(volatile uint32_t *reg)
 {
-	return (reg[0] >> EXTI0_IRQn) & 7u;	// EXTI0-2 are IRQs 6-8: one word, adjacent bits
+#if STM32_HRC_LINES_ADJACENT
+	return (reg[0] >> IRQ_TS) & 7u;	// three lines in a row (EXTI0-2 by default): adjacent bits, in the record's order
+#else
+	return stm32_hrc_lines_pick(reg[0], EXTI0_IRQn);
+#endif
 }
 
 // The interrupt controller's words a lost interrupt's record keeps after the system flags (dmr.modem_lost_regs 1-3)
 static void lost_words(uint32_t w[3])
 {
-	w[0] = EXTI->PR;
+	w[0] = STM32_EXTI_PENDING;
 	w[1] = hooks->int_port->IDR;
 	w[2] = nvic_lines(NVIC->ISER) | nvic_lines(NVIC->ISPR) << 8 | nvic_lines(NVIC->IABR) << 16;
 }
@@ -265,36 +276,37 @@ static void exti_setup(void)
 		.Pin = MODEM_INT_PINS, .Mode = GPIO_MODE_IT_FALLING, .Pull = GPIO_PULLUP, .Speed = GPIO_SPEED_FREQ_LOW,
 	};
 	HAL_GPIO_Init(hooks->int_port, &g);
-	HAL_NVIC_SetPriority(EXTI0_IRQn, MODEM_IRQ_PRIORITY, 0);
-	HAL_NVIC_SetPriority(EXTI1_IRQn, MODEM_IRQ_PRIORITY, 0);
-	HAL_NVIC_SetPriority(EXTI2_IRQn, MODEM_IRQ_PRIORITY, 0);
+	HAL_NVIC_SetPriority(IRQ_TS, MODEM_IRQ_PRIORITY, 0);
+	HAL_NVIC_SetPriority(IRQ_SYS, MODEM_IRQ_PRIORITY, 0);
+	HAL_NVIC_SetPriority(IRQ_RFTX, MODEM_IRQ_PRIORITY, 0);
 }
 
 static void exti_enable(bool on)
 {
 	if (on) {
 		__HAL_GPIO_EXTI_CLEAR_IT(MODEM_INT_PINS);
-		NVIC_ClearPendingIRQ(EXTI0_IRQn);
-		NVIC_ClearPendingIRQ(EXTI1_IRQn);
-		NVIC_ClearPendingIRQ(EXTI2_IRQn);
-		HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-		HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-		HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+		NVIC_ClearPendingIRQ(IRQ_TS);
+		NVIC_ClearPendingIRQ(IRQ_SYS);
+		NVIC_ClearPendingIRQ(IRQ_RFTX);
+		HAL_NVIC_EnableIRQ(IRQ_TS);
+		HAL_NVIC_EnableIRQ(IRQ_SYS);
+		HAL_NVIC_EnableIRQ(IRQ_RFTX);
 	} else {
-		HAL_NVIC_DisableIRQ(EXTI0_IRQn);
-		HAL_NVIC_DisableIRQ(EXTI1_IRQn);
-		HAL_NVIC_DisableIRQ(EXTI2_IRQn);
+		HAL_NVIC_DisableIRQ(IRQ_TS);
+		HAL_NVIC_DisableIRQ(IRQ_SYS);
+		HAL_NVIC_DisableIRQ(IRQ_RFTX);
 	}
 }
 
-void EXTI0_IRQHandler(void)
+// The timeslot line's vector (EXTI0_IRQHandler by default)
+void EXTI_HANDLER(STM32_HRC_LINE_TS)(void)
 {
 	__HAL_GPIO_EXTI_CLEAR_IT(INT_TS);
 	// A system line low with no edge pending: its interrupt was lost (the engine services it below). With an edge
 	// pending, the system ISR is simply next (both lines fell together)
 	if (!sys_line_low(NULL)) {
 		sys_low_counted = false;
-	} else if ((EXTI->PR & INT_SYS) == 0) {
+	} else if (__HAL_GPIO_EXTI_GET_IT(INT_SYS) == 0) {
 		sys_lost();
 	}
 	if (hooks->ts_service != NULL) {
@@ -309,7 +321,8 @@ void EXTI0_IRQHandler(void)
 	hrc6000_dmr_isr_timeslot(&eng);
 }
 
-void EXTI1_IRQHandler(void)
+// The system line's vector (EXTI1_IRQHandler by default)
+void EXTI_HANDLER(STM32_HRC_LINE_SYS)(void)
 {
 	__HAL_GPIO_EXTI_CLEAR_IT(INT_SYS);
 #if CONFIG_AIR
@@ -322,7 +335,8 @@ void EXTI1_IRQHandler(void)
 	hrc6000_dmr_isr_sys(&eng);
 }
 
-void EXTI2_IRQHandler(void)
+// The RF TX line's vector (EXTI2_IRQHandler by default)
+void EXTI_HANDLER(STM32_HRC_LINE_RFTX)(void)
 {
 	__HAL_GPIO_EXTI_CLEAR_IT(INT_RFTX);
 #if CONFIG_AIR
@@ -520,7 +534,7 @@ static void sys_line_check(void)
 	lock(NULL);
 	sys_lost();
 	unlock(NULL);
-	NVIC_SetPendingIRQ(EXTI1_IRQn);
+	NVIC_SetPendingIRQ(IRQ_SYS);
 }
 
 #if CONFIG_DMR
@@ -603,7 +617,7 @@ void stm32_hrc_dmr_enter(void)
 		exti_enable(true);
 		hrc6000_air_rx_restart(AIR);
 		if (sys_line_low(NULL)) {
-			NVIC_SetPendingIRQ(EXTI1_IRQn);
+			NVIC_SetPendingIRQ(IRQ_SYS);
 		}
 		return;
 	}
@@ -612,7 +626,7 @@ void stm32_hrc_dmr_enter(void)
 	active = true;
 	exti_enable(true);
 	if (sys_line_low(NULL)) {
-		NVIC_SetPendingIRQ(EXTI1_IRQn);	// a flag from before (FM) holds the line low: no edge will come, nor is one lost
+		NVIC_SetPendingIRQ(IRQ_SYS);	// a flag from before (FM) holds the line low: no edge will come, nor is one lost
 	}
 }
 
@@ -981,7 +995,7 @@ static bool air_open(const air_profile_t *p, air_event_cb_t cb, void *ctx)
 		return false;
 	}
 	if (sys_line_low(NULL)) {
-		NVIC_SetPendingIRQ(EXTI1_IRQn);	// a flag the halted engine left holds the line low
+		NVIC_SetPendingIRQ(IRQ_SYS);	// a flag the halted engine left holds the line low
 	}
 	return true;
 }
@@ -1004,7 +1018,7 @@ static void air_close(void)
 	if (active) {
 		hrc6000_dmr_run(&eng);
 		if (sys_line_low(NULL)) {
-			NVIC_SetPendingIRQ(EXTI1_IRQn);
+			NVIC_SetPendingIRQ(IRQ_SYS);
 		}
 	}
 }
@@ -1111,7 +1125,7 @@ static bool tap_start(void)
 		return false;
 	}
 	if (sys_line_low(NULL)) {
-		NVIC_SetPendingIRQ(EXTI1_IRQn);
+		NVIC_SetPendingIRQ(IRQ_SYS);
 	}
 	return true;
 }
@@ -1134,7 +1148,7 @@ static void tap_stop(void)
 	if (active) {
 		hrc6000_dmr_run(&eng);
 		if (sys_line_low(NULL)) {
-			NVIC_SetPendingIRQ(EXTI1_IRQn);
+			NVIC_SetPendingIRQ(IRQ_SYS);
 		}
 	}
 }

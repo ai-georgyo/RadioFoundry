@@ -5,8 +5,8 @@
 void stm32_gpio_clock(GPIO_TypeDef *port)
 {
 	uint32_t index = ((uint32_t)port - GPIOA_BASE) / (GPIOB_BASE - GPIOA_BASE);
-	RCC->AHB1ENR |= 1u << index;
-	(void)RCC->AHB1ENR;
+	STM32_GPIO_CLKEN |= 1u << index;
+	(void)STM32_GPIO_CLKEN;
 }
 
 void stm32_pin_force(GPIO_TypeDef *port, uint16_t pins, bool level)
@@ -29,7 +29,7 @@ static void pin_init(GPIO_TypeDef *port, uint16_t pins, uint32_t mode, uint32_t 
 		.Pin = pins,
 		.Mode = mode,
 		.Pull = pull,
-		.Speed = GPIO_SPEED_FREQ_VERY_HIGH,
+		.Speed = STM32_GPIO_SPEED,
 		.Alternate = af,
 	};
 	stm32_gpio_clock(port);

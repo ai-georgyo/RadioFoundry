@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The HR_C6000's two MCU ports on the STM32F4 radios with one: the configuration port bit-banged on four GPIO
+// The HR_C6000's two MCU ports on the STM32 radios with one: the configuration port bit-banged on four GPIO
 // lines of one port, and the voice port on an SPI peripheral with its own chip select (docs/spec/modem-hrc6000.md 1,
 // 1.1). hrc_bus.c gives the hrc_bus_t the chip driver runs on. Both transfers mask interrupts up to the RTOS syscall
 // level, where the chip's own interrupts run, so a modem ISR never lands inside one: safe from tasks and those ISRs.
@@ -16,7 +16,7 @@ typedef struct {
 	GPIO_TypeDef *port;	// the configuration port's four lines
 	uint16_t cs, clk, mosi, miso;	// pin masks on port (MOSI: MCU to chip)
 	SPI_TypeDef *voice_spi;	// voice port: SPI master, clock idle high, data on the first edge
-	uint8_t voice_br;	// its clock: PCLK / 2^(br + 1)
+	uint8_t voice_br;	// its clock: the SPI block's clock / 2^(br + 1) (stm32_spi_master_init)
 	GPIO_TypeDef *voice_cs_port;
 	uint16_t voice_cs;
 } stm32_hrc_bus_cfg_t;
