@@ -510,6 +510,8 @@ bool tftp_codeplug_resume(void)
 	uint8_t h[HEADER_LEN];
 	uint32_t crc;
 
+	// As in cps_fast_resume: the erase below bypasses storage.c, so on a region that isn't ours this test alone keeps
+	// the staging area's bytes (storageBootTest)
 	if (!staging_ok() || !storage_ready() || !flash_read(map()->staging_addr, h, sizeof(h))) {
 		return false;
 	}

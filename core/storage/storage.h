@@ -35,10 +35,20 @@ bool storage_ready(void);
 // holds bytes that are neither erased nor ours, and not one valid record of ours (a settings record, a journal
 // header) is anywhere in it, it is foreign: nothing is erased or programmed there (and so no codeplug or CPS write
 // goes through the journal) until the debug link claims it (after the host dumped it)
+//
+// Claim first. A blank region is taken at the first start (an ownership mark is programmed), which is right when the
+// other firmware's layout is known: its data is where the map says. On a flash that held another firmware's data of
+// unknown layout a blank region says nothing about the megabytes around it, and that mark would open every codeplug
+// and CPS write before a backup exists. Such a board builds with -DSTORAGE_CLAIM_FIRST=1 (MCU_DEFS in its board.mk):
+// a region without a valid record of ours is then foreign, blank or not, and the claim is the only way in. A define
+// and not a field of the flash map, so that the boards that don't set it pay nothing for it
+#ifndef STORAGE_CLAIM_FIRST
+#define STORAGE_CLAIM_FIRST	0
+#endif
 typedef enum {
 	STORAGE_REGION_NONE,		// no flash map / unusable flash
-	STORAGE_REGION_OURS,		// blank, or holding our records
-	STORAGE_REGION_FOREIGN,		// someone else's data: hands off
+	STORAGE_REGION_OURS,		// holding our records, or blank (blank: not with STORAGE_CLAIM_FIRST)
+	STORAGE_REGION_FOREIGN,		// someone else's data, or (STORAGE_CLAIM_FIRST) not claimed yet: hands off
 } storage_region_t;
 storage_region_t storage_region(void);
 // Ask for a claim (the debug link, behind the UID token): the housekeeping task erases the settings ring and the
@@ -120,6 +130,7 @@ typedef struct {
 	uint32_t errors;		// flash operations that failed
 	uint32_t foreign_refusals;	// writes refused because the region is foreign
 	uint16_t foreign_slots;		// settings slots (and journal sectors) that were neither erased nor ours at boot
+					// (0 in a foreign region: a blank one that must be claimed first)
 	bool claim_pending;
 } storage_stats_t;
 

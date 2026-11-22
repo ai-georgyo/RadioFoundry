@@ -629,15 +629,7 @@ static size_t cmd_info_chip(uint8_t *out)
 	put32(out + 11, c.uid[1]);
 	put32(out + 15, c.uid[2]);
 	put32(out + 19, c.optcr);
-	if (c.family == HAL_CHIP_STM32F4) {
-		out[23] = dl_rdp_level(c.optcr);
-		out[24] = dl_rdp_byte(c.optcr);
-		put16(out + 25, dl_wrp_mask(c.optcr));
-		out[27] = dl_bor_level(c.optcr);
-		out[28] = dl_user_bits(c.optcr);
-	} else {
-		memset(out + 23, 0xFF, 6);	// no option bytes: nothing to decode
-	}
+	dl_chip_optbytes(&c, out + 23);		// offsets 23..28: what the family's option word decodes to
 	out[29] = c.family;
 	return 30;
 }
@@ -681,11 +673,17 @@ bool debuglink_transmitting(void)
 	return false;
 }
 
+// The link's checks, then the platform's and the board's rule (hal_system_t.reboot_ok): a mode the board refuses is
+// refused here, not answered OK and then dropped by reboot(). Only called once board.system->reboot is known
 static uint8_t reboot_gate(uint8_t mode, uint32_t token)
 {
 	hal_chip_t c;
 	bool have = read_chip(&c);
-	return dl_reboot_check(mode, token, have ? &c : NULL, debuglink_transmitting());
+	uint8_t why = dl_reboot_check(mode, token, have ? &c : NULL, debuglink_transmitting());
+	if (why == DL_REBOOT_OK && !hal_reboot_possible(board.system, mode)) {
+		why = DL_REBOOT_ARM_FAILED;
+	}
+	return why;
 }
 
 static size_t cmd_reboot(const uint8_t *req, uint16_t len, uint8_t *out)
@@ -754,7 +752,8 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		put32(out + 15, 2u * STORAGE_SECTOR);
 		put32(out + 19, m->calibration_addr);
 		put32(out + 23, m->calibration_size);
-		return 27;
+		out[27] = STORAGE_CLAIM_FIRST ? DL_STORAGE_FLAG_CLAIM_FIRST : 0u;
+		return 28;
 	}
 	case DL_STORAGE_OP_READ: {
 		if (len != 7) {

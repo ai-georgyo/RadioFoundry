@@ -283,9 +283,10 @@ void ui_bands_text(char *out, size_t len, bool tx)
 			continue;	// a TX refusal lists only where it can transmit, not the receive-only ranges
 		if (b.p != out)
 			sb_chr(&b, ' ');
-		sb_u32(&b, board.bands[i].lo_hz / 1000000u, 1);
+		// To the nearest MHz: an edge can sit a fraction of a channel inside a whole MHz limit
+		sb_u32(&b, (board.bands[i].lo_hz + 500000u) / 1000000u, 1);
 		sb_chr(&b, '-');
-		sb_u32(&b, board.bands[i].hi_hz / 1000000u, 1);
+		sb_u32(&b, (board.bands[i].hi_hz + 500000u) / 1000000u, 1);
 	}
 }
 

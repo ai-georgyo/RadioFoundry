@@ -690,6 +690,8 @@ bool cps_fast_resume(void)
 	uint32_t cap = stage_cap(), crc;
 
 	memset(&s, 0, sizeof(s));
+	// The erase below goes to the flash directly, past storage.c's refusals: on a region that isn't ours (another
+	// firmware's, or not claimed yet) this test alone keeps the staging area's bytes (storageBootTest)
 	if (cap == 0 || !storage_ready() || !fread_(map()->staging_addr, r, sizeof(r))) {
 		return false;
 	}

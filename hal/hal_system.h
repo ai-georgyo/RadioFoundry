@@ -9,15 +9,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Which chip the fields describe. Only the STM32F4 has the ID, flash size and option byte registers; the others fill in
-// the UID and leave the rest 0
-enum { HAL_CHIP_STM32F4 = 0, HAL_CHIP_HRC7000 = 1 };
+// Which chip the fields describe. The STM32 families have the ID, flash size and option byte registers; the others fill
+// in the UID and leave the rest 0. The numbers are the debug link's (INFO_CHIP's family byte): add, never renumber
+enum { HAL_CHIP_STM32F4 = 0, HAL_CHIP_HRC7000 = 1, HAL_CHIP_STM32H7 = 2 };
 
 typedef struct {
 	uint32_t idcode;	// DBGMCU IDCODE (may read 0 without a debugger on some STM32F40x revisions)
 	uint16_t flash_kb;	// flash size register
 	uint32_t uid[3];	// 96-bit unique ID, uid[0] = the lowest word
-	uint32_t optcr;		// FLASH_OPTCR: RDP byte, nWRP bits, BOR level, user bits
+	uint32_t optcr;		// the option register word with the RDP byte in bits 15:8 (STM32F4 FLASH_OPTCR, STM32H7
+				// FLASH_OPTSR_CUR); the other bits are the family's own
 	uint8_t family;		// HAL_CHIP_*
 } hal_chip_t;
 
@@ -44,6 +45,11 @@ typedef struct {
 	bool (*mem_window)(unsigned i, hal_mem_window_t *w);
 	// Does not return (or returns false when the request could not be armed, e.g. the backup register didn't stick)
 	bool (*reboot)(uint8_t mode);
+	// Optional (NULL: every mode reboot() takes is possible): whether reboot(mode) would go ahead, by the platform's
+	// and the board's own rule (a board that refuses the software entry to a ROM bootloader). The debug link asks
+	// before it answers, so a mode the board refuses gets a refusal instead of an OK followed by nothing. reboot()
+	// applies the same rule; a false from there is then only a request that could not be stored
+	bool (*reboot_ok)(uint8_t mode);
 	// Runtime RAM-monitor entry (CONFIG_STUB_ENTRY, docs/spec/debuglink.md 3.18), both optional (NULL where the
 	// platform has none). stub_region returns a writable RAM span the host image is loaded into and its length in
 	// *size, or NULL if unsupported. enter_stub quiesces the SoC (interrupts masked, watchdog off, DMA stopped, flash
@@ -73,5 +79,11 @@ typedef struct {
 	bool (*stub_image_ok)(const uint8_t *img, uint32_t len);
 #endif
 } hal_system_t;
+
+// reboot_ok with its default: true where the platform has no such rule
+static inline bool hal_reboot_possible(const hal_system_t *s, uint8_t mode)
+{
+	return s->reboot_ok == NULL || s->reboot_ok(mode);
+}
 
 #endif

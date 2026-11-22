@@ -49,6 +49,10 @@ void input_engine_step(input_engine_t *e, uint32_t raw, int8_t enc, uint32_t now
 	e->raw_prev = raw;
 	uint32_t held = (e->held & ~stable) | (raw & stable);
 	e->ignore &= held;		// a start-up key counts again once it has been released
+	if (e->start_scans < INPUT_START_GUARD_SCANS) {
+		e->start_scans++;
+		e->ignore |= raw | held;	// after the AND: a key seen but not yet debounced stays ignored
+	}
 	if (held != e->held || held != 0 || enc != 0) {
 		e->last_activity_ms = now_ms;
 	}

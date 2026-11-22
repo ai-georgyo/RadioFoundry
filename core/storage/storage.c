@@ -368,7 +368,10 @@ static storage_region_t scan_region(const hal_flash_map_t *m)
 		other++;
 	}
 	stats.foreign_slots = other;
-	if (other != 0 && !ours) {
+	// STORAGE_CLAIM_FIRST: no record of ours means not claimed, even when all of it is blank (storage.h). Nothing
+	// below runs then, so no mark is programmed before the owner asked for one. In this operand order the define's
+	// default folds to the code the compiler made before it existed; "!ours" first does not (16 bytes moved)
+	if ((other != 0 || STORAGE_CLAIM_FIRST) && !ours) {
 		return STORAGE_REGION_FOREIGN;
 	}
 	if (!ours) {

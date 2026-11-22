@@ -69,8 +69,8 @@ static bool mcu_line(support_line_t *l, sbuf_t *b)
 		sb_str(b, "HR_C7000");
 		return true;
 	}
-	// The STM32F4's DBGMCU IDCODE: device 11:0, silicon revision 31:16 (it may read 0 without a debugger)
-	sb_str(b, "STM32F4");
+	// The STM32's DBGMCU IDCODE: device 11:0, silicon revision 31:16 (the STM32F4's may read 0 without a debugger)
+	sb_str(b, c.family == HAL_CHIP_STM32H7 ? "STM32H7" : "STM32F4");
 	if (c.idcode != 0u) {
 		sb_chr(b, ' ');
 		sb_hex(b, c.idcode & 0xFFFu, 3);
