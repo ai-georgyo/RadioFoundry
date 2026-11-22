@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 The RadioFoundry Authors
+# The STM32H7 platform's registry entry (tools/boards.py): what the tools and CI need to know about every board on it.
+# The build itself reads platform.mk, never this file.
+
+id = "stm32h7"
+isa = "arm"
+# The SoC every board on the platform has (a board's [hardware] cpu overrides it for the site's table)
+cpu = "STM32H743"
+# The compiler print-cc names and what installs it when it's missing (ci.sh's skip message), in its own table at the
+# end of this file
+# No flash stub for this SoC (CONFIG_STUB_ENTRY is not written, config.mk), so no board_stub either: its boards carry
+# no [flash.stub] profile
+stubs = []
+# Linker symbols every board's scripts must define: none (no codec is placed by the linker)
+codec_symbols = []
+# Program flash starts here. A board installed through the SoC's ROM bootloader keeps nothing below its image
+flash_base = 0x08000000
+# The geometry a board's [flash] sectors names unless it says otherwise
+default_sectors = "h743"
+# The longest mass erase, in seconds: tME at program/erase parallelism x 8, the slowest setting (DS12110 Table 43,
+# 13 s typical, 26 s at most; the same in the table of either silicon revision). A Read Unprotect through the ROM
+# bootloader erases the whole program flash (RM0433 4.5.3), and the flashing tools wait it out by this figure
+mass_erase_max_s = 26
+
+# Flash geometries: [index, address, size]. STM32H743, 2 MB in two banks of 1 MB: 16 sectors of 128 KB, 0-7 in bank 1
+# and 8-15 in bank 2 (RM0433 Table 15, flash module organization). The index is the registry's running number: the
+# chip's own sector number (FLASH_CR SNB) starts again at 0 in bank 2
+[sectors]
+h743 = [
+	[0, 0x08000000, 0x20000],
+	[1, 0x08020000, 0x20000],
+	[2, 0x08040000, 0x20000],
+	[3, 0x08060000, 0x20000],
+	[4, 0x08080000, 0x20000],
+	[5, 0x080A0000, 0x20000],
+	[6, 0x080C0000, 0x20000],
+	[7, 0x080E0000, 0x20000],
+	[8, 0x08100000, 0x20000],
+	[9, 0x08120000, 0x20000],
+	[10, 0x08140000, 0x20000],
+	[11, 0x08160000, 0x20000],
+	[12, 0x08180000, 0x20000],
+	[13, 0x081A0000, 0x20000],
+	[14, 0x081C0000, 0x20000],
+	[15, 0x081E0000, 0x20000],
+]
+
+# The toolchain CI and releases build with. version and sha256 are the pinned Arm GNU Toolchain release and the
+# SHA-256 of its Linux x86_64 archive: tools/install-arm-toolchain.sh installs that and nothing else. image is the
+# same installed tree in an image (tools/docker/toolchains/build-arm-ci.sh), pinned by digest: the installer copies it
+# from there first and downloads the archive only when that fails. Builds run on the runner, not in the image. id and
+# name: the toolchain's CI job (firmware (Arm)) and its .github/actions/toolchain set-up; every platform with this
+# id builds in that job and must pin the same toolchain
+[toolchain]
+id = "arm"
+name = "Arm"
+cc = "arm-none-eabi-gcc"
+build = "tools/install-arm-toolchain.sh"
+version = "13.3.rel1"
+sha256 = "95c011cee430e64dd6087c75c800f04b9c49832cc1000127a92a97f9c8d83af4"
+image = "ghcr.io/radiofoundry/rfoundry-arm-ci:13.3.rel1-20261117@sha256:9cc22ddf202dd7f10c133be9d69770e133be5071738b676027df86710ad41971"
