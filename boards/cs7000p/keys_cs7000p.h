@@ -5,8 +5,8 @@
 // selector's code table, and the small rules input_cs7000p.c applies to them (docs/spec/hardware-cs7000p.md 9.4).
 //
 // The matrix is on the LCD board, which is not in the maker's schematic: the OEM's 2018 LCD board is the working
-// assumption. Two things here are in no document and wait for a radio (docs/testing/cs7000p-bringup.md):
-//   - which function switch is which key: CS7000P_FN_KEYS is a PROVISIONAL order;
+// assumption. Which function switch is which key is in no document: CS7000P_FN_KEYS is the order read on a radio
+// (board.keys_raw, one key at a time). One thing still waits for a measurement (docs/testing/cs7000p-bringup.md):
 //   - the channel selector's code: its table is empty and the selector makes no steps (CS7000P_CHSW_VERIFIED).
 #ifndef CS7000P_KEYS_H
 #define CS7000P_KEYS_H
@@ -44,11 +44,10 @@ static const uint8_t cs7000p_matrix[CS7000P_KEY_DRIVES][CS7000P_KEY_SENSES] = {
 	{ CS7000P_FN_SW(5), CS7000P_FN_SW(6), KEYMATRIX_NONE,   KEYMATRIX_NONE },	// K9 (PB7)
 };
 
-// The key behind function switch 1 to 6. PROVISIONAL: the radio's six keys are F1, Up, F2 over OK, Down, BACK, and
-// nothing says which switch of the drawing each one is. This order is a placeholder until every key has been
-// pressed once on a radio and read in board.keys_raw; put the measured order here. Until then the debug link's key
-// injection drives the UI
-static const uint8_t CS7000P_FN_KEYS[CS7000P_FN_SWITCHES] = { KEY_F1, KEY_OK, KEY_UP, KEY_DOWN, KEY_F2, KEY_BACK };
+// The key behind function switch 1 to 6. The radio's six keys are F1, Up, F2 over OK, Down, BACK, and the drawing
+// does not say which switch each one is. Measured on a radio, each key held alone (board.keys_raw, 2026-11-22):
+// OK 01 00 00 00 00, BACK 02 .., F1 04 .., F2 08 .. (drive K5, senses K1 to K4); Up .. 01, Down .. 02 (drive K9)
+static const uint8_t CS7000P_FN_KEYS[CS7000P_FN_SWITCHES] = { KEY_OK, KEY_BACK, KEY_F1, KEY_F2, KEY_UP, KEY_DOWN };
 
 // The table for keymatrix_decode (row major: drive x sense), the function switches resolved through the order above
 static inline void cs7000p_keys_map(uint8_t map[CS7000P_KEY_DRIVES * CS7000P_KEY_SENSES])

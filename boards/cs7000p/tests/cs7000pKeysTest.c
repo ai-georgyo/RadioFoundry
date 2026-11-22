@@ -2,7 +2,7 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // The CS7000 M17 PLUS's key tables (keys_cs7000p.h) under the shared decoders (drivers/input/keymatrix, chswitch):
 // every crossing of the matrix gives the key the LCD board's drawing has there, written out below by line name; no
-// key is in the matrix twice; the six function switches follow exactly the documented provisional order; the
+// key is in the matrix twice; the six function switches follow exactly the documented, measured order; the
 // channel selector's table refuses every code while it is unverified, and the rules that will turn a measured table
 // into steps are right on a synthetic one; the accessory PTT's stuck-line rule.
 #include <stdio.h>
@@ -29,8 +29,8 @@ static const crossing_t drawing[] = {
 	{ 4, 8, '*', 0 }, { 4, 7, '0', 0 }, { 4, 6, '#', 0 }, { 4, 5, 0, 4 }, { 4, 9, 0, 0 },
 };
 
-// The provisional order of the function switches, as documented (hardware-cs7000p.md 9.4)
-static const uint8_t documented_fn[6] = { KEY_F1, KEY_OK, KEY_UP, KEY_DOWN, KEY_F2, KEY_BACK };
+// The order of the function switches as measured on a radio and documented (hardware-cs7000p.md 9.4)
+static const uint8_t documented_fn[6] = { KEY_OK, KEY_BACK, KEY_F1, KEY_F2, KEY_UP, KEY_DOWN };
 
 static uint8_t key_of_legend(char c)
 {
@@ -103,11 +103,11 @@ static void test_matrix(void)
 
 static void test_function_order(void)
 {
-	// Exactly the documented provisional order, switch 1 to 6
+	// Exactly the documented order, switch 1 to 6
 	CHECK(sizeof(CS7000P_FN_KEYS) == 6 && CS7000P_FN_SWITCHES == 6);
 	CHECK(memcmp(CS7000P_FN_KEYS, documented_fn, sizeof(documented_fn)) == 0);
-	CHECK(CS7000P_FN_KEYS[0] == KEY_F1 && CS7000P_FN_KEYS[1] == KEY_OK && CS7000P_FN_KEYS[2] == KEY_UP);
-	CHECK(CS7000P_FN_KEYS[3] == KEY_DOWN && CS7000P_FN_KEYS[4] == KEY_F2 && CS7000P_FN_KEYS[5] == KEY_BACK);
+	CHECK(CS7000P_FN_KEYS[0] == KEY_OK && CS7000P_FN_KEYS[1] == KEY_BACK && CS7000P_FN_KEYS[2] == KEY_F1);
+	CHECK(CS7000P_FN_KEYS[3] == KEY_F2 && CS7000P_FN_KEYS[4] == KEY_UP && CS7000P_FN_KEYS[5] == KEY_DOWN);
 	// Each of the radio's six such keys once, whatever order a measurement puts them in
 	uint32_t seen = 0;
 	for (unsigned i = 0; i < 6; i++) {

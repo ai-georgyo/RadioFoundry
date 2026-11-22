@@ -282,7 +282,7 @@ instead of answering. Install again; a whole image leaves no such word in the ra
 | The Home screen, right side up, colors right, no band of garbage at an edge | 160 x 128, offsets and insets 0 | `rfoundry_debug.py screenshot` shows what the radio drew; the difference is the panel. `CONFIG_DISPLAY_INSET` in `config.mk`, the offsets in `display_cs7000p.c` |
 | The backlight dims over the whole setting range | TIM8 CH4 on PC9, the 20 to 70 % duty window (question 12) | [backlight-curve.md](backlight-curve.md) measures the curve; then `CS7000P_BL_MIN`, `CS7000P_BL_MAX` |
 | The key lights follow the backlight | `EXP_LAMP`'s polarity | Inverted: the bit in `exp_cs7000p.h` |
-| `board.keys_raw`, one key at a time, all 18 front keys: each digit, \* and # at its crossing. **Record where F1, F2, OK, BACK, Up and Down appear** | the matrix, and the six function switches' order (question 11) | A digit elsewhere: the matrix table in `keys_cs7000p.h`. The function keys: put the measured order in `CS7000P_FN_KEYS`. Until then use `rfoundry_debug.py key` |
+| `board.keys_raw`, one key at a time, all 18 front keys: each digit, \* and # at its crossing; OK, BACK, F1, F2 as `01`, `02`, `04`, `08` in the first byte, Up and Down as `01`, `02` in the last (read on one radio, 2026-11-22: [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 9.4) | the matrix, and the six function switches' order | A digit elsewhere: the matrix table in `keys_cs7000p.h`. A function key elsewhere: another LCD board revision; put its order in `CS7000P_FN_KEYS` and report it |
 | SK1 = Monitor, SK2, SK3, the top key, PTT each show in the diagnostics page; the accessory PTT only after its line has read high. PTT and the top key only after `board.cal=none` has been seen, with the dummy load fitted: a refusal (`board.tx_refused` why=2) is expected | PD15, PE12, PE13, PE10, PA8, PE11 | The pulls and the mapping in `input_cs7000p.c` |
 | `board.chsw_raw` over 16 detents, both directions. **Record the 16 codes** | the selector's code (question 11) | Fill the table in `keys_cs7000p.h` and build with `CS7000P_CHSW_VERIFIED=1` |
 | `board.phone_det`, `board.bt_strap` with and without an accessory plugged | what PHONE_DET does (question 24) | recorded only |
@@ -478,7 +478,7 @@ checked above, and what to change.
 | 8 | Nothing: the I2S direction is probed. Clock polarity low; the chip is the master | 8 | `ckpol` in `audio_cs7000p.c` |
 | 9 | The chip demodulates FM from the IF; IF buffer gain 6 dB | 9, 10 | the AK2365A words in `rfplan_cs7000p.c` |
 | 10 | The LCD board is the 2018 OEM board; an ST7735-class controller; 160 x 128, offsets 0 | 5 | `CS7000P_LCD_FORCE`, `CS7000P_PANEL_TYPE`, `CS7000P_PANEL_MADCTL_XOR` |
-| 11 | A provisional order of the six function keys; the selector off | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
+| 11 | The selector off (the six function keys' order was read on a radio, 2026-11-22) | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
 | 12 | Backlight window 20 to 70 % duty; key lights on with the bit high | 5 | `CS7000P_BL_MIN`, `CS7000P_BL_MAX` |
 | 13 | The battery model; the knob reads off below `POW_DET` 0.7 V (`CS7000P_KNOB_OPEN_POW_DET_MV`); the hold works at low battery | 4, 7, 11 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV`, `CS7000P_KNOB_OPEN_POW_DET_MV` |
 | 14 | Either silicon revision; any ROM loader version (0x90 may need a second reset); read protected as shipped | 1, 3 | recorded. Unprotected as found: stage 1's readout before stage 2 |
