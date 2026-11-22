@@ -193,12 +193,16 @@ enum {
 // DL_CMD_STORAGE operations (first payload byte; docs/spec/debuglink.md 3.13)
 enum {
 	DL_STORAGE_OP_INFO = 0,		// -> region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then u32 pairs (address,
-					// size): settings ring, journal, calibration copy
+					// size): settings ring, journal, calibration copy; then flags u8 (DL_STORAGE_FLAG_*)
 	DL_STORAGE_OP_READ,		// address u32, length u16 (<= DL_MEM_READ_MAX) -> address u32, the bytes. SPI flash, only
 					// inside the three ranges
 	DL_STORAGE_OP_CLAIM,		// token u32 (the chip UID's low word) -> reason u8 (as REBOOT's); the erase follows in
 					// the housekeeping task: poll the view's storage.region
 };
+// INFO's flags byte, after the three ranges (older builds end before it, which a host reads as 0). Claim first: the
+// board's data flash holds another firmware's data of unknown layout until the claim (settings-store.md 5), so a
+// host backs up the whole chip before it claims, not just the ranges above
+#define DL_STORAGE_FLAG_CLAIM_FIRST	0x01u
 
 // DL_CMD_APRS operations (first payload byte; docs/spec/debuglink.md 3.16)
 enum {

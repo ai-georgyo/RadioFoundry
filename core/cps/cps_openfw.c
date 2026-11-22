@@ -127,12 +127,15 @@ static bool vfo_from_settings(channel_t *ch)
 	return true;
 }
 
-// The VFO A record as the radio would show it, built on the bytes stored (so the vendor bytes stay)
+// The VFO A record as the radio would show it, built on the bytes stored (so the vendor bytes stay). None on a
+// region that isn't ours: the bytes there are another firmware's (or not claimed yet), the live VFO is never
+// written over them, and a backup taken before a claim must get them as they are
 static bool vfo_record(uint8_t *rec)
 {
 	channel_t ch;
 	uint32_t a = map()->openfw_eeprom + EE_VFO_A;
-	if (!vfo_from_settings(&ch) || !board.flash->read(a, rec, CODEPLUG_OPENFW_CHANNEL_SIZE)) {
+	if (storage_region() != STORAGE_REGION_OURS || !vfo_from_settings(&ch) ||
+	    !board.flash->read(a, rec, CODEPLUG_OPENFW_CHANNEL_SIZE)) {
 		return false;
 	}
 	codeplug_openfw_encode(&ch, rec);

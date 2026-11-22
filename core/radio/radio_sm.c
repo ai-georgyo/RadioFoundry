@@ -5004,6 +5004,15 @@ static void scan_start(radio_sm_t *sm, uint8_t kind, uint32_t lo_hz, uint32_t hi
 					hi_hz = board.bands[i].hi_hz;
 				}
 			}
+			// ... from its first frequency on the step's raster. The sweep wraps to its low end, and a band's
+			// edge need not be on the raster (a limit half a channel inside a whole MHz): every stop after
+			// the first wrap would be off it. The raster counts from the whole MHz below the edge, where
+			// every channel spacing has a point (8.33 kHz too): an edge on a whole MHz is the low end for
+			// any step
+			uint32_t over = lo_hz % 1000000u;
+			if (sm->view.vfo_step_hz != 0 && over % sm->view.vfo_step_hz != 0) {
+				lo_hz += sm->view.vfo_step_hz - over % sm->view.vfo_step_hz;
+			}
 		}
 		// Both ends in one band, and room for two stops
 		bool same_band = false;
