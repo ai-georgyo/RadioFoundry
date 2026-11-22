@@ -116,7 +116,9 @@ reports for a matching codec (`codec=` in the debug link's VERSION, [debuglink.m
 Each board's map comes from the board registry. The application region and the codec symbols come from its linker
 script. The sectors are the platform's default geometry (`default_sectors` in `platform.toml`) from the application's
 start up, or `app+slot` on the HR_C7000; a board's `[flash] sectors` overrides that. The protected range is the flash
-from the platform's `flash_base` to the application. `tools/boards.py json --for rfoundry` writes them to
+from the platform's `flash_base` to the application. It is empty on a board whose bootloader is in the MCU's ROM
+(`[flash] family = "dfuse"`): the application starts at `flash_base` and every sector of the chip is in the map.
+`tools/boards.py json --for rfoundry` writes them to
 `tools/rfoundry/rfoundry/registry.json`, which rfoundry, `tools/release.py` and the stub tools read; `tools/ci.sh`
 fails when it is out of date. The STM32 codec windows come from the codec profile (`stockfw.PROFILES`), which rfoundry reads when it loads the
 registry.
@@ -128,6 +130,7 @@ hold the codec. Whether an update can leave the codec alone (keep) depends on th
 |---|---|---|---|
 | STM32F4 | The sectors from the application's start to the codec sectors | The tables stay at their stock address, the code moves into the last sectors, a descriptor says where ([codec-placement.md](../spec/codec-placement.md) "STM32 radios") | Yes: the update writes only the application's sectors |
 | HR_C7000 | From the application base to the slot | A slot at the end of the region ([codec-placement.md](../spec/codec-placement.md) "HR_C7000 radios") | Per route: through the stub yes (it writes only the image's sectors), through an updater that erases the whole area no |
+| STM32H7 | From the first byte of the flash. An STM32H743 has two banks of eight 128 KB sectors (0x08000000 and 0x08100000, RM0433 Table 15), numbered 0 to 15 in the registry; the linker script keeps the image in the first bank, and rfoundry refuses an image that reaches the second ([the ROM bootloader route](#the-rom-bootloader-route)) | None in program flash on a board with `[codec] none` | Nothing to keep: the update writes only the image's sectors |
 
 The exact map of a radio is in its hardware spec (`hardware-<id>.md`) and in `tools/rfoundry/rfoundry/registry.json`.
 
@@ -136,10 +139,20 @@ sector 3 (the vector table) is the first one written back: an update cut off bef
 Cut off later, the radio may boot half an application: a crash, never a brick. Enter the bootloader by hand (the
 board's key combination at power on) and flash again.
 
+On a board whose bootloader is in the MCU's ROM the first sector of the plan holds the vector table and nothing in
+program flash is needed to reach the bootloader, so an install or update cut off anywhere is flashed again the same
+way. Every install through a ROM bootloader uses `vector_last` (rfoundry's `plan.py`, the web flasher's `plan.js`
+`vectorLast`), at block level: the sector at `app_base` is erased first, every other block is written and read back,
+and the vector table's block is written and read back last. An install cut short leaves no vector table, so at a
+normal power-on the radio starts nothing until the same install has run again (the boot pin, not the vectors,
+enters the ROM bootloader); no half image runs in between. `--dry-run` prints "order: sector N erased first and
+written last (a cut install leaves no application to start)". The way in does depend on the chip's option bytes,
+which is one reason no tool writes them ([the ROM bootloader route](#the-rom-bootloader-route)).
+
 An install that moves the codec out of a former layout ([codec-placement.md](../spec/codec-placement.md), "Moving to a
-new layout") erases sector 3 first and writes it last instead (`vector_last` in rfoundry's `plan.py`, `vectorLast` in
-the web flasher's `plan.js`). Cut off anywhere before that last sector, sector 3 is blank, the bootloader stays in DFU
-and the same install, run again, finishes the move from the saved copy; no half application runs in between.
+new layout") also uses `vector_last`, by sector: it erases sector 3 first and writes it last. Cut off anywhere before
+that last sector, sector 3 is blank, the bootloader stays in DFU and the same install, run again, finishes the move
+from the saved copy; no half application runs in between.
 
 ## Releases from before the codec moved
 
@@ -205,6 +218,41 @@ repository and not in a release. rfoundry and `tools/codec_extract.py` get it, i
 So a user needs one file from the vendor's firmware for the first install, which they need anyway for the codec, and
 never handles the key. Updates of a radio that runs RadioFoundry need no stock file.
 
+The key belongs to one family:
+
+| `[flash] family` | Bootloader | Key |
+|---|---|---|
+| `usb-dfu` | The radio maker's, in the first sectors of program flash | The 1024-byte key above; the registry carries its SHA-256 (`key_sha256`) and first bytes |
+| `dfuse` | The MCU's own, in ROM | None: the image is written as it is. `key_sha256` is null, `[flash.dfu]` takes no key, and `rfoundry key` refuses the board |
+| `serial-loader`, `serial-iap`, `boot-rom` | Serial routes ([below](#the-serial-route-hr_c7000-radios)) | None |
+
+## The ROM bootloader route
+
+A board with `[flash] family = "dfuse"` is installed through the bootloader in its MCU's ROM by plain DfuSe (ST
+AN3156). rfoundry's `Dfu.run` without a key (`rfoundry/dfu.py`) and the web flasher's `dfuse` backend do the same
+steps; `rfoundry/fakedfu.py` `FakeRom` is the model both are tested against.
+
+| Step | What happens | Why |
+|---|---|---|
+| Device check | Before any DFU request. String 1 must not be a keyed bootloader's. The first interface string must be the board's `[flash.dfu] layout`, or without one a region that is the board's whole program flash | Nothing is encrypted, so no key stops an image from reaching the wrong device. Radio makers' bootloaders and other chips' ROM bootloaders have the same USB IDs |
+| Idle by state | The protection probe, the Read Unprotect and the erase-and-write run each start with `Dfu.to_idle()` (the web flasher: `toIdle()`): GETSTATUS, then CLRSTATUS only in dfuERROR, a wait in dfuDNBUSY and ABORT in any other state, until dfuIDLE. `wait_idle()`, which sends CLRSTATUS in every state but dfuIDLE, remains the keyed route's way in | A ROM bootloader answers a request its state doesn't allow with a stall and an error. A bootloader that an interrupted run left in dfuDNLOAD-IDLE or dfuUPLOAD-IDLE is taken with ABORT |
+| Protection probe | Set Address Pointer to the flash base, then an UPLOAD of 4 bytes. A read-protected chip answers `dfuERROR` with `errVENDOR` (AN3156 4.1). Nothing changes on the radio. Any other answer stops the install | A protected chip refuses every read, erase and write. "Protected" leads to the next step, so it is never concluded from an answer the documents don't describe |
+| Read Unprotect | Only with `rfoundry flash --unprotect` (the web flasher: its own confirmed step), after a question. Command `0x92`. The chip removes the read protection and erases the program flash and RAM, except areas its option bytes keep (PCROP, secure-only; an STM32H74x loader V9.0 does not clear PCROP, AN2606 Table 146), and leaves the bus. Both tools take a lost GETSTATUS reply after `0x92` as the command taken: the device may leave at once. A reply other than `dfuDNBUSY` with status 0 is a refusal. Refused when the board lists a protected region in `progmem` (`protect.check_whole`) | It removes the original firmware and its bootloader for good: going back is the maker's procedure with the maker's files |
+| Second entry | rfoundry waits until the device has left USB, at most the longest wait, and until at least the least wait has passed since the command. Both come from `cli.unprotect_wait(board)`: least = max(`UNPROTECT_MIN_S` 60, 2 x the platform's `mass_erase_max_s`), most = max(`UNPROTECT_WAIT_S` 120, 2 x least), in seconds. A board whose registry entry has no mass erase time is refused before the Read Unprotect. A USB bus that cannot be listed during the wait does not end the install: it counts as not seen to leave, and the wait runs to its end. Only then does it say to switch the radio off. If a bootloader is already back on the bus at a new address (the radio reset into it with its bootloader key still held), rfoundry writes to it at once and says to leave it on, with no switch-off line. Otherwise, once the radio is back, it prints "in its bootloader again: leave it on and connected while it is written" before the write. A device still on USB at the longest wait gets a warning that the erase is over or was not taken: that wait is at least four times the chip's mass erase bound. The probe runs again and must say unprotected | The chip does not restart by itself after the erase. Twice the bound, because a chip with two flash banks may erase them one after the other, and the RAM erase and option byte change that follow have no time given. The web flasher's `unprotectWait` (`dfuse.js`) applies the same rule with the same two floors, and a test compares it with rfoundry's own figures (the fixture `unprotect-wait.json`) |
+| Plan check | Before the device is looked for, and again in `Dfu.run` (`check_plain` in `dfu.py`): every sector of the plan is in the board's program flash and overlaps its application region (`app_region`, the linker script's), and every block is inside its sector, and the plan has the vector-last order (the sector at `app_base` erased first and written last). An image that reaches past the region is refused, before any Read Unprotect. The web flasher (`checkPlain` in `dfu.js`) checks the same when the write step is drawn, before Connect | The bootloader's address pointer also reaches RAM, system memory and the option bytes. Flash past the application region is kept unused because the bootloader must not erase it: on an STM32H743 that is the second bank, where one ROM version leaves an erase early and the next flash command can hang (AN2606 Table 146, V9.1) |
+| Erase and write | Both tools erase each sector of the plan, then send every 1024-byte block as block 2 right after its own Set Address Pointer. No vendor command, no XOR | The bootloader takes plain DfuSe requests. It places a block at (block number - 2) x wTransferSize + pointer, and AN3156 5.1 calls wTransferSize the length of the buffer the host sent, while the DFU functional descriptor has a field of that name. With block 2 the block's address is the pointer under either reading. The keyed route numbers its blocks from 2 after one Set Address Pointer per sector, as its bootloader expects |
+| Whole flash words | Every block is filled with 0xFF to a multiple of 32 bytes (`FLASH_WORD` in `dfu.py`) | An STM32H7 programs 256-bit flash words and a partial one needs a force-write bit (RM0433 4.3.9). The documents don't say whether the bootloader forces the last partial word of a download. An image ends on a 4-byte boundary. A third-party DfuSe tool may not pad |
+| Read back | Everything except the vector table's block is read back before that block is written (Set Address Pointer to the block, ABORT, an UPLOAD of block 2, ABORT) and compared with what was sent. The vector table is then written and read back; then Leave. A difference, or a read the bootloader refuses, stops the install without starting the image. Whatever fails once the vector table's write has begun (a write the bootloader reports as failed, a read it refuses, a mismatch, a USB error, a lost device) has the table's sector erased again (`Dfu._unvector`, the web flasher's `unvector`), after dfuIDLE is reached by state as above. If that erase cannot be sent, the message says "Its vector table could not be erased again (...): at a normal power-on the radio may start an image whose vector table did not pass its check". An error that is not the tool's own is reported as "USB error at the vector table: ..." | The bootloader reports no error for a write to a write-protected sector (AN3156 5.1, 5.3), and a block placed at another address than meant would go unseen. A vector table that is in flash and did not pass its check must not be left to start at the next normal power-on. The radio stays in the ROM bootloader, so the same command runs again |
+| Leave | Set Address Pointer to `app_base`, a zero-length DNLOAD, GETSTATUS | The bootloader jumps to the image. rfoundry also says what to do if the radio shows nothing: switch it off and on |
+
+**Option bytes are never written.** A ROM bootloader shows them as alternate setting 1 of its DFU interface. No tool
+selects an alternate setting, so every request goes to alternate setting 0, the program flash; the fake fails any
+request sent after one was selected, and a test runs every path against it. A wrong option byte can lock the chip for
+good or take away the way into the bootloader.
+
+Updates of a radio that already runs RadioFoundry use the same route. Its chip is no longer read protected after the
+first install, so no Read Unprotect follows.
+
 ## The release workflow
 
 `.github/workflows/release.yml`:
@@ -252,7 +300,10 @@ stubtool's simulated radio and the update mode protocol against serial_loader's 
 
 Host tests cover the planning, manifests, the codec library, key derivation, the codec decision and complete runs
 against a fake bootloader with a flash model (`python3 -m unittest discover -s tools/rfoundry/tests`; `tools/ci.sh` runs
-them). `rfoundry flash IMAGE --simulate rfoundry-codec` runs the whole command against that fake. What only a radio can
+them). `rfoundry flash IMAGE --simulate rfoundry-codec` runs the whole command against that fake. For a board on the
+ROM bootloader route, `rfoundry flash --board <id> --simulate` stops at the read protection, and with `--unprotect` it
+runs through the unprotect, the second entry, the write and the leave (`--simulate blank`: a chip that is not
+protected). A simulation without an image file makes one up. What only a radio can
 answer, in this order (the first flash of a new build is always a merge, so the radio has a known codec):
 
 1. `rfoundry detect` with the radio in its bootloader.

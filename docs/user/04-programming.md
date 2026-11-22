@@ -59,6 +59,12 @@ can't store a codeplug or keep its settings when turned off. The [web installer]
 after the backup it takes when it installs RadioFoundry. The backup holds a copy of that data. The calibration isn't
 touched.
 
+On a radio whose memory chip RadioFoundry must be given first
+([Installing](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)) the editor doesn't prepare it:
+nobody knows what the original firmware keeps on that chip. It asks you to back up everything in the web installer
+first (**Back Up**, then **Everything**), which prepares the radio, and offers to open the installer. Nothing is
+written to the radio until then.
+
 A radio whose memory chip is too small for RadioFoundry's settings area can't store a codeplug at all. The editor
 says so instead of reading it ([radios](23-radios.md) lists the models where this can happen).
 

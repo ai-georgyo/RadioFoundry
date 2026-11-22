@@ -36,133 +36,133 @@ treated as unverified. "off" is off in the default build, ✕ not available. A r
 is `tools/bringup.py list --radio <id>`.
 
 <!-- generated: tools/boards.py docs checked; edit docs/testing/results/<board>/ (tools/bringup.py run) -->
-| Feature | DM-32UV | DM-1701 | DM-1801 Pro | DB25-D PRO | MD-380 | MD-UV380 | MD-9600 | RT10 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `fm` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | partial, needs re-run |
-| `ref_trim` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | pass, needs re-run | partial, needs re-run |
-| `subtone` | pass (seed) | pass (seed) | pass (seed) | not recorded | pass (seed) | not recorded | pass, needs re-run | partial, needs re-run |
-| `fm_tx_tones` | not recorded | pass (seed) | not recorded | not recorded | not written | not recorded | pass, needs re-run | partial, needs re-run |
-| `tone_burst_key` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run |
-| `dtmf` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | pass, needs re-run | ✕ |
-| `vox` | not written | not recorded | not recorded | not written | not recorded | not recorded | pass, needs re-run | not written |
-| `battery_save` | pass (seed) | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `am_rx` | not recorded | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `bcast_fm` | not recorded | ✕ | not recorded | not written | ✕ | ✕ | ✕ | ✕ |
-| `rx_ext` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not written | not recorded |
-| `p25` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | partial, needs re-run |
-| `p25_trunk` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not recorded |
-| `nxdn` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | partial, needs re-run |
-| `nxdn_scrambler` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not recorded |
-| `dmr_voice` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | partial, needs re-run |
-| `dmr_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `dmr_data_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `dmr_talker_alias` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `dmr_gps` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `dmr_emergency` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass | pass |
-| `dmr_roaming` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `dmr_trunk` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `dmr_trunk_tx` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `dmr_trunk_supl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `dmr_trunk_gw` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `voice_capture` | off | off | off | off | off | off | off | off |
-| `dmr_signaling` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `vfo` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `vfo_fm` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | ✕ |
-| `vfo_dmr` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | ✕ |
-| `channel_list` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `channel_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `zone_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `contact_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `volume_bar` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `volume_lock` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `key_assign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `scan` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `dual_watch` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | ✕ |
-| `beep` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | partial, needs re-run |
-| `signaling_tones` | not recorded | not recorded | not recorded | not recorded | off | not recorded | not recorded | not recorded |
-| `vibrate` | off | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `gps` | pass (seed) | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `satellite_tle` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `gps_icon` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `position` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run |
-| `dmr_data_rx` | not recorded | pass (seed) | pass (seed) | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `dmr_sms` | not recorded | pass (seed) | pass (seed) | not recorded | pass (seed) | not recorded | pass, needs re-run | ✕ |
-| `dmr_tms` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `dmr_ars` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `dmr_lrrp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `dmr_udp_compress` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `dmr_confirmed` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | partial |
-| `sfr` | not recorded | pass (seed) | pass (seed) | not recorded | ✕ | not recorded | ✕ | partial |
-| `sfr_dualpath_rx` | not recorded | not recorded | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded |
-| `sfr_cwid` | not recorded | not recorded | not recorded | not recorded | ✕ | not recorded | pass, needs re-run | pass, needs re-run |
-| `aprs` | pass (seed) | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `aprs_afsk` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run |
-| `aprs_dmr` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run |
-| `aprs_rx` | pass (seed) | not recorded | not recorded | not written | not written | not recorded | pass | partial |
-| `aprs_igate` | not recorded | off | not recorded | not written | not written | off | pass, needs re-run | partial, needs re-run |
-| `gps_sky` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `usb` | ✕ | pass (seed) | ✕ | ✕ | not recorded | not recorded | not recorded | ✕ |
-| `hostlink` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `hotspot` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | not recorded | pass, needs re-run | off |
-| `split_duplex` | pass (seed) | pass (seed) | pass (seed) | not written | not written | not recorded | partial, needs re-run | not written |
-| `debuglink` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | pass | partial |
-| `task_stacks` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
-| `cps_openfw` | not recorded | pass (seed) | not recorded | pass (seed) | pass (seed) | not recorded | pass, needs re-run | pass, needs re-run |
-| `cps_fast` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `stub_entry` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `crash_log` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
-| `crash_screen` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `crash_report` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
-| `watchdog` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
-| `support_info` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `fault_trace` | not recorded | ✕ | not recorded | not recorded | ✕ | ✕ | ✕ | not recorded |
-| `usb_network` | ✕ | pass (seed) | ✕ | ✕ | not recorded | not recorded | pass, needs re-run | ✕ |
-| `usb_serial_request` | off | not recorded | off | off | not recorded | not recorded | not recorded | off |
-| `dmr_ip_gateway` | not recorded | not recorded | pass (seed) | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `dmr_tx_spacing` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `zone_share` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | ✕ |
-| `dmr_control_station` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `net_tcp` | not recorded | not recorded | pass (seed) | pass (seed) | not recorded | not recorded | pass, needs re-run | off |
-| `net_kiss` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `net_http` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `net_http_gzip` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
-| `net_webctl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
-| `net_radio_udp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
-| `net_rigctl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `net_usrp` | not recorded | not recorded | not recorded | not written | not recorded | not recorded | pass, needs re-run | not written |
-| `net_aprsis` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `mdns` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `tftp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `tftp_iddb` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
-| `dmr_iddb` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | ✕ |
-| `iddb_compact` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `snmp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | off |
-| `net_ppp` | not recorded | off | pass (seed) | pass (seed) | off | off | off | off |
-| `ui_navigation` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `key_lock` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `channel_knob` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
-| `ui_settings` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | ✕ |
-| `diag` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ |
-| `backlight_test` | off | off | off | off | off | off | off | ✕ |
-| `ui_color` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | ✕ | ✕ |
-| `font_xl` | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `font_aa` | not recorded | off | off | off | off | off | ✕ | ✕ |
-| `font_big` | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `lang_es` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off | ✕ |
-| `lang_it` | off | off | off | off | off | off | off | ✕ |
-| `lang_fr` | off | off | off | off | off | off | off | off |
-| `lang_zh` | off | ✕ | ✕ | ✕ | ✕ | ✕ | off | ✕ |
-| `lang_default_es` | off | off | off | off | off | off | off | ✕ |
-| `lang_default_it` | off | off | off | off | off | off | off | ✕ |
-| `lang_default_fr` | off | off | off | off | off | off | off | off |
-| `lang_default_zh` | off | ✕ | ✕ | ✕ | ✕ | ✕ | off | ✕ |
-| `radio_controls` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
-| `settings_store` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `codeplug_foreign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `nand_storage` | ✕ | ✕ | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ |
-| `codec_check` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
-| `air_raw` | off | off | off | off | off | off | off | off |
-| `audio_probe` | not written | off | not written | not written | not written | off | off | not written |
+| Feature | DM-32UV | DM-1701 | DM-1801 Pro | DB25-D PRO | MD-380 | MD-UV380 | MD-9600 | CS7000 M17 PLUS | RT10 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `fm` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | not recorded | partial, needs re-run |
+| `ref_trim` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `subtone` | pass (seed) | pass (seed) | pass (seed) | not recorded | pass (seed) | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `fm_tx_tones` | not recorded | pass (seed) | not recorded | not recorded | not written | not recorded | pass, needs re-run | not written | partial, needs re-run |
+| `tone_burst_key` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ | partial, needs re-run |
+| `dtmf` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | pass, needs re-run | not written | ✕ |
+| `vox` | not written | not recorded | not recorded | not written | not recorded | not recorded | pass, needs re-run | not written | not written |
+| `battery_save` | pass (seed) | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `am_rx` | not recorded | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `bcast_fm` | not recorded | ✕ | not recorded | not written | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `rx_ext` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not written | not written | not recorded |
+| `p25` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not written | partial, needs re-run |
+| `p25_trunk` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not written | not recorded |
+| `nxdn` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not written | partial, needs re-run |
+| `nxdn_scrambler` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not written | not recorded |
+| `dmr_voice` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | ✕ | partial, needs re-run |
+| `dmr_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `dmr_data_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `dmr_talker_alias` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `dmr_gps` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `dmr_emergency` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass | not recorded | pass |
+| `dmr_roaming` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `dmr_trunk` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `dmr_trunk_tx` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `dmr_trunk_supl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `dmr_trunk_gw` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `voice_capture` | off | off | off | off | off | off | off | off | off |
+| `dmr_signaling` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `vfo` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `vfo_fm` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | not recorded | ✕ |
+| `vfo_dmr` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `channel_list` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `channel_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `zone_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `contact_edit` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `volume_bar` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `volume_lock` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `key_assign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `scan` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `dual_watch` | not recorded | pass (seed) | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | not recorded | ✕ |
+| `beep` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | not recorded | partial, needs re-run |
+| `signaling_tones` | not recorded | not recorded | not recorded | not recorded | off | not recorded | not recorded | not recorded | not recorded |
+| `vibrate` | off | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | off | ✕ |
+| `gps` | pass (seed) | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `satellite_tle` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `gps_icon` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `position` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run |
+| `dmr_data_rx` | not recorded | pass (seed) | pass (seed) | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `dmr_sms` | not recorded | pass (seed) | pass (seed) | not recorded | pass (seed) | not recorded | pass, needs re-run | not recorded | ✕ |
+| `dmr_tms` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `dmr_ars` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `dmr_lrrp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `dmr_udp_compress` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `dmr_confirmed` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | not recorded | partial |
+| `sfr` | not recorded | pass (seed) | pass (seed) | not recorded | ✕ | not recorded | ✕ | not written | partial |
+| `sfr_dualpath_rx` | not recorded | not recorded | not recorded | not recorded | ✕ | not recorded | not recorded | not written | not recorded |
+| `sfr_cwid` | not recorded | not recorded | not recorded | not recorded | ✕ | not recorded | pass, needs re-run | not written | pass, needs re-run |
+| `aprs` | pass (seed) | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `aprs_afsk` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not written | partial, needs re-run |
+| `aprs_dmr` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run |
+| `aprs_rx` | pass (seed) | not recorded | not recorded | not written | not written | not recorded | pass | not written | partial |
+| `aprs_igate` | not recorded | off | not recorded | not written | not written | off | pass, needs re-run | not written | partial, needs re-run |
+| `gps_sky` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `usb` | ✕ | pass (seed) | ✕ | ✕ | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `hostlink` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `hotspot` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `split_duplex` | pass (seed) | pass (seed) | pass (seed) | not written | not written | not recorded | partial, needs re-run | not written | not written |
+| `debuglink` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | pass | not recorded | partial |
+| `task_stacks` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | not recorded | pass |
+| `cps_openfw` | not recorded | pass (seed) | not recorded | pass (seed) | pass (seed) | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `cps_fast` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `stub_entry` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not written | not recorded |
+| `crash_log` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | not recorded | pass |
+| `crash_screen` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `crash_report` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
+| `watchdog` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | not recorded | pass |
+| `support_info` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
+| `fault_trace` | not recorded | ✕ | not recorded | not recorded | ✕ | ✕ | ✕ | not written | not recorded |
+| `usb_network` | ✕ | pass (seed) | ✕ | ✕ | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `usb_serial_request` | off | not recorded | off | off | not recorded | not recorded | not recorded | not recorded | off |
+| `dmr_ip_gateway` | not recorded | not recorded | pass (seed) | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `dmr_tx_spacing` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `zone_share` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | not recorded | ✕ |
+| `dmr_control_station` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `net_tcp` | not recorded | not recorded | pass (seed) | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `net_kiss` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not written | off |
+| `net_http` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `net_http_gzip` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
+| `net_webctl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
+| `net_radio_udp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
+| `net_rigctl` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `net_usrp` | not recorded | not recorded | not recorded | not written | not recorded | not recorded | pass, needs re-run | not recorded | not written |
+| `net_aprsis` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not written | off |
+| `mdns` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `tftp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `tftp_iddb` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off |
+| `dmr_iddb` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | not recorded | ✕ |
+| `iddb_compact` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `snmp` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | off |
+| `net_ppp` | not recorded | off | pass (seed) | pass (seed) | off | off | off | off | off |
+| `ui_navigation` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `key_lock` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `channel_knob` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | ✕ | pass |
+| `ui_settings` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | partial, needs re-run | not recorded | ✕ |
+| `diag` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | ✕ |
+| `backlight_test` | off | off | off | off | off | off | off | off | ✕ |
+| `ui_color` | not recorded | not recorded | ✕ | not recorded | not recorded | not recorded | ✕ | not recorded | ✕ |
+| `font_xl` | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `font_aa` | not recorded | off | off | off | off | off | ✕ | off | ✕ |
+| `font_big` | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `lang_es` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off | not recorded | ✕ |
+| `lang_it` | off | off | off | off | off | off | off | off | ✕ |
+| `lang_fr` | off | off | off | off | off | off | off | off | off |
+| `lang_zh` | off | ✕ | ✕ | ✕ | ✕ | ✕ | off | ✕ | ✕ |
+| `lang_default_es` | off | off | off | off | off | off | off | off | ✕ |
+| `lang_default_it` | off | off | off | off | off | off | off | off | ✕ |
+| `lang_default_fr` | off | off | off | off | off | off | off | off | off |
+| `lang_default_zh` | off | ✕ | ✕ | ✕ | ✕ | ✕ | off | ✕ | ✕ |
+| `radio_controls` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
+| `settings_store` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `codeplug_foreign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
+| `nand_storage` | ✕ | ✕ | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `codec_check` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ | pass, needs re-run |
+| `air_raw` | off | off | off | off | off | off | off | off | off |
+| `audio_probe` | not written | off | not written | not written | not written | off | off | not written | not written |
 <!-- end generated -->
 
 What the records don't hold yet: limits and known problems from the bring-up pages.
@@ -190,119 +190,119 @@ switches. Voltage reading: what the radio measures, its battery, its DC input (S
 clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](spec/radio-features.md) 5.6).
 
 <!-- generated: tools/boards.py docs feature-defaults; edit config/features.mk and boards/*/config.mk -->
-| Feature switch | DM-32UV | DM-1701 | DM-1801 Pro | DB25-D PRO | MD-380 | MD-UV380 | MD-9600 | RT10 |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `USB_SERIAL_REQUEST` | ○ | ● | ○ | ○ | ● | ● | ● | ○ |
-| `FM` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `SUBTONE` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_PRIVACY` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_TALKER_ALIAS` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_GPS` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `DMR_SMS` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `DMR_TMS` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `DMR_ARS` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_LRRP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `DMR_SIGNALING` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_EMERGENCY` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_ROAMING` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_TRUNK` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_TRUNK_TX` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_TRUNK_SUPL` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_TRUNK_GW` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `VOICE_CAPTURE` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| `DMR_IP_GATEWAY` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `ZONE_SHARE` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `DMR_UDP_COMPRESS` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `NET_TCP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_KISS` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_HTTP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_HTTP_GZIP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_WEBCTL` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_RADIO_UDP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_RIGCTL` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_APRSIS` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `NET_USRP` | ● | ● | ● | … | ● | ● | ● | … |
-| `MDNS` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `TFTP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `TFTP_IDDB` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `IDDB_COMPACT` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DMR_CONTROL_STATION` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `SNMP` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `SFR` | ● | ● | ● | ● | ✕ | ● | ● | ● |
-| `SFR_DUALPATH_RX` | ● | ● | ● | ● | ✕ | ● | ● | ● |
-| `SFR_CWID` | ● | ● | ● | ● | ✕ | ● | ● | ● |
-| `TASK_STACKS` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `USB` | ✕ | ● | ✕ | ✕ | ● | ● | ● | ✕ |
-| `HOSTLINK` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `USB_NETWORK` | ✕ | ● | ✕ | ✕ | ● | ● | ● | ✕ |
-| `NET_PPP` | ● | ○ | ● | ● | ○ | ○ | ○ | ○ |
-| `HOTSPOT` | ● | ● | ● | ● | ● | ● | ● | ○ |
-| `HOTSPOT_SPLIT` | ● | ● | ● | … | … | ● | ● | … |
-| `DEBUGLINK` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `CPS_OPENFW` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `CPS_FAST` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `VFO` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `VFO_FM` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `VFO_DMR` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `DIAG` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `BACKLIGHT_TEST` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
-| `FONT_XL` | ● | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `FONT_AA` | ● | ○ | ○ | ○ | ○ | ○ | ✕ | ✕ |
-| `FONT_BIG` | ● | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `LANG_ES` | ● | ● | ● | ● | ● | ● | ○ | ✕ |
-| `LANG_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
-| `LANG_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| `LANG_ZH` | ○ | ✕ | ✕ | ✕ | ✕ | ✕ | ○ | ✕ |
-| `LANG_DEFAULT_ES` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
-| `LANG_DEFAULT_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
-| `LANG_DEFAULT_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| `LANG_DEFAULT_ZH` | ○ | ✕ | ✕ | ✕ | ✕ | ✕ | ○ | ✕ |
-| `UI_COLOR` | ● | ● | ✕ | ● | ● | ● | ✕ | ✕ |
-| `UI_SETTINGS` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `SCAN` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `DUAL_WATCH` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `BEEP` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `SIG_TONES` | ● | ● | ● | ● | ○ | ● | ● | ● |
-| `FM_TX_TONES` | ● | ● | ● | ● | … | ● | ● | ● |
-| `DTMF` | ● | ● | ● | ● | … | ● | ● | ✕ |
-| `RX_EXT` | ● | ● | ● | ● | … | ● | … | ● |
-| `VOX` | … | ● | ● | … | ● | ● | ● | … |
-| `REF_TRIM` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `BATTERY_SAVE` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `VIBRATE` | ? | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `GPS` | ● | ● | ✕ | ● | ● | ● | ● | ✕ |
-| `AUDIO_PROBE` | … | ○ | … | … | … | ○ | ○ | … |
-| `STUB_ENTRY` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `NAND_STORAGE` | ✕ | ✕ | ✕ | ● | ✕ | ✕ | ✕ | ✕ |
-| `CRASH_LOG` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `CRASH_SCREEN` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `CRASH_REPORT` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `WATCHDOG` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `SUPPORT_INFO` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `FAULT_TRACE` | ● | ✕ | ● | ● | ✕ | ✕ | ✕ | ● |
-| `AM_RX` | ● | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `BCAST_FM` | ● | ✕ | ● | … | ✕ | ✕ | ✕ | ✕ |
-| `APRS` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `APRS_AFSK` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `APRS_DMR` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `APRS_RX` | ● | ● | ● | … | … | ● | ● | ● |
-| `APRS_IGATE` | ● | ○ | ● | … | … | ○ | ● | ● |
-| `GPS_SKY` | ● | ● | ✕ | ● | ● | ● | ● | ✕ |
-| `SATELLITE_TLE` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `KEY_ASSIGN` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `CHANNEL_LIST` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `CHANNEL_EDIT` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `ZONE_EDIT` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `CONTACT_EDIT` | ● | ● | ● | ● | ● | ● | ● | ✕ |
-| `VOLUME_BAR` | ● | ● | ● | ● | ● | ● | ● | ● |
-| `P25` | ● | ● | ● | ● | … | ● | ● | ● |
-| `P25_TRUNK` | ● | ● | ● | ● | … | ● | ● | ● |
-| `NXDN` | ● | ● | ● | ● | … | ● | ● | ● |
-| `NXDN_SCRAMBLER` | ● | ● | ● | ● | … | ● | ● | ● |
-| `AIR_RAW` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| Voltage reading (board, no switch) | Battery | Battery | Battery | None | Battery | Battery | Supply | Battery |
-| Clock kept through power-off (board, no switch) | Yes | ? | Yes | ? | ? | ? | ? | No (only while on) |
+| Feature switch | DM-32UV | DM-1701 | DM-1801 Pro | DB25-D PRO | MD-380 | MD-UV380 | MD-9600 | CS7000 M17 PLUS | RT10 |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `USB_SERIAL_REQUEST` | ○ | ● | ○ | ○ | ● | ● | ● | ● | ○ |
+| `FM` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `SUBTONE` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_PRIVACY` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_TALKER_ALIAS` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_GPS` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `DMR_SMS` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `DMR_TMS` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `DMR_ARS` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_LRRP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `DMR_SIGNALING` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_EMERGENCY` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_ROAMING` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_TRUNK` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_TRUNK_TX` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_TRUNK_SUPL` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_TRUNK_GW` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `VOICE_CAPTURE` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| `DMR_IP_GATEWAY` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `ZONE_SHARE` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `DMR_UDP_COMPRESS` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `NET_TCP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_KISS` | ● | ● | ● | ● | ● | ● | ● | … | ○ |
+| `NET_HTTP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_HTTP_GZIP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_WEBCTL` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_RADIO_UDP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_RIGCTL` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `NET_APRSIS` | ● | ● | ● | ● | ● | ● | ● | … | ○ |
+| `NET_USRP` | ● | ● | ● | … | ● | ● | ● | ● | … |
+| `MDNS` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `TFTP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `TFTP_IDDB` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `IDDB_COMPACT` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DMR_CONTROL_STATION` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `SNMP` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `SFR` | ● | ● | ● | ● | ✕ | ● | ● | … | ● |
+| `SFR_DUALPATH_RX` | ● | ● | ● | ● | ✕ | ● | ● | … | ● |
+| `SFR_CWID` | ● | ● | ● | ● | ✕ | ● | ● | … | ● |
+| `TASK_STACKS` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `USB` | ✕ | ● | ✕ | ✕ | ● | ● | ● | ● | ✕ |
+| `HOSTLINK` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `USB_NETWORK` | ✕ | ● | ✕ | ✕ | ● | ● | ● | ● | ✕ |
+| `NET_PPP` | ● | ○ | ● | ● | ○ | ○ | ○ | ○ | ○ |
+| `HOTSPOT` | ● | ● | ● | ● | ● | ● | ● | ● | ○ |
+| `HOTSPOT_SPLIT` | ● | ● | ● | … | … | ● | ● | … | … |
+| `DEBUGLINK` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `CPS_OPENFW` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `CPS_FAST` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `VFO` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `VFO_FM` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `VFO_DMR` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `DIAG` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `BACKLIGHT_TEST` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
+| `FONT_XL` | ● | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `FONT_AA` | ● | ○ | ○ | ○ | ○ | ○ | ✕ | ○ | ✕ |
+| `FONT_BIG` | ● | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `LANG_ES` | ● | ● | ● | ● | ● | ● | ○ | ● | ✕ |
+| `LANG_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
+| `LANG_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| `LANG_ZH` | ○ | ✕ | ✕ | ✕ | ✕ | ✕ | ○ | ✕ | ✕ |
+| `LANG_DEFAULT_ES` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
+| `LANG_DEFAULT_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
+| `LANG_DEFAULT_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| `LANG_DEFAULT_ZH` | ○ | ✕ | ✕ | ✕ | ✕ | ✕ | ○ | ✕ | ✕ |
+| `UI_COLOR` | ● | ● | ✕ | ● | ● | ● | ✕ | ● | ✕ |
+| `UI_SETTINGS` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `SCAN` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `DUAL_WATCH` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `BEEP` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `SIG_TONES` | ● | ● | ● | ● | ○ | ● | ● | ● | ● |
+| `FM_TX_TONES` | ● | ● | ● | ● | … | ● | ● | … | ● |
+| `DTMF` | ● | ● | ● | ● | … | ● | ● | … | ✕ |
+| `RX_EXT` | ● | ● | ● | ● | … | ● | … | … | ● |
+| `VOX` | … | ● | ● | … | ● | ● | ● | … | … |
+| `REF_TRIM` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `BATTERY_SAVE` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `VIBRATE` | ? | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ? | ✕ |
+| `GPS` | ● | ● | ✕ | ● | ● | ● | ● | ● | ✕ |
+| `AUDIO_PROBE` | … | ○ | … | … | … | ○ | ○ | … | … |
+| `STUB_ENTRY` | ● | ● | ● | ● | ● | ● | ● | … | ● |
+| `NAND_STORAGE` | ✕ | ✕ | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `CRASH_LOG` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `CRASH_SCREEN` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `CRASH_REPORT` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `WATCHDOG` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `SUPPORT_INFO` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `FAULT_TRACE` | ● | ✕ | ● | ● | ✕ | ✕ | ✕ | … | ● |
+| `AM_RX` | ● | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `BCAST_FM` | ● | ✕ | ● | … | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `APRS` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `APRS_AFSK` | ● | ● | ● | ● | ● | ● | ● | … | ● |
+| `APRS_DMR` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `APRS_RX` | ● | ● | ● | … | … | ● | ● | … | ● |
+| `APRS_IGATE` | ● | ○ | ● | … | … | ○ | ● | … | ● |
+| `GPS_SKY` | ● | ● | ✕ | ● | ● | ● | ● | ● | ✕ |
+| `SATELLITE_TLE` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `KEY_ASSIGN` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `CHANNEL_LIST` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `CHANNEL_EDIT` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `ZONE_EDIT` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `CONTACT_EDIT` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
+| `VOLUME_BAR` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| `P25` | ● | ● | ● | ● | … | ● | ● | … | ● |
+| `P25_TRUNK` | ● | ● | ● | ● | … | ● | ● | … | ● |
+| `NXDN` | ● | ● | ● | ● | … | ● | ● | … | ● |
+| `NXDN_SCRAMBLER` | ● | ● | ● | ● | … | ● | ● | … | ● |
+| `AIR_RAW` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
+| Voltage reading (board, no switch) | Battery | Battery | Battery | None | Battery | Battery | Supply | Battery | Battery |
+| Clock kept through power-off (board, no switch) | Yes | ? | Yes | ? | ? | ? | ? | No clock | No (only while on) |
 <!-- end generated -->
 
 ## Radio and voice
@@ -420,7 +420,6 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 |---|---|---:|---:|---|
 | Settings menu on the radio | `UI_SETTINGS` | 5,304 | 5,640 |  |
 | Diagnostics page | `DIAG` | 3,752 | 3,532 |  |
-| Satellite TLE catalog, pass prediction and Doppler compensation | `SATELLITE_TLE` | 26,332 | 26,620 | Needs `DEBUGLINK`. RAM: 1,280 B on DM-1701 (656 B linked, 624 B from the existing heap), 1,272 B on MD-380 (648 B linked, 624 B heap), and 1,264 B on DM-32UV (656 B linked, 608 B heap). Heap figures include allocation overhead and are already reserved in linked RAM. The DM-1701 and MD-UV380 maximal builds keep it on; the MD-9600 maximal build leaves it off to fit app flash. Default builds keep it on ([satellite.md](spec/satellite.md)). |
 | Support info on About and the debug link (build source, chips, image hash) | `SUPPORT_INFO` | 2,496 | 3,016 | About 515 bytes of RAM, most of it About's longer text. Read only when About opens or a host asks ([support-info.md](spec/support-info.md)) |
 | Backlight test pages | `BACKLIGHT_TEST` | 1,536 | 1,552 | Off by default; bench work ([backlight-curve.md](testing/backlight-curve.md)) |
 | Color screen settings (theme, highlight color, filled status bar) | `UI_COLOR` | 672 | 608 | Off on the DM-1801 Pro (monochrome screen; 628 B there). Measured 2026-10-17; DM-1701 with LTO 612 B |
@@ -430,7 +429,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | Spanish on the radio | `LANG_ES` | 28,456 | 28,348 | The first language brings the lookup and the accented letters of every font (about 7.5 KB); the rest is its text. Measured 2026-10-31 |
 | Italian on the radio | `LANG_IT` | 17,304 | 17,304 | Off by default; measured with Spanish on (its text, and the hashes of strings Spanish leaves untranslated). Alone it costs about as much as Spanish |
 | French on the radio | `LANG_FR` | 15,540 | 15,528 | Off by default; measured with Spanish on, as Italian |
-| Chinese on the radio | `LANG_ZH` | 32,856 | 32,856 | Off by default. Not the text alone: 16,160 B of 16x16 glyphs (505 characters, `core/ui/cjk_font_data.c`) and about 17 KB of UTF-8 text, with the text layer's decoder. The total (32,856 B) was measured with Spanish on and the prior 480-glyph catalog, 2026-11-04; remeasure this merged catalog. Needs a 16 px line height: a 240 px color radio draws its words in 8x16 and shows Chinese on every screen, while a layout whose words use the 5x8 or 6x12 font (128x64, 160x128) has no room for it and must not build it. |
+| Chinese on the radio | `LANG_ZH` | 32,856 | 32,856 | Off by default. Not the text alone: 15,360 B of 16x16 glyphs (480 characters, `core/ui/cjk_font_data.c`) and about 17 KB of UTF-8 text, with the text layer's decoder. Needs a 16 px line height: a 240 px color radio draws its words in 8x16 and shows Chinese on every screen, while a layout whose words use the 5x8 or 6x12 font (128x64, 160x128) has no room for it and must not build it. Measured with Spanish on, 2026-11-04 |
 | Start in Spanish | `LANG_DEFAULT_ES` | 0 | 0 | The language the radio starts in until the user picks one (needs `LANG_ES`); the web flasher sets it from its Radio language choice |
 | Start in Italian | `LANG_DEFAULT_IT` | 0 | 0 | As `LANG_DEFAULT_ES` (needs `LANG_IT`) |
 | Start in French | `LANG_DEFAULT_FR` | 0 | 0 | As `LANG_DEFAULT_ES` (needs `LANG_FR`) |

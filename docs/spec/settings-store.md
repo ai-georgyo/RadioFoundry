@@ -301,7 +301,8 @@ a good CRC) exists anywhere in the region. Then:
 - `settings_init()` returns `SETTINGS_FOREIGN` and the radio runs on the defaults in RAM; changes are kept in RAM
   and not saved.
 - The debug link's view shows `settings.load=foreign`, `storage.region=foreign`, `storage.journal=foreign` and
-  `storage.foreign_slots` (slots and journal sectors with other bytes).
+  `storage.foreign_slots` (slots and journal sectors with other bytes; 0 on a blank flash that is claimed first,
+  below).
 
 Junk beside a valid record of ours (a torn erase of our own ring) is not foreign: the slots are skipped and
 reused once their sector comes round.
@@ -312,19 +313,61 @@ defaults past it (no settings layout is 0) and the first real save gets sequence
 always exists, because saves never erase the sector with the newest record, so a power cut inside a journal
 rewrite (J0 erased, J1 full) can't make the region look foreign at the next boot.
 
+**Claim first.** The rule above takes a blank region at the first start, and with the mark every codeplug and CPS
+write anywhere in the map is allowed. That is right when the other firmware's layout is known: its data is where
+the map says. It is wrong for a flash that held another firmware's data in a layout nobody knows. There a blank
+region says nothing about the megabytes around it, and the first start would open them to writes before a backup
+exists. A board with such a flash builds with `-DSTORAGE_CLAIM_FIRST=1` (`MCU_DEFS` in its `board.mk`; the default
+is 0), and its hardware page says so. A region with no valid record of ours is then foreign, blank or not:
+
+| Region at start | Default | `STORAGE_CLAIM_FIRST` |
+|---|---|---|
+| a valid record of ours, anything beside it | ours | ours |
+| other bytes, no valid record of ours | foreign | foreign |
+| all blank | ours, the mark is programmed | foreign |
+| a torn mark and nothing else (a power cut inside the claim) | ours, marked again | foreign, to be claimed again |
+
+- Everything listed for a foreign region holds, on every unit, from the first start. Every writer in the core asks
+  `storage_ready()` (settings, codeplug edits, CPS commits, TFTP writes), so the core erases and programs nothing
+  anywhere on the chip. `tests/host/storageBootTest.c` (built as `storageBootTest` and `storageBootClaimFirstTest`)
+  checks that the two start-up resumes, whose erases bypass `storage.c`, leave a foreign or unclaimed chip untouched. `storage_init()` never writes the mark. A board's own writes to the chip (a board record
+  sector) don't pass through `storage_ready()`: on such a board they need their own rule.
+- The claim (below) is the only way in. It erases the region and writes the mark, so the next start finds a valid
+  record and the region ours. It opens the whole map to writes, so the backup to take first is of the whole flash.
+  The firmware can't check that one exists. It tells the clients instead: `STORAGE INFO` carries a claim-first flag
+  (`debuglink.md` 3.13), and each client claims on such a board only after its own backup of the whole chip, read
+  completely, or not at all (below).
+- Once claimed, the region stays ours for the reason the mark gives: a valid record always exists. A region that
+  lost its last record would be foreign again and the radio would save nothing until a second claim.
+- A valid record proves one claim, not what happened since. A flash that other firmware wrote to after the claim is
+  still ours at the next start if a record of ours survived in the region.
+
+The switch is a define and not a field of the flash map, so a board that doesn't set it carries no code or data
+for it: with 0 the condition is the default one.
+
 **Claim.** Only through the debug link, behind the chip UID token like REBOOT (`debuglink.md` 3.13). Two clients
 send it:
 
-- The web radio programming utility, right after a full backup (the backup holds the whole SPI flash, the region
-  included), when `STORAGE INFO` reports the region foreign. The Codeplug Editor checks before every write and, on a
-  foreign region, explains and claims only when the user confirms. Both poll INFO until the region is ours (20 s
-  limit).
-- `rfoundry_debug.py storage claim --out DIR`:
+- The web radio programming utility, right after a backup of everything, when `STORAGE INFO` reports the region
+  foreign and the backup holds the whole SPI flash (a read that stopped early claims nothing). The Codeplug Editor
+  checks before every write and, on a foreign region, explains and claims only when the user confirms. Both poll
+  INFO until the region is ours (20 s limit).
+- `rfoundry_debug.py storage claim --out DIR`, as listed below.
 
+On a claim-first board (INFO's flag) the Codeplug Editor never claims: it tells the user to take the utility's
+backup of everything, which claims after it. The utility's restore of channels from a backup bundle doesn't claim
+either (a bundle is an older state, maybe of another radio), and says the same. The other clients claim only where
+the other firmware's layout is known: the utility's channel step after it recognized a known codeplug in the chip
+(`prepareStorage` with no whole-chip backup), and the migration tools for the radios they serve (`migrate.js`
+`writeConverted`). On a claim-first board they claim nothing, write nothing, and point to the backup of everything
+(`flash.storage.claim_first`).
 
 1. `rfoundry_debug.py storage claim` reads the settings ring, the journal and the calibration copy through the debug
    link's read-only SPI flash window (twice, compared) into `--out DIR` (refused inside any git
-   work tree), then sends the claim with the token.
+   work tree), then sends the claim with the token. On a claim-first board it first reads the whole data flash
+   through the CPS shim (`cps-protocol.md` 2.2, area 1; the size from the CPS radio info), each 32 KB block twice and
+   compared, into one `dataflash_*.bin` in the same directory, and stops before the claim when a block is refused,
+   short or read differently (no partial file is left). `--skip-full-backup` leaves that read out.
 2. The firmware notes the request (`storage.claim_pending`). The housekeeping task (`settings_poll`) erases every
    settings sector and both journal sectors, checks they read blank, marks the region ours and writes the
    ownership mark, then saves the settings the radio is running with.
@@ -343,5 +386,6 @@ send it:
 | `tests/hil/test_cps.py` `test_settings_saved` | on the radio: a channel change is saved within 2 s (the debug link's `storage` view section, `debuglink.md` 3.7) |
 | `settingsTest.c` `test_foreign` | another firmware's bytes in the ring / J0 / J1: foreign, no flash operation at all, writes refused, RAM defaults, the read window's limits; claim erases and saves; junk beside our record, our J0 header beside junk, a cut inside a journal rewrite after the mark, a cut inside the first mark: ours |
 | `cpsTest.c` `test_foreign` | a foreign region: reads answered, `X 1` and codeplug edits refused, flash unchanged; after a claim, CPS writes work |
+| `tests/host/storageClaimFirstTest.c` | the store built with `STORAGE_CLAIM_FIRST=1`: a blank flash, a blank region with other data around it and a region with other bytes are all foreign, with no program or erase on any sector, every write refused and counted, RAM defaults; the claim touches the region only and leaves the mark, and the next start is ours; our journal header alone is ours and nothing is marked; a power cut at every flash operation of the claim and the save after it (ours once the mark is whole, else foreign with nothing written at that start, and a second claim works); once claimed, a cut at every operation of the saves that erase a ring sector (two laps of a two-sector ring) and inside both kinds of journal rewrite never makes the region foreign |
 | `tests/hil/test_cps.py` `test_storage_region` | on the radio: the region state matches the view, reads inside the window work and outside it are refused (skips with instructions when foreign) |
 | `tests/hil/test_cps.py` `test_settings_survive_restart` | opt-in `--allow-reboot`: the channel position survives a restart |

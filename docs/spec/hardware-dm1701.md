@@ -1748,7 +1748,7 @@ locked out), so the bootloader (sectors 0-2) can be read with `rfoundry_debug.py
 **Route 1: ST's ROM bootloader (USB DfuSe in system memory). Refused on this radio.** The firmware has it:
 `REBOOT` mode 1 stores the flag `0xB007DF11` in `RTC_BKP19R` and resets. A backup register is used rather than RAM
 because the bootloader runs in RAM before the application. First thing in `main()`,
-`stm32_sysboot_check()` (`platform/stm32f4/sysboot.c`) finds the flag and then:
+`stm32_sysboot_check()` (`platform/stm32/sysboot.c`) finds the flag and then:
 
 1. clears the flag and checks that it is clear, so a failed entry boots normally next time (and boots normally
    anyway if the flag won't clear);
@@ -1873,7 +1873,7 @@ across the family.
 4. CCM RAM is not zeroed or initialized by default startup code and is invisible to DMA. RadioFoundry puts the RTOS heap (every
    task stack), the slot engine, the radio state machine and the big CPU-only buffers there; `.ccmbss`
    (`RFOUNDRY_CPU_RAM`) is zeroed and `.ccmdata` (`RFOUNDRY_CPU_DATA`) copied from flash before `main` by a
-   `.preinit_array` entry in `platform/stm32f4/ccm.c`, `.ccmram` (`RFOUNDRY_CPU_RAM_NOINIT`) is not. The heap is the rest of
+   `.preinit_array` entry in `platform/stm32/ccm.c`, `.ccmram` (`RFOUNDRY_CPU_RAM_NOINIT`) is not. The heap is the rest of
    the CCM. DMA buffers stay static in main SRAM, and each stream's set-up checks that (`DMA_RAM_OK`).
 5. The codec must be at exactly 0x0807537C; the code budget is the space below it. Keep large constant tables above the
    codec end if the code grows.
@@ -1975,7 +1975,7 @@ datasheet; register table and appendix A in its Chinese section):
 
 The I2S link (SPI3 as I2S slave on PA15/PC10/PC11/PC12, the HR_C6000 driving the clocks): Philips, 16-bit data in
 32-bit frames, both channels, 8 kHz, circular DMA on DMA1 streams 0 and 5 in 20 ms halves
-(`platform/stm32f4/hrc/i2s_pcm.c`, `hal/hal_audio.h`). This is the only audio data path between the MCU and the radio.
+(`platform/stm32/hrc/i2s_pcm.c`, `hal/hal_audio.h`). This is the only audio data path between the MCU and the radio.
 
 No other path exists on this board: ADC1's four inputs are the volume pot (PA0), battery (PA1), mic level (PA3) and
 the temperature sensor; DAC channel 1 (PA4) sets the PA power (APC); the DAC channel 2 pin (PA5) is the VHF receiver

@@ -66,7 +66,8 @@ between the two images (0x10000 to 0x1FFFF on the STM32 radios: calibration, set
 unlike the CPS's area 1, which reads it raw (`cps-protocol.md` 2.7, decision 2).
 
 The image is the one the CPS shows. The VFO A record (EEPROM 0x7590) shows the live VFO when one is set, in sums and
-reads alike (`open-firmware-cps.md` 2.2). A block written with a VFO A record that differs from the live VFO gives the
+reads alike (`open-firmware-cps.md` 2.2), while the region is ours; on a foreign or unclaimed region READ and SUMS
+give the stored bytes. A block written with a VFO A record that differs from the live VFO gives the
 VFO its settings, as a CPS commit does.
 
 ## 3. Operations

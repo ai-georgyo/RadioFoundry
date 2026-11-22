@@ -183,7 +183,7 @@ Our allocation, following the DM-1701 (`boards/dm1701`), since the same MCU pins
 | TIM3 | sub-audio tone PWM, CH2 on PC7, only with `CONFIG_SUBTONE` and only while a tone is sent (section 6.4) | 6 |
 | OTG_FS | USB (platform) | platform |
 
-FreeRTOS's `configMAX_SYSCALL_INTERRUPT_PRIORITY` is 4 (`platform/stm32f4/FreeRTOSConfig.h`; even so that a part with
+FreeRTOS's `configMAX_SYSCALL_INTERRUPT_PRIORITY` is 4 (`platform/stm32/FreeRTOSConfig.h`; even so that a part with
 3 priority bits can hold it, [gotchas.md](gotchas.md) 13.11), and no interrupt uses 4. The modem ISRs at 5 notify the
 DMR task, and a masked section at the syscall level makes every configuration-port and synthesizer transaction
 atomic.
@@ -1120,7 +1120,7 @@ the first move `md380-d2032`. Without the codec merged the radio is FM only.
 
 ## 15. USB
 
-OTG_FS device on PA11 / PA12 (unverified). RadioFoundry enumerates with the STM32F4 radios' IDs (`platform/stm32f4/platform.h`) and the product
+OTG_FS device on PA11 / PA12 (unverified). RadioFoundry enumerates with the STM32F4 radios' IDs (`platform/stm32/platform.h`) and the product
 name "MD-380" (`usb_md380.c`); the bootloader's DFU device is separate (14.3).
 
 The open-firmware CPS shim reports radio type 7 and serves the MCU ROM from 0x08000000, 1 MB (`boards/md380/board.c`,

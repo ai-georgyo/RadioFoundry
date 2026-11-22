@@ -63,7 +63,10 @@ tuned channel or frequency is the core view's as usual.
   channel as a channel change would (P25, NXDN: the engine starts there). Left out: parked channels, P25 trunked
   channels, and NXDN channels at a rate the board can't receive ([p25.md](p25.md) 7.1, [nxdn.md](nxdn.md) 6.4).
 - **VFO scan** steps the VFO frequency by its step from `lo` to `hi` and wraps. Without a range it sweeps the board
-  band the VFO frequency is in. Both ends must be in one band, at least one step apart.
+  band the VFO frequency is in. The sweep's low end is then the band's first frequency on the step's raster, counted
+  from the whole MHz at or below the band's low edge: a band that starts on a whole MHz is swept from its edge, and
+  one whose edge is off the raster from the first step point inside it, so the scan is on the raster after every
+  wrap. A range that was asked for keeps its own `lo`. Both ends must be in one band, at least one step apart.
 - **Dual watch** alternates between two channels, skip flags ignored (2.1). `radio_req_scan_dual(pos)` (the debug
   link's) watches the current channel and position `pos` of the current zone. The UI on top of it (A and B, the
   screens, the keys) is in [dual-watch.md](../ux/dual-watch.md).

@@ -72,7 +72,9 @@ gets three tries, so one dropped connection to GitHub no longer fails the job.
 The nested submodules of FreeRTOS-Kernel (its partner and community ports) aren't checked out: no build uses them,
 since the CK803 port is in `platform/hrc7000/freertos/`. After a submodule bump, rebuild the runner image to bring the
 clones up to date ([tools/ci-runner/README.md](../../tools/ci-runner/README.md)); until then the new commits come over
-the network. A new submodule also goes in the Dockerfile's `SUBMODULE_URLS`.
+the network. A new submodule also goes in the Dockerfile's `SUBMODULE_URLS`. An STM32 family brings two: its ST HAL
+and its CMSIS device package. The web flasher's build service checks the tree out by itself and needs every submodule
+a board's platform names.
 
 ## Pull request checks: `pr-tests.yml`
 
@@ -262,8 +264,11 @@ support claims with the records is not checked yet.
 `--board` excludes the other two; `--platform` and `--toolchain` together select the boards that match both. An
 unknown id fails with exit status 2, so a typo in a workflow never passes with nothing built.
 
-`tools/install-arm-toolchain.sh` installs the pinned Arm toolchain on Linux x86_64 the way CI does, trimmed to the
-Cortex-M4 multilib (215 MB instead of 1 GB; `FULL=1` for all of it).
+`tools/install-arm-toolchain.sh` installs the pinned Arm toolchain on Linux x86_64 the way CI does, trimmed to one
+multilib, `thumb/v7e-m+fp/hard` (215 MB instead of 1 GB; `FULL=1` for all of it). Every Arm platform builds with
+flags that select it: the Cortex-M4F ones, and the Cortex-M7 ones with the single-precision FPU named
+([building.md](building.md#the-stm32-platforms)). A platform whose flags select another multilib fails at link time
+on a trimmed toolchain, with missing C library files.
 
 ## Toolchains
 

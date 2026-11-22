@@ -9,12 +9,34 @@ pinned version of each toolchain is in `platform/<p>/platform.toml` `[toolchain]
 
 | Platform | Compiler | Where it comes from |
 |---|---|---|
-| `stm32f4` | `arm-none-eabi-gcc` | Arm GNU Toolchain; `tools/install-arm-toolchain.sh` installs the pinned release on Linux x86_64. The Makefile looks in `~/opt/arm-gnu-toolchain-*-arm-none-eabi/bin/` first, then `/usr/bin/`; `CROSS=` overrides |
+| `stm32f4`, `stm32h7` | `arm-none-eabi-gcc` | Arm GNU Toolchain; `tools/install-arm-toolchain.sh` installs the pinned release on Linux x86_64, trimmed to one multilib (below). The Makefile looks in `~/opt/arm-gnu-toolchain-*-arm-none-eabi/bin/` first, then `/usr/bin/`; `CROSS=` or `ARM_GCC_DIR=` overrides |
 | `hrc7000` | `csky-elf-gcc` | Build it once with `tools/build-csky-toolchain.sh` (into `~/toolchains/csky-elf`, about 45 minutes), or use the Docker image: `tools/docker/csky-toolchain/run.sh make BOARD=<board>` ([CI](ci-runners.md#the-csky-elf-image)). The Makefile looks in `~/toolchains/csky-elf/bin/`, then `PATH` |
 | Host tests | the host's `cc` and zlib | Xcode command line tools or the distribution's compiler |
 
 You also need make, git and Python 3. Clone with submodules: `git submodule update --init` fetches FreeRTOS, TinyUSB
-and ST's HAL and CMSIS into `third_party/`.
+and ST's HAL and CMSIS into `third_party/`. Each STM32 family has its own HAL and its own CMSIS device package (two
+submodules a family); a checkout made before a family was added needs the command again.
+
+### The STM32 platforms
+
+The two Arm platforms share one compiler, one multilib and most of their source:
+
+| | `stm32f4` | `stm32h7` |
+|---|---|---|
+| Core | Cortex-M4F | Cortex-M7 |
+| CPU flags (`CPUFLAGS` in `platform.mk`) | `-mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard` | `-mcpu=cortex-m7 -mfpu=fpv5-sp-d16 -mfloat-abi=hard` |
+| Multilib | `thumb/v7e-m+fp/hard` | the same. The single-precision FPU is named on purpose: the core's default (`fpv5-d16`) selects `v7e-m+dp`, which the trimmed toolchain doesn't have, and the tree has no `double` ([gotchas.md](../spec/gotchas.md) 13.12) |
+| ST packages (`third_party/`) | `stm32f4xx-hal-driver`, `cmsis-device-f4` | `stm32h7xx-hal-driver`, `cmsis-device-h7` |
+| FreeRTOS port | `portable/GCC/ARM_CM4F` | the same port: the same registers and FPU frame. It refuses only core revisions r0p0 and r0p1 |
+| Source | `platform/stm32` and `platform/stm32f4` | `platform/stm32` and `platform/stm32h7` |
+
+`platform/stm32` holds what the families share; a family directory holds its clock, SPI, USB and start-up code and
+its side of the family contract ([architecture.md](architecture.md#the-stm32-family-contract)). The two directories
+are one source set: `PLATFORM_SRC` in `platform.mk` lists their `.c` files in file-name order across both, because the
+link order steers what LTO produces ([gotchas.md](../spec/gotchas.md) 13.10). A file name must not exist in both.
+
+`make BOARD=<b> print-cc` prints the compiler and `make -s BOARD=<b> print-vars VARS=CPUFLAGS` the flags;
+`arm-none-eabi-gcc <those flags> -print-multi-directory` prints the multilib they select.
 
 ## Make targets
 
@@ -94,9 +116,11 @@ Users flash with the web installer or `rfoundry`: [Installing](../user/02-instal
 | Platform | Flash |
 |---|---|
 | `stm32f4` | `rfoundry flash build/<b>/rfoundry_<b>.bin --board <b> [--stock FILE]` ([tools/rfoundry](../../tools/rfoundry/README.md)): keeps the radio's codec or merges it from the stock file, erases only the sectors it needs. The older two-step route still works: `tools/codec_extract.py --stock FILE`, then `tools/stm32_dfu.py IMAGE --model <b> --key <key file>`, which erases every application sector. Moving a radio from stock with its codeplug: `tools/<id>_migrate.py` where a board has one ([the migration specs](../spec/README.md#migrating-from-stock)) |
+| `stm32h7` | `rfoundry flash build/<b>/rfoundry_<b>.bin --board <b> [--unprotect]`: plain DfuSe to the bootloader in the processor's ROM (`[flash] family = "dfuse"`). No key, no codec step, no stock file. The image starts at the first byte of the program flash and is sent in whole 32-byte flash words. `--unprotect` is for the first install on a read-protected radio: it erases the whole program flash ([release.md](release.md#the-rom-bootloader-route)). `tools/stm32_dfu.py` is for the keyed bootloaders and doesn't serve this route |
 | `hrc7000` | `tools/hrc7000_codec.py` merges the codec; `tools/serial_loader.py IMAGE` writes it through the vendor bootloader over the programming cable (`--wrap` makes the vendor file for the vendor's updater), or `rfoundry` over the serial route ([release.md](release.md#the-serial-route-hr_c7000-radios)) |
 
-Without a codec the firmware runs, with FM only. See [The codec](codec.md).
+Without a codec the firmware runs, with FM only. See [The codec](codec.md). A board whose registry entry says
+`[codec] none` has no codec route: the build writes no `_codec.bin` for it and `tools/codec_auto.py` says so.
 
 With the radio's stock firmware file in `codecs/`, `make` also writes `<image>_codec.bin`, the image with the codec
 merged in (`tools/codec_auto.py` picks the stock file by SHA-256 and runs the board's codec tool). Flash that file with
