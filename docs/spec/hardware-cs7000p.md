@@ -46,8 +46,9 @@ What the radio refuses until it is calibrated or checked:
 | Skyworks SKY72310 datasheet, AKM AK2365A datasheet, Winbond W25Q256JV datasheet, TI SN74HC595 datasheet, the HR_C6000 notes in [hrc6000-registers.md](hrc6000-registers.md) | the chips |
 
 Not known from any of them, and so not in the code: the first LO's side, the HR_C6000 registers that set the
-reference oscillator's control voltage, every calibration value, the display controller, the order of the six
-function keys, the channel selector's code, and where the maker's firmware keeps anything on the data flash. Section
+reference oscillator's control voltage, every calibration value, the display controller, the channel selector's
+code, and where the maker's firmware keeps anything on the data flash (the order of the six function keys was in
+none of them either; it has since been read on a radio, 9.4). Section
 16 lists all of it.
 
 The OEM model is Shenzhen Covalue's DR7810S-2. The service manual and the FCC filing describe that model and its
@@ -1016,9 +1017,20 @@ a driven line (K5, K6, K7, K8, K9); bit n of a byte is sense line K(n+1) low. Ke
 | K4 (PD3) | * | 0 | # | function switch 4 | - |
 
 The six function switches carry no legend on the drawing. The radio's six are F1, Up, F2 above OK, Down, BACK.
-`CS7000P_FN_KEYS` = `{ KEY_F1, KEY_OK, KEY_UP, KEY_DOWN, KEY_F2, KEY_BACK }` is a **provisional order** and says so
-in the source. Until each key has been pressed once on a radio (`board.keys_raw`), the debug link's key injection
-drives the UI. No diodes: three keys on the corners of a rectangle read as four.
+Their order was read on one radio, each key held alone (`board.keys_raw`, 2026-11-22):
+
+| Function switch | Crossing | `keys_raw` | Key |
+|---|---|---|---|
+| 1 | K5 x K1 | `0100000000` | OK |
+| 2 | K5 x K2 | `0200000000` | BACK |
+| 3 | K5 x K3 | `0400000000` | F1 |
+| 4 | K5 x K4 | `0800000000` | F2 |
+| 5 | K9 x K1 | `0000000001` | Up |
+| 6 | K9 x K2 | `0000000002` | Down |
+
+`CS7000P_FN_KEYS` = `{ KEY_OK, KEY_BACK, KEY_F1, KEY_F2, KEY_UP, KEY_DOWN }`. The twelve digit keys were reported
+working at the drawing's crossings on the same radio. No diodes: three keys on the corners of a rectangle read as
+four.
 
 Direct keys, all low when pressed, each with a pull-up on the board:
 
@@ -1292,7 +1304,7 @@ the source comments use.
 | 8 | **The I2S data direction of a slave.** RM0433 Table 426 against 50.9.2. Also the clock polarity, and whether the chip is the master | no beeps; with the wrong sense assumed, two outputs on one line | Not assumed: probed (section 6.3). `board.i2s` shows the verdict and both counts; a scope on PC11 / PC12 confirms it once |
 | 9 | FM receive audio through the chip from a 450 kHz IF; the IF level (AK2365A `IFOG`); the 0.16 V bias at the chip's input | no FM audio, poor DMR sensitivity | Audio at the speaker against generator level; DMR BER ([dmr-bench.md](../testing/dmr-bench.md)) |
 | 10 | **The LCD board**: is it the 2018 OEM board; the controller and its ID; panel size, offsets, insets | a blank or garbled display; the keys | `board.lcd_board` (only PE0 low), the `board.panel` ID bytes, `board.keys_raw` |
-| 11 | The function keys' positions and the selector's code | wrong keys; no knob | Press each key once; turn the selector 16 steps both ways; fill `keys_cs7000p.h` |
+| 11 | The selector's code (the function keys' positions are read: 9.4) | no knob | Turn the selector 16 steps both ways; fill `keys_cs7000p.h` |
 | 12 | The backlight curve; the key lights' polarity | too dark, no dimming | [backlight-curve.md](../testing/backlight-curve.md) |
 | 13 | The battery scale (a model, +/-4 %), the knob's switch-open threshold (`POW_DET` 0.7 V), the hold's margin at low battery | a wrong battery display; the radio switches off when the knob's contact bounces at low battery | A bench supply sweep against `board.vbat_mv`; `POW_DET` with the knob on at the lowest battery and as the knob goes off; knob off at 6.0 V from normal running (the hold set) |
 | 14 | Silicon revision (Y or V), the ROM loader's version, the RDP level and option bytes as shipped | USB PHY errata, loader quirks (on 0x90: whether a cold SK1 entry connects without a second reset, AN2606 Table 146; PCROP left by the Read Unprotect), whether the first install always needs the unprotect | `board.mcu_rev`, `board.rom_loader`, `board.rdp`; `rfoundry detect` in loader mode, before and after the maker's recovery |

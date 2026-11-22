@@ -54,7 +54,7 @@ _Static_assert(CS7000P_RX_MIN_HZ == CS7000P_TX_MIN_HZ, "the band table starts wh
 // are set to the names on a wattmeter (docs/testing/power-calibration.md), and until then nothing transmits
 static const char *const power_names[] = { "1W", "4W" };
 
-// docs/ux/information-architecture.md 7.1. The matrix positions of the six function switches are provisional
+// docs/ux/information-architecture.md 7.1. The matrix positions of the six function switches were read on a radio
 // (keys_cs7000p.h): the LCD board's drawing has no legend for them
 static const keymap_entry_t keymap[] = {
 	{ KEY_OK, ACT_SELECT, ACT_SELECT, false, false, 0 },

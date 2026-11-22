@@ -8,7 +8,7 @@
 // only while no display session is open. That board is not in the maker's schematic: the matrix is scanned only if
 // the display's board check passed (display_cs7000p.c), because a scan drives the connector's lines. On any other
 // board the scan never runs and the keys below are all the radio has. Which of the matrix's six unlabeled function
-// switches is which key is provisional (keys_cs7000p.h).
+// switches is which key was read on a radio (keys_cs7000p.h).
 //
 // The side keys, the top key and PTT have a pin each, low = pressed, with a pull-up on the main board. The
 // accessory connector's PTT counts only once its line has read high (drivers/input/plugptt): the jack may be empty
