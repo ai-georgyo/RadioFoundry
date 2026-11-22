@@ -6,7 +6,8 @@ SPDX-FileCopyrightText = "2026 The RadioFoundry Authors"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["platform/stm32f4/stm32f4xx_hal_conf.h", "platform/stm32f4/LICENSE-STM32F4xx-HAL.txt"]
+path = ["platform/stm32f4/stm32f4xx_hal_conf.h", "platform/stm32f4/LICENSE-STM32F4xx-HAL.txt",
+        "platform/stm32h7/stm32h7xx_hal_conf.h", "platform/stm32h7/LICENSE-STM32H7xx-HAL.txt"]
 SPDX-FileCopyrightText = "2017 STMicroelectronics"
 SPDX-License-Identifier = "BSD-3-Clause"
 
