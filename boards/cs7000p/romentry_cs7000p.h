@@ -8,9 +8,11 @@
 // The loader sets up every interface it knows, on this board's nets (AN2606 Table 145): it drives PA2, an op-amp's
 // output here, and PB10, a contact of the channel selector that may be at ground, from the start, except version
 // 9.1, the one version the table says keeps them inputs until its serial port is used; every version drives PB14,
-// the modem's data output. So: no, unless the build says the bench has checked it (CS7000P_SOFT_ROM_ENTRY,
-// hardware-cs7000p.md 2.5, open question 18), and then only with that version, or with the selector's contact on
-// PB10 open. SK1 held at power-on starts the same loader and is not asked: that is the maker's own route
+// the modem's data output. So the entry is allowed (CS7000P_SOFT_ROM_ENTRY, on by default; hardware-cs7000p.md 2.5,
+// open question 18) only with that version, or with the selector's contact on PB10 open: on any other version,
+// 9.2 included, a selector position that grounds PB10 is refused, and the user turns the selector a step or uses
+// the key. SK1 held at power-on starts the same loader on the same pins and is not asked: that is the maker's own
+// route
 #ifndef ROMENTRY_CS7000P_H
 #define ROMENTRY_CS7000P_H
 
