@@ -750,6 +750,74 @@ test("after the backup, the stock data in RadioFoundry's settings area is claime
 	assert.ok(radio.events.includes("storage claimed"));
 });
 
+// STORAGE INFO's flags byte (debuglink.md 3.13) after the three ranges: bit 0 says the board's memory chip is claimed
+// only after a backup of all of it. Firmware before it ends after the ranges (the simulated radio's answer)
+test("STORAGE INFO says whether the board claims first; older firmware doesn't, and reads as not", async () => {
+	const { radio } = await simulated("rfoundry");
+	const link = new Link(radio.serialStream());
+	const old = await link.storageInfo();
+	assert.equal(old.claimFirst, false);
+	assert.deepEqual(old.calibration, { addr: 0x10000, size: 0x200 });
+	const answer = radio.serialAnswer.bind(radio);
+	let flags = 1;
+	radio.serialAnswer = (req) => {
+		const r = answer(req);
+		const f = parseFrames(req)[0];
+		if (f?.cmd !== 0x0F || f.payload[0] !== 0) return r;
+		const a = parseFrames(r)[0];
+		return frame(a.cmd, a.seq, Uint8Array.from([...a.payload, flags]));
+	};
+	const first = await link.storageInfo();
+	assert.equal(first.claimFirst, true);
+	assert.equal(first.region, "foreign");
+	assert.deepEqual(first.calibration, old.calibration, "the ranges read as before");
+	flags = 0xFE;	// the other bits are not the flag
+	assert.equal((await link.storageInfo()).claimFirst, false);
+	radio.noMap = true;
+	assert.equal((await link.storageInfo()).claimFirst, false, "no flash map: nothing to claim");
+});
+
+// app.js needs the DOM, so its source is checked: a restore of channels asks STORAGE INFO first, and on a claim-first
+// board whose memory chip isn't RadioFoundry's yet it neither reads, claims nor writes: the backup of everything does
+// the claim, after it read the whole chip
+test("a restore of channels doesn't claim a memory chip that is claimed only after a full backup", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const body = src.slice(src.indexOf("function afterRestore("), src.indexOf("\n}\n", src.indexOf("function afterRestore(")));
+	const check = body.indexOf('st?.region === "foreign" && st.claimFirst');
+	assert.ok(check > body.indexOf("await link.storageInfo()") && body.indexOf("await link.storageInfo()") > 0, "INFO read before the check");
+	for (const later of ["link.cpsDump(", "prepareStorage(", "writeCodeplug("]) assert.ok(check < body.indexOf(later), `checked before ${later}`);
+	assert.match(body.slice(check, body.indexOf("return;", check)), /t\("flash\.restore\.claim_first"\)/);
+	assert.ok(en["flash.restore.claim_first"]);
+	// the backup of everything claims only when its memory chip read is complete
+	assert.match(src, /const whole = pick === "all" && !!S\.backupParts\.find\(\(x\) => x\.what === "spi-flash"\)\?\.complete;/);
+	assert.match(src, /if \(whole\) await prepareStorage\(status, \{ whole \}\);/);
+});
+
+// The rule in one place: prepareStorage claims a claim-first board's memory chip only for a caller whose backup holds
+// all of it, and tells any other caller to write nothing; the install's channel step read the codeplug span alone
+test("the install's channel step doesn't claim a memory chip that is claimed only after a full backup", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const fn = src.slice(src.indexOf("async function prepareStorage("), src.indexOf("\n}\n", src.indexOf("async function prepareStorage(")));
+	assert.match(fn, /^async function prepareStorage\(box, \{ whole = false \} = \{\}\)/);
+	const check = fn.indexOf("if (st.claimFirst && !whole) {");
+	assert.ok(check > fn.indexOf('if (st?.region !== "foreign") return true;') && check < fn.indexOf("storageClaim("), "decided before the claim");
+	const branch = fn.slice(check, fn.indexOf("return false;", check));
+	assert.match(branch, /t\("flash\.storage\.claim_first"\)/);
+	assert.doesNotMatch(branch, /storageClaim/);
+	assert.ok(en["flash.storage.claim_first"]);
+	// whole only where the backup of the whole chip was just taken: the backup of everything, a complete openfw read
+	assert.deepEqual([...src.matchAll(/await prepareStorage\([^)]*whole[^)]*\)/g)].map((m) => m[0].slice(6)),
+		["prepareStorage(status, { whole })", "prepareStorage(status, { whole: true })"]);
+	assert.match(src, /openfw\.complete\(S\.openfwRead\)\) await prepareStorage\(status, \{ whole: true \}\);/);
+	// the channel step writes nothing when it is refused
+	const bring = src.slice(src.indexOf("async function bringChannels("), src.indexOf("\n}\n", src.indexOf("async function bringChannels(")));
+	const call = bring.indexOf("if (!await prepareStorage(box)) {");
+	assert.ok(call > 0 && call < bring.indexOf("writeCodeplug("), "checked before the write");
+	assert.match(bring.slice(call, bring.indexOf("}", call)), /S\.forward\(finish\(\)\);\n\t\t\t\treturn;/);
+});
+
 test("a read whose reply lost its tail is asked again", async () => {
 	const { radio } = await simulated("rfoundry");
 	const answer = radio.serialAnswer.bind(radio);

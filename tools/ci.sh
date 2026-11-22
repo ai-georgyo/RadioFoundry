@@ -40,7 +40,7 @@
 #      the channel-mode kinds and system types agree in the spec, the firmware and the Codeplug Editor
 #      (tools/check_modes.py);
 #      the glossary data is sound and its pages current (tools/glossary.py); the web site builds without a warning (site/build.py, needs markdown-it-py or uv) and the web flasher's tests
-#      pass against rfoundry (site/tests/run.sh, needs Node 20+)
+#      pass against rfoundry (site/tests/run.sh, needs Node 20.11+)
 #   3. firmware, for every boards/<b>/board.mk whose compiler is installed (a board without one is skipped with a
 #      notice naming what installs it, its platform.toml toolchain.build):
 #        default            the board's defaults

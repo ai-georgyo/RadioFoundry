@@ -735,6 +735,22 @@ async function ensureStorage(c) {
 	c.storage = await c.transport.storage();
 	diag.note("storage region", c.storage);
 	if (c.storage?.region !== "foreign") return true;
+	// A board whose memory chip holds another firmware's data where nobody knows until it is claimed: the claim opens
+	// the whole chip to writes, so it comes only after a backup of all of it, which this page doesn't take. The radio
+	// programming utility's backup of everything prepares the radio once it has read the whole chip
+	if (c.storage.claimFirst) {
+		await new Promise((resolve) => {
+			dialog(t("editor.storage.first_title"), [h("p", {}, t("editor.storage.first_text", { radio: c.radio.name })), h("p", {}, t("editor.storage.first_text2"))],
+				t("editor.storage.first_open"), async (close) => {
+					// the utility's tab needs the port: this one lets go of it (opened first, in the click, so no popup blocker stops it)
+					window.open(`${HOME}flash/index.html`, "_blank", "noopener");
+					close();
+					if (S.conn === c) await dropConnection();
+				}, () => resolve());
+		});
+		say(t("editor.storage.first_said", { radio: c.radio.name }), "warn");
+		return false;
+	}
 	const go = await new Promise((resolve) => {
 		let ok = false;
 		dialog(t("editor.storage.title"), [h("p", {}, t("editor.storage.text", { radio: c.radio.name })), h("p", {}, t("editor.storage.text2"))],

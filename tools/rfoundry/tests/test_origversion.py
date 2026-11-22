@@ -402,7 +402,8 @@ class Learn(unittest.TestCase):
         self.assertIsNone(r)
 
     def test_board_without_the_declaration_sends_nothing(self):
-        other = next((x for _, x in sorted(boards.BOARDS.items()) if not x.original_version and x.dfu_ids), None)
+        other = next((x for _, x in sorted(boards.BOARDS.items())
+                      if not x.original_version and x.family == "usb-dfu"), None)	# a keyed bootloader, as board()'s
         if other is None:
             self.skipTest("every DFU board declares it")
         dev = fakedfu.FakeOriginalFirmware(other)

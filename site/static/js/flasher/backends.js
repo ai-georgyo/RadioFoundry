@@ -11,16 +11,27 @@
 //   steps(task, ctx)        the step ids of a task, or null for the shared ones (STEPS in app.js). ctx: {recovering}
 //   views                   {step id: () => element} for the steps the backend owns
 //   stepLabel(step, task)   optional: the i18n key suffix of a step's name (flash.step.<suffix>)
-//   recovery                the help task: {first: "updatemode" | "fix", stock: "file" | "restore", reach: i18n key
-//                           or null, stockText: i18n key}. "updatemode": the page first checks the radio reaches its
+//   recovery                the help task: {first: "updatemode" | "fix", stock: "file" | "restore" | "maker", reach: i18n
+//                           key or null, stockText: i18n key}. "updatemode": the page first checks the radio reaches its
 //                           bootloader; stock "file": stock firmware comes back from the user's stock file, "restore":
-//                           from a backup through the restore task. Optional extra(radio, fb): more reinstall choices,
-//                           [{id, title, text, prepare()}] (string keys; prepare() runs once the install task is set up)
+//                           from a backup through the restore task, "maker": the page can't put it back, and maker()
+//                           returns the element that says whose procedure it is. Optional calm: an i18n key, the
+//                           reassurance where the shared one would promise the original firmware back. Optional
+//                           extra(radio, fb): more reinstall choices, [{id, title, text, prepare()}] (string keys;
+//                           prepare() runs once the install task is set up)
 //   ownsBundle(bundle)      optional: this backend restores the backup bundle with its own view
 //   ownImage(fb, board, data)  optional: splits a user's own image file into {image, codec} (a merged codec slot)
 //   vendorRestore(radio, file, fb)  optional: a restore bundle from the radio's original firmware file (an
 //                           openVendorFile entry for this radio), so recovery "restore" also takes that file
 //   release()               optional: let go of a port or loader the backend still holds (start over, other radio)
+//   restores                optional: {targets, note}: the restore targets the backend takes back ("rfoundry", "codeplug",
+//                           "stock", "openfw") and the i18n key that says why the others are missing; without it, every
+//                           target the bundle has
+//   untested                optional: the i18n key of the build step's line for a radio still in development, where the
+//                           shared ones (back up first, keep the stock file) don't apply
+//   stockChannels           optional: false where the original firmware's codeplug is in no layout the page converts:
+//                           the install then has no channel step (app.js bringChannels), so the memory chip is neither
+//                           read for one nor claimed for one
 //
 // Bulk memory reads for backups go through readers (readers.js), so a backend that shares a radio family's backup
 // steps can still bring its own way of reading.

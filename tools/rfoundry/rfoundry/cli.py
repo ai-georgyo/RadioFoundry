@@ -15,7 +15,7 @@ import uuid
 from . import __version__, boards, bootkey, codecsave, debuglink, manifest as mf, plan as planmod, state, stockfw
 from . import dfu as dfumod
 from . import release as relmod
-from . import origversion, serialflash, stubroute
+from . import origversion, protect, serialflash, stubroute
 
 EPILOG = """\
 examples:
@@ -30,6 +30,9 @@ examples:
   rfoundry flash rfoundry-dm1801pro-v26.11.bin --port /dev/ttyUSB0
                                                         a DM-1801 Pro over its programming cable (the stub when it
                                                         runs RadioFoundry with stub entry, else Baofeng's update mode)
+  rfoundry flash IMAGE --unprotect                      a radio installed through its processor's own bootloader,
+                                                        the first time: remove its read protection, which erases
+                                                        the original firmware and its bootloader for good
 
 entering the bootloader: rfoundry says how for the radio (the steps are each radio's own, as on the web flasher).
 """
@@ -236,6 +239,14 @@ def load_image(args, board_hint):
     elif args.image:
         img_path = args.image
         man_path = args.manifest or os.path.splitext(img_path)[0] + ".json"
+    elif args.simulate and board_hint:
+        # a simulation needs no file: random bytes stand in for a local build of the board
+        board = boards.get(board_hint)
+        image = stockfw.random_bytes(random.Random(1), SIM_IMAGE_SIZE)
+        m = mf.for_dev_build(board, image)
+        mf.verify(m, image, board.id)
+        say("image    (simulated) %d random bytes as a local %s build" % (len(image), board.name))
+        return board, m, image, None
     else:
         raise UsageError("which firmware? Give an image file (with its .json manifest next to it) or --release "
                          "VERSION (or --release latest)")
@@ -284,6 +295,11 @@ def load_image(args, board_hint):
     mf.verify(m, image, board.id)
     warn("no manifest: treating %s as a local %s build (nothing to verify it against)" % (img_path, board.name))
     return board, m, image, None
+
+
+# The image a simulation makes up when it is given none: over one sector on every board, and not a whole number of
+# blocks or flash words, so the fill after the image is part of what the simulation checks
+SIM_IMAGE_SIZE = 200004
 
 
 def stock_codec(stock, key, board=None):
@@ -606,7 +622,7 @@ def wait_for_dfu(usb, board, wait_s, log=say, gone=None):
             time.sleep(0.5)
             devs = find()
     if not devs:
-        win = "\n" + dfumod.WINDOWS_DRIVER_STEPS if sys.platform == "win32" else ""
+        win = "\n" + dfumod.windows_driver_steps(board) if sys.platform == "win32" else ""
         raise UsageError("no radio bootloader found (USB %04X:%04X). Check that the cable carries data and that the "
                          "radio is in its bootloader: %s%s" % (board.dfu_ids + (bootloader_steps(board), win)))
     if len(devs) > 1:
@@ -635,7 +651,7 @@ def learn_original_version(args, usb, board, log=say, ask=None, sleep=time.sleep
         return None
     dev = devs[0]
     try:
-        fp = dfumod.fingerprint(usb, dev)
+        fp = dfumod.fingerprint(usb, dev, board)
     except dfumod.DfuError as e:
         log("version  not read: %s" % str(e).splitlines()[0])
         return None
@@ -645,7 +661,7 @@ def learn_original_version(args, usb, board, log=say, ask=None, sleep=time.sleep
             "read from here" % what)
         return None
     try:
-        intf = dfumod.open_device(usb, dev)
+        intf = dfumod.open_device(usb, dev, board)
     except dfumod.DfuError as e:
         log("version  not read: %s" % str(e).splitlines()[0])
         return None
@@ -773,11 +789,13 @@ def hwopt_prompt(port, board, log=say, choose=ask_choice, link_fn=None):
 
 
 def check_bootloader(usb, dev, board, log=say):
-    fp = dfumod.fingerprint(usb, dev)
+    fp = dfumod.fingerprint(usb, dev, board)
     log("found    bootloader: %r, product %r, serial %r" % (fp["string1"], fp["product"], fp["serial"]))
     for i in fp["interfaces"]:
         log("         layout %r" % i)
-    if board.dfu_string1 and board.dfu_string1.split()[0] not in (fp["string1"] or ""):
+    # a keyed board without the string would skip the one check that tells its bootloader from a ROM bootloader
+    want = (board.dfu_string1 or "").split()
+    if not want or want[0] not in (fp["string1"] or ""):
         raise UsageError("this is not the radio's own bootloader (string 1 is %r, expected %r). ST's ROM bootloader "
                          "would write the encrypted image as is: refusing" % (fp["string1"], board.dfu_string1))
     if board.original_version and origversion.runs_original(board.original_version, fp["interfaces"]):
@@ -787,6 +805,37 @@ def check_bootloader(usb, dev, board, log=say):
         raise UsageError("the radio is switched on normally, not in its bootloader (its layout reads %r). Writing "
                          "through it could erase the bootloader: refusing. Switch it off, put it in its bootloader "
                          "(%s) and try again" % (fp["interfaces"][0], bootloader_steps(board)))
+    return fp
+
+
+def keyed_marks():
+    """The first word of every keyed bootloader's string 1: the radio makers' bootloaders, which share their USB IDs
+    with the processors' ROM bootloaders."""
+    return sorted({b.dfu_string1.split()[0] for b in boards.BOARDS.values()
+                   if b.family == "usb-dfu" and (b.dfu_string1 or "").split()})
+
+
+def check_rom_loader(usb, dev, board, log=say):
+    """The plain route's device check, before any DFU request: the bootloader in the processor's ROM takes any image
+    as it is, so what the device shows must be this board's chip. A radio maker's keyed bootloader (the same USB IDs)
+    is refused by its string 1, another chip's ROM bootloader by its flash layout (dfu.rom_layout_ok)."""
+    fp = dfumod.fingerprint(usb, dev, board)
+    log("found    bootloader: %r, product %r, serial %r" % (fp["string1"], fp["product"], fp["serial"]))
+    for i in fp["interfaces"]:
+        log("         layout %r" % i)
+    if any(m in (fp["string1"] or "") for m in keyed_marks()):
+        raise UsageError("this is a radio maker's own bootloader (string 1 is %r), which takes only images encrypted "
+                         "with its key. The %s is installed through the bootloader in its processor's ROM (%s): "
+                         "check which radio is connected. Refusing" % (fp["string1"], board.name, bootloader_steps(board)))
+    if not dfumod.rom_layout_ok(fp["interfaces"], board):
+        want = board.dfu_layout or "%d KB from 0x%08X" % ((board.flash_end - board.rom_base) // 1024, board.rom_base)
+        got = next((i for i in fp["interfaces"] if i), None)
+        if got is None:		# not "another chip": nothing was read (on Windows, a bootloader without its driver)
+            win = "\n" + dfumod.windows_driver_steps(board) if sys.platform == "win32" else ""
+            raise UsageError("this bootloader's flash layout could not be read, so nothing says it is the %s's chip "
+                             "(%s). Refusing%s" % (board.name, want, win))
+        raise UsageError("this bootloader's flash layout is %r, not the %s's (%s): another chip, with the same USB "
+                         "IDs. Refusing" % (got, board.name, want))
     return fp
 
 
@@ -802,6 +851,9 @@ def cmd_flash(args):
         from . import fakedfu
         sim_key = fakedfu.synthetic_key()
     board, man, image, merged = load_image(args, args.board)
+    if args.unprotect and board.family != "dfuse":
+        raise UsageError("--unprotect is for a radio installed through its processor's own bootloader; the %s isn't"
+                         % board.name)
     if board.family == "serial-loader":
         return cmd_flash_serial(args, board, man, image, merged)
     if board.family == "serial-iap":
@@ -811,6 +863,8 @@ def cmd_flash(args):
     if args.route != serialflash.AUTO:
         raise UsageError("--route is for the radios flashed over a programming cable (DM-1801 Pro, DM-32UV) and "
                          "--route stub (radios running RadioFoundry with stub entry)")
+    if board.family == "dfuse":		# a ROM bootloader: no key and no codec step
+        return cmd_flash_dfuse(args, board, man, image)
     stock = load_stock(args)
     if merged and stock is not None:
         say("stock    the image carries the codec, so the stock file only gives the bootloader key")
@@ -887,7 +941,7 @@ def cmd_flash(args):
     if not args.yes and not sim and not ask_yes("Erase and write %d sector(s) now?" % len(p.erase), default=True):
         say("nothing done")
         return 1
-    intf = dfumod.open_device(usb, dev)
+    intf = dfumod.open_device(usb, dev, board)
     started = None if sim else flash_started(args, board, man)
 
     tty = sys.stdout.isatty()
@@ -928,6 +982,247 @@ def cmd_flash(args):
             say("note     " + learned_hint(board, learned))
         return 0
     return verify_after(args, board, man, d, learned=learned)
+
+
+# After a Read Unprotect the chip erases its whole program flash, then leaves USB (AN3156 5.4, figure 10). How long
+# that erase takes at most is the chip's own figure: the registry's mass_erase_max_s, from the board's platform.toml.
+# unprotect_wait() makes the two waits from it. dfuse.js waits the same (unprotectWait), and a test keeps the two equal
+UNPROTECT_MIN_S = 60		# the least wait is never shorter than this
+UNPROTECT_WAIT_S = 120		# nor the longest one than this
+
+
+def unprotect_wait(board):
+    """(least, most), in seconds from a Read Unprotect. least: the radio is told it may be switched off no sooner,
+    twice the chip's longest mass erase and never under UNPROTECT_MIN_S (a chip with two flash banks may erase them
+    one after the other; the RAM erase and option byte change that follow have no time given). most: how long it is
+    waited for to leave USB, twice the least wait and never under UNPROTECT_WAIT_S: one still on USB then has long
+    finished the erase, or never started it. A board whose registry entry gives no erase time is refused, and
+    cmd_flash_dfuse asks before the Read Unprotect is sent."""
+    bound = getattr(board, "mass_erase_max_s", None)
+    if not bound or bound <= 0:
+        raise UsageError("the registry gives no mass erase time for the %s's processor (platform.toml "
+                         "mass_erase_max_s): rfoundry could not say when the radio may be switched off after its "
+                         "read protection is removed. Refusing" % board.name)
+    least = max(UNPROTECT_MIN_S, 2 * bound)
+    return least, max(UNPROTECT_WAIT_S, 2 * least)
+
+
+def unprotect_text(board):
+    """Why a read-protected radio stops the install and what removing the protection costs, then the board's own
+    install notice (board.toml [flash] notice) when the registry carries it."""
+    text = ("the %s's program memory is read protected: its processor's bootloader won't read, erase or write it, and "
+            "nothing on the radio was changed. Removing the protection erases the whole program memory, the original "
+            "firmware and its bootloader included. rfoundry can't put them back: going back is the maker's own "
+            "recovery procedure with the maker's files. To go on, run the same command with --unprotect"
+            % board.name)
+    notice = getattr(board, "notice", None)
+    return text + ("\n" + notice if notice else "")
+
+
+def _listed(usb, board):
+    """The bootloaders on the bus, or None when the bus can't be listed just now. For the wait after a Read Unprotect:
+    an error there would end the install with the words for a failed one, which start with switching the radio off,
+    while it may be erasing."""
+    try:
+        return dfumod.find(usb, board)
+    except Exception:
+        return None
+
+
+def wait_gone(usb, board, dev, wait_s, sleep=time.sleep):
+    """Wait until a device has left the bus (a ROM bootloader after a Read Unprotect). False: it is still there, or
+    was not seen to leave (a bus that can't be listed shows nothing leaving)."""
+    end = time.monotonic() + wait_s
+    while True:
+        found = _listed(usb, board)
+        if found is not None and all(_usb_where(d) != _usb_where(dev) for d in found):
+            return True
+        if time.monotonic() >= end:
+            return False
+        sleep(1.0)
+
+
+def wait_unprotect(usb, board, was, sent):
+    """The wait after a Read Unprotect sent at time.monotonic() `sent` to the bootloader at `was`: until it has left
+    USB (the longest wait of unprotect_wait at most) and the least wait has passed. (left, back): whether it left, and
+    a bootloader on the bus again at another place by then (the radio reset into it by itself, its key still held),
+    or None"""
+    least, most = unprotect_wait(board)
+    left = wait_gone(usb, board, was, max(0.0, sent + most - time.monotonic()), sleep=time.sleep)
+    rest = sent + least - time.monotonic()
+    if rest > 0:
+        time.sleep(rest)
+    back = [d for d in _listed(usb, board) or [] if _usb_where(d) != _usb_where(was)] if left else []
+    return left, back[0] if len(back) == 1 else None
+
+
+def cmd_flash_dfuse(args, board, man, image):
+    """A radio installed through the bootloader in its processor's ROM by plain DfuSe (family dfuse): no key, no
+    codec step. A read-protected chip takes nothing until the protection is removed, and removing it erases the whole
+    program memory: only with --unprotect, confirmed, and the radio is then put in its bootloader a second time.
+    Every request goes to the program flash (alternate setting 0); the option bytes are never selected or written."""
+    sim = args.simulate
+    if args.key or args.stock or args.stock_installed or args.codec != "auto":
+        raise UsageError("the %s has no bootloader key and no codec to keep or write: --key, --stock, "
+                         "--stock-installed and --codec don't apply" % board.name)
+    probe = None if sim else get_probe(args)
+    if probe and not args.board:
+        pb = boards.from_debuglink_name(probe.get("board") or "")
+        if pb and pb.id != board.id:
+            raise UsageError("the radio is a %s, the image is for the %s: refusing" % (pb.name, board.name))
+    check_options(board, man, resolve_options(args, board, probe))
+    # the vector table last (dfu.check_plain): a cut install leaves nothing to start at the next normal power-on
+    p = planmod.make_plan(board, mf.segments(man, image), planmod.KEEP, vector_last=True)
+    # here, not only in Dfu.run: a plan the route refuses must be refused before the read protection is removed
+    dfumod.check_plain(p)
+    say("")
+    say("plan:")
+    for line in p.describe():
+        say("  " + line)
+    say("")
+    if args.dry_run:
+        say("dry run: nothing was erased or written")
+        return 0
+
+    before = None
+    if sim:
+        from . import fakedfu
+        # stock: every byte in use and read protected, as the maker's firmware leaves the chip; blank: erased
+        dev = fakedfu.FakeRomUsbDevice(board, None if sim == "blank" else fakedfu.rom_flash(board, random.Random(3)),
+                                       protected=sim == "stock")
+        usb = fakedfu.FakeUsb([dev])
+        before = bytes(dev.flash)
+    else:
+        usb = dfumod.import_usb()
+        dev = wait_for_dfu(usb, board, args.wait)
+
+    def connect(dev):
+        check_rom_loader(usb, dev, board)
+        d = dfumod.Dfu(dev, dfumod.open_device(usb, dev, board), log=lambda m: say("         " + m),
+                       sleep=(lambda s: None) if sim else time.sleep)
+        return d, d.probe_protected(board)
+
+    started = None
+    unprotected = writing = False
+    again = "put the radio in its bootloader again (%s) and run the same command" % bootloader_steps(board)
+    try:
+        d, protected = connect(dev)
+        if protected:
+            say("radio    the program memory is read protected")
+            if not args.unprotect:
+                raise UsageError(unprotect_text(board))
+            try:		# checked before the question is asked; Dfu.read_unprotect checks it again
+                protect.check_whole(board, "progmem", "remove the read protection, which erases the whole")
+            except protect.ProtectedError as e:
+                raise UsageError(str(e))
+            least, most = unprotect_wait(board)		# here too: no erase without knowing how long it is waited out
+            if not sim and not args.yes and not ask_yes(
+                    "Remove the read protection now? It erases the radio's whole program memory, the original "
+                    "firmware and its bootloader included, and can't be undone"):
+                say("nothing done (not confirmed: answer the question on a terminal, or pass --yes)")
+                return 1
+            started = None if sim else flash_started(args, board, man)
+            # where the bootloader is on the bus now: after the erase the radio comes back as another device
+            was = argparse.Namespace(bus=getattr(dev, "bus", None), address=getattr(dev, "address", None))
+            sent = time.monotonic()
+            d.read_unprotect(board)
+            unprotected = True
+            say("erasing  the radio removes its read protection and erases its program memory, and its screen shows "
+                "nothing: leave it on and connected until rfoundry says to switch it off (at least %d s)" % least)
+            if sim:
+                dev.power_cycle()
+                say("radio    (simulated) left USB, then switched off and put in its bootloader again")
+            else:
+                left, back = wait_unprotect(usb, board, was, sent)
+                dfumod.release(usb, dev)
+                if left:
+                    say("radio    left USB: the erase is over")
+                else:		# twice the longest erase and more: it is over, or it never started
+                    warn("the radio is still on USB after %d s, longer than its erase takes (at most %d s): the "
+                         "erase is over, or the radio did not take the command. The protection is checked again "
+                         "next" % (most, board.mass_erase_max_s))
+                if back:	# nothing to switch off: written now, with the user told so
+                    say("radio    back in its bootloader by itself (its key still held?): leave it on and connected, "
+                        "it is written now")
+                    dev = back
+                else:
+                    say("Now switch the radio off.")
+                    try:		# a device still at the old place is the one that hasn't left: passed over
+                        dev = wait_for_dfu(usb, board, args.wait, gone=None if left else was)
+                    except UsageError as e:
+                        # only a radio that left USB is known to have finished the erase
+                        how = ("The read protection is removed and the program memory is empty" if left else
+                               "The radio took the Read Unprotect command and did not leave USB")
+                        raise UsageError("%s\n%s: %s" % (e, how, again))
+                    # the last word on the screen before the write: not "switch off"
+                    say("radio    in its bootloader again: leave it on and connected while it is written")
+            d, protected = connect(dev)
+            if protected:
+                raise dfumod.DfuError("the program memory is still read protected after the Read Unprotect: nothing "
+                                      "was written. Switch the radio off, %s" % again)
+        else:
+            if args.unprotect:
+                say("radio    the program memory is not read protected: nothing to remove")
+            if not args.yes and not sim and not ask_yes("Erase and write %d sector(s) now?" % len(p.erase),
+                                                        default=True):
+                say("nothing done")
+                return 1
+        if started is None and not sim:
+            started = flash_started(args, board, man)
+        writing = True
+        d.run(p, None, _progress("blocks"))
+    except BaseException as e:
+        flash_finished(started, e)
+        if isinstance(e, (dfumod.DfuError, UsageError)) or not isinstance(e, Exception):
+            raise
+        cut = (" The vector table is written last, after everything else is read back, so an install cut short leaves "
+               "no half-written image to start." if writing else "")
+        raise dfumod.DfuError("USB error while flashing: %s.%s The bootloader is in the processor's ROM and is never "
+                              "erased: %s" % (e, cut, again))
+    finally:
+        dfumod.release(usb, dev)
+    flash_finished(started)
+    if not sim:
+        state.forget_probe()
+    # whether the ROM's jump starts the image is not known on every chip: say what to do if it doesn't
+    say("done     the bootloader starts RadioFoundry %s. If the radio shows nothing, switch it off and on"
+        % man.get("version"))
+    if sim:
+        return report_rom_simulation(board, p, dev, before, unprotected)
+    if args.no_verify:
+        return 0
+    return verify_after(args, board, man, None)
+
+
+def report_rom_simulation(board, p, dev, before, unprotected):
+    """The simulated ROM bootloader after a plain run: the written sectors hold the plan's blocks and 0xFF, every other
+    sector is as it was (erased after a Read Unprotect), the image was started, and nothing was sent that a ROM
+    bootloader must never get."""
+    say("sim      erased %s; %d blocks written; read unprotect %s; leave %s"
+        % (", ".join(hex(a) for a in dev.erased), dev.blocks, "yes" if dev.unprotected else "no",
+           "yes" if dev.exited else "NO"))
+    ok = dev.exited
+    for st in p.steps:
+        s = st.sector
+        if st.action == "write":
+            want = b"".join(b for _, b in st.blocks)
+            want += b"\xFF" * (s.size - len(want))
+        elif unprotected:
+            want = b"\xFF" * s.size
+        else:
+            want = before[s.addr - board.rom_base:s.end - board.rom_base]
+        if dev.read(s.addr, s.size) != want:
+            say("sim      sector %d content MISMATCH" % s.index)
+            ok = False
+    for n, what in ((len(dev.violations), "bytes programmed over non-erased flash"),
+                    (len(dev.partial), "blocks that were not whole flash words"),
+                    (len(dev.refused), "commands the bootloader doesn't have"),
+                    (len(dev.alt_selected), "alternate settings selected (the option bytes are never selected)")):
+        if n:
+            say("sim      %d %s" % (n, what))
+            ok = False
+    say("sim      %s" % ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
 
 
 def _progress(unit):
@@ -1068,7 +1363,7 @@ def cmd_flash_serial(args, board, man, app, slot):
     entry, else Baofeng's update mode."""
     sf = serialflash
     if args.simulate:
-        raise UsageError("--simulate runs the DM-1701 bootloader model only")
+        raise UsageError("--simulate runs the USB DFU bootloader models only")
     if args.key or args.stock_installed:
         raise UsageError("the %s needs no bootloader key and no --stock-installed" % board.name)
     stock = load_stock(args)
@@ -1227,6 +1522,9 @@ def verify_after(args, board, man, d, wait_s=25, learned=None):
     if want_git and want_git != "unknown" and not (p.get("git") or "").startswith(want_git):
         warn("the radio reports git %s, the image is %s" % (p.get("git"), want_git))
         return 1
+    if not board.has_codec:		# no codec route for this radio: nothing to check and no file to flash again with
+        say("radio    running RadioFoundry git %s" % p.get("git"))
+        return 0
     say("radio    running RadioFoundry git %s, codec %s" % (p.get("git"), p.get("codec")))
     if board.codec_present(p.get("codec")):
         say("ok       DMR voice is ready")
@@ -1247,7 +1545,9 @@ def cmd_probe(args):
     b = boards.from_debuglink_name(p.get("board") or "")
     say("radio    %s on %s, RadioFoundry git %s, chip %s" % (p.get("board"), p["port"], p.get("git"), p.get("uid") or "?"))
     say("codec    %s" % p.get("codec"))
-    if b and b.codec_present(p.get("codec")):
+    if b and not b.has_codec:
+        say("note     %s" % b.codec_none)
+    elif b and b.codec_present(p.get("codec")):
         say("ok       the codec can be kept: 'rfoundry flash' will leave the codec sectors alone (remembered for "
             "%d min)" % (state.PROBE_MAX_AGE_S // 60))
     elif p.get("codec") is None:
@@ -1269,8 +1569,10 @@ def cmd_detect(args):
     else:
         say("RadioFoundry      no radio running RadioFoundry on USB")
     usb = dfumod.import_usb()
-    # every USB DFU bootloader the registry knows, each USB id once (radios of one vendor share theirs)
-    cands = [boards.get(args.board)] if args.board else boards.by(family="usb-dfu")
+    # every USB DFU bootloader the registry knows, each USB id once (radios of one vendor share theirs, and so do the
+    # processors' ROM bootloaders of the dfuse family)
+    cands = [boards.get(args.board)] if args.board else boards.by(family="usb-dfu") + boards.by(family="dfuse")
+    cands = [b for b in cands if b.dfu_ids]
     devs, ids = [], []
     for b in cands:
         if b.dfu_ids not in ids:
@@ -1280,25 +1582,53 @@ def cmd_detect(args):
         say("DFU      no bootloader (%s) found" % ", ".join("%04X:%04X" % i for i in ids))
         return 0 if p else 1
     for board, dev in devs:
-        fp = dfumod.fingerprint(usb, dev)
+        # the device is known only with --board: radios and processors share the USB IDs, each with its own name
+        fp = dfumod.fingerprint(usb, dev, board if args.board else None)
         say("DFU      %04X:%04X string 1 %r, manufacturer %r, product %r, serial %r"
             % (board.dfu_ids + (fp["string1"], fp["manufacturer"], fp["product"], fp["serial"])))
         for i in fp["interfaces"]:
             say("         layout %r" % i)
-        if dfumod.normal_mode(fp["interfaces"], None if args.board is None else board):
+        # a ROM bootloader is told by what it isn't (no keyed bootloader's string) and by its chip's flash layout
+        roms = [] if any(m in (fp["string1"] or "") for m in keyed_marks()) else [
+            b for b in ([board] if args.board else boards.by(family="dfuse"))
+            if b.family == "dfuse" and b.dfu_ids == board.dfu_ids and dfumod.rom_layout_ok(fp["interfaces"], b)]
+        if roms:
+            say("         the bootloader in a processor's ROM (plain DfuSe). By its flash layout the radio can be: %s. "
+                "The model isn't reported: rfoundry goes by the image or --board"
+                % ", ".join("%s (--board %s)" % (b.name, b.id) for b in roms))
+            say("         read protection: %s" % rom_protection(usb, dev, roms[0]))
+        elif dfumod.normal_mode(fp["interfaces"], None if args.board is None else board):
             say("         the radio switched on normally, not its bootloader: rfoundry won't flash it")
         elif "AnyRoad" in (fp["string1"] or ""):
             say("         a TYT/Baofeng AnyRoad bootloader (DM-1701, MD-UV380, MD-9600 and others share it; the model "
                 "isn't reported, rfoundry goes by the image, the debug link probe or --board)")
         else:
-            say("         not the radio's own bootloader (ST's ROM loader?): rfoundry won't flash it")
+            say("         not a bootloader of a radio rfoundry knows (another chip's ROM loader?): rfoundry won't "
+                "flash it")
     return 0
+
+
+def rom_protection(usb, dev, board):
+    """For detect: whether a ROM bootloader's chip is read protected, in words. The probe reads 4 bytes and changes
+    nothing (dfu.Dfu.probe_protected)."""
+    try:
+        d = dfumod.Dfu(dev, dfumod.open_device(usb, dev, board), log=lambda m: None)
+        try:
+            protected = d.probe_protected(board)
+        finally:
+            dfumod.release(usb, dev)
+    except Exception as e:
+        return "not read (%s)" % (str(e).splitlines() or [type(e).__name__])[0]
+    return ("on: the first install needs 'rfoundry flash --unprotect', which erases the whole program memory"
+            if protected else "off")
 
 
 def cmd_key(args):
     if not args.stock:
         p = None if args.board else debuglink.probe(args.port, log=say)
         board = (p and boards.from_debuglink_name(p.get("board") or "")) or pick_board(args.board, "key")
+        if board.family == "usb-dfu" and not board.key_sha256 or board.family == "dfuse":
+            raise UsageError("the %s's bootloader has no key: it takes the image as it is" % board.name)
         key = bootkey.from_radio(board, args.port, log=say)
         if not key:
             raise UsageError("no radio running RadioFoundry gave the %s bootloader key: connect it, or use --stock FILE"
@@ -1411,8 +1741,14 @@ def build_parser():
                         "[flash.original_version]): don't read that firmware's version before the bootloader")
     f.add_argument("--no-reporting", action="store_true",
                    help="don't send the RadioFoundry project the radio model, build and result of this flash")
-    f.add_argument("--simulate", choices=("stock", "rfoundry-codec", "rfoundry-nocodec", "blank"),
-                   help="run against a fake radio (testing: no USB); --stock synthetic gives a synthetic stock file")
+    f.add_argument("--unprotect", action="store_true",
+                   help="a radio installed through its processor's own bootloader whose program memory is read "
+                        "protected: remove the protection first. This erases the whole program memory, the original "
+                        "firmware and its bootloader included, for good")
+    f.add_argument("--simulate", nargs="?", const="stock", choices=("stock", "rfoundry-codec", "rfoundry-nocodec", "blank"),
+                   help="run against a fake radio in this state (testing: no USB; default stock, read protected where "
+                        "a maker ships it so); --stock synthetic gives a synthetic stock file, and with --board and no "
+                        "image a made-up image is flashed")
     common(f)
     f.set_defaults(fn=cmd_flash)
 

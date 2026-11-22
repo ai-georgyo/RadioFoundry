@@ -25,6 +25,8 @@ const SOF1 = 0xA5, SOF2 = 0x5A;
 export const CMD = { PING: 0x01, VERSION: 0x02, INFO_CHIP: 0x0B, READ_MEM: 0x0C, STORAGE: 0x0F, HWOPT: 0x21, SUPPORT: 0x25, SATELLITE: 0x26 };
 // The status a command not built in, or with nothing to act on, answers (debuglink.md 2)
 const DL_UNAVAILABLE = 4;
+// STORAGE INFO's flags byte, after the three ranges (debuglink.md 3.13)
+const STORAGE_CLAIM_FIRST = 0x01;
 
 export class LinkError extends Error {}
 
@@ -419,7 +421,8 @@ export class Link {
 	async chip() {
 		const r = await this.request(CMD.INFO_CHIP);
 		if (r.length < 28) return null;
-		// family: 0 STM32F4, 1 HR_C7000 (no option bytes: rdp to user read 0xFF); firmware before the byte was STM32F4 only
+		// family: 0 STM32F4, 1 HR_C7000 (no option bytes: rdp to user read 0xFF), 2 STM32H7 (rdp is its level; wrp, bor and
+		// user read 0xFF, not decoded there); firmware before the byte was STM32F4 only
 		return { idcode: u32le(r, 0), flashKb: u16le(r, 4), uid: toHex(r.subarray(6, 18)), token: u32le(r, 6), optcr: u32le(r, 18),
 			rdp: r[22], wrp: u16le(r, 24), bor: r[26], user: r[27], family: r.length > 28 ? r[28] : 0 };
 	}
@@ -427,20 +430,23 @@ export class Link {
 	// STORAGE INFO (debuglink.md 3.13): whether the settings and journal region is ours, or still holds another
 	// firmware's data ("foreign": the radio then refuses every settings save and codeplug write). "none": the region
 	// didn't start (unusable flash). "nomap": the radio has no such region (a memory chip too small for the board's flash
-	// map: nothing is stored, no codeplug is there and every write is refused). null from a build without the command
+	// map: nothing is stored, no codeplug is there and every write is refused). null from a build without the command.
+	// claimFirst: the board's memory chip holds another firmware's data, where nobody knows, until it is claimed: a
+	// client claims only after a backup of the whole chip (the flags byte; false from builds before it)
 	async storageInfo() {
 		let r;
 		try {
 			r = await this.request(CMD.STORAGE, new Uint8Array([0]));
 		} catch (e) {
-			if (e instanceof LinkError && e.status === DL_UNAVAILABLE) return { region: "nomap", pending: false, settings: null, journal: null, calibration: null };
+			if (e instanceof LinkError && e.status === DL_UNAVAILABLE) return { region: "nomap", pending: false, claimFirst: false, settings: null, journal: null, calibration: null };
 			if (e instanceof LinkError && !/no answer/.test(e.message)) return null;
 			throw e;
 		}
 		if (r.length < 2) return null;
 		const region = ["none", "ours", "foreign"][r[0]] || String(r[0]);
 		const range = (o) => (r.length >= o + 8 ? { addr: u32le(r, o), size: u32le(r, o + 4) } : null);
-		return { region, pending: !!r[1], settings: range(2), journal: range(10), calibration: range(18) };
+		const claimFirst = r.length > 26 && !!(r[26] & STORAGE_CLAIM_FIRST);
+		return { region, pending: !!r[1], claimFirst, settings: range(2), journal: range(10), calibration: range(18) };
 	}
 
 	// STORAGE CLAIM: the radio erases a foreign region and takes it (some 10 sector erases), then the poll sees it

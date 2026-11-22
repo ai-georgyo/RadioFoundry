@@ -307,7 +307,7 @@ import { FakeCpsRadio } from "../static/js/codeplug/fakecps.js";
 import { makeBundle } from "../static/js/flasher/backup.js";
 import { CONVERTERS } from "../static/js/flasher/codeplug.js";
 import { FastLink, FastError } from "../static/js/codeplug/fastlink.js";
-import { Link, browserErrorKey } from "../static/js/flasher/link.js";
+import { Link, browserErrorKey, frame, parseFrames } from "../static/js/flasher/link.js";
 import { updateFor } from "../static/js/flasher/version.js";
 
 const RADIOS = [
@@ -602,6 +602,39 @@ test("a radio still holding another firmware's settings data is prepared, then w
 	const want = encode(rich());
 	const res = await tr.write(want, null);
 	await tr.verify(want, res.plan);
+});
+
+// A board whose memory chip holds another firmware's data where nobody knows until it is claimed (STORAGE INFO's
+// flags byte, debuglink.md 3.13): the editor tells the user to back up everything in the radio programming utility,
+// which claims after it read the whole chip, and claims nothing itself. app.js needs the DOM, so its source is checked
+test("on a board that claims first, the editor doesn't prepare the radio and sends the user to the full backup", async () => {
+	const radio = new FakeCpsRadio({ board: "DM-1701", foreign: true });
+	const answer = radio.answer.bind(radio);
+	radio.answer = (req) => {
+		const r = answer(req);
+		const f = req[0] === 0xA5 ? parseFrames(req)[0] : null;
+		if (f?.cmd !== 0x0F || f.payload[0] !== 0) return r;
+		const a = parseFrames(r)[0];
+		return frame(a.cmd, a.seq, Uint8Array.from([...a.payload, 1]));
+	};
+	const tr = new CpsSerial(radio.stream());
+	await tr.identify(RADIOS);
+	const st = await tr.storage();
+	assert.equal(st.region, "foreign");
+	assert.equal(st.claimFirst, true);
+	assert.equal((await new CpsSerial(new FakeCpsRadio({ board: "DM-1701", foreign: true }).stream()).storage()).claimFirst, false,
+		"firmware before the flags byte");
+	const src = readFileSync(new URL("../static/js/editor/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const fn = src.slice(src.indexOf("async function ensureStorage("), src.indexOf("\n}\n", src.indexOf("async function ensureStorage(")));
+	const branch = fn.slice(fn.indexOf("if (c.storage.claimFirst) {"), fn.indexOf("return false;", fn.indexOf("if (c.storage.claimFirst) {")));
+	assert.ok(fn.indexOf("if (c.storage.claimFirst) {") > fn.indexOf('if (c.storage?.region !== "foreign") return true;'), "only for a foreign region");
+	assert.ok(fn.indexOf("if (c.storage.claimFirst) {") < fn.indexOf("claimStorage("), "decided before the claim");
+	assert.doesNotMatch(branch, /claimStorage|editor\.storage\.prepare"/);
+	assert.match(branch, /window\.open\(`\$\{HOME\}flash\/index\.html`/);
+	const keys = [...branch.matchAll(/t\("([\w.]+)"/g)].map((m) => m[1]);
+	assert.deepEqual(keys, ["editor.storage.first_title", "editor.storage.first_text", "editor.storage.first_text2", "editor.storage.first_open", "editor.storage.first_said"]);
+	for (const k of keys) assert.ok(en[k], k);
 });
 
 test("a sector left pending by an interrupted write is retried; verify skips the live VFOs", async () => {
