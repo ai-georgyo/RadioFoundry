@@ -26,7 +26,7 @@ typedef struct {
 	bool fm_audio_chip;		// FM receive audio is the chip's own, on its line out (hrc6000_fm_audio on). False: the
 					// board has an analog FM path and wants PCM on the line out in FM (hrc6000_fm_rx_pcm)
 	bool ref_dac_hold;		// the reference oscillator's control voltage comes from the chip's modulation DAC:
-					// keep that DAC on while receiving (4:0x25 bit 5 set, bit 3 clear) after every set-up
+					// keep that DAC on while receiving (4:0x25 = 0x0C, measured) after every set-up
 	uint8_t e0_set, e0_clear;	// codec input bits of 4:0xE0 forced after hrc6000_dmr_enter and hrc6000_set_mode_fm_tx
 					// (both 0: the driver's choice stands)
 	bool (*lo_high)(void *ctx, uint32_t hz);	// the first LO is above the signal at hz: the IF is inverted and the I/Q order swapped (hrc6000_rx_iq_swap)

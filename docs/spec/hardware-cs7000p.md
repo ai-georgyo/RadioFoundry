@@ -673,14 +673,23 @@ MOD2 is the HR_C6000's DAC on pin 75. So **the radio's frequency, in receive too
 with that DAC on**, on the synthesizer rail (the amplifier's supply and reference), and on PC8's mean level
 (section 7.6).
 
-The driver's set-ups leave 4:0x25 = 0x0E: the chip switches both DACs by TX slot. With `ref_dac_hold` the IF host
-writes 4:0x25 = 0x26 (bit 5 set, bit 3 clear) after every mode set-up and at every receive entry, so the DAC stays
-on while receiving, at the level of the two-point bias 4:0x47 / 0x48. Then it sets the reference offset,
-`CS7000P_REF_OFFSET`, which is 0.
+The driver's set-ups leave 4:0x25 = 0x0E: with it the pin 75 DAC is on only while the chip transmits. With
+`ref_dac_hold` the IF host writes 4:0x25 = 0x0C after every mode set-up and at every receive entry, so the DAC stays
+on while receiving, at mid-scale plus the offset in 4:0x04. Then it sets the reference offset, `CS7000P_REF_OFFSET`,
+which is 0.
 
-**Open, and the first RF measurement** (open question 1): which register drives which DAC pin, the bias's coding,
-and the level that puts the oscillator on frequency. Until then receive and transmit may sit several ppm off, and
-off from each other. The control amplifier settles through 1 uF into about 6 k: nothing transmits and no frequency
+**Measured on one radio (2026-11-22).** With the DAC off (the first image wrote 0x26, the manual's recipe, which does
+nothing on this pin) MOD2 sits at 0 V, the control voltage near 2.84 V, and the receiver is about 10.5 kHz high at
+433.5 MHz: a 433.500 MHz carrier is centered with the radio tuned to 433.490 MHz, and the squelch never opens on
+channel. With the DAC on at mid-scale the same carrier is centered on 433.500 MHz (signal and noise readings equal to
+the passband's center). PC8's duty moves the passband by about 2 kHz end to end, which gives about 8 kHz per volt of
+control voltage at this frequency. The table of control words is in
+[hrc6000-registers.md](hrc6000-registers.md) 3.22.
+
+**Still open** (open question 1): the offset in 4:0x04 that puts this unit exactly on frequency (the passband is
+flat near its center, so it needs a frequency counter on the transmitter or a narrower measurement), the same for
+other units, and what the DAC does in a DMR TX slot. Until the offset is measured, receive and transmit may sit a
+few ppm off. The control amplifier settles through 1 uF into about 6 k: nothing transmits and no frequency
 is measured until `CS7000P_REF_SETTLE_MS` (30 ms) after the synthesizer rail came on (open question 35).
 
 ---
