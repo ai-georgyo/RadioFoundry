@@ -30,10 +30,11 @@
 #include "keys_cs7000p.h"
 #include "subpwm_cs7000p.h"	// PC8's period and idle duty, the sub-audio generator's
 #include "rfplan_cs7000p.h"	// the band edges
-// 1: allow the software entry to the ROM bootloader (board_rom_entry_ok below). A bench knob
-// (docs/testing/cs7000p-bringup.md)
+// 1: allow the software entry to the ROM bootloader under the rule of romentry_cs7000p.h (board_rom_entry_ok below),
+// so an update needs no key held at power-on. 0 refuses it always. On since a radio's owner asked for it with the
+// rule's refusal kept (docs/testing/cs7000p-bringup.md)
 #ifndef CS7000P_SOFT_ROM_ENTRY
-#define CS7000P_SOFT_ROM_ENTRY	0
+#define CS7000P_SOFT_ROM_ENTRY	1
 #endif
 
 // One band. Receive 400-527 MHz: the maker's manual ("the frequency of this radio is 400-527 MHz"). Transmit only

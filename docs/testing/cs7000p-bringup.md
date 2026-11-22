@@ -140,7 +140,7 @@ one rebuild can carry several.
 | `CS7000P_VOL_FULL_RAW` | 4095 | The `VOL-DET` reading at full volume (`battery_cs7000p.h`). The default is the ADC's full scale: no source has the pot's resistance, so the position reads low at the top until it is measured |
 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV` | 4006, 245 | The battery model: mV = (gain x `POW_DET` mV) / 1000 - offset (`battery_cs7000p.h`) |
 | `CS7000P_BENCH_DMR_TX` | 0 | 1: the bench drive override may also key DMR bursts |
-| `CS7000P_SOFT_ROM_ENTRY` | 0 | 1: allows the software entry to the ROM bootloader, and then only with loader version 0x91 or with PB10 reading high (`board.c`; the rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h`). With 0, `rfoundry_debug.py reboot --rom-dfu` gets a refusal (reason 5) and the radio runs on |
+| `CS7000P_SOFT_ROM_ENTRY` | 1 | 1: allows the software entry to the ROM bootloader, and then only with loader version 0x91 or with PB10 reading high (`board.c`; the rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h`). Refused, or with 0, `rfoundry_debug.py reboot --rom-dfu` gets a refusal (reason 5) and the radio runs on |
 
 Not knobs, but the places for measured values: `CS7000P_FN_KEYS` and the selector's table in `keys_cs7000p.h`; the
 model tables in `rfcal_cs7000p.c`; the polarity of an expander bit in `exp_cs7000p.h`; the fixed waits in
@@ -412,7 +412,7 @@ What the shared sequencer (`drivers/rf/chainseq`) assumes about this chain, each
 
 | Check | Question | Knob |
 |---|---|---|
-| The software entry to the ROM bootloader: the loader's version from `board.rom_loader`; whether the HR_C6000 releases its data output while deselected (PB14 against the loader's pin); PB10 with the selector in each position; whether the request survives in the backup register | 18 | `CS7000P_SOFT_ROM_ENTRY=1`. Without it, or on a loader other than 0x91 with PB10 low, `reboot --rom-dfu` is refused (reason 5) before anything happens. If the request is lost, the tool's after-OK hint says the request could not be stored and nothing is armed. SK1 at power-on stays available |
+| The software entry to the ROM bootloader: the loader's version from `board.rom_loader`; whether the HR_C6000 releases its data output while deselected (PB14 against the loader's pin); PB10 with the selector in each position; whether the request survives in the backup register | 18 | On by default (`CS7000P_SOFT_ROM_ENTRY`). On a loader other than 0x91 with PB10 low (`board.chsw_raw` bit 2 clear), `reboot --rom-dfu` is refused (reason 5) before anything happens: turn the selector a step. If the request is lost, the tool's after-OK hint says the request could not be stored and nothing is armed. SK1 at power-on stays available |
 | The VCAP capacitors' real value | 15 | none: the port stays at VOS3 |
 | What the pack puts on BAT_DET; IC611; the unlabeled expander output | 24 | recorded only |
 | A watchdog reset with SK1 held and the knob off; a power-on with SK1 held and the knob turned off in the loader, over several cold starts (does IC621 come up with the hold set?) | 29 | none: the pack comes off |
@@ -486,7 +486,7 @@ checked above, and what to change.
 | 15 | The core supply is good at VOS3 | 12 | none |
 | 16 | The crystal starts without bypass; USB works from a PLL with a 1 MHz input | 3 | the clock table in `board.c`. A table with a 5 MHz input that stays in VOS3: `pll_m` 5, `pll_n` 144 (VCO 720 MHz, wide range), `pll_p` 4 (CPU 180 MHz), `pll_q` 15 (48 MHz), `ahb_div` 2 (HCLK 90 MHz), `apb_div` 2 (45 MHz, timers 90 MHz), `flash_latency` 1. With it `board.c`'s static asserts (the medium VCO, two wait states) change, PC8's period follows the timer clock (87.9 kHz: `subpwm_cs7000p.h`), and question 17 is checked again (5 x 90 = 450 MHz). The platform never changes the voltage scale, and question 15 is against a higher one |
 | 17 | The bus clock's harmonics don't desense the receiver | 9 | the clock table |
-| 18 | The software ROM entry is unsafe until shown otherwise: off | 12 | `CS7000P_SOFT_ROM_ENTRY` |
+| 18 | The software ROM entry reaches the loader and harms nothing: allowed only with loader 0x91 or PB10 high; not yet tried on a radio | 12 | `CS7000P_SOFT_ROM_ENTRY` |
 | 19 | The ROM's Leave starts the image; an erased first sector starts nothing | 3 | the tools already ask for a power cycle |
 | 20 | Nothing unit-specific is in the processor's flash | 0, 2 | none: the codeplug saved (and the tuning data, if the maker's tuner can export it), the maker's recovery, the codeplug written back, before the install |
 | 21 | Nothing is known about the maker's data on the flash chip: nothing is written before the claim | 6 | `STORAGE_CLAIM_FIRST` stays |
