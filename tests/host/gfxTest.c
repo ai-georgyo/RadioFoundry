@@ -30,7 +30,8 @@ static void d_flush_indexed(const void *fb, const uint16_t *pal, uint16_t y0, ui
 static void d_backlight(uint8_t p) { (void)p; }
 static hal_display_t disp = { .width = 160, .height = 120, .bpp = 16, .init = d_init, .flush = d_flush, .set_backlight = d_backlight };
 
-static const band_t bands[] = { { 136000000, 174000000, true }, { 400000000, 480000000, true } };
+// Not const: test_bands_text changes them
+static band_t bands[] = { { 136000000, 174000000, true }, { 400000000, 480000000, true } };
 static const char *const power_names[] = { "50mW", "250mW", "500mW", "750mW", "1W", "2W", "3W", "4W", "5W" };
 const board_t board = {
 	.name = "Test radio", .bands = bands, .band_count = 2, .power_count = 9, .power_names = power_names,
@@ -498,6 +499,29 @@ static void test_pass_wait(void)
 	CHECK(!gfx_held(5));
 }
 
+// The bands as a hint shows them (ui_bands_text): edges to the nearest MHz, so one a fraction of a channel inside a
+// whole MHz limit reads as that MHz, not as the one below
+static void test_bands_text(void)
+{
+	char text[32];
+	const band_t were[2] = { bands[0], bands[1] };
+	ui_bands_text(text, sizeof text, true);
+	CHECK(strcmp(text, "136-174 400-480") == 0);
+	bands[0] = (band_t){ 400000000, 405987500, true };
+	bands[1] = (band_t){ 406112500, 512000000, true };
+	ui_bands_text(text, sizeof text, true);
+	CHECK(strcmp(text, "400-406 406-512") == 0);
+	// A receive-only range is left out of what may transmit; half a MHz goes up
+	bands[0] = (band_t){ 405987500, 406112500, false };
+	bands[1] = (band_t){ 430499999, 439500000, true };
+	ui_bands_text(text, sizeof text, true);
+	CHECK(strcmp(text, "430-440") == 0);
+	ui_bands_text(text, sizeof text, false);
+	CHECK(strcmp(text, "406-406 430-440") == 0);
+	bands[0] = were[0];
+	bands[1] = were[1];
+}
+
 #if CONFIG_LANG_ZH
 // A CJK catalog's text (CONFIG_LANG_ZH): UTF-8 decoded one character at a time, 16 px a character, widths in pixels, and
 // a cut that keeps whole characters (docs/spec/ui.md 2.5, core/ui/cjk_font.h)
@@ -700,6 +724,7 @@ int main(void)
 	test_aa_text();
 	test_splash_footer();
 	test_pass_wait();
+	test_bands_text();
 	test_idle_pill_contrast();
 	test_big_text();
 	test_hc_strip_white();

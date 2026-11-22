@@ -218,7 +218,7 @@ static void test_engine(void)
 	keyassign_set(s, 2, false, KEYFN_MONITOR);
 	keyassign_build(base, N, side, 3, s, map);
 	input_engine_init(&e, map, N, now);
-	input_engine_step(&e, 0, 0, now, emit, NULL);
+	hold(&e, &now, 0, INPUT_START_GUARD_SCANS * INPUT_SCAN_MS);	// past the start-up guard
 	nev = 0;
 	hold(&e, &now, 1u << K_SK1, 100);
 	CHECK(nev == 1 && evs[0].action == ACT_SCAN && evs[0].gesture == GESTURE_PRESS);
@@ -240,7 +240,7 @@ static void test_engine(void)
 	CHECK(keyassign_get(s, 1, false) == KEYFN_KEY_LOCK && keyassign_get(s, 1, true) == KEYFN_CALL_BACK);
 	keyassign_build(base, N, side, 3, s, map);
 	input_engine_init(&e, map, N, now);
-	input_engine_step(&e, 0, 0, now, emit, NULL);
+	hold(&e, &now, 0, INPUT_START_GUARD_SCANS * INPUT_SCAN_MS);	// past the start-up guard
 	nev = 0;
 	hold(&e, &now, 1u << K_SK2, 100);
 	CHECK(nev == 1 && evs[0].action == ACT_LOCK && evs[0].gesture == GESTURE_PRESS);
@@ -254,7 +254,7 @@ static void test_engine(void)
 	keyassign_set(s, 2, true, KEYFN_POWER);
 	keyassign_build(base, N, side, 3, s, map);
 	input_engine_init(&e, map, N, now);
-	input_engine_step(&e, 0, 0, now, emit, NULL);
+	hold(&e, &now, 0, INPUT_START_GUARD_SCANS * INPUT_SCAN_MS);	// past the start-up guard
 	nev = 0;
 	hold(&e, &now, 1u << K_TOP, 100);
 	CHECK(nev == 2 && evs[0].action == ACT_MONITOR && evs[0].gesture == GESTURE_DOWN &&
@@ -279,7 +279,7 @@ static void test_burst_edges(void)
 	CHECK(map[1].raw_edges && map[1].short_action == ACT_TONE_BURST &&
 	      map[1].long_action == ACT_TONE_BURST && !map[1].repeat);
 	input_engine_init(&e, map, N, now);
-	input_engine_step(&e, 0, 0, now, emit, NULL);
+	hold(&e, &now, 0, INPUT_START_GUARD_SCANS * INPUT_SCAN_MS);	// past the start-up guard
 	for (unsigned ms = 100; ms <= 3000; ms += 2900) {
 		nev = 0;
 		hold(&e, &now, 1u << K_SK1, ms);

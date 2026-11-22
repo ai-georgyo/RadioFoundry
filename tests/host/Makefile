@@ -912,14 +912,30 @@ hrc6000ToneTest: hrc6000ToneTest.c $(HRCDMR)/hrc6000_dmr.c $(HRC6K)/hrc6000.c $(
 
 # The speaker path through the HR_C6000's prompt FIFO in the FM copy (#673): the sample ring and the chip's FIFO writes
 TESTS   += promptFifoTest
-promptFifoTest: promptFifoTest.c $(HRC6K)/hrc6000.c $(HRCDMR)/hrc.c $(HRCDMR)/hrc.h $(ROOT)/platform/stm32f4/hrc/pcm_ring.h
+promptFifoTest: promptFifoTest.c $(HRC6K)/hrc6000.c $(HRCDMR)/hrc.c $(HRCDMR)/hrc.h $(ROOT)/platform/stm32/hrc/pcm_ring.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ promptFifoTest.c $(HRC6K)/hrc6000.c $(HRCDMR)/hrc.c
 
+# The HR_C6000 on a board that feeds it a 450 kHz IF (drivers/modem/hrc6000/if_host): the call order, the receive
+# hold of the DAC control word, the codec input rewrite and the bus failure count, against the fake register file;
+# and again as a build without DMR compiles it ($(FMONLY), defined above aprsRadioTest's rule)
+TESTS   += hrc6000IfHostTest hrc6000IfHostTestFm
+HRCIF   := $(HRC6K)/if_host/hrc6000_if_host.c $(HRCDMR)/hrc6000_dmr.c $(HRC6K)/hrc6000.c $(HRCDMR)/hrc.c \
+           $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c
+HRCIFH  := $(HRC6K)/if_host/hrc6000_if_host.h $(HRC6K)/hrc6000.h $(wildcard $(HRCDMR)/*.h) $(ROOT)/hal/hal_dmr_modem.h
+
+hrc6000IfHostTest: hrc6000IfHostTest.c $(HRCIF) $(HRCIFH)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ hrc6000IfHostTest.c $(HRCIF)
+
+hrc6000IfHostTestFm: hrc6000IfHostTest.c $(HRCIF) $(HRCIFH)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(FMONLY) -o $@ hrc6000IfHostTest.c $(HRCIF)
+
 run: run-modem
-run-modem: hrc6000DmrTest hrc6000ToneTest promptFifoTest
+run-modem: hrc6000DmrTest hrc6000ToneTest promptFifoTest hrc6000IfHostTest hrc6000IfHostTestFm
 	./hrc6000DmrTest
 	./hrc6000ToneTest
 	./promptFifoTest
+	./hrc6000IfHostTest
+	./hrc6000IfHostTestFm
 .PHONY: run-modem
 
 # The DMR receive chain: a model of the HR_C6000's reports through the slot engine, a batching board task and the call
@@ -1219,9 +1235,44 @@ lis3dhTest: lis3dhTest.c $(ROOT)/drivers/sensor/lis3dh/lis3dh.c $(ROOT)/drivers/
 baofengCalTest: baofengCalTest.c $(ROOT)/drivers/cal/baofeng/baofeng_cal.c $(ROOT)/drivers/cal/baofeng/baofeng_cal.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ baofengCalTest.c $(ROOT)/drivers/cal/baofeng/baofeng_cal.c
 
+# The small generic drivers a board lists by directory: the 74HC595 output expander against a model of the chain; the
+# three-wire bus on pin callbacks against models of a synthesizer and an IF receiver under their real drivers; the
+# st7735 driver's panel type from the controller's ID; a channel's sub-audio selection as the software detector takes it
+TESTS   += hc595Test wire3GpioTest st7735IdTest subaudioSelTest
+
+hc595Test: hc595Test.c $(ROOT)/drivers/io/hc595/hc595.c $(ROOT)/drivers/io/hc595/hc595.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ hc595Test.c $(ROOT)/drivers/io/hc595/hc595.c
+
+WIRE3_GPIO := $(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.c $(ROOT)/drivers/rf/sky72310/sky72310.c \
+	$(ROOT)/drivers/rf/ak2365a/ak2365a.c
+wire3GpioTest: wire3GpioTest.c $(WIRE3_GPIO) $(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.h $(ROOT)/drivers/bus/wire3.h \
+		$(ROOT)/drivers/rf/sky72310/sky72310.h $(ROOT)/drivers/rf/ak2365a/ak2365a.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ wire3GpioTest.c $(WIRE3_GPIO)
+
+st7735IdTest: st7735IdTest.c $(ROOT)/drivers/display/st7735/id/st7735_id.c $(ROOT)/drivers/display/st7735/id/st7735_id.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ st7735IdTest.c $(ROOT)/drivers/display/st7735/id/st7735_id.c
+
+subaudioSelTest: subaudioSelTest.c $(ROOT)/drivers/rf/subaudio/subaudio_sel.h $(ROOT)/drivers/rf/subaudio/subaudio_rx.h \
+		$(ROOT)/hal/hal_radio.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ subaudioSelTest.c
+
+# The RF chain sequencer (drivers/rf/chainseq) on a logging fake board: every sequence's order and waits, and its
+# three rules watched at every write, under every sequence of calls and with a write refused at every position.
+# chainseqTestFm: the same without the burst pieces, as a build with CONFIG_DMR off has it ($(FMONLY): aprsRadioTest's
+# set of switches, defined above it in the Makefile)
+TESTS   += chainseqTest chainseqTestFm
+
+CHAINSEQ := chainseqTest.c $(ROOT)/drivers/rf/chainseq/chainseq.c
+CHAINSEQ_H := $(ROOT)/drivers/rf/chainseq/chainseq.h $(CORE)/radio/apc_ramp.h $(CORE)/radio/pa_keyup.h $(CORE)/config.h
+chainseqTest: $(CHAINSEQ) $(CHAINSEQ_H)
+	$(CC) $(CFLAGS) -Wshadow -o $@ $(CHAINSEQ)
+
+chainseqTestFm: $(CHAINSEQ) $(CHAINSEQ_H)
+	$(CC) $(CFLAGS) -Wshadow $(FMONLY) -o $@ $(CHAINSEQ)
+
 run: run-drivers
 run-drivers: fd6818Test st7567Test st7735Test st7789Test keymatrixTest sharedPttTest chswitchTest plugPttTest hrc7000DmrTest hrc7000AirTest baofengCalTest rda5807mTest \
-             lis3dhTest hrc7000BsTest hrc7000DmrTestSplit
+             lis3dhTest hrc7000BsTest hrc7000DmrTestSplit hc595Test wire3GpioTest st7735IdTest subaudioSelTest chainseqTest chainseqTestFm
 	./hrc7000BsTest
 	./hrc7000DmrTestSplit
 	./lis3dhTest
@@ -1237,6 +1288,12 @@ run-drivers: fd6818Test st7567Test st7735Test st7789Test keymatrixTest sharedPtt
 	./hrc7000DmrTest
 	./hrc7000AirTest
 	./baofengCalTest
+	./hc595Test
+	./wire3GpioTest
+	./st7735IdTest
+	./subaudioSelTest
+	./chainseqTest
+	./chainseqTestFm
 	python3 -I $(ROOT)/tools/hrc7000_codec.py --self-test
 .PHONY: run-drivers
 
@@ -1310,9 +1367,65 @@ TESTS   += hrc7000CodecSlotTest
 hrc7000CodecSlotTest: hrc7000CodecSlotTest.c $(ROOT)/platform/hrc7000/codec_slot.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ hrc7000CodecSlotTest.c
 
+# The STM32 modem glue's interrupt lines (platform/stm32/hrc/hrc_lines.h): the masks, the "in a row" flag and the
+# one-by-one pick of the three lines' bits, with the default lines and with the system and RF TX lines crossed
+TESTS   += hrcLinesTest hrcLinesAltTest
+
+hrcLinesTest: hrcLinesTest.c $(ROOT)/platform/stm32/hrc/hrc_lines.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ hrcLinesTest.c
+hrcLinesAltTest: hrcLinesTest.c $(ROOT)/platform/stm32/hrc/hrc_lines.h
+	$(CC) $(CFLAGS) -Wshadow -DSTM32_HRC_LINE_SYS=3 -DSTM32_HRC_LINE_RFTX=2 -o $@ hrcLinesTest.c
+
+# The STM32H7's clock table arithmetic (platform/stm32h7/clock_math.h): the rates of a table, each limit of the
+# voltage scale the platform runs at, the flash wait state rule, the register codes, the same rates from the HSI
+TESTS   += stm32h7ClockTest
+stm32h7ClockTest: stm32h7ClockTest.c $(ROOT)/platform/stm32h7/clock_math.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ stm32h7ClockTest.c
+
+# The STM32H7's debug link windows (platform/stm32h7/mem_window.h) through the debug link's own gate: READ_MEM never
+# reaches RAM or a peripheral, CHIP_REG only the peripheral buses and the core's own registers
+TESTS   += stm32h7WindowTest
+stm32h7WindowTest: stm32h7WindowTest.c $(ROOT)/platform/stm32h7/mem_window.h $(CORE)/debuglink/dl_chip.c \
+		$(CORE)/debuglink/dl_chip.h $(ROOT)/hal/hal_system.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ stm32h7WindowTest.c $(CORE)/debuglink/dl_chip.c
+
+# The STM32H7 I2S data direction probe's pure part (platform/stm32h7/hrc/i2s_dir.h): the sense tried first for each
+# wiring, the verdict for every outcome of the two passes, the edge threshold
+TESTS   += stm32h7I2sDirTest
+stm32h7I2sDirTest: stm32h7I2sDirTest.c $(ROOT)/platform/stm32h7/hrc/i2s_dir.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ stm32h7I2sDirTest.c
+
+# The shared STM32 glue a board lists by directory (platform/stm32/lcd8080_gpio, gpio_keypad, dmr_keyup), on
+# stubs/stm32gpio: a stand-in platform.h whose ports are fake registers a test watches pin by pin, and a FreeRTOS.h
+# with the interrupt mask and configASSERT. The stub directory comes first on the include path: platform/stm32 has the
+# real platform.h
+STM32GLUE := -Istubs/stm32gpio -I$(ROOT)/platform/stm32 -I$(ROOT)/hal -Wshadow
+STM32GLUE_H := $(wildcard stubs/stm32gpio/*.h)
+
+# The 8080 display bus on GPIO against a panel that watches every pin, then the real display driver's init on it
+TESTS   += lcd8080GpioTest
+LCD8080 := lcd8080GpioTest.c $(ROOT)/platform/stm32/lcd8080_gpio/lcd8080_gpio.c $(ROOT)/drivers/display/st7735/st7735.c
+lcd8080GpioTest: $(LCD8080) $(ROOT)/platform/stm32/lcd8080_gpio/lcd8080_gpio.h $(ROOT)/drivers/display/st7735/st7735.h \
+		$(STM32GLUE_H)
+	$(CC) $(CFLAGS) $(STM32GLUE) -o $@ $(LCD8080)
+
+# The key matrix on GPIO lines that may be a bus, against a matrix of keys that join the lines they sit on
+TESTS   += gpioKeypadTest
+GPIOKEYPAD := gpioKeypadTest.c $(ROOT)/platform/stm32/gpio_keypad/gpio_keypad.c
+gpioKeypadTest: $(GPIOKEYPAD) $(ROOT)/platform/stm32/gpio_keypad/gpio_keypad.h $(ROOT)/hal/hal_time.h $(STM32GLUE_H)
+	$(CC) $(CFLAGS) $(STM32GLUE) -o $@ $(GPIOKEYPAD)
+
+# The DMR burst key-up runner on a fake one-shot timer, fake RF ops and a fake modem glue, with the real key-up rule
+TESTS   += dmrKeyupTest
+DMRKEYUP := dmrKeyupTest.c $(ROOT)/platform/stm32/dmr_keyup/dmr_keyup.c $(CORE)/radio/pa_keyup.c
+dmrKeyupTest: $(DMRKEYUP) $(ROOT)/platform/stm32/dmr_keyup/dmr_keyup.h $(ROOT)/platform/stm32/oneshot.h \
+		$(ROOT)/platform/stm32/hrc/dmr_glue.h $(CORE)/radio/pa_keyup.h $(ROOT)/hal/hal_radio.h $(STM32GLUE_H)
+	$(CC) $(CFLAGS) $(STM32GLUE) -DCONFIG_DMR=1 -o $@ $(DMRKEYUP)
+
 run: run-platform
 run-platform: bk4819Test at1141Test fd6818shTest superhetTest rfbusI2cTest hrc7000ClockTest hrc7000UartFormatTest hrc7000CodecSlotTest \
-		hrc7000IrqStallTest hrc7000UartIdleTest hrc7000RfburstTest
+		hrc7000IrqStallTest hrc7000UartIdleTest hrc7000RfburstTest hrcLinesTest hrcLinesAltTest \
+		stm32h7ClockTest stm32h7WindowTest stm32h7I2sDirTest lcd8080GpioTest gpioKeypadTest dmrKeyupTest
 	./bk4819Test
 	./at1141Test
 	./fd6818shTest
@@ -1325,6 +1438,14 @@ run-platform: bk4819Test at1141Test fd6818shTest superhetTest rfbusI2cTest hrc70
 	./hrc7000RfburstTest
 	python3 -I $(ROOT)/tools/hrc7000_codec.py --test-slot hrc7000_test_slot.bin
 	./hrc7000CodecSlotTest hrc7000_test_slot.bin
+	./hrcLinesTest
+	./hrcLinesAltTest
+	./stm32h7ClockTest
+	./stm32h7WindowTest
+	./stm32h7I2sDirTest
+	./lcd8080GpioTest
+	./gpioKeypadTest
+	./dmrKeyupTest
 .PHONY: run-platform
 
 # The HR_C7000 interrupt stack's fill, canary and high-water count (platform/hrc7000/irq_stack.h)
@@ -1412,10 +1533,19 @@ TESTS   += settingsTest
 settingsTest: settingsTest.c $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h sim/sim_flash.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ settingsTest.c $(STORE)
 
+# core/storage as a board with a flash of unknown foreign layout builds it: claimed before its first write
+# (docs/spec/settings-store.md 5). The define must be 1 here; the test refuses to compile without it
+TESTS   += storageClaimFirstTest
+
+storageClaimFirstTest: storageClaimFirstTest.c $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h sim/sim_flash.h)
+	$(CC) $(CFLAGS) -DSTORAGE_CLAIM_FIRST=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageClaimFirstTest.c $(STORE)
+
 run: run-settings
-run-settings: settingsTest spiNorTest spiNandTest nandSectorsTest
+run-settings: settingsTest storageClaimFirstTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
 	./settingsTest
+	./storageClaimFirstTest
 	./spiNorTest
+	./spiNorAddr4Test
 	./spiNandTest
 	./nandSectorsTest
 .PHONY: run-settings
@@ -1461,6 +1591,16 @@ spiNorTest: spiNorTest.c $(ROOT)/drivers/flash/spi_nor/spi_nor.c $(ROOT)/drivers
             $(ROOT)/drivers/bus/spi_bus.h $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ spiNorTest.c $(ROOT)/drivers/flash/spi_nor/spi_nor.c \
 		$(CORE)/storage/storage.c $(CORE)/settings/settings.c
+
+# The same again with the driver as a board with a part larger than 16 MB builds it (SPI_NOR_ADDR4): 4-byte addresses,
+# the reset at the probe, a chip other firmware left in another address mode, busy or with a suspended operation, the
+# extended address register after every transaction, and the journal and settings store on a 32 MB part
+TESTS   += spiNorAddr4Test
+
+spiNorAddr4Test: spiNorTest.c $(ROOT)/drivers/flash/spi_nor/spi_nor.c $(ROOT)/drivers/flash/spi_nor/spi_nor.h \
+                 $(ROOT)/drivers/bus/spi_bus.h $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h)
+	$(CC) $(CFLAGS) -DSPI_NOR_ADDR4=1 -I$(ROOT)/hal -I. -Wshadow -o $@ spiNorTest.c \
+		$(ROOT)/drivers/flash/spi_nor/spi_nor.c $(CORE)/storage/storage.c $(CORE)/settings/settings.c
 
 # The SPI NAND driver against a model of the chip at the bus: ID, page reads through the cache, ECC status, bad-block
 # marks, a chip that stays busy or doesn't answer; program loads, internal data moves, erase, the block lock, the write
@@ -1614,6 +1754,23 @@ run: run-cpsfast
 run-cpsfast: cpsFastTest
 	./cpsFastTest
 .PHONY: run-cpsfast
+
+# app.c's start-up order on a region that isn't ours, the staging area holding another firmware's bytes: the two
+# resumes erase nothing. As is (foreign by its data) and claim first (foreign while blank too)
+STORBOOT := $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c
+TESTS   += storageBootTest storageBootClaimFirstTest
+
+storageBootTest: storageBootTest.c $(STORBOOT) $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -o $@ storageBootTest.c $(STORBOOT)
+storageBootClaimFirstTest: storageBootTest.c $(STORBOOT) $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -DSTORAGE_CLAIM_FIRST=1 -o $@ storageBootTest.c \
+		$(STORBOOT)
+
+run: run-storageboot
+run-storageboot: storageBootTest storageBootClaimFirstTest
+	./storageBootTest
+	./storageBootClaimFirstTest
+.PHONY: run-storageboot
 
 # tools/cps_client.py against the shim on stdin / stdout (cpsSim), when python3 is there; the sim also answers the
 # debug link's VERSION, CODEPLUG and IDDB, for tools/cps_fast.py (cpsFastClientTest.py)

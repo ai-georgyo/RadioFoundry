@@ -111,6 +111,48 @@ static void test_signed_fraction(void)
 	}
 }
 
+// The reference divider pick: the smallest one whose ratio the part takes
+static void test_pick_ref_div(void)
+{
+	sky72310_ratio_t r;
+	// A 16.8 MHz reference and a UHF band's first LO and carrier, 350 to 527 MHz: 2 throughout (8.4 MHz at the phase
+	// detector, N 41.7 to 62.7); 1 would put N at 20.8 to 31.4, below the fractional range
+	for (uint32_t f = 350050000u; f <= 527000000u; f += 12500u * 97u) {
+		CHECK(sky72310_pick_ref_div(16800000u, f) == 2);
+	}
+	CHECK(sky72310_pick_ref_div(16800000u, 527000000u) == 2);
+	CHECK(!sky72310_ratio(16800000u, 1, 527000000u, &r));
+	// The edge: N 37.5 at divider 2 is 315 MHz. Below it 3 (5.6 MHz), then 4 from N 37.5 at 5.6 MHz, 210 MHz
+	CHECK(sky72310_pick_ref_div(16800000u, 315000000u) == 2);
+	CHECK(sky72310_pick_ref_div(16800000u, 314999000u) == 3);
+	CHECK(sky72310_pick_ref_div(16800000u, 270000000u) == 3);
+	CHECK(sky72310_pick_ref_div(16800000u, 210000000u) == 3);
+	CHECK(sky72310_pick_ref_div(16800000u, 209999000u) == 4);
+	// High enough for the reference itself: N 38 at divider 1 is 638.4 MHz (N 37.5: 630 MHz)
+	CHECK(sky72310_pick_ref_div(16800000u, 630000000u) == 1);
+	CHECK(sky72310_pick_ref_div(16800000u, 629999000u) == 2);
+	// A reference over the phase detector's 50 MHz: the dividers that leave it there are passed over
+	CHECK(sky72310_pick_ref_div(80000000u, 2000000000u) == 2);	// 40 MHz, N 50
+	CHECK(sky72310_pick_ref_div(120000000u, 2000000000u) == 3);	// 40 MHz again
+	// The largest divider, 32 (the arithmetic only: the part's lowest VCO frequency is 12 x the reference)
+	CHECK(sky72310_pick_ref_div(16800000u, 20000000u) == 32);	// N 38.1
+	CHECK(sky72310_pick_ref_div(16800000u, 19950000u) == 32);	// N 38.0
+	// None: too low for even the largest divider (N 19 at 32), too high for the smallest (N 600 at 1, more above),
+	// no reference
+	CHECK(sky72310_pick_ref_div(16800000u, 10000000u) == 0);
+	CHECK(sky72310_pick_ref_div(1000000u, 600000000u) == 0);
+	CHECK(sky72310_pick_ref_div(0u, 400000000u) == 0);
+	// The pick is the smallest: every divider below it is refused, and it is accepted
+	for (uint32_t f = 60000000u; f <= 700000000u; f += 3141593u) {
+		uint8_t d = sky72310_pick_ref_div(16800000u, f);
+		CHECK(d >= 1 && d <= 32);
+		CHECK(sky72310_ratio(16800000u, d, f, &r));
+		for (uint8_t k = 1; k < d; k++) {
+			CHECK(!sky72310_ratio(16800000u, k, f, &r));
+		}
+	}
+}
+
 static void test_words_and_order(void)
 {
 	sky72310_t dev;
@@ -152,6 +194,20 @@ static void test_words_and_order(void)
 	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == ((SKY72310_MUX_FPD << SKY72310_MUX_SHIFT) | SKY72310_PWR_FULL_DOWN));
 	CHECK(sky72310_power_down(&dev, false));
 	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == (SKY72310_MUX_FPD << SKY72310_MUX_SHIFT));
+	// Mux_out off: the tri-state bit and no source, powered and powered down, from the init on
+	dev.mux = SKY72310_MUX_OFF;
+	CHECK(sky72310_init(&dev));
+	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == SKY72310_MUX_TRISTATE);
+	CHECK(sky72310_power_down(&dev, true));
+	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == (SKY72310_MUX_TRISTATE | SKY72310_PWR_FULL_DOWN));
+	CHECK(sky72310_power_down(&dev, false));
+	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == SKY72310_MUX_TRISTATE);
+	// The default a board gets from the attach: the reference oscillator, the pin driven (what md380 programs)
+	sky72310_t fresh;
+	sky72310_attach(&fresh, dev.bus, 16800000u, 31);
+	CHECK(fresh.mux == SKY72310_MUX_OSC);
+	CHECK(sky72310_init(&fresh));
+	CHECK(chip.reg[SKY72310_REG_POWER_MUX] == 0);
 
 	chip.lock = false;
 	CHECK(!sky72310_wait_lock(&dev, 100));
@@ -165,6 +221,7 @@ int main(void)
 	test_limits();
 	test_words_and_order();
 	test_signed_fraction();
+	test_pick_ref_div();
 	printf("sky72310Test: %s (%d failures)\n", failures ? "FAILED" : "passed", failures);
 	return failures ? 1 : 0;
 }

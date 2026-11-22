@@ -3,20 +3,21 @@
 """CHIP_REG's SoC form reads what READ_MEM reads (docs/spec/debuglink.md 3.24).
 
 A register both commands reach (the interrupt controller's polarity word on the HR_C7000, all ones from start-up; the
-Cortex-M4 CPUID on the STM32F4, r0p1) reads
+core's CPUID on an STM32: Cortex-M4 r0p1 on the STM32F4, Cortex-M7 r1p1 on the STM32H7) reads
 the same through each, and an address outside the platform's register windows is refused. Reads only, nothing
 transmitted. Skipped on firmware without CHIP_REG and on platforms without SoC register windows.
 """
 import pytest
 
 from rfoundry_hil import DebugLinkError, skip
-from rfoundry_debug import CHIP_HRC7000, CHIP_STM32F4, ST_REFUSED, ST_UNAVAILABLE
+from rfoundry_debug import CHIP_HRC7000, CHIP_STM32F4, CHIP_STM32H7, ST_REFUSED, ST_UNAVAILABLE
 
 ST_UNKNOWN_CMD = 1
 # Per chip family: a register word with no read side effects that both windows hold, its start-up value, and an address
-# outside the register windows (main SRAM)
+# outside the register windows (RAM)
 PROBES = {CHIP_HRC7000: (0x17000004, 0xFFFFFFFF, 0x00010000),
-          CHIP_STM32F4: (0xE000ED00, 0x410FC241, 0x20000000)}
+          CHIP_STM32F4: (0xE000ED00, 0x410FC241, 0x20000000),
+          CHIP_STM32H7: (0xE000ED00, 0x411FC271, 0x24000000)}
 
 
 @pytest.mark.feature("debuglink")

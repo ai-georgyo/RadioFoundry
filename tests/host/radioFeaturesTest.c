@@ -1447,6 +1447,65 @@ static void test_vfo_scan(void)
 	hw.sig[0].hz = 0;
 }
 
+// A band whose low edge is on the raster of few steps (a limit half a channel inside a whole MHz): the band sweep's
+// low end is the band's first frequency on the step's raster, so the scan is still on it after every wrap
+static void test_vfo_scan_band_edge(void)
+{
+	static const band_t edge_bands[] = { { 136000000, 174000000, true }, { 406112500, 406412500, true } };
+	static const uint32_t steps[] = { 2500, 5000, 6250, 8333, 10000, 12500, 20000, 25000, 50000, 100000 };
+	const band_t *bands_were = board.bands;
+	start();
+	board.bands = edge_bands;
+	for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		const uint32_t step = steps[i];
+		req(RREQ_VFO_SET, 406300000);
+		req(RREQ_VFO_STEP_SIZE, (int32_t)step);
+		CHECK(sm.view.vfo && sm.view.ch.rx_hz == 406300000 && sm.view.vfo_step_hz == step);
+		req(RREQ_SCAN, RSCAN_VFO);
+		CHECK(sm.view.scan == SCAN_VFO && sm.scan.hi_hz == 406412500);
+		CHECK(sm.scan.lo_hz == 406000000 + (112500 + step - 1) / step * step);
+		// Two wraps: every stop from the first one on is on the raster and in the band
+		int wraps = 0, stops = 0, off = 0;
+		uint32_t last = sm.view.ch.rx_hz;
+		for (int n = 0; n < 4000 && wraps < 2; n++) {
+			run(25);
+			uint32_t hz = sm.view.ch.rx_hz;
+			if (hz == last) {
+				continue;
+			}
+			wraps += hz < last;
+			last = hz;
+			if (wraps != 0) {
+				stops++;
+				off += (hz - 406000000) % step != 0 || hz < 406112500 || hz > 406412500;
+			}
+		}
+		CHECK(wraps == 2 && stops >= 3 && off == 0);
+		if (off != 0) {
+			printf("# step %u Hz: %d of %d stops off the raster after a wrap\n", (unsigned)step, off, stops);
+		}
+		req(RREQ_SCAN, RSCAN_CANCEL);
+		CHECK(sm.view.scan == SCAN_OFF && sm.view.ch.rx_hz == 406300000);
+		// A range that was asked for keeps its own low end
+		req2(RREQ_SCAN_VFO, 406112500, 406412500);
+		CHECK(sm.view.scan == SCAN_VFO && sm.scan.lo_hz == 406112500);
+		req(RREQ_SCAN, RSCAN_CANCEL);
+	}
+	// An edge on a whole MHz is the low end whatever the step and wherever the VFO is on it
+	static const uint32_t vfos[] = { 146000000, 146005000, 146006250, 173999000 };
+	for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		for (unsigned v = 0; v < sizeof(vfos) / sizeof(vfos[0]); v++) {
+			req(RREQ_VFO_SET, (int32_t)vfos[v]);
+			req(RREQ_VFO_STEP_SIZE, (int32_t)steps[i]);
+			req(RREQ_SCAN, RSCAN_VFO);
+			CHECK(sm.view.scan == SCAN_VFO && sm.scan.lo_hz == 136000000 && sm.scan.hi_hz == 174000000);
+			req(RREQ_SCAN, RSCAN_CANCEL);
+		}
+	}
+	req(RREQ_VFO_STEP_SIZE, 0);
+	board.bands = bands_were;
+}
+
 // ---- DMR on the simulated modem (as in radioCoreTest.c) ----
 
 static bool lc_private;		// hear_call: a private call to dst rather than a group call
@@ -4781,6 +4840,7 @@ int main(void)
 	test_zone_scan();
 	test_scan_ptt_and_modes();
 	test_vfo_scan();
+	test_vfo_scan_band_edge();
 	test_mixed_scan();
 	test_scan_dmr_mid_call();
 	test_scan_dmr_digital_monitor();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // The speaker path through the HR_C6000's prompt FIFO (#673; modem-hrc6000.md 8.1): the ring between the audio task
-// and the feeder (platform/stm32f4/hrc/pcm_ring.h) gives back every block in order, in 32-sample chunks, across the
+// and the feeder (platform/stm32/hrc/pcm_ring.h) gives back every block in order, in 32-sample chunks, across the
 // 2^32 index wrap, reports an underrun as silence and refuses a block it has no room for; the chip's FIFO functions
 // (hrc_prompt_*) set and clear only 4:0x06 bit 1, read the room from 4:0x88 bit 0 and write 32 samples big endian to
 // page 3 address 0x00. Against a fake register file. The chip the speaker goes to (pcm_fifo_chip, #753): the FM copy's
@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "modem/hrc6000/hrc6000.h"
-#include "../../platform/stm32f4/hrc/pcm_ring.h"
+#include "../../platform/stm32/hrc/pcm_ring.h"
 
 static int failures, checks;
 

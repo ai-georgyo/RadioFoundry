@@ -500,6 +500,31 @@ static void test_info_and_reads(void)
 	       (unsigned)(sizeof(bad) / sizeof(bad[0])));
 }
 
+// A foreign region (another firmware's ring and journal): READ and SUMS give the chip's own VFO A bytes, whatever the
+// live VFO, so a backup taken before a claim holds what the claim may later overwrite
+static void test_foreign_reads(void)
+{
+	static uint8_t got[BLOCK];
+	uint8_t fmt;
+	unsigned reqs;
+
+	boot(&dm1701_map, true);
+	for (uint32_t i = 0; i < BLOCK; i++) {
+		sim_flash_data[0x7000u + i] = (uint8_t)(i % 56u);	// another firmware's VFO A at 0x590
+	}
+	for (uint32_t i = 0; i < 0xA000u; i++) {
+		sim_flash_data[0x11000u + i] = (uint8_t)(0x30 + i * 11u);	// no record of ours
+	}
+	boot(&dm1701_map, false);
+	CHECK(storage_region() == STORAGE_REGION_FOREIGN);
+	settings_t *st = settings_begin();
+	st->vfo_rx_hz = st->vfo_tx_hz = 446006250u;
+	settings_end(now);
+	CHECK(read_block(0x7000, got, &fmt, &reqs) && memcmp(got, &sim_flash_data[0x7000], BLOCK) == 0);
+	CHECK(sums(0x7000, 1) == DL_ST_OK && g32(&rep[8]) == storage_crc32(0, &sim_flash_data[0x7000], BLOCK));
+	printf("# a foreign region reads as stored, no VFO overlay\n");
+}
+
 // --- writing ---
 
 static uint8_t last_format;
@@ -983,6 +1008,7 @@ int main(void)
 	test_power_cuts();
 	test_bad_records();
 	test_settings_area();
+	test_foreign_reads();
 	CHECK(sim_flash_violations() == 0);
 	sim_flash_free();
 	printf("# cpsFastTest: %d checks, %s\n", checks, failures ? "FAILED" : "PASSED");
