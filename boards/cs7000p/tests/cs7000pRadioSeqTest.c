@@ -1,0 +1,1011 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 The RadioFoundry Authors
+// The CS7000 M17 PLUS RF chain (rfops_cs7000p.c under drivers/rf/chainseq) on a fake expander and DAC that carry
+// the board's own interlock (exp_cs7000p.h), a fake synthesizer and IF chip. Checked at every write: the transmit
+// rail only changes with the DAC at or under the floor and the loop open, it is never on with the receive VCO
+// selected, and the interlock's rule holds. Then the orders of receive, FM transmit and a burst, and every way a
+// transmission is refused: no calibration (nothing is written), the bench drive's conditions one by one, the
+// reference's settle time, the battery, the power's off state, an unlocked synthesizer, a refused write, a safe
+// request from outside.
+#include <stdio.h>
+#include <string.h>
+#include "rfops_cs7000p.h"
+#include "rfplan_cs7000p.h"
+#include "exp_cs7000p.h"
+#include "radio/pa_keyup.h"
+
+static int failures;
+
+#define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
+
+#define MHZ	1000000u
+
+// --- The fake board ---
+
+enum { EV_EXP, EV_DAC, EV_SYNTH, EV_IF, EV_DELAY };
+typedef struct {
+	uint8_t type;
+	uint32_t a, b;	// EXP: set, clear. DAC: value. SYNTH: divider, Hz. IF: wide. DELAY: us
+} ev_t;
+
+#define EV_MAX	512
+static ev_t ev[EV_MAX];
+static int ev_n;
+
+static cs7000p_rf_t rf;
+static uint32_t shadow;		// the expander's outputs
+static uint16_t dac_now;	// the shared DAC, 0 = off
+static uint16_t il_floor;	// the interlock's floor (the build's CS7000P_APC_FLOOR)
+static bool pll_locked;
+static uint32_t us_total;
+static int trips;		// writes the interlock refused
+static int inv_fail;		// writes that broke a rule of the chain
+static uint32_t refuse_set;	// expander bits the fake refuses to set (a fault to inject)
+static int dac_fail_in;		// the n-th DAC write over the floor from now fails (0: none)
+static int safe_in_delays;	// a safe request from outside lands in the n-th delay from now (0: none)
+static int safe_at_ev;		// the log's length when it landed (-1: not yet)
+static uint16_t drive_cap;	// the largest reference a closed loop may see
+
+static void log_ev(uint8_t type, uint32_t a, uint32_t b)
+{
+	if (ev_n < EV_MAX) {
+		ev[ev_n++] = (ev_t){ type, a, b };
+	} else {
+		inv_fail++;
+	}
+}
+
+// After every write that was let through
+static void rules(uint32_t before)
+{
+	if (((before ^ shadow) & EXP_TX_RAIL) != 0u && (dac_now > il_floor || ((before | shadow) & EXP_APC_LOOP) != 0u)) {
+		inv_fail++;	// the transmit rail moved under a reference or a closed loop
+	}
+	if ((shadow & EXP_TX_RAIL) != 0u && (shadow & EXP_VCO_RX) != 0u) {
+		inv_fail++;	// the transmitter powered with the receive VCO selected
+	}
+	if ((shadow & EXP_APC_LOOP) != 0u && ((shadow & EXP_TX_RAIL) == 0u || dac_now > drive_cap)) {
+		inv_fail++;	// the loop closed without its rail, or on something that is no drive
+	}
+	if (!exp_dac_ok(shadow, dac_now, il_floor)) {
+		inv_fail++;
+	}
+	if ((shadow & (EXP_POWER_HOLD | EXP_MOTOR | EXP_BT_ON | EXP_SPARE | EXP_AF_MUTE)) != 0u) {
+		inv_fail++;	// not the radio's bits
+	}
+}
+
+// cs7000p_exp_set as exp_cs7000p.c has it: a transmit bit is refused over the floor, a clear never
+static bool f_exp(void *ctx, uint32_t set, uint32_t clear)
+{
+	(void)ctx;
+	if ((set & refuse_set) != 0u) {
+		return false;
+	}
+	if (!exp_set_ok(set, dac_now, il_floor)) {
+		trips++;
+		return false;
+	}
+	uint32_t before = shadow;
+	uint32_t after = (shadow & ~clear) | set;
+	if (!exp_dac_ok(after, dac_now, il_floor)) {
+		dac_now = 0;
+	}
+	shadow = after;
+	log_ev(EV_EXP, set, clear);
+	rules(before);
+	return true;
+}
+
+// cs7000p_apc_dac: over the floor only with both transmit bits or neither
+static bool f_dac(void *ctx, uint16_t v)
+{
+	(void)ctx;
+	if (v > il_floor && dac_fail_in != 0 && --dac_fail_in == 0) {
+		return false;
+	}
+	if (v > CS7000P_DAC_MAX || (v != 0u && !exp_dac_ok(shadow, v, il_floor))) {
+		trips++;
+		return false;
+	}
+	dac_now = v;
+	log_ev(EV_DAC, v, 0);
+	rules(shadow);
+	return true;
+}
+
+static bool f_synth(void *ctx, uint8_t ref_div, uint32_t vco_hz)
+{
+	(void)ctx;
+	log_ev(EV_SYNTH, ref_div, vco_hz);
+	return true;
+}
+
+static bool f_if(void *ctx, bool wide)
+{
+	(void)ctx;
+	log_ev(EV_IF, wide, 0);
+	return true;
+}
+
+static bool f_locked(void *ctx)
+{
+	(void)ctx;
+	return pll_locked;
+}
+
+// board_rf_safe() as exp_cs7000p.c has it: the DAC off, the shadow made safe and shifted, then the radio's part,
+// which writes nothing itself (it is the end of every task's deepest path)
+static int safe_wrote;
+static void board_rf_safe_fake(void)
+{
+	dac_now = 0;
+	shadow = exp_rf_safe_word(shadow);
+	int n = ev_n;
+	cs7000p_rf_safe(&rf);
+	safe_wrote += ev_n - n;
+}
+
+static void f_delay(void *ctx, uint32_t us)
+{
+	(void)ctx;
+	us_total += us;
+	log_ev(EV_DELAY, us, 0);
+	if (safe_in_delays != 0 && --safe_in_delays == 0) {
+		safe_at_ev = ev_n;
+		board_rf_safe_fake();	// another task or a fault path, in the middle of this sequence
+	}
+}
+
+static const cs7000p_rf_io_t io = {
+	.exp_set = f_exp, .dac = f_dac, .synth = f_synth, .if_setup = f_if, .locked = f_locked, .delay_us = f_delay,
+};
+
+// A calibration as a measured radio would have it
+static const cs7000p_cal_t cal_ok = {
+	.drive = {
+		{ 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 },
+		{ 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000 },
+	},
+	.floor = 300,
+	.rx_tune = { 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500 },
+	.fm_mod2 = { 40, 40, 40, 40, 40, 40, 40, 40, 40 },
+	.fm_mod1 = { 50, 50, 50, 50, 50, 50, 50, 50, 50 },
+	.dmr_mod2 = { 60, 60, 60, 60, 60, 60, 60, 60, 60 },
+	.dmr_mod1 = { 70, 70, 70, 70, 70, 70, 70, 70, 70 },
+	.ref_set = true,
+	.ref_offset = 3,
+};
+
+#define T0		1000u			// when the synthesizer rail came on
+#define T_SETTLED	(T0 + CS7000P_REF_SETTLE_MS)
+
+static void clear_log(void)
+{
+	ev_n = 0;
+}
+
+// A radio after reset and start-up, with the given calibration; receiving on rx_hz when that is not 0
+static void bring_up(const cs7000p_cal_t *cal, uint32_t rx_hz)
+{
+	shadow = EXP_RESET_WORD;
+	dac_now = 0;
+	il_floor = cal->floor;
+	pll_locked = true;
+	us_total = 0;
+	trips = 0;
+	inv_fail = 0;
+	refuse_set = 0;
+	dac_fail_in = 0;
+	safe_in_delays = 0;
+	drive_cap = CS7000P_DAC_MAX;
+	clear_log();
+	cs7000p_rf_init(&rf, &io, cal);
+	CHECK(cs7000p_rf_start(&rf, T0));
+	if (rx_hz != 0) {
+		CHECK(cs7000p_rf_rx(&rf, rx_hz, true));
+	}
+	clear_log();
+}
+
+static cs7000p_tx_req_t req(uint32_t hz, uint8_t power, bool dmr)
+{
+	return (cs7000p_tx_req_t){ .hz = hz, .power = power, .dmr = dmr, .now_ms = T_SETTLED, .battery_mv = 7400,
+				   .battery_critical_mv = 6000, .debuglink = true, .limit_list = false, .bench_dmr = false };
+}
+
+// The first event from index from on that sets (or clears) an expander bit, writes a DAC value, ...; -1: none
+static int find_exp(int from, uint32_t bit, bool on)
+{
+	for (int i = from; i < ev_n; i++) {
+		if (ev[i].type == EV_EXP && ((on ? ev[i].a : ev[i].b) & bit) != 0u) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int find_ev(int from, uint8_t type)
+{
+	for (int i = from; i < ev_n; i++) {
+		if (ev[i].type == type) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int find_dac_over(int from, uint16_t over)
+{
+	for (int i = from; i < ev_n; i++) {
+		if (ev[i].type == EV_DAC && ev[i].a > over) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool tx_bits_ever(void)
+{
+	return find_exp(0, EXP_TX_RAIL, true) >= 0 || find_exp(0, EXP_APC_LOOP, true) >= 0;
+}
+
+static bool is_safe(void)
+{
+	return (shadow & EXP_TX_BITS) == 0u && (shadow & EXP_VCO_RX) != 0u;
+}
+
+// --- Start-up and receive ---
+
+static void test_start(void)
+{
+	shadow = EXP_RESET_WORD | EXP_TX_RAIL | EXP_APC_LOOP;	// whatever a fault left: the init makes it safe
+	shadow &= ~EXP_VCO_RX;
+	dac_now = 0;
+	il_floor = 0;
+	drive_cap = CS7000P_DAC_MAX;
+	inv_fail = 0;
+	clear_log();
+	cs7000p_rf_init(&rf, &io, &cs7000p_cal_model);
+	CHECK(is_safe() && dac_now == 0 && rf.seq.state == CHAINSEQ_ST_OFF);
+	CHECK(find_exp(0, EXP_APC_LOOP, false) < find_exp(0, EXP_TX_RAIL, false));	// the loop opens before its rail goes
+	CHECK(find_exp(0, EXP_TX_RAIL, false) < find_exp(0, EXP_VCO_RX, true));
+	CHECK(!rf.lo_high && rf.ref_offset == CS7000P_REF_OFFSET && !rf.synth_on);
+	// The synthesizer rail, its settle time, and from when the reference counts as settling
+	clear_log();
+	us_total = 0;
+	CHECK(cs7000p_rf_start(&rf, 5000));
+	CHECK((shadow & EXP_SYNTH_RAIL) != 0u && us_total == CS7000P_RAIL_SETTLE_US);
+	CHECK(rf.synth_on && rf.synth_on_ms == 5000);
+	CHECK(find_exp(0, EXP_SYNTH_RAIL, true) == 0 && find_ev(0, EV_DELAY) == 1);
+	CHECK(CS7000P_RAIL_SETTLE_US == 2000 && CS7000P_REF_SETTLE_MS == 30);
+}
+
+static void test_receive(void)
+{
+	bring_up(&cs7000p_cal_model, 0);
+	// Out of band: refused, nothing written
+	CHECK(!cs7000p_rf_rx(&rf, 399999999u, true) && !cs7000p_rf_rx(&rf, 527000001u, false));
+	CHECK(ev_n == 0 && rf.seq.state == CHAINSEQ_ST_OFF);
+
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true));
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && inv_fail == 0 && trips == 0);
+	// The order: safe first (the DAC is about to be a tuning voltage), the receive VCO, the first LO on the low
+	// side with the divider 2, the receive rail and the IF chip, 1 ms, the IF set-up, the tuning value, the audio rail
+	int i_dac0 = find_ev(0, EV_DAC);
+	int i_loop = find_exp(0, EXP_APC_LOOP, false), i_txr = find_exp(0, EXP_TX_RAIL, false);
+	int i_vco = find_exp(0, EXP_VCO_RX, true), i_synth = find_ev(0, EV_SYNTH);
+	int i_rxr = find_exp(0, EXP_RX_RAIL, true), i_run = find_exp(0, EXP_AK_RUN, true);
+	int i_if = find_ev(0, EV_IF), i_tune = find_dac_over(0, 0), i_aud = find_exp(0, EXP_AUDIO_RAIL, true);
+	CHECK(i_dac0 == 0 && ev[0].a == 0);
+	CHECK(i_dac0 < i_loop && i_loop < i_txr && i_txr < i_vco && i_vco < i_synth && i_synth < i_rxr && i_rxr < i_run);
+	CHECK(i_run < i_if && i_if < i_tune && i_tune < i_aud && i_aud == ev_n - 1);
+	CHECK(ev[i_synth].a == 2 && ev[i_synth].b == 446u * MHZ - CS7000P_IF_HZ);
+	CHECK(ev[i_if].a == 1);
+	// 1 ms between the receive rail and the IF chip's set-up: its second LO comes up with that rail
+	bool waited = false;
+	for (int i = i_run; i < i_if; i++) {
+		waited = waited || (ev[i].type == EV_DELAY && ev[i].a == CS7000P_RX_RAIL_US);
+	}
+	CHECK(waited && CS7000P_RX_RAIL_US == 1000u);
+	// The tuning value: the nominal one, with both transmit bits off
+	CHECK(ev[i_tune].a == CS7000P_RX_TUNE_NOMINAL && dac_now == CS7000P_RX_TUNE_NOMINAL && rf.rx_tune == dac_now);
+	CHECK(is_safe() && (shadow & (EXP_SYNTH_RAIL | EXP_RX_RAIL | EXP_AK_RUN | EXP_AUDIO_RAIL)) ==
+			   (EXP_SYNTH_RAIL | EXP_RX_RAIL | EXP_AK_RUN | EXP_AUDIO_RAIL));
+	CHECK(rf.pll_r == 2 && rf.vco_hz == 446u * MHZ - CS7000P_IF_HZ && rf.ak_ok);
+
+	// The other LO side (the bench switch), a 12.5 kHz channel, the trim, a bench tuning value
+	rf.lo_high = true;
+	rf.trim_ppb = 1000;
+	rf.tune_override = 4000;
+	clear_log();
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, false));
+	i_synth = find_ev(0, EV_SYNTH);
+	CHECK(ev[i_synth].b == 446u * MHZ + CS7000P_IF_HZ + 496u);	// 495.95 MHz + 1 ppm
+	CHECK(ev[find_ev(0, EV_IF)].a == 0 && dac_now == CS7000P_TUNE_MAX && inv_fail == 0);
+	rf.tune_override = 0;
+
+	// An unlocked receive LO is counted and receive goes on
+	pll_locked = false;
+	CHECK(cs7000p_rf_rx(&rf, 430u * MHZ, true) && rf.seq.state == CHAINSEQ_ST_RX && rf.seq.unlocked == 1);
+	pll_locked = true;
+
+	// Sleep: the receive rail off, the synthesizer rail and the IF chip kept; the way back is a full set-up
+	cs7000p_rf_sleep(&rf, true);
+	CHECK(rf.seq.state == CHAINSEQ_ST_SLEEP && (shadow & EXP_RX_RAIL) == 0u);
+	CHECK((shadow & (EXP_SYNTH_RAIL | EXP_AK_RUN)) == (EXP_SYNTH_RAIL | EXP_AK_RUN));
+	cs7000p_rf_sleep(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && (shadow & EXP_RX_RAIL) != 0u && inv_fail == 0 && trips == 0);
+}
+
+// --- What is refused ---
+
+static void test_uncalibrated(void)
+{
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	uint32_t shadow0 = shadow;
+	uint16_t dac0 = dac_now;
+	// Every frequency, level and mode: refused, counted, and no line and no DAC value changes (406 MHz, in the
+	// beacon band's guard, as out of band)
+	uint32_t n = 0;
+	for (uint32_t hz = 400u * MHZ; hz <= 512u * MHZ; hz += 2u * MHZ) {
+		const cs7000p_tx_why_t want = cs7000p_tx_band(hz) ? CS7000P_TX_UNCAL : CS7000P_TX_BAND;
+		for (uint8_t power = 0; power < CS7000P_POWER_LEVELS; power++) {
+			cs7000p_tx_req_t q = req(hz, power, false);
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == want);
+			q.dmr = true;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == want);
+			n += 2;
+		}
+	}
+	CHECK(rf.tx_refused == n && rf.tx_refused_why == CS7000P_TX_UNCAL && !rf.admit);
+	// And the steps behind the check do nothing without its yes
+	CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK);
+#if CONFIG_DMR
+	CHECK(!chainseq_burst_tune(&rf.seq, 446u * MHZ));
+	CHECK(!chainseq_burst_point(&rf.seq, CHAINSEQ_PT_LOOP, 0) && !chainseq_burst_point(&rf.seq, PA_KEYUP_PT_PA, 2000));
+#endif
+	CHECK(ev_n == 0 && shadow == shadow0 && dac_now == dac0 && rf.seq.state == CHAINSEQ_ST_RX);
+	CHECK(cs7000p_rf_drive_level(&rf, 446u * MHZ, 0) == 0 && cs7000p_rf_drive_level(&rf, 446u * MHZ, 1) == 0);
+	CHECK(cs7000p_rf_drive_top(&rf) == 0);
+	uint8_t m2 = 9, m1 = 9;
+	CHECK(!cs7000p_rf_mod_pair(&rf, 446u * MHZ, false, &m2, &m1));
+	CHECK(!cs7000p_rf_mod_pair(&rf, 446u * MHZ, true, &m2, &m1));
+	// The plain chainseq call with no admission behind it is refused by the plan as well
+	CHECK(chainseq_tx(&rf.seq, 446u * MHZ, 0) == CHAINSEQ_REFUSED_CAL && ev_n == 0);
+}
+
+// The bench drive lifts the calibration's refusal only with every one of its conditions
+static void test_override(void)
+{
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	cs7000p_tx_req_t good = req(446u * MHZ, 0, false);
+	good.limit_list = true;
+	cs7000p_tx_req_t q;
+
+	CHECK(!cs7000p_rf_drive(&rf, CS7000P_DAC_MAX + 1u, T_SETTLED));	// over the DAC's range: not armed
+	CHECK(cs7000p_rf_tx_admit(&rf, &good) == CS7000P_TX_UNCAL);		// nothing armed: no list helps
+
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	// 1: a test TX limit that lists the frequency
+	q = good;
+	q.limit_list = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LIST && rf.tx_refused_why == CS7000P_TX_OVR_NO_LIST);
+	// 2: FM, unless the build allows the bench drive in DMR
+	q = good;
+	q.dmr = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_DMR);
+	q.bench_dmr = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit && rf.admit_drive == 600 && rf.admit_ovr);
+	// 4: the debug link is built
+	q = good;
+	q.debuglink = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LINK && !rf.admit);
+	// 3: at most 60 s since it was armed. A second before the end it holds, a millisecond after it is dropped
+	q = good;
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_EXPIRED && rf.ovr_drive == 0);
+	CHECK(cs7000p_rf_tx_admit(&rf, &good) == CS7000P_TX_UNCAL);	// and stays dropped
+	CHECK(CS7000P_OVERRIDE_MS == 60000u);
+	CHECK(ev_n == 0);	// none of this wrote anything
+
+	// All four: admitted at the bench drive, with an unmodulated carrier (no pair is known)
+	uint8_t m2 = 9, m1 = 9;
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	CHECK(cs7000p_rf_tx_admit(&rf, &good) == CS7000P_TX_OK && rf.admit_hz == 446u * MHZ);
+	CHECK(cs7000p_rf_mod_pair(&rf, 446u * MHZ, false, &m2, &m1) && m2 == 0 && m1 == 0);
+	CHECK(!cs7000p_rf_mod_pair(&rf, 447u * MHZ, false, &m2, &m1));
+	CHECK(!cs7000p_rf_mod_pair(&rf, 446u * MHZ, true, &m2, &m1));
+	drive_cap = 600;
+	CHECK(cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK);
+	CHECK(rf.seq.state == CHAINSEQ_ST_TX && dac_now == 600 && (shadow & EXP_TX_BITS) == EXP_TX_BITS);
+	// One transmission: the end drops it, and the next key-up is refused as uncalibrated
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && is_safe() && rf.ovr_drive == 0 && !rf.admit);
+	CHECK(cs7000p_rf_tx_admit(&rf, &good) == CS7000P_TX_UNCAL);
+	CHECK(inv_fail == 0 && trips == 0);
+
+	// Outside the transmit ranges nothing helps, the bench drive included
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	q = good;
+	q.hz = 406050000u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 512000001u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 520u * MHZ;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	// A drive of 0 disarms
+	CHECK(cs7000p_rf_drive(&rf, 0, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &good) == CS7000P_TX_UNCAL);
+}
+
+// A calibration with one part missing: the transmission of the mode that needs that part is refused, the other one
+// goes ahead, and nothing is written. And the bench drive at or under a measured floor keys nothing
+static void cal_unset(uint16_t *row)
+{
+	for (unsigned i = 0; i < CS7000P_CAL_POINTS; i++) {
+		row[i] = CS7000P_CAL_UNSET;
+	}
+}
+
+static void admit_both(const cs7000p_cal_t *cal, cs7000p_tx_why_t want_fm, cs7000p_tx_why_t want_dmr)
+{
+	for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+		bring_up(cal, 446u * MHZ);
+		cs7000p_tx_req_t q = req(446u * MHZ, level, false);
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == want_fm && rf.admit == (want_fm == CS7000P_TX_OK));
+		CHECK(want_fm == CS7000P_TX_OK || rf.tx_refused_why == want_fm);
+		cs7000p_rf_tx_off(&rf, false);
+		clear_log();
+		q = req(446u * MHZ, level, true);
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == want_dmr && rf.admit == (want_dmr == CS7000P_TX_OK));
+		CHECK(want_dmr == CS7000P_TX_OK || rf.tx_refused_why == want_dmr);
+		CHECK(ev_n == 0);	// an admission writes nothing either way
+	}
+}
+
+static void test_partial_cal(void)
+{
+	static cs7000p_cal_t c;
+
+	admit_both(&cal_ok, CS7000P_TX_OK, CS7000P_TX_OK);
+	// DMR's modulation pair missing: FM goes, DMR does not (judged on its own rows, not on FM's)
+	c = cal_ok;
+	cal_unset(c.dmr_mod2);
+	admit_both(&c, CS7000P_TX_OK, CS7000P_TX_UNCAL);
+	c = cal_ok;
+	cal_unset(c.dmr_mod1);
+	admit_both(&c, CS7000P_TX_OK, CS7000P_TX_UNCAL);
+	// FM's missing: the reverse
+	c = cal_ok;
+	cal_unset(c.fm_mod1);
+	admit_both(&c, CS7000P_TX_UNCAL, CS7000P_TX_OK);
+	c = cal_ok;
+	cal_unset(c.fm_mod2);
+	admit_both(&c, CS7000P_TX_UNCAL, CS7000P_TX_OK);
+	// No reference offset measured: neither, at any level, though every drive is there
+	c = cal_ok;
+	c.ref_set = false;
+	admit_both(&c, CS7000P_TX_UNCAL, CS7000P_TX_UNCAL);
+
+	// The bench drive on an uncalibrated radio with a measured floor: at or under it nothing keys, one over it does
+	c = cs7000p_cal_model;
+	c.floor = 300;
+	static const struct { uint16_t drive; cs7000p_tx_why_t want; } bench[] = {
+		{ 200, CS7000P_TX_UNCAL }, { 300, CS7000P_TX_UNCAL }, { 301, CS7000P_TX_OK },
+	};
+	for (unsigned i = 0; i < sizeof(bench) / sizeof(bench[0]); i++) {
+		bring_up(&c, 446u * MHZ);
+		cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
+		q.limit_list = true;
+		CHECK(cs7000p_rf_drive(&rf, bench[i].drive, T_SETTLED));
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == bench[i].want && rf.admit == (bench[i].want == CS7000P_TX_OK));
+		CHECK(ev_n == 0);
+		if (bench[i].want != CS7000P_TX_OK) {
+			// And the sequence finds no admission behind it: nothing over the floor reaches the DAC
+			CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK);
+			CHECK(!tx_bits_ever() && find_dac_over(0, 0) < 0);
+		}
+	}
+	CHECK(inv_fail == 0 && trips == 0);
+}
+
+static void test_settle_battery_band(void)
+{
+	bring_up(&cal_ok, 446u * MHZ);
+	cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
+	// The reference: nothing until 30 ms after the synthesizer rail came on
+	q.now_ms = T0;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_SETTLE);
+	q.now_ms = T0 + CS7000P_REF_SETTLE_MS - 1u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_SETTLE && rf.tx_refused_why == CS7000P_TX_REF_SETTLE);
+	q.now_ms = T0 + CS7000P_REF_SETTLE_MS;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	// The battery: under its critical level, or without a reading
+	q = req(446u * MHZ, 0, false);
+	q.battery_mv = 5999;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BATTERY);
+	q.battery_mv = 0;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BATTERY);
+	q.battery_mv = 6000;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	// The band, calibrated or not: the grant's rows less half a channel at the gap, the gap, nothing over 512 MHz
+	q = req(405987500u, 1, false);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	q.hz = 405987501u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 406u * MHZ;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 406100000u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 406112499u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 406112500u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	q.hz = 512u * MHZ;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	q.hz = 512000001u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 399999999u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	// No such level
+	q = req(446u * MHZ, CS7000P_POWER_LEVELS, false);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL);
+	CHECK(ev_n == 0);
+	// A radio whose start-up never ran has no settled reference
+	cs7000p_rf_init(&rf, &io, &cal_ok);
+	q = req(446u * MHZ, 0, false);
+	q.now_ms = 0xFFFFFFF0u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_SETTLE);
+
+	// The drive levels the wattmeter procedure reads
+	bring_up(&cal_ok, 446u * MHZ);
+	CHECK(cs7000p_rf_drive_level(&rf, 446u * MHZ, 0) == 1000 && cs7000p_rf_drive_level(&rf, 446u * MHZ, 1) == 3000);
+	CHECK(cs7000p_rf_drive_level(&rf, 406050000u, 0) == 0 && cs7000p_rf_drive_level(&rf, 520u * MHZ, 1) == 0);
+	CHECK(cs7000p_rf_drive_level(&rf, 446u * MHZ, 2) == 0);
+}
+
+// The power's off state (a power-off the knob overrode): every transmission is refused, a calibrated one and one on
+// the bench drive, FM and DMR, before anything else is looked at
+static void test_off_state(void)
+{
+	CHECK(CS7000P_TX_OFF == 12);	// the hardware page's number: append only
+	for (int dmr = 0; dmr < 2; dmr++) {
+		bring_up(&cal_ok, 446u * MHZ);
+		cs7000p_tx_req_t q = req(446u * MHZ, 1, dmr != 0);
+		q.off = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF && !rf.admit && rf.tx_refused_why == CS7000P_TX_OFF);
+		CHECK(rf.tx_refused == 1 && ev_n == 0);
+		CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK && !tx_bits_ever());
+		// Whatever else is wrong with the request: this reason first
+		q.hz = 520u * MHZ;
+		q.battery_mv = 0;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF);
+		// An admission from before the off state is gone
+		q = req(446u * MHZ, 1, dmr != 0);
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit);
+		q.off = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF && !rf.admit && !cs7000p_rf_tx_begin(&rf));
+		// The safe request that came with the power-off stands
+		board_rf_safe_fake();
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF && rf.safed && rf.restore);
+	}
+	// A bench drive that is armed is neither used nor dropped, not even one that has waited too long: it is there
+	// for the first transmission after the off state, if that comes in time
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
+	q.limit_list = true;
+	q.off = true;
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF && !rf.admit && rf.ovr_drive == 600);
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF && rf.ovr_drive == 600);
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS;
+	q.off = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && rf.admit_drive == 600);
+	CHECK(ev_n == 0 && inv_fail == 0 && trips == 0);
+}
+
+// --- FM transmit ---
+
+static void test_fm_tx(void)
+{
+	bring_up(&cal_ok, 446u * MHZ);
+	cs7000p_tx_req_t q = req(446500000u, 1, false);
+	uint8_t m2 = 0, m1 = 0;
+	drive_cap = 3000;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_drive == 3000 && !rf.admit_ovr);
+	CHECK(ev_n == 0);	// the check itself writes nothing
+	CHECK(cs7000p_rf_mod_pair(&rf, q.hz, false, &m2, &m1) && m2 == 40 && m1 == 50);
+	// Steps 1 and 2, ahead of the modem's set-up: the DAC to 0, the receive rail off
+	CHECK(cs7000p_rf_tx_begin(&rf));
+	CHECK(ev_n == 2 && ev[0].type == EV_DAC && ev[0].a == 0 && ev[1].type == EV_EXP && ev[1].b == EXP_RX_RAIL);
+	CHECK(dac_now == 0 && (shadow & EXP_RX_RAIL) == 0u);
+	clear_log();
+	us_total = 0;
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK);
+	CHECK(rf.seq.state == CHAINSEQ_ST_TX && inv_fail == 0 && trips == 0);
+	// The transmit VCO on the carrier, locked, the rail, 500 us, the floor, the loop, then the ramp to the drive
+	int i_vco = find_exp(0, EXP_VCO_RX, false), i_synth = find_ev(0, EV_SYNTH);
+	int i_txr = find_exp(0, EXP_TX_RAIL, true), i_floor = find_dac_over(0, 0);
+	int i_loop = find_exp(0, EXP_APC_LOOP, true), i_ramp = find_dac_over(0, cal_ok.floor);
+	CHECK(i_vco >= 0 && i_vco < i_synth && i_synth < i_txr && i_txr < i_floor && i_floor < i_loop && i_loop < i_ramp);
+	CHECK(ev[i_synth].a == 2 && ev[i_synth].b == 446500000u);
+	CHECK(ev[i_floor].a == cal_ok.floor);
+	bool lead = false;
+	for (int i = i_txr; i < i_loop; i++) {
+		lead = lead || (ev[i].type == EV_DELAY && ev[i].a == CS7000P_TX_RAIL_US);
+	}
+	CHECK(lead && CS7000P_TX_RAIL_US == 500u);
+	// The ramp: eight steps, each at or over the one before, never under the floor, ending on the drive
+	uint16_t last = cal_ok.floor;
+	int steps = 0;
+	for (int i = i_loop; i < ev_n; i++) {
+		if (ev[i].type == EV_DAC) {
+			CHECK(ev[i].a >= last && ev[i].a <= 3000);
+			last = (uint16_t)ev[i].a;
+			steps++;
+		}
+	}
+	CHECK(steps == (int)CHAINSEQ_RAMP_STEPS && dac_now == 3000 && last == 3000);
+	CHECK((shadow & EXP_TX_BITS) == EXP_TX_BITS && (shadow & (EXP_VCO_RX | EXP_RX_RAIL)) == 0u);
+	CHECK(cs7000p_rf_drive_top(&rf) == 3000);
+
+	// The end: down the ramp to the floor, the loop, the rail, the DAC off, then the whole receive set-up
+	clear_log();
+	cs7000p_rf_tx_off(&rf, false);
+	int o_loop = find_exp(0, EXP_APC_LOOP, false), o_txr = find_exp(0, EXP_TX_RAIL, false);
+	int o_vco = find_exp(0, EXP_VCO_RX, true), o_if = find_ev(0, EV_IF);
+	CHECK(o_loop > 0 && o_loop < o_txr && o_txr < o_vco && o_vco < o_if);
+	last = 3000;
+	for (int i = 0; i < o_loop; i++) {
+		if (ev[i].type == EV_DAC) {
+			CHECK(ev[i].a <= last && ev[i].a >= cal_ok.floor);
+			last = (uint16_t)ev[i].a;
+		}
+	}
+	CHECK(last == cal_ok.floor);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && is_safe() && dac_now == 1500 && !rf.admit);
+	CHECK(ev[find_ev(o_vco, EV_SYNTH)].b == 446u * MHZ - CS7000P_IF_HZ);
+	CHECK(inv_fail == 0 && trips == 0 && cs7000p_rf_drive_top(&rf) == 0);
+	// After the end the plan answers for nothing: the next key-up needs its own check
+	CHECK(cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK && !cs7000p_rf_tx_begin(&rf));
+	// Nor after a receive set-up that came between the check and the key-up
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit);
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && !rf.admit);
+	clear_log();
+	CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK && ev_n == 0);
+	CHECK(chainseq_tx(&rf.seq, q.hz, q.power) == CHAINSEQ_REFUSED_CAL && ev_n == 0);
+}
+
+static void test_fm_refusals(void)
+{
+	cs7000p_tx_req_t q = req(446500000u, 0, false);
+
+	// Not locked on the carrier: no rail, no loop, no drive; receiving again, and counted
+	bring_up(&cal_ok, 446u * MHZ);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	clear_log();
+	pll_locked = false;
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_UNLOCKED);
+	CHECK(!tx_bits_ever() && find_dac_over(0, CS7000P_TUNE_MAX) < 0);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && is_safe() && dac_now == 1500 && !rf.admit);
+	CHECK(rf.tx_refused == 1 && rf.tx_refused_why == CS7000P_TX_UNLOCKED && inv_fail == 0);
+
+	// The expander refuses the transmit rail: safe, and back to receive
+	bring_up(&cal_ok, 446u * MHZ);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	refuse_set = EXP_TX_RAIL;
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_BUS && rf.tx_refused_why == CS7000P_TX_BUS);
+	CHECK(is_safe() && rf.seq.state == CHAINSEQ_ST_RX && dac_now == 1500 && inv_fail == 0);
+	// ... the loop: the rail that was already on comes off again
+	bring_up(&cal_ok, 446u * MHZ);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	refuse_set = EXP_APC_LOOP;
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_BUS);
+	CHECK(is_safe() && rf.seq.state == CHAINSEQ_ST_RX && rf.dac_refused != 0 && inv_fail == 0);
+	// A DAC write refused in the middle of the ramp: safe at once, nothing left keyed
+	for (int n = 1; n <= (int)CHAINSEQ_RAMP_STEPS; n++) {
+		bring_up(&cal_ok, 446u * MHZ);
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+		dac_fail_in = n;
+		CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_BUS);
+		CHECK(is_safe() && rf.seq.state == CHAINSEQ_ST_RX && dac_now == 1500 && inv_fail == 0 && !rf.admit);
+	}
+	// The interlock itself, were the table's floor over the one the board's writer knows: the floor's write is
+	// turned down and nothing keys
+	bring_up(&cal_ok, 446u * MHZ);
+	il_floor = 0;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	clear_log();
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_BUS && trips != 0 && rf.dac_refused != 0);
+	CHECK(find_exp(0, EXP_APC_LOOP, true) < 0 && is_safe() && inv_fail == 0);
+}
+
+// --- board_rf_safe() ---
+
+static void check_safed(void)
+{
+	CHECK(is_safe() && dac_now == 0 && rf.safed && inv_fail == 0);
+	CHECK(rf.seq.state == CHAINSEQ_ST_IDLE || rf.seq.state == CHAINSEQ_ST_OFF);
+	// Nothing transmits until the radio task's next request: no drive, no burst piece
+	CHECK(!chainseq_drive_now(&rf.seq, 2000));
+#if CONFIG_DMR
+	CHECK(!chainseq_burst_point(&rf.seq, CHAINSEQ_PT_LOOP, 0) && !chainseq_burst_point(&rf.seq, PA_KEYUP_PT_PA, 2000));
+	chainseq_burst_off(&rf.seq);
+	CHECK(!chainseq_burst_tune(&rf.seq, rf.admit_hz) || (shadow & EXP_APC_LOOP) == 0u);
+	chainseq_safe(&rf.seq);
+#endif
+	CHECK((shadow & EXP_APC_LOOP) == 0u && dac_now == 0);
+}
+
+static void test_rf_safe(void)
+{
+	cs7000p_tx_req_t q = req(446500000u, 1, false);
+
+	// Before anything is set up (first thing in main: the chain's state is all zeroes)
+	memset(&rf, 0, sizeof(rf));
+	shadow = EXP_RESET_WORD;
+	dac_now = 0;
+	clear_log();
+	cs7000p_rf_safe(&rf);
+	CHECK(ev_n == 0 && !rf.safed && !cs7000p_rf_restore_take(&rf));
+
+	// Off (after init), idle, receiving, asleep
+	bring_up(&cal_ok, 0);
+	board_rf_safe_fake();
+	check_safed();
+	bring_up(&cal_ok, 446u * MHZ);
+	board_rf_safe_fake();
+	check_safed();
+	// The receiver comes back with the radio task's next request, and transmitting works again after it
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && !rf.safed && rf.seq.state == CHAINSEQ_ST_RX && dac_now == 1500);
+	cs7000p_rf_sleep(&rf, true);
+	board_rf_safe_fake();
+	check_safed();
+	cs7000p_rf_sleep(&rf, false);	// the sequencer no longer knows it slept: a full set-up
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && (shadow & EXP_RX_RAIL) != 0u && !rf.safed);
+
+	// In an FM transmission: off at once, and the end the core asks for later brings the receiver back
+	drive_cap = 3000;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK && dac_now == 3000);
+	board_rf_safe_fake();
+	check_safed();
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && is_safe() && dac_now == 1500 && inv_fail == 0);
+
+	// Between the check and the key-up: the key-up finds the request standing and sets no transmit bit
+	bring_up(&cal_ok, 446u * MHZ);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+	board_rf_safe_fake();
+	clear_log();
+	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_BUS);
+	CHECK(!tx_bits_ever() && find_dac_over(0, 0) < 0 && is_safe() && dac_now == 0 && inv_fail == 0);
+
+	// In the middle of a key-up, at each of its waits (the lock's, the rail's lead, every ramp step): what the
+	// sequence writes afterwards never sets a transmit bit again and never puts a value on the DAC. With a measured
+	// floor the write after the rail's lead is the floor's, which the latch refuses first; with none (the shipped
+	// 0) the loop line follows the lead straight away, and only the latch's line check stops it
+	static cs7000p_cal_t cal_f0;
+	cal_f0 = cal_ok;
+	cal_f0.floor = 0;
+	for (int f = 0; f < 2; f++) {
+		const cs7000p_cal_t *cal = f == 0 ? &cal_ok : &cal_f0;
+		for (int n = 1; n <= 12; n++) {
+			bring_up(cal, 446u * MHZ);
+			drive_cap = 3000;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && cs7000p_rf_tx_begin(&rf));
+			clear_log();
+			safe_in_delays = n;
+			safe_at_ev = -1;
+			cs7000p_tx_why_t why = cs7000p_rf_tx_key(&rf);
+			if (safe_in_delays != 0) {
+				CHECK(why == CS7000P_TX_OK);	// fewer waits than n: the key-up ran through
+				break;
+			}
+			CHECK(n <= 8 || why == CS7000P_TX_OK || why == CS7000P_TX_BUS);
+			CHECK(is_safe() && dac_now == 0 && rf.safed && inv_fail == 0);
+			CHECK(rf.seq.state == CHAINSEQ_ST_IDLE);
+			// Nothing after the request: no transmit line set, no value on the DAC
+			CHECK(safe_at_ev >= 0 && find_exp(safe_at_ev, EXP_APC_LOOP, true) < 0);
+			CHECK(find_exp(safe_at_ev, EXP_TX_RAIL, true) < 0 && find_dac_over(safe_at_ev, 0) < 0);
+			// The receiver is back with the next request
+			CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && dac_now == 1500);
+		}
+		CHECK(safe_in_delays != 0);	// the loop reached past the key-up's last wait
+	}
+	safe_in_delays = 0;
+	CHECK(safe_wrote == 0);		// no call above went through the callbacks
+
+	// In the middle of a receive set-up: it ends safe and not receiving, and the next one works
+	bring_up(&cal_ok, 0);
+	safe_in_delays = 1;
+	CHECK(!cs7000p_rf_rx(&rf, 446u * MHZ, true) && is_safe() && dac_now == 0 && rf.seq.state == CHAINSEQ_ST_IDLE);
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && rf.seq.state == CHAINSEQ_ST_RX);
+
+	// The request to set the receiver up again outlives the latch. On a radio without calibration the next
+	// request may be a key-up that is refused: it lifts the latch and writes nothing, and the receiver would stay
+	// off if the request had gone with it
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	CHECK(!cs7000p_rf_restore_take(&rf));	// nothing asked yet
+	board_rf_safe_fake();
+	CHECK(rf.safed && rf.seq.state == CHAINSEQ_ST_IDLE && dac_now == 0);
+	clear_log();
+	q = req(446500000u, 0, false);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL && !rf.safed && ev_n == 0);
+	CHECK(rf.seq.state == CHAINSEQ_ST_IDLE);	// still not receiving
+	CHECK(cs7000p_rf_restore_take(&rf));		// ... and the radio task still learns of it, once
+	CHECK(!cs7000p_rf_restore_take(&rf));
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && rf.seq.state == CHAINSEQ_ST_RX && dac_now == CS7000P_RX_TUNE_NOMINAL);
+	// Nor does a receive set-up or a transmission's end take it: what else went off with the request (the
+	// speaker's amplifier) is the caller's to put back
+	board_rf_safe_fake();
+	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true) && !rf.safed);
+	cs7000p_rf_tx_off(&rf, false);
+	cs7000p_rf_sleep(&rf, true);
+	cs7000p_rf_sleep(&rf, false);
+	CHECK(cs7000p_rf_restore_take(&rf) && !cs7000p_rf_restore_take(&rf));
+	// Two requests before the task looks are one
+	board_rf_safe_fake();
+	board_rf_safe_fake();
+	CHECK(cs7000p_rf_restore_take(&rf) && !cs7000p_rf_restore_take(&rf));
+	CHECK(inv_fail == 0);
+}
+
+// --- Bursts ---
+
+#if CONFIG_DMR
+// One burst as platform/stm32/dmr_keyup runs it: the loop point first (drive 0), then the key-up rule's points
+static bool burst(uint16_t boost, uint16_t drive)
+{
+	if (!chainseq_burst_point(&rf.seq, CHAINSEQ_PT_LOOP, 0)) {
+		return false;
+	}
+	if (boost != 0 && !chainseq_burst_point(&rf.seq, PA_KEYUP_PT_BOOST, boost)) {
+		return false;
+	}
+	if (!chainseq_burst_point(&rf.seq, PA_KEYUP_PT_PA, boost != 0 ? boost : drive)) {
+		return false;
+	}
+	return boost == 0 || chainseq_burst_point(&rf.seq, PA_KEYUP_PT_DRIVE, drive);
+}
+
+static void test_bursts(void)
+{
+	// The constants the runner is given: it takes them (room after the interrupt for the loop's lead, the drop
+	// inside the timer's range), and with one fixed point the loop closes 1250 us and the PA keys 1750 us after
+	// the modem's RF TX interrupt
+	static const pa_keyup_cfg_t fixed = PA_KEYUP_FIXED(CS7000P_KEYUP_PA_US);
+	CHECK(CS7000P_KEYUP_LOOP_LEAD_US + 30u < CS7000P_KEYUP_INT_AHEAD_US);
+	CHECK(CS7000P_KEYUP_INT_AHEAD_US + 27500u <= 65535u);
+	CHECK(CS7000P_KEYUP_INT_AHEAD_US - CS7000P_KEYUP_LOOP_LEAD_US - 30u == 2020u);
+	CHECK(fixed.pa_us == 800u && fixed.window_us == 800u && fixed.slope_us == 800u && fixed.knee_us == 0u);
+	CHECK(fixed.pa_us <= CS7000P_KEYUP_INT_AHEAD_US - CS7000P_KEYUP_LOOP_LEAD_US - 30u);
+	CHECK(CS7000P_KEYUP_INT_AHEAD_US - fixed.pa_us == 1750u);
+	CHECK(CS7000P_KEYUP_INT_AHEAD_US - fixed.pa_us - CS7000P_KEYUP_LOOP_LEAD_US == 1250u);
+
+	bring_up(&cal_ok, 446u * MHZ);
+	cs7000p_tx_req_t q = req(441u * MHZ, 1, true);
+	uint16_t d = 0, top = 0, fl = 0;
+	drive_cap = 3000;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	cs7000p_rf_burst_drives(&rf, &d, &top, &fl);
+	CHECK(d == 3000 && top == 3000 && fl == 300);
+	// The tune: receiver off, the transmit VCO on the carrier, the rail; the DAC off and the loop open. The
+	// sequencer asks the plan for level 0 here, and the plan answers for the admitted transmission all the same
+	CHECK(chainseq_burst_tune(&rf.seq, 441u * MHZ));
+	int i_rxr = find_exp(0, EXP_RX_RAIL, false), i_vco = find_exp(0, EXP_VCO_RX, false);
+	int i_synth = find_ev(0, EV_SYNTH), i_txr = find_exp(0, EXP_TX_RAIL, true);
+	CHECK(ev[0].type == EV_DAC && ev[0].a == 0 && i_rxr > 0 && i_rxr < i_vco && i_vco < i_synth && i_synth < i_txr);
+	CHECK(ev[i_synth].b == 441u * MHZ && dac_now == 0 && (shadow & EXP_TX_BITS) == EXP_TX_RAIL);
+	CHECK(rf.seq.state == CHAINSEQ_ST_BURST && find_ev(0, EV_DELAY) < 0);	// interrupt level: no waits
+	// Another frequency than the admitted one has no plan
+	CHECK(!chainseq_burst_tune(&rf.seq, 442u * MHZ));
+
+	// Two bursts: the loop closes on the floor before any drive, then the drive; the end takes all of it away and
+	// leaves the transmit VCO tuned
+	for (int n = 0; n < 2; n++) {
+		clear_log();
+		CHECK(burst(0, d));
+		int i_floor = find_dac_over(0, 0), i_loop = find_exp(0, EXP_APC_LOOP, true), i_drive = find_dac_over(0, fl);
+		CHECK(i_floor >= 0 && ev[i_floor].a == fl && i_floor < i_loop && i_loop < i_drive && ev[i_drive].a == 3000);
+		CHECK((n == 0) == (find_exp(0, EXP_TX_RAIL, true) < 0) || find_exp(0, EXP_TX_RAIL, true) < i_floor);
+		CHECK(dac_now == 3000 && (shadow & EXP_TX_BITS) == EXP_TX_BITS && rf.seq.state == CHAINSEQ_ST_BURST_ON);
+		chainseq_burst_off(&rf.seq);
+		chainseq_burst_off(&rf.seq);	// the timed drop, then the glue's switch back
+		CHECK(dac_now == 0 && (shadow & (EXP_TX_BITS | EXP_VCO_RX)) == 0u && rf.seq.state == CHAINSEQ_ST_BURST);
+		CHECK(find_ev(0, EV_SYNTH) < 0 && find_ev(0, EV_DELAY) < 0);
+	}
+	// With a boost: it comes after the loop point, and the PA's point carries it
+	clear_log();
+	CHECK(burst(3000, 1000) && dac_now == 1000 && inv_fail == 0 && trips == 0);
+	chainseq_burst_off(&rf.seq);
+
+	// Not locked at the PA's point: no drive, the burst is off, counted; the next burst keys
+	uint32_t unlocked = rf.seq.unlocked;
+	pll_locked = false;
+	clear_log();
+	CHECK(!burst(0, d) && find_dac_over(0, fl) < 0);
+	CHECK(dac_now == 0 && (shadow & EXP_TX_BITS) == 0u && rf.seq.unlocked == unlocked + 1u);
+	pll_locked = true;
+	CHECK(burst(0, d) && dac_now == 3000);
+	chainseq_burst_off(&rf.seq);
+
+	// The way back at the transmission's end: the receive LO, the receive rail, the tuning value, no waits
+	clear_log();
+	CHECK(chainseq_burst_rx(&rf.seq) && rf.seq.state == CHAINSEQ_ST_RX);
+	CHECK(is_safe() && (shadow & EXP_RX_RAIL) != 0u && dac_now == 1500 && find_ev(0, EV_DELAY) < 0);
+	CHECK(ev[find_ev(0, EV_SYNTH)].b == 446u * MHZ - CS7000P_IF_HZ);
+	// keep: the end leaves a chain that already receives alone
+	clear_log();
+	cs7000p_rf_tx_off(&rf, true);
+	CHECK(ev_n == 0 && !rf.admit && rf.seq.state == CHAINSEQ_ST_RX);
+	CHECK(inv_fail == 0 && trips == 0);
+	// Without keep the same end runs the whole receive set-up: the way back above had none for the IF chip
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && chainseq_burst_tune(&rf.seq, 441u * MHZ) && burst(0, d));
+	chainseq_burst_off(&rf.seq);
+	CHECK(chainseq_burst_rx(&rf.seq));
+	clear_log();
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(find_ev(0, EV_IF) >= 0 && find_ev(0, EV_SYNTH) >= 0 && rf.seq.state == CHAINSEQ_ST_RX && dac_now == 1500);
+	// And with no transmission behind it, an end while receiving does nothing either way
+	clear_log();
+	cs7000p_rf_tx_off(&rf, false);
+	cs7000p_rf_tx_off(&rf, true);
+	CHECK(ev_n == 0 && inv_fail == 0 && trips == 0);
+
+	// A drive ahead of the loop point is refused, and the transmission's RF ends there
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && chainseq_burst_tune(&rf.seq, 441u * MHZ));
+	CHECK(!chainseq_burst_point(&rf.seq, PA_KEYUP_PT_DRIVE, 2000));
+	CHECK(is_safe() && dac_now == 0 && inv_fail == 0);
+	// A full end from the burst state: the receiver set up again
+	CHECK(chainseq_burst_tune(&rf.seq, 441u * MHZ) && burst(0, d));
+	chainseq_burst_off(&rf.seq);
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && is_safe() && dac_now == 1500 && inv_fail == 0);
+
+	// A safe request in a burst: off, and neither that burst nor the next keys until the task asks again
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && chainseq_burst_tune(&rf.seq, 441u * MHZ) && burst(0, d));
+	board_rf_safe_fake();
+	check_safed();
+	CHECK(!burst(0, d) && is_safe() && dac_now == 0);
+	clear_log();
+	if (chainseq_burst_tune(&rf.seq, 441u * MHZ)) {
+		CHECK(!burst(0, d));
+	}
+	CHECK(find_exp(0, EXP_APC_LOOP, true) < 0 && find_dac_over(0, 0) < 0 && inv_fail == 0);
+
+	// On the bench drive (a build that allows it in DMR): the top drive is the bench drive's own
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	q.limit_list = true;
+	q.bench_dmr = true;
+	CHECK(cs7000p_rf_drive(&rf, 500, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	cs7000p_rf_burst_drives(&rf, &d, &top, &fl);
+	CHECK(d == 500 && top == 500 && fl == 0);
+	drive_cap = 500;
+	CHECK(chainseq_burst_tune(&rf.seq, 441u * MHZ) && burst(0, d) && dac_now == 500);
+	chainseq_burst_off(&rf.seq);
+	CHECK(chainseq_burst_rx(&rf.seq) && inv_fail == 0 && trips == 0);
+}
+#endif
+
+int main(void)
+{
+	test_start();
+	test_receive();
+	test_uncalibrated();
+	test_override();
+	test_partial_cal();
+	test_settle_battery_band();
+	test_off_state();
+	test_fm_tx();
+	test_fm_refusals();
+	test_rf_safe();
+#if CONFIG_DMR
+	test_bursts();
+#endif
+	printf("# cs7000pRadioSeqTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
+	return failures ? 1 : 0;
+}
