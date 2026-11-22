@@ -234,6 +234,7 @@ steps; `rfoundry/fakedfu.py` `FakeRom` is the model both are tested against.
 
 | Step | What happens | Why |
 |---|---|---|
+| Entry | The bootloader's keys at power-on (the board's `[flash.bootloader] steps`), or, where the board's firmware can and RadioFoundry runs on the radio, a restart the tool asks for over the debug link ([below](#the-restart-into-the-bootloader)). Everything after it is the same either way | The bootloader is in ROM: whatever is in program flash, the keys reach it |
 | Device check | Before any DFU request. String 1 must not be a keyed bootloader's. The first interface string must be the board's `[flash.dfu] layout`, or without one a region that is the board's whole program flash | Nothing is encrypted, so no key stops an image from reaching the wrong device. Radio makers' bootloaders and other chips' ROM bootloaders have the same USB IDs |
 | Idle by state | The protection probe, the Read Unprotect and the erase-and-write run each start with `Dfu.to_idle()` (the web flasher: `toIdle()`): GETSTATUS, then CLRSTATUS only in dfuERROR, a wait in dfuDNBUSY and ABORT in any other state, until dfuIDLE. `wait_idle()`, which sends CLRSTATUS in every state but dfuIDLE, remains the keyed route's way in | A ROM bootloader answers a request its state doesn't allow with a stall and an error. A bootloader that an interrupted run left in dfuDNLOAD-IDLE or dfuUPLOAD-IDLE is taken with ABORT |
 | Protection probe | Set Address Pointer to the flash base, then an UPLOAD of 4 bytes. A read-protected chip answers `dfuERROR` with `errVENDOR` (AN3156 4.1). Nothing changes on the radio. Any other answer stops the install | A protected chip refuses every read, erase and write. "Protected" leads to the next step, so it is never concluded from an answer the documents don't describe |
@@ -249,6 +250,31 @@ steps; `rfoundry/fakedfu.py` `FakeRom` is the model both are tested against.
 selects an alternate setting, so every request goes to alternate setting 0, the program flash; the fake fails any
 request sent after one was selected, and a test runs every path against it. A wrong option byte can lock the chip for
 good or take away the way into the bootloader.
+
+### The restart into the bootloader
+
+A board whose firmware restarts into the ROM bootloader when the debug link asks says so in its registry entry:
+`[flash.bootloader] restart = true` ([board-registry.md](board-registry.md)), `bootloader_restart` in the views. The
+request is `REBOOT` with the ROM bootloader mode ([debuglink.md](../spec/debuglink.md) 3.11), which the board or its
+platform may refuse before it answers (reason 5, `hal_system_t.reboot_ok`). `rfoundry flash` then asks a radio that
+runs RadioFoundry instead of asking for the keys (`cli.py` `restart_into_bootloader`), and the web flasher offers the
+same as a button ([web-flasher.md](web-flasher.md#the-restart-into-the-loader)). Which boards: the registry
+(`tools/boards.py get <id> flash.bootloader.restart` prints `true`), and each radio's own page says so.
+
+| Case | rfoundry |
+|---|---|
+| Who is asked | The radio this run's probe found on the debug link, when its board name is this board's (the rule the codec decision has for a probe). Before the request the port is asked again: the board name and the chip UID must be the probe's. Never a remembered probe, another model, or another radio. With more than one debug link on the host (`debug_links`: the serial ports and the radios in USB network mode) and no `--port`, none is restarted: the probe took the first that answered, which is not the user's choice (the stub route's rule, `stubroute.run`). With `--no-probe`, with no radio found, or with a bootloader already on USB, nothing is asked and the keys' steps follow as before |
+| The request | INFO_CHIP, the host's half of the gate (a chip family with a ROM bootloader, RDP level 0), then `REBOOT` mode 1 with the chip UID's low word. `debuglink.py` `Link.restart_into_bootloader` returns the reply's kind (`restart_outcome`) |
+| Taken | The radio resets 250 ms after its reply. rfoundry lists USB every 0.5 s for at most `RESTART_WAIT_S` (20 s) and goes on with the device: the device check, the probe and the rest of the table above |
+| Refused, reason 5 | "did not restart into its bootloader: it can't right now. Nothing was changed", then the board's `bootloader_restart_hint` when it has one. On a terminal rfoundry asks "Try the restart again?" as often as the user says yes. Otherwise, and with `--yes`, it prints the keys' steps and waits for the bootloader as before |
+| Refused for another reason | Said as what it is (transmitting, a read-protected processor, a firmware without the command), then the keys' steps |
+| Taken, and no bootloader within the wait | "took the restart, but no bootloader came onto USB within 20 s", with "it still runs RadioFoundry" when the debug link still answers (a check failed again at the reset). On Windows, when the radio left the debug link, the bootloader's driver steps follow: a bootloader without WinUSB is not listed. Then the keys' steps |
+
+The kinds and their words are the same in both tools (`debuglink.py`, `link.js`); the fixture `restart-vectors.json`
+holds rfoundry's, and `site/tests/dfuse.test.mjs` compares. `fakedfu.FakeRunning` is the running radio that
+rfoundry's tests and `--simulate` talk to: it takes the restart (its bootloader then comes onto the fake bus), refuses
+it with a reason, or answers OK and stays up. Both fakes check in the firmware's order (`dl_reboot_check`, then the
+platform's `reboot_ok`) and answer the status with a reason byte, as the firmware does. The restart has not been tried on a radio.
 
 Updates of a radio that already runs RadioFoundry use the same route. Its chip is no longer read protected after the
 first install, so no Read Unprotect follows.
@@ -303,7 +329,9 @@ against a fake bootloader with a flash model (`python3 -m unittest discover -s t
 them). `rfoundry flash IMAGE --simulate rfoundry-codec` runs the whole command against that fake. For a board on the
 ROM bootloader route, `rfoundry flash --board <id> --simulate` stops at the read protection, and with `--unprotect` it
 runs through the unprotect, the second entry, the write and the leave (`--simulate blank`: a chip that is not
-protected). A simulation without an image file makes one up. What only a radio can
+protected). Where the board's firmware restarts into the bootloader, `--simulate rfoundry-nocodec` is a running radio
+that takes the restart and `--simulate rfoundry-refuses` one that refuses it (reason 5), so both are seen without a
+radio. A simulation without an image file makes one up. What only a radio can
 answer, in this order (the first flash of a new build is always a merge, so the radio has a known codec):
 
 1. `rfoundry detect` with the radio in its bootloader.

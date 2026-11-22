@@ -2,7 +2,8 @@
 # Copyright (c) 2026 The RadioFoundry Authors
 """Just enough of the debug link (docs/spec/debuglink.md) to ask a running RadioFoundry radio what it is: VERSION (board,
 git, codec=) and INFO_CHIP (the chip UID, to tell radios apart), and READ_MEM for the bootloader key (bootkey.py),
-and HWOPT (3.25) for a hardware option an install learned (origversion.py). Only hwopt_set changes the radio.
+and HWOPT (3.25) for a hardware option an install learned (origversion.py), and REBOOT (3.11) into the processor's
+own bootloader for an install through it. Only hwopt_set and restart_into_bootloader change the radio.
 Needs pyserial for a serial port; a radio in USB network mode answers over UDP (udp:ADDR) without it.
 """
 import ipaddress
@@ -19,12 +20,57 @@ NET_PID = 0x0096	# the network personality (CDC-NCM, docs/spec/usb-network.md)
 UDP_PORT = 3334		# the serial protocols over UDP at the radio's address in network mode
 INDIVIDUAL_NET = ipaddress.IPv4Network("12.0.0.0/8")	# the host's address is 12.<DMR ID>, the radio's that xor 1
 SOF1, SOF2 = 0xA5, 0x5A
-CMD_VERSION, CMD_INFO_CHIP, CMD_READ_MEM, CMD_HWOPT = 0x02, 0x0B, 0x0C, 0x21
+CMD_VERSION, CMD_INFO_CHIP, CMD_READ_MEM, CMD_REBOOT, CMD_HWOPT = 0x02, 0x0B, 0x0C, 0x0D, 0x21
 HWOPT_LIST, HWOPT_SET = 0, 1
+ST_OK, ST_UNKNOWN, ST_UNAVAILABLE, ST_REFUSED = 0, 1, 4, 7	# a reply's status byte (debuglink.md 2)
+REBOOT_BOOTLOADER = 1		# REBOOT's mode 1: reset, then straight into the processor's ROM bootloader
+# INFO_CHIP's family byte: the ones whose option word carries the RDP level, and so have a ROM bootloader to enter
+CHIP_STM32F4, CHIP_STM32H7 = 0, 2
+CHIP_ROM_FAMILIES = (CHIP_STM32F4, CHIP_STM32H7)
+
+# What a radio answered to the restart into its bootloader (REBOOT mode 1, debuglink.md 3.11), by kind. The web
+# flasher has the same table (site/static/js/flasher/link.js restartOutcome), and a test compares the two
+RESTART_OK = "ok"			# taken: the reply goes out first, the radio resets 250 ms later
+RESTART_NOT_NOW = "not-now"		# reason 5: the board or its platform can't do it now (hal_system_t.reboot_ok)
+RESTART_TRANSMITTING = "transmitting"	# reason 3
+RESTART_PROTECTED = "protected"		# reason 2: no ROM bootloader on this chip, or RDP is not level 0
+RESTART_TOKEN = "token"			# reason 1: the token was not the chip UID's low word
+RESTART_NO_CHIP = "no-chip"		# reason 4: the radio could not read its chip info
+RESTART_UNSUPPORTED = "unsupported"	# a firmware without the command (unknown, or not built in)
+RESTART_OTHER = "other"			# anything else: reported as it came
+RESTART_REASONS = {1: RESTART_TOKEN, 2: RESTART_PROTECTED, 3: RESTART_TRANSMITTING, 4: RESTART_NO_CHIP,
+                   5: RESTART_NOT_NOW}
+# The kinds in words, for the ones that are not the board's "not now" (the caller has the board's own hint for that)
+RESTART_WHY = {
+    RESTART_TRANSMITTING: "the radio is transmitting",
+    RESTART_PROTECTED: "its processor is read protected, or has no bootloader of its own to restart into",
+    RESTART_TOKEN: "the radio did not accept the request's confirmation word",
+    RESTART_NO_CHIP: "the radio could not read its processor's identity",
+    RESTART_UNSUPPORTED: "this firmware has no restart command",
+}
+
+
+def restart_outcome(status, data=b""):
+    """The kind of a REBOOT reply: its status byte and the bytes after it (the reason, when refused)."""
+    if status == ST_OK:
+        return RESTART_OK
+    if status in (ST_UNKNOWN, ST_UNAVAILABLE):
+        return RESTART_UNSUPPORTED
+    if status == ST_REFUSED and data:
+        return RESTART_REASONS.get(data[0], RESTART_OTHER)
+    return RESTART_OTHER
+
+
+def restart_request(token):
+    """REBOOT's payload for the restart into the bootloader: the mode, and the chip UID's low word as the token."""
+    return struct.pack("<BI", REBOOT_BOOTLOADER, token)
 
 
 class LinkError(Exception):
-    pass
+    """status: the reply's status byte when the radio answered with one that isn't OK, with the bytes after it in
+    data (a refusal's reason); None when nothing usable came back."""
+    status = None
+    data = b""
 
 
 def crc16(data, crc=0xFFFF):
@@ -211,7 +257,9 @@ def find_network_radios(candidates=None, timeout=0.4):
 
 class Link:
     def __init__(self, port, timeout=1.0):
-        if str(port).startswith("udp:"):
+        if hasattr(port, "write"):	# a stream that is already open: a simulated radio (fakedfu.FakeRunning)
+            self.s = port
+        elif str(port).startswith("udp:"):
             self.s = UdpSerial(port[4:])
         else:
             import serial
@@ -240,7 +288,10 @@ class Link:
             for rcmd, rseq, data in parse_frames(bytes(buf)):
                 if rseq == self.seq and rcmd in (cmd | 0x80, 0xFF):
                     if not data or data[0] != 0:
-                        raise LinkError("command 0x%02X: status %s" % (cmd, data[0] if data else "?"))
+                        e = LinkError("command 0x%02X: status %s" % (cmd, data[0] if data else "?"))
+                        if data:
+                            e.status, e.data = data[0], data[1:]
+                        raise e
                     return data[1:]
         raise LinkError("no answer to command 0x%02X" % cmd)
 
@@ -283,6 +334,33 @@ class Link:
         except LinkError:
             return None
         return r[6:18].hex() if len(r) >= 18 else None
+
+    def chip(self):
+        """INFO_CHIP (debuglink.md 3.9) as far as a restart needs it: {"uid" (hex), "token" (the UID's low word, which
+        REBOOT wants back), "family", "rdp" (the level; None where the family has none)}. LinkError when the radio
+        gives no chip info."""
+        r = self.request(CMD_INFO_CHIP)
+        if len(r) < 28:
+            raise LinkError("INFO_CHIP answered %d bytes" % len(r))
+        family = r[28] if len(r) > 28 else CHIP_STM32F4	# firmware before the family byte was STM32F4 only
+        return {"uid": r[6:18].hex(), "token": struct.unpack_from("<I", r, 6)[0], "family": family,
+                "rdp": r[22] if family in CHIP_ROM_FAMILIES else None}
+
+    def restart_into_bootloader(self, chip):
+        """Ask the radio to restart into its processor's ROM bootloader (REBOOT mode 1) and return what it said, a
+        RESTART_* kind. chip: this radio's chip(). The host's half of the gate comes first, as rfoundry_debug.py's
+        (debuglink.md 3.11): a chip family with a ROM bootloader, at RDP level 0, else nothing is sent. On
+        RESTART_OK the radio resets 250 ms after its reply, unless a check fails again by then (it then stays up).
+        LinkError only when no reply came."""
+        if chip["family"] not in CHIP_ROM_FAMILIES or chip["rdp"] != 0:
+            return RESTART_PROTECTED
+        try:
+            self.request(CMD_REBOOT, restart_request(chip["token"]))
+        except LinkError as e:
+            if e.status is None:
+                raise
+            return restart_outcome(e.status, e.data)
+        return RESTART_OK
 
 
 def probe(port=None, log=None):

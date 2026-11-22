@@ -131,7 +131,10 @@ and `--codec` are refused), and `rfoundry flash` does, in order:
 1. Load and check the image, print the plan (`--dry-run` stops here). An image that reaches past the application's
    part of the program flash is refused: it is not this radio's, and the bootloader must not erase flash the build
    keeps unused.
-2. Wait for the bootloader (the board's key at power-on; rfoundry says which).
+2. Get the radio into its bootloader. A radio that runs RadioFoundry and answers on its debug link is restarted
+   into it by rfoundry, where the board's firmware can do that (`[flash.bootloader] restart` in its `board.toml`):
+   no key to hold. Otherwise, and when the radio refuses, rfoundry waits for the bootloader (the board's key at
+   power-on; rfoundry says which).
 3. Check the device before it sends anything: not a radio maker's keyed bootloader (they share the USB IDs), and a
    flash layout that is this radio's chip. Anything else is refused.
 4. Probe the read protection: a read of 4 bytes, which changes nothing.
@@ -153,10 +156,19 @@ and `--codec` are refused), and `rfoundry flash` does, in order:
 
 `rfoundry detect` with the radio in its bootloader names the radios the device can be and says whether it is read
 protected. An update of a radio that already runs RadioFoundry is the same command without `--unprotect` (the
-protection is gone after the first install). Use rfoundry or the web flasher for these radios: both fill the image
-to whole 32-byte flash words, which another DfuSe tool may not do. Nothing writes the processor's option bytes: rfoundry
-never selects the bootloader's second alternate setting, and never sends an address outside the program flash. The
-design is in [docs/dev/release.md](../../docs/dev/release.md#the-rom-bootloader-route).
+protection is gone after the first install).
+
+The restart in step 2 asks only the radio this run found on the debug link, and only when it reports this board;
+`--no-probe` turns it off. With more than one radio that runs RadioFoundry connected, rfoundry restarts none unless
+`--port` names the one. A radio may refuse it at that moment (its board's own rule): rfoundry says that nothing
+was changed, prints the board's hint for what to do, asks on a terminal whether to try again, and otherwise goes on
+with the key. If the radio takes the restart and no bootloader is on USB within 20 s, rfoundry says so and asks for
+the key. Not yet tried on a radio.
+
+Use rfoundry or the web flasher for these radios: both fill the image to whole 32-byte flash words, which another
+DfuSe tool may not do. Nothing writes the processor's option bytes: rfoundry never selects the bootloader's second
+alternate setting, and never sends an address outside the program flash. The design is in
+[docs/dev/release.md](../../docs/dev/release.md#the-rom-bootloader-route).
 
 ### The DM-1801 Pro
 
@@ -209,5 +221,6 @@ Tests: `python3 -m unittest discover -s tools/rfoundry/tests -v` (no USB, no ser
 against the fake bootloader: `rfoundry flash IMAGE --simulate rfoundry-codec` (or `stock` with `--stock-installed "V02.06
 CSV"`, or `rfoundry-nocodec --stock synthetic`). The processor's own bootloader: `rfoundry flash --board cs7000p
 --simulate` stops at the read protection, `--simulate --unprotect` runs the whole install, `--simulate blank` a radio
-that isn't protected; without an image file a simulation makes one up. A local build without a manifest: `rfoundry flash
+that isn't protected, `--simulate rfoundry-nocodec` one that runs RadioFoundry and takes the restart into its
+bootloader, `--simulate rfoundry-refuses` one that refuses it; without an image file a simulation makes one up. A local build without a manifest: `rfoundry flash
 build/dm1701/rfoundry_dm1701.bin --board dm1701`. Design and the sector map: [docs/dev/release.md](../../docs/dev/release.md).

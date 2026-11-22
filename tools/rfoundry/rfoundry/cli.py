@@ -35,6 +35,8 @@ examples:
                                                         the original firmware and its bootloader for good
 
 entering the bootloader: rfoundry says how for the radio (the steps are each radio's own, as on the web flasher).
+A radio that runs RadioFoundry and is installed through its processor's own bootloader is restarted into it by
+rfoundry, over the debug link, where its firmware can do that; if the radio refuses, rfoundry says what to do.
 """
 
 
@@ -839,6 +841,116 @@ def check_rom_loader(usb, dev, board, log=say):
     return fp
 
 
+# How long the processor's bootloader may take to come onto USB after the radio took the restart: it resets 250 ms
+# after its reply (debuglink.md 3.11), and the host then lists a new device. After that the keys are asked for
+RESTART_WAIT_S = 20
+
+
+def _still_running(port):
+    """Whether RadioFoundry still answers on the port, after a restart it took and no bootloader showed"""
+    try:
+        link = debuglink.Link(port)
+    except Exception:
+        return False
+    try:
+        link.version()
+        return True
+    except (debuglink.LinkError, OSError):
+        return False
+    finally:
+        link.close()
+
+
+def debug_links():
+    """The debug link of every radio that runs RadioFoundry on this host: the serial ports, then the radios in USB
+    network mode (udp:ADDR)"""
+    return list(debuglink.find_ports() or []) + debuglink.find_network_radios()
+
+
+def restart_into_bootloader(usb, board, probe, ask=None, log=say, wait_s=RESTART_WAIT_S, sleep=None, links=None):
+    """A radio that runs RadioFoundry on a board whose firmware restarts into its processor's bootloader when asked
+    (the registry's bootloader_restart; the debug link's REBOOT, docs/spec/debuglink.md 3.11): ask it, and return the
+    bootloader's device once it is on USB. None for everything else, each said in a line: the caller then asks for
+    the bootloader's keys as it always did (wait_for_dfu).
+
+    probe: this run's probe of the radio (get_probe). Only a radio that answers now is asked, and only one that is
+    this board, by the rule the codec decision has for a probe (decide_codec): never a remembered probe, a radio of
+    another model, or another radio than the one probed (its chip UID is read again on the port). Nothing is asked
+    while a bootloader is already on USB: the user put a radio there. Nor while the host shows more than one debug
+    link and the user named none (links: a callable that lists them, debug_links; None when the user gave the port,
+    and in a simulation): the probe took the first that answered, which is rfoundry's pick and not the user's, as on
+    the stub route (stubroute.run).
+
+    A refusal changes nothing on the radio. Reason 5 is the board's own rule saying not now: the board's hint
+    (bootloader_restart_hint) says what to do, and with ask (a yes/no callable, None when nobody can answer) the
+    restart is tried again as often as the user says. Any other refusal is said as what it is. A radio that took the
+    restart and whose bootloader is not on USB within wait_s gets a line saying so."""
+    if not getattr(board, "bootloader_restart", False) or not probe or "age_s" in probe:
+        return None
+    pb = boards.from_debuglink_name(probe.get("board") or "")
+    if pb is None or pb.id != board.id:
+        log("radio    the radio on the debug link reports board %r, not the %s: it is not restarted"
+            % (probe.get("board"), board.name))
+        return None
+    if _listed(usb, board):
+        return None
+    by_hand = "enter the bootloader with its keys"
+    found = links() if links else []
+    if len(found) > 1:
+        log("radio    more than one radio that runs RadioFoundry is connected (%s): none is restarted. Name one with "
+            "--port, or %s:" % (", ".join(str(x) for x in found), by_hand))
+        return None
+    while True:
+        try:
+            link = debuglink.Link(probe["port"])
+        except Exception as e:
+            log("radio    could not ask it to restart into its bootloader (%s): %s" % (e, by_hand))
+            return None
+        try:
+            v, chip = link.version(), link.chip()
+            if v.get("board") != probe.get("board") or (probe.get("uid") and chip["uid"] != probe["uid"]):
+                log("radio    another radio answers on the debug link now: it is not restarted")
+                return None
+            log("radio    restarting it into its bootloader over the debug link (no keys to hold)")
+            kind = link.restart_into_bootloader(chip)
+        except (debuglink.LinkError, OSError) as e:
+            log("radio    could not ask it to restart into its bootloader (%s): %s" % (e, by_hand))
+            return None
+        finally:
+            link.close()
+        if kind == debuglink.RESTART_OK:
+            break
+        if kind != debuglink.RESTART_NOT_NOW:
+            log("radio    did not restart into its bootloader: %s. Nothing was changed: %s"
+                % (debuglink.RESTART_WHY.get(kind, "it answered the request with an error"), by_hand))
+            return None
+        log("radio    did not restart into its bootloader: it can't right now. Nothing was changed")
+        hint = getattr(board, "bootloader_restart_hint", None)
+        if hint:
+            log("         " + hint)
+        if ask is None or not ask("Try the restart again?", default=True):
+            log("         To try the restart again, run the same command. Or %s:" % by_hand)
+            return None
+    devs = []
+    for _ in range(max(1, int(wait_s * 2))):
+        devs = _listed(usb, board) or []
+        if devs:
+            break
+        (sleep or time.sleep)(0.5)
+    if len(devs) == 1:
+        log("radio    in its bootloader: leave it on and connected")
+        return devs[0]
+    if not devs:
+        up = _still_running(probe["port"])
+        log("radio    took the restart, but no bootloader came onto USB within %d s%s" % (
+            wait_s, ": it still runs RadioFoundry, so a check failed again at the reset (a transmission started, or "
+            "the board no longer allowed it)" if up else ""))
+        if not up and sys.platform == "win32":		# it left, and Windows shows no bootloader: one without its driver
+            log(dfumod.windows_driver_steps(board))
+        log("         Now %s:" % by_hand)
+    return None		# several bootloaders: wait_for_dfu says so
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # commands
 
@@ -854,6 +966,9 @@ def cmd_flash(args):
     if args.unprotect and board.family != "dfuse":
         raise UsageError("--unprotect is for a radio installed through its processor's own bootloader; the %s isn't"
                          % board.name)
+    if sim == "rfoundry-refuses" and not getattr(board, "bootloader_restart", False):
+        raise UsageError("--simulate rfoundry-refuses is for a radio whose firmware restarts into its processor's "
+                         "bootloader when asked; the %s's doesn't" % board.name)
     if board.family == "serial-loader":
         return cmd_flash_serial(args, board, man, image, merged)
     if board.family == "serial-iap":
@@ -1060,7 +1175,9 @@ def cmd_flash_dfuse(args, board, man, image):
     """A radio installed through the bootloader in its processor's ROM by plain DfuSe (family dfuse): no key, no
     codec step. A read-protected chip takes nothing until the protection is removed, and removing it erases the whole
     program memory: only with --unprotect, confirmed, and the radio is then put in its bootloader a second time.
-    Every request goes to the program flash (alternate setting 0); the option bytes are never selected or written."""
+    Every request goes to the program flash (alternate setting 0); the option bytes are never selected or written.
+    A radio that runs RadioFoundry is restarted into the bootloader over its debug link where the board's firmware
+    can do that (restart_into_bootloader); everything after the bootloader is found is the same either way."""
     sim = args.simulate
     if args.key or args.stock or args.stock_installed or args.codec != "auto":
         raise UsageError("the %s has no bootloader key and no codec to keep or write: --key, --stock, "
@@ -1085,6 +1202,7 @@ def cmd_flash_dfuse(args, board, man, image):
         return 0
 
     before = None
+    restarted = False
     if sim:
         from . import fakedfu
         # stock: every byte in use and read protected, as the maker's firmware leaves the chip; blank: erased
@@ -1092,9 +1210,23 @@ def cmd_flash_dfuse(args, board, man, image):
                                        protected=sim == "stock")
         usb = fakedfu.FakeUsb([dev])
         before = bytes(dev.flash)
+        if sim.startswith("rfoundry") and getattr(board, "bootloader_restart", False):
+            # RadioFoundry runs and answers on its debug link; the bootloader is on USB only once the radio restarts
+            # into it. rfoundry-refuses: the board's rule says not now, so the keys are used after all
+            running = fakedfu.FakeRunning(board, dev, refuse=5 if sim == "rfoundry-refuses" else None)
+            say("radio    (simulated) RadioFoundry running on its debug link")
+            if restart_into_bootloader(usb, board, running.probe(), sleep=lambda s: None) is None:
+                running.enter_by_hand()
+                say("radio    (simulated) switched off and put in its bootloader with its keys")
     else:
         usb = dfumod.import_usb()
-        dev = wait_for_dfu(usb, board, args.wait)
+        # a radio that runs RadioFoundry and can restart into its bootloader does so; any other, and one that
+        # refuses, is put there with its keys
+        ask = None if args.yes or not sys.stdin.isatty() else ask_yes
+        dev = restart_into_bootloader(usb, board, probe, ask=ask, links=None if args.port else debug_links)
+        restarted = dev is not None
+        if dev is None:
+            dev = wait_for_dfu(usb, board, args.wait)
 
     def connect(dev):
         check_rom_loader(usb, dev, board)
@@ -1105,6 +1237,8 @@ def cmd_flash_dfuse(args, board, man, image):
     started = None
     unprotected = writing = False
     again = "put the radio in its bootloader again (%s) and run the same command" % bootloader_steps(board)
+    # a radio rfoundry restarted into its bootloader stays there when nothing is written
+    left_there = " (the radio is in its bootloader: switch it off and on to start it normally)" if restarted else ""
     try:
         d, protected = connect(dev)
         if protected:
@@ -1165,7 +1299,7 @@ def cmd_flash_dfuse(args, board, man, image):
                 say("radio    the program memory is not read protected: nothing to remove")
             if not args.yes and not sim and not ask_yes("Erase and write %d sector(s) now?" % len(p.erase),
                                                         default=True):
-                say("nothing done")
+                say("nothing done" + left_there)
                 return 1
         if started is None and not sim:
             started = flash_started(args, board, man)
@@ -1710,7 +1844,8 @@ def build_parser():
         p.add_argument("--board", help="radio model (%s); normally taken from the manifest and the radio" % ", ".join(sorted(boards.BOARDS)))
         p.add_argument("--port", help="the radio's serial port when it runs RadioFoundry (found by USB ID otherwise); DM-1801 "
                        "Pro, DM-32UV: the programming cable's port (found when it is the only USB-serial cable)")
-        p.add_argument("--no-probe", action="store_true", help="don't ask a running RadioFoundry radio over its debug link")
+        p.add_argument("--no-probe", action="store_true", help="don't ask a running RadioFoundry radio over its debug link, and "
+                       "don't restart one into its bootloader")
         p.add_argument("--option", action="append", metavar="NAME=VALUE", help="a hardware build option, such as "
                        "BAND=vhf on the MD-380 (normally taken from the board name the radio reports)")
 
@@ -1745,10 +1880,12 @@ def build_parser():
                    help="a radio installed through its processor's own bootloader whose program memory is read "
                         "protected: remove the protection first. This erases the whole program memory, the original "
                         "firmware and its bootloader included, for good")
-    f.add_argument("--simulate", nargs="?", const="stock", choices=("stock", "rfoundry-codec", "rfoundry-nocodec", "blank"),
+    f.add_argument("--simulate", nargs="?", const="stock",
+                   choices=("stock", "rfoundry-codec", "rfoundry-nocodec", "rfoundry-refuses", "blank"),
                    help="run against a fake radio in this state (testing: no USB; default stock, read protected where "
                         "a maker ships it so); --stock synthetic gives a synthetic stock file, and with --board and no "
-                        "image a made-up image is flashed")
+                        "image a made-up image is flashed. rfoundry-refuses: a radio whose firmware restarts into its "
+                        "processor's bootloader when asked, and refuses just now")
     common(f)
     f.set_defaults(fn=cmd_flash)
 

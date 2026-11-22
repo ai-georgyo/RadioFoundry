@@ -50,8 +50,13 @@ backup = { stock = "none", rfoundry = "full", spi_size = 0x2000000 }
 
 # hold: SK1 is the side key above PTT. The key pulls the processor's BOOT0 pin high, so holding it at power-on starts
 # the ROM bootloader (hardware-cs7000p.md, unverified on a radio)
+# restart: the firmware enters the same bootloader when the debug link asks (REBOOT, hardware-cs7000p.md 2.5), so the
+# tools restart a radio that runs RadioFoundry themselves. The board refuses it on a selector position that grounds a
+# pin the loader may drive (reason 5); restart_hint is what the tools tell the user then. Untested on a radio
 [flash.bootloader]
 hold = ["sk1"]
+restart = true
+restart_hint = "The radio refuses this restart on some channel selector positions. Turn the channel selector one step and try again."
 steps = [
 	"Turn the radio off and connect the programming cable.",
 	"Hold SK1, the side key above PTT.",

@@ -211,6 +211,19 @@ test("kit README: a ROM bootloader radio has no stock file, no key and no codec,
 	}
 });
 
+test("kit README: a radio whose firmware restarts into its bootloader is updated without keys, and only such a radio is told so", () => {
+	const make = (restart) => kit.kitReadme({ radio: { ...radios[PLAIN], flash: { ...radios[PLAIN].flash, bootloader_restart: restart } }, board: brd(PLAIN),
+		base: `rfoundry-${PLAIN}-v0.2.0`, manifest: manifest(PLAIN), stock: null, site: SITE, repo: REPO, community: COMMUNITY, git: "abcd1234", date: "2026-10-26" });
+	const yes = make(true), no = make(false);
+	const said = "restarts it into its bootloader by itself";
+	assert.ok(yes.replace(/\n/g, " ").includes(said) && !no.replace(/\n/g, " ").includes(said));
+	// after the keys' steps, which stay: a refusal ends with them
+	assert.ok(yes.indexOf(radios[PLAIN].flash.bootloader[0]) < yes.indexOf("needs no keys"));
+	assert.ok(yes.replace(/\n/g, " ").includes("If the radio refuses the restart, rfoundry says what to do"));
+	assert.ok(yes.split("\n").every((l) => l.length <= 110 || l.startsWith("  ")));
+	assert.equal(yes.replace(/A radio that already runs RadioFoundry needs no keys[^]*?as above\.\n\n/, ""), no);
+});
+
 test("kit README: a ROM bootloader radio's setup is the USB one, its device found by USB ID while its name is unknown", () => {
 	const b = brd(PLAIN);
 	const [vid, pid] = b.dfu_ids;

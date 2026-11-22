@@ -22,6 +22,8 @@ Python it was ported from (site/tests/flasher.test.mjs):
     f4stub's test profile, a board with other SPI wiring
   - for the wait after a Read Unprotect: rfoundry's own waits (cli.unprotect_wait) for a row of mass erase times and
     for every board written through a processor's ROM bootloader, so dfuse.js waits what rfoundry waits
+  - for the restart into a processor's ROM bootloader: rfoundry's request, the kind it reads from every reply and its
+    words for them (debuglink.py), and which chips it asks at all, so link.js asks and reads the same
   - for the codeplug editor: the radio's own codeplug code on the host (tests/host/cpsSim), a codeplug it stored
     and what it reads back, so site/tests/codeplug.test.mjs checks the JavaScript decoder and encoder against it
 
@@ -219,11 +221,36 @@ def unprotect_waits(out):
 		json.dump(doc, f, indent=1)
 
 
+def restart_vectors(out):
+	"""rfoundry's side of the restart into the bootloader over the debug link (debuglink.md 3.11): the frame it sends
+	for a token, [status, bytes after it, kind] for every reply the spec names and some it doesn't, its words for the
+	kinds, and [family, RDP level, asked] from its Link against the simulated running radio: the host's half of the
+	gate"""
+	from rfoundry import debuglink as dl, fakedfu
+	token = 0x89ABCDEF
+	replies = [(0, b"")] + [(7, bytes([r])) for r in range(8)] + [(7, b""), (7, b"\x05\x00")] + \
+		[(st, b"") for st in (1, 2, 3, 4, 6, 9)] + [(5, bytes([dl.CMD_REBOOT]))]
+	board = next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "dfuse")
+	gate = []
+	for family in (0, 1, 2, 3, 9):
+		for rdp in (0, 1, 2):
+			radio = fakedfu.FakeRunning(board, fakedfu.FakeRom(board), family=family, rdp=rdp, stays=True)
+			link = dl.Link(radio)
+			link.restart_into_bootloader(link.chip())
+			gate.append([family, rdp, bool(radio.requests)])
+	doc = {"cmd": dl.CMD_REBOOT, "token": token, "seq": 0x41, "request": dl.restart_request(token).hex(),
+	       "frame": dl.frame(dl.CMD_REBOOT, 0x41, dl.restart_request(token)).hex(),
+	       "replies": [[st, d.hex(), dl.restart_outcome(st, d)] for st, d in replies], "why": dl.RESTART_WHY, "gate": gate}
+	with open(os.path.join(out, "restart-vectors.json"), "w") as f:
+		json.dump(doc, f, indent=1)
+
+
 def main(out):
 	os.makedirs(out, exist_ok=True)
 	codec_map_vectors(out)
 	f4_vectors(out)
 	unprotect_waits(out)
+	restart_vectors(out)
 	rng = random.Random(42)
 	key = synthetic_key(1701)
 	stock, profiles, code, tables = stockfw.build_synthetic_stock(key, rng)

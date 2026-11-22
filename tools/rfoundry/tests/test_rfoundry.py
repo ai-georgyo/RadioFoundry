@@ -3111,6 +3111,523 @@ class RomBootloader(unittest.TestCase):
         self.assertEqual(dev.requests, [])
 
 
+class RestartIntoBootloader(unittest.TestCase):
+    """A radio that runs RadioFoundry on a board whose firmware restarts into its processor's bootloader when the
+    debug link asks (the registry's bootloader_restart): rfoundry asks it instead of asking for the keys, against
+    fakedfu.FakeRunning. A refusal changes nothing and leads to the keys; only the radio that was probed is asked."""
+    HINT = "Turn the knob one step and try again."
+
+    def setUp(self):
+        self.b = rom_board()
+        # whatever the first board of the family says for itself: these tests are about a board that can
+        for k, v in (("bootloader_restart", True), ("bootloader_restart_hint", self.HINT)):
+            patch = mock.patch.object(self.b, k, v, create=True)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def radio(self, **kw):
+        """(the running radio, its bootloader's device, the bus)"""
+        dev = fakedfu.FakeRomUsbDevice(self.b, fakedfu.rom_flash(self.b, random.Random(5)))
+        return fakedfu.FakeRunning(self.b, dev, **kw), dev, fakedfu.FakeUsb([dev])
+
+    def restart(self, running, usb, probe=None, **kw):
+        log, naps = [], []
+        kw.setdefault("sleep", naps.append)
+        got = cli.restart_into_bootloader(usb, self.b, running.probe() if probe is None else probe, log=log.append, **kw)
+        return got, "\n".join(log), naps
+
+    def test_registry(self):
+        """Only a board installed through its processor's ROM bootloader says its firmware restarts into it, and a
+        hint stands only beside that"""
+        for b in boards.BOARDS.values():
+            with mock.patch.object(b, "bootloader_restart", b.__dict__["bootloader_restart"]), \
+                    mock.patch.object(b, "bootloader_restart_hint", b.__dict__["bootloader_restart_hint"]):
+                self.assertIsInstance(b.bootloader_restart, bool, b.id)
+                if b.bootloader_restart:
+                    self.assertEqual(b.family, "dfuse", b.id)
+                else:
+                    self.assertIsNone(b.bootloader_restart_hint, b.id)
+                self.assertTrue(b.bootloader_restart_hint is None or b.bootloader_restart_hint.strip(), b.id)
+
+    def test_what_the_radio_answered(self):
+        kinds = {(0, b""): "ok", (7, b"\x05"): "not-now", (7, b"\x03"): "transmitting", (7, b"\x02"): "protected",
+                 (7, b"\x01"): "token", (7, b"\x04"): "no-chip", (7, b"\x09"): "other", (7, b""): "other",
+                 (1, b""): "unsupported", (4, b""): "unsupported", (2, b""): "other", (3, b""): "other",
+                 (5, b"\x0D"): "other"}
+        for (status, data), kind in kinds.items():
+            self.assertEqual(debuglink.restart_outcome(status, data), kind, (status, data))
+        # every kind but the board's own "not now" and the unnamed one has its words
+        self.assertEqual(set(debuglink.RESTART_WHY), set(kinds.values()) - {"ok", "not-now", "other"})
+        self.assertEqual(debuglink.restart_request(0x12345678), bytes.fromhex("0178563412"))
+
+    def test_link(self):
+        running, dev, _ = self.radio()
+        link = debuglink.Link(running)
+        chip = link.chip()
+        self.assertEqual((chip["uid"], chip["token"], chip["family"], chip["rdp"]),
+                         (running.uid.hex(), struct.unpack_from("<I", running.uid)[0], debuglink.CHIP_STM32H7, 0))
+        self.assertEqual(link.chip_uid(), chip["uid"])
+        self.assertTrue(dev.gone)
+        for reason, kind in ((5, "not-now"), (3, "transmitting"), (4, "no-chip"), (2, "protected"), (77, "other")):
+            running.refuse = reason
+            self.assertEqual(link.restart_into_bootloader(chip), kind)
+            self.assertTrue(running.running and dev.gone, kind)		# a refusal changes nothing
+        self.assertEqual(running.requests, [debuglink.restart_request(chip["token"])] * 5)
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "token")
+        # the host's half of the gate: a read-protected chip, or a family without a ROM bootloader, is never asked
+        del running.requests[:]
+        for bad in (dict(chip, rdp=1), dict(chip, rdp=2), dict(chip, family=1, rdp=None), dict(chip, family=9, rdp=None)):
+            self.assertEqual(link.restart_into_bootloader(bad), "protected")
+        self.assertEqual(running.requests, [])
+        # and the radio's own half says the same when the host is wrong about it
+        running.refuse, running.rdp = None, 1
+        self.assertEqual(link.restart_into_bootloader(chip), "protected")
+        self.assertEqual(link.chip()["rdp"], 1)
+        running.rdp = 0
+        # a refusal's status and reason travel with the error; no reply at all is an error of the link
+        with self.assertRaises(debuglink.LinkError) as cm:
+            link.request(debuglink.CMD_REBOOT, b"\x01")
+        self.assertEqual((cm.exception.status, cm.exception.data), (2, b""))
+        self.assertEqual(link.restart_into_bootloader(chip), "ok")
+        self.assertFalse(running.running or dev.gone)
+        with self.assertRaises(OSError):
+            link.version()
+        # the simulated radio checks in the firmware's order (core/debuglink/dl_chip.c dl_reboot_check, then the
+        # platform's reboot_ok): the chip info, the token, transmitting, the protection, the board's rule last
+        running, dev, _ = self.radio(refuse=4)
+        link = debuglink.Link(running)
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "no-chip")
+        running.refuse, running.rdp = 3, 1
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "token")
+        self.assertEqual(link.restart_into_bootloader(chip), "transmitting")
+        running.refuse = 5
+        self.assertEqual(link.restart_into_bootloader(chip), "protected")
+        running.rdp = 0
+        self.assertEqual(link.restart_into_bootloader(chip), "not-now")
+        # a mode the firmware doesn't have is a bad argument; the board's rule is about the bootloader mode only, so
+        # a normal reset is taken: the status and reason 0, and the firmware starts again, not the bootloader
+        with self.assertRaises(debuglink.LinkError) as cm:
+            link.request(debuglink.CMD_REBOOT, struct.pack("<BI", 2, chip["token"]))
+        self.assertEqual((cm.exception.status, cm.exception.data), (2, b""))
+        self.assertTrue(running.running and dev.gone)
+        self.assertEqual(link.request(debuglink.CMD_REBOOT, struct.pack("<BI", 0, chip["token"])), b"\x00")
+        self.assertFalse(running.running)
+        self.assertTrue(dev.gone)
+        # a firmware that doesn't know the command, or was built without it
+        for status in (debuglink.ST_UNKNOWN, debuglink.ST_UNAVAILABLE):
+            old, dev2, _ = self.radio()
+            answer = old._answer
+            old._answer = lambda cmd, payload: bytes([status]) if cmd == debuglink.CMD_REBOOT else answer(cmd, payload)
+            self.assertEqual(debuglink.Link(old).restart_into_bootloader(chip), "unsupported")
+            self.assertTrue(old.running and dev2.gone)
+
+    def test_restarts_and_finds_the_bootloader(self):
+        running, dev, usb = self.radio()
+        got, log, naps = self.restart(running, usb)
+        self.assertIs(got, dev)
+        self.assertEqual(running.requests, [debuglink.restart_request(struct.unpack_from("<I", running.uid)[0])])
+        self.assertIn("restarting it into its bootloader over the debug link", log)
+        self.assertIn("in its bootloader: leave it on and connected", log)
+        self.assertNotIn(self.HINT, log)
+        self.assertEqual(naps, [])						# it was there at the first look
+
+    def test_bootloader_that_takes_a_moment(self):
+        running, dev, usb = self.radio()
+        real = dev.power_cycle
+        late = []
+
+        def slow():
+            late.append(real)
+
+        def nap(s):
+            if late and len(naps) == 3:
+                late.pop()()
+            naps.append(s)
+
+        naps = []
+        with mock.patch.object(dev, "power_cycle", slow):
+            got, log, _ = self.restart(running, usb, sleep=nap)
+        self.assertIs(got, dev)
+        self.assertEqual(naps, [0.5] * 4)
+
+    def test_refused_by_the_board(self):
+        """Reason 5: the board's hint, nothing changed, and the keys"""
+        running, dev, usb = self.radio(refuse=5)
+        got, log, naps = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("did not restart into its bootloader: it can't right now. Nothing was changed", log)
+        self.assertIn(self.HINT, log)
+        self.assertIn("run the same command", log)
+        self.assertTrue(log.rstrip().endswith("enter the bootloader with its keys:"))
+        self.assertTrue(running.running and dev.gone)
+        self.assertEqual((len(running.requests), naps), (1, []))
+        # a board without a hint of its own says the rest all the same
+        with mock.patch.object(self.b, "bootloader_restart_hint", None):
+            got, log, _ = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("it can't right now", log)
+        self.assertNotIn(self.HINT, log)
+
+    def test_refused_then_tried_again(self):
+        """With somebody to ask: the user does what the hint says and the next request is taken; "no" ends it"""
+        running, dev, usb = self.radio(refuse=5)
+        asked = []
+
+        def turn_the_knob(question, default=False):
+            asked.append((question, default))
+            if len(asked) == 2:
+                running.refuse = None
+            return True
+
+        got, log, _ = self.restart(running, usb, ask=turn_the_knob)
+        self.assertIs(got, dev)
+        self.assertEqual(asked, [("Try the restart again?", True)] * 2)
+        self.assertEqual(len(running.requests), 3)
+        self.assertEqual(log.count(self.HINT), 2)
+        self.assertNotIn("run the same command", log)
+        running, dev, usb = self.radio(refuse=5)
+        got, log, _ = self.restart(running, usb, ask=lambda q, default=False: False)
+        self.assertIsNone(got)
+        self.assertEqual(len(running.requests), 1)
+        self.assertIn("enter the bootloader with its keys", log)
+        self.assertTrue(running.running and dev.gone)
+
+    def test_other_refusals_are_said_as_what_they_are(self):
+        for kw, words in (({"refuse": 3}, "the radio is transmitting"), ({"rdp": 1}, "its processor is read protected"),
+                          ({"refuse": 4}, "the radio could not read its processor's identity"),
+                          ({"refuse": 77}, "it answered the request with an error")):
+            running, dev, usb = self.radio(**kw)
+            ask = mock.Mock(return_value=True)
+            got, log, _ = self.restart(running, usb, ask=ask)
+            self.assertIsNone(got, words)
+            self.assertIn("did not restart into its bootloader: " + words, log)
+            self.assertIn("Nothing was changed: enter the bootloader with its keys", log)
+            self.assertNotIn(self.HINT, log)					# the hint is for the board's rule only
+            ask.assert_not_called()
+            self.assertTrue(running.running and dev.gone, words)
+
+    def test_only_the_radio_that_was_probed(self):
+        running, dev, usb = self.radio()
+        probe = running.probe()
+        other = next(b for b in boards.BOARDS.values() if b.id != self.b.id)
+        for what, p, says in (("no probe", None, ""), ("a remembered probe", dict(probe, age_s=60), ""),
+                              ("another model", dict(probe, board=other.debuglink_names[0]), "it is not restarted"),
+                              ("a name no board has", dict(probe, board="NOSUCH"), "it is not restarted"),
+                              ("another radio of the model", dict(probe, uid="00" * 12), "another radio answers")):
+            if p is None:
+                got, log = cli.restart_into_bootloader(usb, self.b, None, log=self.fail), ""
+            else:
+                got, log, _ = self.restart(running, usb, probe=p)
+            self.assertIsNone(got, what)
+            self.assertIn(says, log, what)
+            self.assertEqual(running.requests, [], what)
+            self.assertTrue(running.running and dev.gone, what)
+        # the radio on the port now reports another board than the one probed
+        running.name = other.debuglink_names[0]
+        got, log, _ = self.restart(running, usb, probe=probe)
+        self.assertIsNone(got)
+        self.assertIn("another radio answers", log)
+        self.assertEqual(running.requests, [])
+        # a radio that is another model, or one no board knows, and says so at the probe and on the port: the board
+        # asked for is not the one connected (--board names the image's board, not the radio's)
+        for name in (other.debuglink_names[0], "NOSUCH"):
+            running, dev, usb = self.radio(name=name)
+            got, log, _ = self.restart(running, usb)
+            self.assertIsNone(got, name)
+            self.assertIn("reports board %r, not the %s: it is not restarted" % (name, self.b.name), log)
+            self.assertEqual(running.requests, [], name)
+            self.assertTrue(running.running and dev.gone, name)
+        # a board whose firmware does not do it is never asked, whatever answers
+        running, dev, usb = self.radio()
+        with mock.patch.object(self.b, "bootloader_restart", False):
+            self.assertIsNone(cli.restart_into_bootloader(usb, self.b, running.probe(), log=self.fail))
+        self.assertEqual(running.requests, [])
+        # nor is any radio while a bootloader is already on USB: the user put one there
+        dev.gone = False
+        self.assertIsNone(cli.restart_into_bootloader(usb, self.b, running.probe(), log=self.fail))
+        self.assertEqual(running.requests, [])
+        self.assertTrue(running.running)
+
+    def test_several_radios_on_the_debug_link(self):
+        """The probe takes the first radio that answers. With more than one connected that is rfoundry's pick, not
+        the user's: none is restarted unless the user named the port"""
+        running, dev, usb = self.radio()
+        got, log, _ = self.restart(running, usb, links=lambda: ["/dev/ttyA", "udp:12.0.0.2"])
+        self.assertIsNone(got)
+        self.assertIn("more than one radio that runs RadioFoundry is connected (/dev/ttyA, udp:12.0.0.2): none is "
+                      "restarted", log)
+        self.assertIn("--port", log)
+        self.assertTrue(log.rstrip().endswith("enter the bootloader with its keys:"))
+        self.assertEqual(running.requests, [])
+        self.assertTrue(running.running and dev.gone)
+        # one radio, or a host that lists none (the probe found it all the same): it is the one
+        for found in (["/dev/ttyA"], []):
+            running, dev, usb = self.radio()
+            got, log, _ = self.restart(running, usb, links=lambda found=found: found)
+            self.assertIs(got, dev, found)
+        # the list is the serial ports and the radios in USB network mode
+        with mock.patch.object(debuglink, "find_ports", return_value=["/dev/ttyA"]), \
+                mock.patch.object(debuglink, "find_network_radios", return_value=["udp:12.0.0.2"]):
+            self.assertEqual(cli.debug_links(), ["/dev/ttyA", "udp:12.0.0.2"])
+        with mock.patch.object(debuglink, "find_ports", return_value=None), \
+                mock.patch.object(debuglink, "find_network_radios", return_value=[]):
+            self.assertEqual(cli.debug_links(), [])		# no pyserial
+
+    def test_real_run_several_radios(self):
+        """rfoundry flash with two radios on the debug link: the keys, unless --port names the radio"""
+        running, dev, usb = self.radio()
+
+        def user(s):
+            if running.running:
+                running.enter_by_hand()
+
+        two = [self.PORT, "/dev/ttyFAKE1"]
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user, links=two)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(running.requests, [])
+        self.assertIn("more than one radio that runs RadioFoundry is connected (%s): none is restarted" % ", ".join(two),
+                      out)
+        self.assertLess(out.index("none is restarted"), out.index("Put the %s in its bootloader now" % self.b.name))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        running, dev, usb = self.radio()
+        with mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb, "--port", self.PORT, links=AssertionError("listed"))
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertNotIn("more than one", out)
+
+    def test_a_port_that_stopped_answering(self):
+        running, dev, usb = self.radio()
+        running.running = False							# the cable went since the probe
+        got, log, _ = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("could not ask it to restart into its bootloader", log)
+        self.assertIn("enter the bootloader with its keys", log)
+        self.assertTrue(dev.gone)
+
+    def test_took_the_restart_and_never_showed(self):
+        """The wait is bounded, and the words say what is known: the radio stayed up, or it left and nothing came"""
+        running, dev, usb = self.radio(stays=True)
+        got, log, naps = self.restart(running, usb, wait_s=7)
+        self.assertIsNone(got)
+        self.assertEqual(naps, [0.5] * 14)
+        self.assertIn("took the restart, but no bootloader came onto USB within 7 s", log)
+        self.assertIn("it still runs RadioFoundry", log)
+        self.assertIn("Now enter the bootloader with its keys:", log)
+        self.assertEqual(len(running.requests), 1)
+        self.assertEqual(cli.RESTART_WAIT_S, 20)
+        running, dev, usb = self.radio()
+        with mock.patch.object(dev, "power_cycle"):				# it left, and no device came
+            got, log, naps = self.restart(running, usb, wait_s=2)
+        self.assertIsNone(got)
+        self.assertEqual(len(naps), 4)
+        self.assertIn("no bootloader came onto USB within 2 s", log)
+        self.assertNotIn("still runs RadioFoundry", log)
+        self.assertNotIn("Zadig", log)
+        self.assertFalse(running.running)
+        # on Windows a bootloader without its driver is not listed: the radio left, so the driver's steps are said,
+        # by this board's device; a radio that stayed up needs no driver
+        for stays in (False, True):
+            running, dev, usb = self.radio(stays=stays)
+            with mock.patch.object(dev, "power_cycle"), mock.patch.object(cli.sys, "platform", "win32"):
+                got, log, _ = self.restart(running, usb, wait_s=1)
+            self.assertIsNone(got)
+            self.assertEqual(dfumod.windows_driver_steps(self.b) in log, not stays)
+
+    def cli_run(self, *argv):
+        made = []
+        real = fakedfu.FakeRunning
+
+        class Spy(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+        with mock.patch.object(fakedfu, "FakeRunning", Spy):
+            rc, out, err = run_cli(["flash", "--board", self.b.id] + list(argv))
+        return rc, out, err, (made[0] if made else None)
+
+    def test_simulation_shows_both(self):
+        rc, out, err, running = self.cli_run("--simulate", "rfoundry-nocodec")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("restarting it into its bootloader over the debug link", out)
+        self.assertIn("in its bootloader: leave it on and connected", out)
+        self.assertNotIn("with its keys", out)
+        self.assertIn("sim      PASS", out)
+        self.assertEqual(len(running.requests), 1)
+        rc, out, err, running = self.cli_run("--simulate", "rfoundry-refuses")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("it can't right now. Nothing was changed", out)
+        self.assertIn(self.HINT, out)
+        self.assertIn("(simulated) switched off and put in its bootloader with its keys", out)
+        self.assertLess(out.index(self.HINT), out.index("found    bootloader"))
+        self.assertIn("sim      PASS", out)
+        self.assertEqual(len(running.requests), 1)
+        # a radio that doesn't run RadioFoundry is not asked, and a dry run asks nobody
+        for argv in (("--simulate", "blank"), ("--simulate", "stock", "--unprotect"),
+                     ("--simulate", "rfoundry-nocodec", "--dry-run")):
+            rc, out, err, running = self.cli_run(*argv)
+            self.assertEqual(rc, 0, out + err)
+            self.assertIsNone(running, argv)
+            self.assertNotIn("restart", out, argv)
+
+    def test_simulation_without_the_restart(self):
+        """A board whose firmware does not restart into its bootloader installs as before, and has no refusal to show"""
+        keyed = next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "usb-dfu")
+        with mock.patch.object(self.b, "bootloader_restart", False):
+            rc, out, err, running = self.cli_run("--simulate", "rfoundry-nocodec")
+            self.assertEqual(rc, 0, out + err)
+            self.assertIsNone(running)
+            self.assertNotIn("restart", out)
+            self.assertIn("sim      PASS", out)
+            rc, out, err, running = self.cli_run("--simulate", "rfoundry-refuses")
+            self.assertEqual(rc, 2, out + err)
+            self.assertIn("--simulate rfoundry-refuses is for a radio whose firmware restarts", err)
+        rc, out, err = run_cli(["flash", "--board", keyed.id, "--simulate", "rfoundry-refuses", "--yes"])
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("--simulate rfoundry-refuses is for", err)
+
+    PORT = "/dev/ttyFAKE0"
+
+    @classmethod
+    def PORT_PROBE(cls, running):
+        """The running radio's probe as debuglink.probe() gives it: the port by name"""
+        return dict(running.probe(), port=cls.PORT)
+
+    def on_port(self, running):
+        """The running radio behind the port's name: rfoundry opens the port it probed, no other"""
+        link = debuglink.Link
+
+        def open_(port, *a, **kw):
+            self.assertEqual(port, self.PORT)
+            return link(running, *a, **kw)
+
+        return mock.patch.object(debuglink, "Link", side_effect=open_)
+
+    def real_run(self, running, usb, *extra, probe="live", user=None, links=None):
+        """rfoundry flash against the fakes, not simulated: the probe is the running radio's. links: the debug links
+        the host lists (the probed port alone unless given; an exception when listing them is a failure)"""
+        listed = mock.patch.object(cli, "debug_links", side_effect=links if isinstance(links, Exception) else None,
+                                   return_value=[self.PORT] if links is None else links)
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            self.img = rom_image(9000)
+            with open(bp, "wb") as f:
+                f.write(self.img)
+            argv = ["flash", bp, "--board", self.b.id, "--yes", "--no-verify", "--no-reporting"] + list(extra)
+            with self.on_port(running), mock.patch.object(dfumod, "import_usb", return_value=usb), listed, \
+                    mock.patch.object(cli.time, "sleep", side_effect=user), \
+                    mock.patch.object(debuglink, "probe", return_value=self.PORT_PROBE(running) if probe == "live"
+                                      else probe) as probed:
+                rc, out, err = run_cli(argv)
+        return rc, out, err, probed
+
+    def test_real_run_restarts_the_radio(self):
+        running, dev, usb = self.radio()
+        with mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertLess(out.index("restarting it into its bootloader"), out.index("found    bootloader"))
+        self.assertNotIn("Put the", out)
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        self.assertTrue(dev.exited)
+        self.assertEqual((dev.unprotected, dev.alt_selected, dev.refused, dev.partial, dev.violations),
+                         (False, [], [], [], []))
+
+    def test_real_run_radio_in_usb_network_mode(self):
+        """A radio in USB network mode was probed over UDP: the restart is asked there, on the address probed"""
+        running, dev, usb = self.radio()
+        with mock.patch.object(type(self), "PORT", "udp:12.52.86.121"), \
+                mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("RadioFoundry running on udp:12.52.86.121", out)
+        self.assertEqual(len(running.requests), 1)
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_real_run_same_requests_as_by_hand(self):
+        """Nothing about the install changes: the bootloader gets the same requests after a restart as after the keys"""
+        running, dev, usb = self.radio()
+        rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        hand = fakedfu.FakeRomUsbDevice(self.b, fakedfu.rom_flash(self.b, random.Random(5)))
+        rc, out, err, probed = self.real_run(running, fakedfu.FakeUsb([hand]), "--no-probe")
+        self.assertEqual(rc, 0, out + err)
+        probed.assert_not_called()
+        self.assertEqual(dev.requests, hand.requests)
+        self.assertEqual(bytes(dev.flash), bytes(hand.flash))
+
+    def test_real_run_refused_goes_on_with_the_keys(self):
+        running, dev, usb = self.radio(refuse=5)
+
+        def user(s):								# off, the key, on
+            if running.running:
+                running.enter_by_hand()
+
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertIn(self.HINT, out)
+        hint, steps = out.index(self.HINT), out.index("Put the %s in its bootloader now: %s" % (
+            self.b.name, cli.bootloader_steps(self.b)))
+        self.assertLess(hint, steps)
+        self.assertLess(steps, out.index("found    bootloader"))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        self.assertTrue(dev.exited)
+
+    def test_real_run_without_a_radio_on_the_debug_link(self):
+        """--no-probe, no radio found, a remembered probe: exactly what it was, the keys"""
+        for extra, probe in ((["--no-probe"], "live"), ([], None)):
+            running, dev, usb = self.radio()
+
+            def user(s, running=running):
+                if running.running:
+                    running.enter_by_hand()
+
+            state.forget_probe()
+            rc, out, err, probed = self.real_run(running, usb, "--wait", "5", *extra, probe=probe, user=user)
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(running.requests, [], extra)
+            self.assertNotIn("restart", out, extra)
+            self.assertIn("Put the %s in its bootloader now" % self.b.name, out)
+            self.assertEqual(probed.called, not extra)
+            self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_real_run_no_show_goes_on_with_the_keys(self):
+        running, dev, usb = self.radio(stays=True)
+        naps = []
+
+        def user(s):
+            naps.append(s)
+            if len(naps) > 2 * cli.RESTART_WAIT_S and dev.gone:		# only once rfoundry asked for the keys
+                running.enter_by_hand()
+
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("took the restart, but no bootloader came onto USB within %d s" % cli.RESTART_WAIT_S, out)
+        self.assertLess(out.index("took the restart"), out.index("Put the %s in its bootloader now" % self.b.name))
+        n = 2 * cli.RESTART_WAIT_S + 1						# the bounded wait, then one for the keys
+        self.assertEqual((naps[:n], 0.5 in naps[n:]), ([0.5] * n, False))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_declined_install_says_where_the_radio_is(self):
+        running, dev, usb = self.radio()
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(9000))
+            with self.on_port(running), mock.patch.object(dfumod, "import_usb", return_value=usb), \
+                    mock.patch.object(cli.time, "sleep"), mock.patch.object(cli, "debug_links", return_value=[self.PORT]), \
+                    mock.patch.object(debuglink, "probe", return_value=self.PORT_PROBE(running)), \
+                    mock.patch.object(cli, "ask_yes", return_value=False) as ask:
+                rc, out, err = run_cli(["flash", bp, "--board", self.b.id, "--no-verify", "--no-reporting"])
+        self.assertEqual(rc, 1, out + err)
+        ask.assert_called_once()						# the write's question; not a tty: no "again?"
+        self.assertIn("nothing done (the radio is in its bootloader: switch it off and on to start it normally)", out)
+        self.assertEqual((dev.erased, dev.blocks), ([], 0))
+
+
 class BootKeyFromRadio(unittest.TestCase):
     """The key read from the bootloader over READ_MEM, found only by its hash."""
 

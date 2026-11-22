@@ -169,6 +169,8 @@ sector across its end would be erased beyond it, into flash the build keeps unus
 | `hold` | Optional: the keys held to enter it, by key name (the board's `KEY_*` in lower case, `["ptt", "sk1"]`). The web flasher marks them on the radio's picture and names them under it; `steps` stays the instructions. Each must be a key of the board (`tools/boards.py check`) and tagged in its drawing or listed in `data-undrawn` ([Radio images](website.md#radio-images)) |
 | `id` | Optional: the string the loader answers, also the magic of its files (`serial-loader`) |
 | `sign` | Optional: what the radio shows in the bootloader |
+| `restart` | Optional, true: the board's firmware restarts into this bootloader when the debug link asks (`REBOOT` with the ROM bootloader mode, [debuglink.md](../spec/debuglink.md) 3.11). rfoundry and the web flasher then ask a radio that runs RadioFoundry before they ask for the keys ([release.md](release.md#the-restart-into-the-bootloader)). Only on a family whose loader is the MCU's ROM (`dfuse`): that is the bootloader the request enters (`restart_problems`). The views carry it as `bootloader_restart` |
+| `restart_hint` | Optional, with `restart`: what the user can do when the radio refuses the restart just then (the board's own rule, reason 5), in a sentence or two. Both tools show it as written, next to their own words for the refusal. `bootloader_restart_hint` in the views |
 
 `[flash.dfu]` (`usb-dfu`, `dfuse`): the bootloader's USB device. What a family needs:
 

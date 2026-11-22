@@ -152,7 +152,7 @@ the side key above PTT, and also `KEY_SK1` on PD15: held at power-on it never re
 |---|---|---|
 | Normal | no key | the image at 0x08000000 |
 | ROM bootloader | SK1 held while the radio is switched on. The maker: "the screen will appear gray" | ST's system memory: USB DfuSe on 0483:DF11. Unverified on a radio with RadioFoundry installed |
-| ROM bootloader from the running image | the debug link's `REBOOT` to the ROM (`rfoundry_debug.py reboot --rom-dfu`) | allowed (`CS7000P_SOFT_ROM_ENTRY`, 1 by default) only with ROM loader version 0x91 (V9.1) or with the selector's PB10 contact open (below); the one radio read so far has loader 0x92 (V9.2), so there a selector position that grounds PB10 is refused and the user turns the selector a step. The entry itself has not been tried on a radio. The rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h` (`cs7000pPinsTest`). The platform asks it before the debug link answers, so a refusal is the refused status with reason 5 ([debuglink.md](debuglink.md) 3.11), not an OK followed by nothing |
+| ROM bootloader from the running image | the debug link's `REBOOT` to the ROM (`rfoundry_debug.py reboot --rom-dfu`) | allowed (`CS7000P_SOFT_ROM_ENTRY`, 1 by default) only with ROM loader version 0x91 (V9.1) or with the selector's PB10 contact open (below); the one radio read so far has loader 0x92 (V9.2), so there a selector position that grounds PB10 is refused and the user turns the selector a step. The entry itself has not been tried on a radio. The rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h` (`cs7000pPinsTest`). The platform asks it before the debug link answers, so a refusal is the refused status with reason 5 ([debuglink.md](debuglink.md) 3.11), not an OK followed by nothing. `rfoundry flash` and the web flasher send the same request to a radio that runs RadioFoundry, so an update needs no key (`[flash.bootloader] restart` in `board.toml`; [release.md](../dev/release.md#the-restart-into-the-bootloader)). On a refusal they show the board's hint (`restart_hint`: turn the channel selector one step and try again) and go on with SK1 at power-on. Untested on a radio, through the tools as well |
 
 The maker's firmware has its own bootloader with its own modes (PTT and the top key for its update mode; SK2 or SK3
 to pick one of its two programs). A RadioFoundry install erases that bootloader with the rest of the program flash,
@@ -207,8 +207,8 @@ starts with some of these pins still driven, the loader's USB interrupt and SysT
 the reset handler and `board_reset_safe()` take all of that back before anything else
 ([gotchas.md](gotchas.md) 18.10).
 
-This is why the software entry is off by default. With SK1 at power-on the same pins are driven, but that is the
-maker's own route and its own procedure.
+This is why the software entry is allowed only under the rule above. With SK1 at power-on the same pins are driven,
+but that is the maker's own route and its own procedure.
 
 **Every software reset waits for SK1.** SK1 is the Monitor key, and any reset while it is down starts the same
 loader. So every software reset the firmware makes (the crash restart, the hang check, the knob watch's restart, a
