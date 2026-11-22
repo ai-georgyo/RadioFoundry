@@ -575,12 +575,28 @@ static void test_foreign(void)
 	CHECK(!codeplug_set_channel(2, &c));		// nor a radio-side edit
 	CHECK(control(6, 2));				// "save the settings": answered, nothing written
 	CHECK(memcmp(snap, sim_flash_data, FLASH_SIZE) == 0);
+	// A live VFO (RAM only here) is not laid over the stored VFO A: a backup before a claim reads the chip as it is
+	uint8_t b[96], rec[56];
+	channel_t ch;
+	settings_t *w = settings_begin();
+	w->vfo_rx_hz = w->vfo_tx_hz = 146520000;
+	settings_end(now);
+	CHECK(read_block(1, EE + 0x7580, 96, b) && memcmp(b, &snap[EE + 0x7580], 96) == 0);
+	CHECK(read_block(1, EE + 0x7590, 32, b) && memcmp(b, &snap[EE + 0x7590], 32) == 0);
+	CHECK(read_block(2, 0x7590, 32, b) && memcmp(b, &snap[EE + 0x7590], 32) == 0);	// the EEPROM image alike
 	// Claimed (the debug link), erased by the housekeeping: writes work again
 	CHECK(storage_claim_request());
 	settings_poll(now);
 	CHECK(storage_ready());
 	CHECK(x_prepare(0x3) && x_data(0x3000, d, 32, 0) && x_commit() && control(5, 0));
 	CHECK(sim_flash_data[0x3000] == 0x11);
+	// Ours now: the overlay is back
+	w = settings_begin();
+	w->vfo_rx_hz = w->vfo_tx_hz = 146520000;
+	settings_end(now);
+	CHECK(read_block(1, EE + 0x7580, 96, b));
+	memcpy(rec, b + 0x10, 56);
+	CHECK(codeplug_openfw_decode(rec, &ch) && ch.rx_hz == 146520000);
 	free(snap);
 }
 

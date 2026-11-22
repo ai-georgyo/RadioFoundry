@@ -283,6 +283,13 @@ def test_storage_region(radio):
     info = radio.link.storage_info()
     s = storage(radio)
     assert s.get("storage.region") == info["region"], (s, info)
+    if info["region"] == "foreign" and info["claim_first"]:
+        # every unit of such a board starts here: its data flash is another firmware's until claimed, layout unknown
+        assert s.get("settings.load") == "foreign" and s.get("storage.journal") == "foreign", s
+        skip("state", "the data flash is not RadioFoundry's yet, and this board claims it only after a backup of the "
+                      "whole chip (docs/spec/settings-store.md 5): tools/rfoundry_debug.py storage claim --out DIR "
+                      "saves the whole data flash, then claims (minutes), or the web installer's Back Up, Everything "
+                      "does both (writes are refused until then)")
     if info["region"] == "foreign":
         assert s.get("settings.load") == "foreign" and s.get("storage.journal") == "foreign", s
         skip("state", "the settings / journal region holds another firmware's data: dump and claim it with "

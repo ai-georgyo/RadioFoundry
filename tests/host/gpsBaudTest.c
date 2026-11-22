@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // GPS module detection with a rate hunt (drivers/gps/gps_rx/gps_baud.c over gps_rx and nmea_line), driven the way
-// platform/stm32f4/gps_uart/gps_uart.c drives it: canned NMEA streams with garbage, cut-off and corrupted sentences, a
+// platform/stm32/gps_uart/gps_uart.c drives it: canned NMEA streams with garbage, cut-off and corrupted sentences, a
 // silent line (no module), a module at another rate, and one that only ever sends rubbish
 #include <stdio.h>
 #include <string.h>

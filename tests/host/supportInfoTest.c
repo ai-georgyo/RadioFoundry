@@ -32,11 +32,12 @@ uint32_t hal_millis(void)
 	return now;
 }
 
+// What the fake chip answers: an STM32F4 until a test says otherwise
+static hal_chip_t fake_chip = { .idcode = 0x10076413u, .flash_kb = 1024, .family = HAL_CHIP_STM32F4 };
+
 static bool chip(hal_chip_t *c)
 {
-	c->idcode = 0x10076413u;
-	c->flash_kb = 1024;
-	c->family = HAL_CHIP_STM32F4;
+	*c = fake_chip;
 	return true;
 }
 
@@ -190,6 +191,21 @@ static void line_tests(void)
 	rev = 1;
 	CHECK(support_hw_line(6, &l) && strcmp(l.value, "V4") == 0);
 	CHECK(support_hw_line(0, &l) && strcmp(tr(l.label), "MCU: ") == 0);
+	// The MCU line by chip family: the same ID, revision and flash size text for each STM32, the name alone otherwise
+	const hal_chip_t f4 = fake_chip;
+	fake_chip = (hal_chip_t){ .idcode = 0x20036450u, .flash_kb = 2048, .family = HAL_CHIP_STM32H7 };
+	CHECK(support_hw_line(0, &l) && strcmp(l.key, "mcu") == 0 && strcmp(l.value, "STM32H7 450 rev 2003, 2048 KB") == 0);
+	fake_chip.idcode = 0;		// an ID register that reads 0: no ID text
+	CHECK(support_hw_line(0, &l) && strcmp(l.value, "STM32H7, 2048 KB") == 0);
+	fake_chip.flash_kb = 0;
+	CHECK(support_hw_line(0, &l) && strcmp(l.value, "STM32H7") == 0);
+	fake_chip = (hal_chip_t){ .idcode = 0x12345678u, .flash_kb = 99, .family = HAL_CHIP_HRC7000 };
+	CHECK(support_hw_line(0, &l) && strcmp(l.value, "HR_C7000") == 0);
+	fake_chip = f4;
+	fake_chip.idcode = 0;
+	CHECK(support_hw_line(0, &l) && strcmp(l.value, "STM32F4, 1024 KB") == 0);
+	fake_chip = f4;
+	CHECK(support_hw_line(0, &l) && strcmp(l.value, "STM32F4 413 rev 1007, 1024 KB") == 0);
 	// A build without the Makefile's stamp: unknown, no repository
 	CHECK(support_source() == SUPPORT_SRC_UNKNOWN && strcmp(support_source_key(support_source()), "unknown") == 0);
 	CHECK(strcmp(support_repo(), "") == 0);

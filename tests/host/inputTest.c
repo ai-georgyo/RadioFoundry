@@ -52,7 +52,7 @@ static void reset(uint32_t held_at_start)
 	now = 5000;
 	keys = held_at_start;
 	input_engine_init(&e, keymap, sizeof(keymap) / sizeof(keymap[0]), now);
-	run(INPUT_SCAN_MS, 0);
+	run(INPUT_START_GUARD_SCANS * INPUT_SCAN_MS, 0);	// past the start-up guard
 }
 
 static int count(uint8_t action, uint8_t gesture)
@@ -213,6 +213,93 @@ static void test_held_at_start(void)
 	CHECK(nev == 1 && evs[0].gesture == GESTURE_DOWN);
 }
 
+// A board's own debounce in front of the engine: a change counts once two scans agree, from a zeroed start, so a key
+// held at power-on first shows in the second sample. Later still when the keys share a bus with the display: while it
+// is busy up to BOARD_SKIP_MAX scans in a row are skipped, and the scan after them waits its turn, so a display busy
+// from the start puts the first report at the eighth sample. PTT and an emergency key held from power-on stay ignored
+// until released, then work
+#define BOARD_SKIP_MAX	3u
+static uint32_t board_last, board_settled;
+static unsigned board_busy, board_skipped;	// scans the shared bus is still busy for; scans skipped in a row
+
+static uint32_t board_scan(uint32_t raw)
+{
+	bool busy = board_busy > 0;
+	if (busy) {
+		board_busy--;
+	}
+	if (busy && board_skipped < BOARD_SKIP_MAX) {
+		board_skipped++;
+		return board_settled;	// skipped: the last settled keys
+	}
+	board_skipped = 0;
+	if (raw == board_last) {
+		board_settled = raw;
+	}
+	board_last = raw;
+	return board_settled;
+}
+
+static void run_board(uint32_t ms)
+{
+	for (uint32_t t = 0; t < ms; t += INPUT_SCAN_MS) {
+		now += INPUT_SCAN_MS;
+		input_engine_step(&e, board_scan(keys), 0, now, emit, NULL);
+	}
+}
+
+static void test_held_behind_board_debounce(void)
+{
+	for (unsigned busy = 0; busy <= 10; busy += 10) {
+		nev = 0;
+		now = 5000;
+		board_last = board_settled = 0;
+		board_busy = busy;
+		board_skipped = 0;
+		keys = (1u << K_PTT) | (1u << K_TOP);
+		input_engine_init(&e, keymap, sizeof(keymap) / sizeof(keymap[0]), now);
+		run_board(2000);
+		CHECK(nev == 0);
+		keys = 0;
+		run_board(50);
+		CHECK(nev == 0);
+		keys = 1u << K_PTT;
+		run_board(50);
+		CHECK(nev == 1 && evs[0].action == ACT_PTT && evs[0].gesture == GESTURE_DOWN);
+		keys = 1u << K_TOP;
+		run_board(INPUT_HOLD_MS + 50);
+		CHECK(count(ACT_PTT, GESTURE_UP) == 1 && count(ACT_EMERGENCY, GESTURE_LONG) == 1);
+		keys = 0;
+		run_board(50);
+	}
+}
+
+// The guard's edge: a key first reported in the last guarded sample is still a start-up key (seen there, not yet
+// debounced), one first reported in the sample after it is a press
+static void test_start_guard_edge(void)
+{
+	for (unsigned first = INPUT_START_GUARD_SCANS; first <= INPUT_START_GUARD_SCANS + 1u; first++) {
+		nev = 0;
+		now = 5000;
+		keys = 0;
+		input_engine_init(&e, keymap, sizeof(keymap) / sizeof(keymap[0]), now);
+		run((first - 1u) * INPUT_SCAN_MS, 0);
+		keys = 1u << K_PTT;
+		run(1000, 0);
+		if (first == INPUT_START_GUARD_SCANS) {
+			CHECK(nev == 0);
+			keys = 0;
+			run(50, 0);
+			CHECK(nev == 0);
+		} else {
+			CHECK(nev == 1 && evs[0].action == ACT_PTT && evs[0].gesture == GESTURE_DOWN);
+			keys = 0;
+			run(50, 0);
+			CHECK(nev == 2 && evs[1].gesture == GESTURE_UP);
+		}
+	}
+}
+
 static void test_encoder_idle(void)
 {
 	reset(0);
@@ -354,6 +441,8 @@ int main(void)
 	test_raw_edges();
 	test_chord();
 	test_held_at_start();
+	test_held_behind_board_debounce();
+	test_start_guard_edge();
 	test_encoder_idle();
 	test_dtmf();
 	test_inject_late_scans();
