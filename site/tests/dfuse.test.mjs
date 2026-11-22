@@ -48,14 +48,14 @@ globalThis.document = { createElement: (t) => new El(t), createElementNS: (ns, t
 const en = JSON.parse(strings);
 const all = (el) => [el, ...el.children.filter((c) => c instanceof El).flatMap(all)];
 
-const { Dfu, DfuError, WrongDeviceError, WebUsbTransport, romDevice, checkPlain, PLAIN_FAMILY, FLASH_WORD, KEY_LEN } = await import("../static/js/flasher/dfu.js");
+const { Dfu, DfuError, WrongDeviceError, WebUsbTransport, romDevice, checkPlain, interfaceStringIndexes, PLAIN_FAMILY, FLASH_WORD, KEY_LEN } = await import("../static/js/flasher/dfu.js");
 const { makePlan, KEEP, BLOCK, FIRST_BLOCK } = await import("../static/js/flasher/plan.js");
 const { forDevBuild, segments, verify } = await import("../static/js/flasher/manifest.js");
 const { FakeRadio, FakeRomRadio, romSimulation, romLayout, simulation, randomBytes, rng } = await import("../static/js/flasher/fake.js");
-const { Link, probe } = await import("../static/js/flasher/link.js");
+const { Link, LinkError, probe, CMD, frame, parseFrames, restartOutcome, restartRequest, RESTART_WHY } = await import("../static/js/flasher/link.js");
 const { ProtectedError } = await import("../static/js/flasher/protect.js");
 const { backendOf } = await import("../static/js/flasher/backends.js");
-const { hex } = await import("../static/js/flasher/bytes.js");
+const { hex, fromHex, toHex } = await import("../static/js/flasher/bytes.js");
 const { supportReport } = await import("../static/js/support.js");
 const dfuse = await import("../static/js/flasher/dfuse.js");
 const { stopBars } = await import("../static/js/flasher/dom.js");
@@ -652,6 +652,53 @@ test("an image for this board verifies and plans with no codec; one that leaves 
 	assert.throws(() => makePlan(sim.board, [[sim.board.app_base, big]], KEEP), /outside the application flash/);
 });
 
+test("WebUSB: a loader the browser gave no interface names for is identified by the names read from the device", async () => {
+	// A configuration descriptor with one interface and two alternate settings whose names are strings 4 and 5, a DFU
+	// functional descriptor between them and the end (as a ROM loader's has)
+	const config = Uint8Array.from([9, 2, 43, 0, 1, 1, 0, 0xC0, 50,
+		9, 4, 0, 0, 0, 0xFE, 1, 2, 4,
+		9, 4, 0, 1, 0, 0xFE, 1, 2, 5,
+		9, 0x21, 0x0B, 0xFF, 0, 0, 4, 0x1A, 1,
+		7, 5, 0x81, 3, 8, 0, 10]);
+	assert.deepEqual(interfaceStringIndexes(config), [4, 5]);
+	assert.deepEqual(interfaceStringIndexes(config.subarray(0, 20)), [4], "a cut descriptor ends the walk");
+	assert.deepEqual(interfaceStringIndexes(Uint8Array.from([9, 4, 0, 0, 0, 0xFE, 1, 2, 0])), [], "no string, no name");
+	assert.deepEqual(interfaceStringIndexes(Uint8Array.from([0, 4, 0])), [], "a zero length does not loop");
+	const strings = { 1: "STMicroelectronics", 4: romLayout(board), 5: "@Option Bytes  (simulated)" };
+	const utf16 = (s) => { const b = new Uint8Array(2 + 2 * s.length); b[0] = b.length; b[1] = 3; for (let i = 0; i < s.length; i++) b[2 + 2 * i] = s.charCodeAt(i); return b; };
+	const asked = [];
+	const make = ({ named, stall = false }) => ({ configuration: { interfaces: [{ interfaceNumber: 0, alternates: [
+		{ interfaceClass: 0xFE, interfaceSubclass: 0x01, interfaceName: named ? romLayout(board) : undefined },
+		{ interfaceClass: 0xFE, interfaceSubclass: 0x01, interfaceName: named ? "@Option Bytes  (simulated)" : undefined }] }] },
+		open: async () => {}, close: async () => {}, selectConfiguration: async () => {}, claimInterface: async () => {},
+		selectAlternateInterface: async () => { throw new Error("an alternate setting was selected"); },
+		controlTransferOut: async () => ({ status: "ok", bytesWritten: 0 }),
+		controlTransferIn: async (setup) => {
+			asked.push(setup.value);
+			if (setup.requestType !== "standard" || setup.request !== 6) throw new Error("not a descriptor read");
+			if (setup.value === 0x0200) { if (stall) throw new Error("stall"); return { status: "ok", data: new DataView(config.buffer) }; }
+			const s = strings[setup.value & 0xFF];
+			if (s === undefined) throw new Error("stall");
+			return { status: "ok", data: new DataView(utf16(s).buffer) };
+		} });
+	// no names from the browser: read from the device, in order, and the check passes on alternate 0's layout
+	const bare = await WebUsbTransport.open(make({ named: false }), board);
+	const info = await bare.fingerprint();
+	assert.deepEqual(info.interfaces, [romLayout(board), "@Option Bytes  (simulated)"]);
+	romDevice(board, info);
+	assert.ok(asked.includes(0x0200) && asked.includes(0x0304) && asked.includes(0x0305));
+	// names from the browser: nothing more is read than before (string 1)
+	asked.length = 0;
+	const named = await WebUsbTransport.open(make({ named: true }), board);
+	romDevice(board, await named.fingerprint());
+	assert.deepEqual(asked, [0x0301]);
+	// a device that answers neither way is still refused: nothing is assumed about what it would erase
+	const mute = await WebUsbTransport.open(make({ named: false, stall: true }), board);
+	const none = await mute.fingerprint();
+	assert.deepEqual(none.interfaces, []);
+	assert.throws(() => romDevice(board, none), WrongDeviceError);
+});
+
 test("WebUSB: the interface is claimed and no alternate setting is ever selected; the device check reads alternate 0", async () => {
 	const ok = async () => ({ status: "ok", data: new DataView(new ArrayBuffer(6)), bytesWritten: 0 });
 	const picked = [];
@@ -905,6 +952,320 @@ test("the write step on a radio that runs RadioFoundry: no unprotect step, and a
 	assert.equal(fake.unprotects, 0);
 });
 
+// ---- the restart into the loader from RadioFoundry, over the debug link (docs/spec/debuglink.md 3.11)
+
+// rfoundry's own request, kinds, words and gate (site/tests/fixtures.py restart_vectors, from rfoundry/debuglink.py)
+test("the restart request and its replies are read as rfoundry reads them", async () => {
+	const py = json("restart-vectors.json");
+	assert.equal(CMD.REBOOT, py.cmd);
+	assert.equal(toHex(restartRequest(py.token)), py.request);
+	assert.equal(toHex(frame(CMD.REBOOT, py.seq, restartRequest(py.token))), py.frame);
+	assert.ok(py.replies.length >= 15 && new Set(py.replies.map((r) => r[2])).size === 8, "every kind is in the vectors");
+	for (const [status, data, kind] of py.replies) assert.equal(restartOutcome(status, fromHex(data)), kind, `${status} ${data}`);
+	assert.deepEqual(RESTART_WHY, py.why);
+	// the host's half of the gate: which chips are asked at all
+	assert.ok(py.gate.some((g) => g[2]) && py.gate.some((g) => !g[2]));
+	for (const [family, rdp, asked] of py.gate) {
+		const sent = [];
+		const s = { buf: new Uint8Array(0), clear() { s.buf = new Uint8Array(0); }, take(n) { s.buf = s.buf.slice(n); },
+			async write(d) { sent.push(d); const f = parseFrames(d)[0]; s.buf = frame(f.cmd | 0x80, f.seq, new Uint8Array([0])); } };
+		const kind = await new Link(s, { timeout: 50 }).restartIntoBootloader({ family, rdp, token: py.token });
+		assert.equal(sent.length === 1, asked, `family ${family} rdp ${rdp}`);
+		assert.equal(kind, asked ? "ok" : "protected");
+		if (asked) assert.equal(toHex(parseFrames(sent[0])[0].payload), py.request);
+	}
+});
+
+const running = async (opts = {}) => {
+	const x = await installable("rfoundry", opts);
+	const link = new Link(x.fake.serialStream(), { timeout: 50 });
+	return { ...x, link, chip: await link.chip() };
+};
+
+test("the simulated radio takes the restart, or refuses it and changes nothing", async () => {
+	let { fake, link, chip } = await running();
+	assert.equal(chip.token, new DataView(fake.uid.buffer).getUint32(0, true));
+	assert.deepEqual([chip.family, chip.rdp, chip.uid], [2, 0, toHex(fake.uid)]);
+	// a wrong token is refused by the radio; a read-protected chip is never asked
+	assert.equal(await link.restartIntoBootloader({ ...chip, token: chip.token ^ 1 }), "token");
+	assert.equal(await link.restartIntoBootloader({ ...chip, rdp: 1 }), "protected");
+	assert.equal(await link.restartIntoBootloader(null), "protected");
+	assert.equal(fake.reboots.length, 1);
+	assert.equal(fake.mode, "normal");
+	assert.equal(await link.restartIntoBootloader(chip), "ok");
+	assert.equal(fake.mode, "bootloader");
+	assert.deepEqual(fake.events, ["restart into the loader"]);
+	await assert.rejects(() => link.version(), /lost/);	// its serial port went with the restart
+	await checkLoader_(fake);
+	// the board's own rule (reason 5), as often as it says; then the user did what the hint says
+	({ fake, link, chip } = await running({ restartRefusals: 2 }));
+	for (let i = 0; i < 2; i++) {
+		assert.equal(await link.restartIntoBootloader(chip), "not-now");
+		assert.equal(fake.mode, "normal");
+		assert.equal((await link.version()).board, board.debuglink_names[0]);
+	}
+	assert.equal(await link.restartIntoBootloader(chip), "ok");
+	assert.equal(fake.mode, "bootloader");
+	// other reasons are what they are; the radio's own protection check comes before the board's rule
+	for (const [opts, kind] of [[{ restartReason: 3 }, "transmitting"], [{ restartReason: 4 }, "no-chip"], [{ restartReason: 9 }, "other"]]) {
+		({ fake, link, chip } = await running(opts));
+		assert.equal(await link.restartIntoBootloader(chip), kind);
+		assert.equal(fake.mode, "normal");
+	}
+	({ fake, link, chip } = await running({ restartRefusals: 1 }));
+	fake.rdp = 1;
+	assert.equal(await link.restartIntoBootloader(chip), "protected");
+	assert.deepEqual([fake.restartRefusals, fake.mode], [1, "normal"]);
+	// a refusal carries its status and reason on the error, for whoever asks the command itself
+	await assert.rejects(() => link.request(CMD.REBOOT, restartRequest(chip.token)), (e) => e instanceof LinkError && e.status === 7 && e.data[0] === 2);
+	// the firmware's order (core/debuglink/dl_chip.c dl_reboot_check, then the platform's reboot_ok): the chip info,
+	// the token, transmitting, the protection, the board's rule last. The radio is asked directly: the host's own
+	// check would not send to a protected chip
+	const ask = (token = chip.token, mode = 1) => link.request(CMD.REBOOT, new Uint8Array([mode, ...restartRequest(token).subarray(1)]));
+	const reason = (n) => (e) => e instanceof LinkError && e.status === 7 && e.data[0] === n;
+	fake.restartReason = 4;
+	await assert.rejects(() => ask(chip.token ^ 1), reason(4));
+	fake.restartReason = 3;
+	await assert.rejects(() => ask(chip.token ^ 1), reason(1));
+	await assert.rejects(() => ask(), reason(3));
+	fake.restartReason = 0;
+	await assert.rejects(() => ask(), reason(2));
+	fake.rdp = 0;
+	await assert.rejects(() => ask(), reason(5));
+	assert.deepEqual([fake.restartRefusals, fake.mode], [0, "normal"]);
+	// a mode the firmware doesn't have is a bad argument
+	await assert.rejects(() => ask(chip.token, 2), (e) => e instanceof LinkError && e.status === 2);
+	assert.equal(fake.mode, "normal");
+	// a normal reset (mode 0) starts the firmware again on a new port, not the loader. The board's rule is about the
+	// loader mode only. The reply is the status and reason 0
+	fake.restartRefusals = 1;
+	assert.deepEqual([...await ask(chip.token, 0)], [0]);
+	assert.equal(fake.restartRefusals, 1);
+	assert.equal(fake.mode, "normal");
+	await assert.rejects(() => link.version(), /lost/);
+	assert.ok(await probe(new Link(fake.serialStream(), { timeout: 50 })));
+});
+async function checkLoader_(fake) {
+	const found = await dfuse.checkLoader(fake.dfuTransport(), fake.board, noWait);
+	assert.equal(found.stage, "ready");
+}
+
+const quick = { waitMs: 20, tickMs: 5 };
+test("restartIntoLoader asks only the radio the page was talking to, and says what became of the request", async () => {
+	let { sim, fake, link, chip } = await running();
+	// another model's name, another radio of the model, a radio without chip info: nothing is asked
+	const other = { ...sim.board, debuglink_names: ["SOME OTHER RADIO"] };
+	assert.equal((await dfuse.restartIntoLoader(link, other, quick)).kind, "other");
+	assert.equal((await dfuse.restartIntoLoader(link, sim.board, { ...quick, uid: "00".repeat(12) })).kind, "other");
+	// without chip info there is no token to send: said as that, not as another radio
+	const noChip = Object.assign(Object.create(link), { chip: async () => null });
+	assert.deepEqual(await dfuse.restartIntoLoader(noChip, sim.board, quick), { kind: "no-chip", why: RESTART_WHY["no-chip"] });
+	assert.equal((await dfuse.restartIntoLoader(noChip, other, quick)).kind, "other");
+	assert.deepEqual([fake.reboots.length, fake.mode], [0, "normal"]);
+	// this radio, by its board name and the UID read when it connected
+	assert.deepEqual(await dfuse.restartIntoLoader(link, sim.board, { ...quick, uid: chip.uid }), { kind: "ok" });
+	assert.equal(fake.mode, "bootloader");
+	// a radio whose port is gone does not answer: thrown, for the caller's words
+	await assert.rejects(() => dfuse.restartIntoLoader(link, sim.board, quick));
+	({ sim, fake, link } = await running({ restartRefusals: 1 }));
+	assert.deepEqual(await dfuse.restartIntoLoader(link, sim.board, quick), { kind: "not-now" });
+	({ sim, fake, link } = await running({ restartReason: 3 }));
+	assert.deepEqual(await dfuse.restartIntoLoader(link, sim.board, quick), { kind: "transmitting", why: "the radio is transmitting" });
+	({ sim, fake, link } = await running({ restartReason: 9 }));
+	assert.deepEqual(await dfuse.restartIntoLoader(link, sim.board, quick), { kind: "other", why: "it answered the request with an error" });
+	// it answered OK and still runs when the watch ends: said, after a bounded wait
+	({ sim, fake, link } = await running({ restartStays: true }));
+	const t0 = Date.now();
+	assert.deepEqual(await dfuse.restartIntoLoader(link, sim.board, quick), { kind: "stayed" });
+	assert.ok(Date.now() - t0 < 2000);
+	assert.equal(fake.mode, "normal");
+	assert.ok(dfuse.RESTART_CHECK_MS >= 1000 && dfuse.RESTART_CHECK_MS <= 10000 && dfuse.RESTART_TICK_MS < dfuse.RESTART_CHECK_MS);
+});
+
+// The write step with the page connected to a radio that runs RadioFoundry, on a board whose firmware restarts into
+// its loader. The board's hint is the test's own: the page shows whatever the radio's data says
+const HINT = "Turn the knob one step and try again.";
+const restartButton = (box) => all(box).find((e) => e.tagName === "BUTTON" && text(e) === en["flash.dfuse.restart_go"]);
+async function connected(opts = {}, { flash = { bootloader_restart: true, bootloader_restart_hint: HINT } } = {}) {
+	const x = await installable("rfoundry", opts);
+	const { state, got } = page(x.fake, x.sim, x.image, x.manifest, { restartWait: quick, dropSerial: async () => { got.dropped = (got.dropped || 0) + 1; state.link = null; } });
+	state.radio = { ...radio, flash: { ...radio.flash, ...flash } };
+	state.link = new Link(x.fake.serialStream(), { timeout: 50 });
+	state.now = { kind: "rfoundry", probe: await probe(state.link), uid: toHex(x.fake.uid) };
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	return { ...x, state, got, box };
+}
+
+test("the write step offers the restart to a connected radio, says what follows, and keeps the keys' steps", async () => {
+	const { fake, image, state, got, box } = await connected();
+	for (const k of ["restart_offer", "restart_next", "restart_by_hand"]) assert.ok(text(box).includes(en[`flash.dfuse.${k}`]), k);
+	assert.match(en["flash.dfuse.restart_next"], /Connect.*different USB device/);
+	for (const s of state.radio.flash.bootloader) assert.ok(text(box).includes(s), s);
+	// the restart is the step's first button while it is offered; Connect is there for the keys' way
+	assert.ok(restartButton(box).className.includes("btn-primary"));
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	assert.ok(!got.forward.className.includes("btn-primary"));
+	await restartButton(box).click();
+	assert.equal(fake.mode, "bootloader");
+	assert.equal(fake.reboots.length, 1);
+	assert.equal(got.dropped, 1, "the serial port went with the restart");
+	assert.ok(text(box).includes(en["flash.dfuse.restart_done"]));
+	assert.match(en["flash.dfuse.restart_done"], /Connect.*different USB device.*steps below/);
+	// the offer is gone, the keys' steps stay, and Connect is the way on
+	assert.equal(restartButton(box), undefined);
+	assert.ok(!text(box).includes(en["flash.dfuse.restart_offer"]) && !text(box).includes(en["flash.dfuse.restart_by_hand"]));
+	for (const s of state.radio.flash.bootloader) assert.ok(text(box).includes(s), s);
+	assert.ok(got.forward.className.includes("btn-primary"));
+	await got.forward.click();
+	// from here the install is the one a radio entered by its keys gets
+	assert.ok(text(box).includes(en["flash.dfuse.not_protected"]));
+	assert.ok(!text(box).includes(en["flash.dfuse.restart_done"]));
+	assert.equal(text(got.forward), en["flash.write.go"]);
+	await got.forward.click();
+	assert.equal(got.next, 1);
+	assert.deepEqual(fake.flash.subarray(0, image.length), image);
+	assert.deepEqual([fake.violations, fake.unprotects, fake.vendor], [[], 0, []]);
+});
+
+test("a write that fails after a restart goes back to the keys' steps, without the restart's old words", async () => {
+	const { fake, image, got, box } = await connected();
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_done"]));
+	await got.forward.click();
+	assert.equal(text(got.forward), en["flash.write.go"]);
+	// the cable goes mid-write
+	fake.mode = "off";
+	await got.forward.click();
+	assert.equal(got.next, 0);
+	assert.ok(text(box).includes(en["flash.write.failed"].split("{error}")[0].trim()));
+	// "the radio is restarting" is no longer true, and no port is left to ask a restart on: the keys, then Connect
+	assert.ok(!text(box).includes(en["flash.dfuse.restart_done"]) && !text(box).includes(en["flash.dfuse.restart_offer"]));
+	assert.equal(restartButton(box), undefined);
+	for (const s of radio.flash.bootloader) assert.ok(text(box).includes(s), s);
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	assert.ok(got.forward.className.includes("btn-primary"));
+	fake.enterBootloader();
+	await got.forward.click();
+	await got.forward.click();
+	assert.equal(got.next, 1);
+	assert.deepEqual(fake.flash.subarray(0, image.length), image);
+	assert.equal(fake.reboots.length, 1);
+});
+
+test("a refused restart is said with the board's hint, changes nothing, and can be tried again", async () => {
+	const { fake, image, got, box } = await connected({ restartRefusals: 1 });
+	const before = fake.flash.slice();
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_refused"]) && text(box).includes(HINT));
+	assert.ok(text(box).includes(en["flash.sim.restart_note"]), "practice mode says why the next try works");
+	// not an error: no error notice, nothing dropped, the radio as it was
+	const note = all(box).find((e) => e.className === "notice action" && text(e).includes(HINT));
+	assert.ok(note && !all(box).some((e) => /\bbad\b/.test(e.className)));
+	assert.deepEqual([fake.mode, got.dropped, fake.flash], ["normal", undefined, before]);
+	// the offer and the keys' steps are both still there
+	assert.ok(restartButton(box) && !restartButton(box).disabled);
+	assert.ok(text(box).includes(en["flash.dfuse.restart_by_hand"]) && text(box).includes(radio.flash.bootloader[0]));
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	// the user did what the hint says
+	await restartButton(box).click();
+	assert.equal(fake.mode, "bootloader");
+	assert.ok(text(box).includes(en["flash.dfuse.restart_done"]) && !text(box).includes(en["flash.dfuse.restart_refused"]) && !text(box).includes(HINT));
+	await got.forward.click();
+	await got.forward.click();
+	assert.equal(got.next, 1);
+	assert.deepEqual(fake.flash.subarray(0, image.length), image);
+});
+
+test("a refused restart leaves the keys' way open, and a board without a hint says the rest all the same", async () => {
+	const { fake, image, state, got, box } = await connected({ restartRefusals: 5 }, { flash: { bootloader_restart: true, bootloader_restart_hint: null } });
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_refused"]) && !text(box).includes(HINT));
+	// outside practice mode nothing speaks of a simulated radio
+	state.fakeRadio = null;
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_refused"]) && !text(box).includes(en["flash.sim.restart_note"]));
+	state.fakeRadio = fake;
+	// off, the key, on: the manual steps as they always were
+	fake.enterBootloader();
+	await got.forward.click();
+	assert.ok(text(box).includes(en["flash.dfuse.not_protected"]) && !text(box).includes(en["flash.dfuse.restart_refused"]));
+	await got.forward.click();
+	assert.equal(got.next, 1);
+	assert.deepEqual(fake.flash.subarray(0, image.length), image);
+	assert.equal(fake.events.includes("restart into the loader"), false);
+});
+
+test("a restart that is not taken for another reason, or taken and not carried out, is said as what it is", async () => {
+	// transmitting: the page's own sentence for it, no hint (the hint is for the board's rule). The user can end it,
+	// so it is a notice and the offer stays
+	let { fake, got, box } = await connected({ restartReason: 3 });
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_transmitting"]));
+	assert.match(en["flash.dfuse.restart_transmitting"], /transmitting.*Nothing was changed.*steps below/);
+	assert.ok(!text(box).includes(en["flash.dfuse.restart_failed"].split("{error}")[0]) && !all(box).some((e) => /\bbad\b/.test(e.className)));
+	assert.ok(!text(box).includes(HINT) && fake.mode === "normal" && restartButton(box) && !restartButton(box).disabled);
+	assert.deepEqual([fake.reboots.length, got.dropped], [1, undefined]);
+	// any other reason: the frame in the page's language, the reason in rfoundry's words
+	({ fake, got, box } = await connected({ restartReason: 4 }));
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_failed"].replace("{error}", RESTART_WHY["no-chip"])));
+	assert.ok(!text(box).includes(HINT) && fake.mode === "normal" && restartButton(box));
+	// OK, and the radio still runs
+	({ fake, got, box } = await connected({ restartStays: true }));
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_stayed"]));
+	assert.match(en["flash.dfuse.restart_stayed"], /steps below/);
+	assert.deepEqual([fake.mode, got.dropped], ["normal", undefined]);
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	// a radio that no longer answers
+	let state;
+	({ fake, got, box, state } = await connected());
+	state.link = new Link({ buf: new Uint8Array(0), clear() {}, take() {}, async write() {} }, { timeout: 20 });
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_no_answer"].split("{error}")[0]));
+	assert.equal(fake.reboots.length, 0);
+	// another radio than the one the page connected to answers: never restarted
+	({ fake, got, box, state } = await connected());
+	state.now.uid = "ab".repeat(12);
+	await restartButton(box).click();
+	assert.ok(text(box).includes(en["flash.dfuse.restart_failed"].replace("{error}", "another radio answers on this connection")));
+	assert.deepEqual([fake.reboots.length, fake.mode], [0, "normal"]);
+});
+
+test("no restart is offered without a connection to RadioFoundry, or on a board whose firmware cannot", async () => {
+	const none = (box, why) => {
+		assert.equal(restartButton(box), undefined, why);
+		for (const k of ["restart_offer", "restart_next", "restart_by_hand"]) assert.ok(!text(box).includes(en[`flash.dfuse.${k}`]), `${why}: ${k}`);
+	};
+	// the board's data doesn't say so
+	let x = await connected({}, { flash: { bootloader_restart: false, bootloader_restart_hint: null } });
+	none(x.box, "a board without the restart");
+	assert.ok(x.got.forward.className.includes("btn-primary"));
+	// nothing connected (an install, a radio on its original firmware), a port that was lost, a radio the page knows
+	// only as not RadioFoundry, a radio already in its loader
+	for (const [why, change] of [["no link", (s) => { s.link = null; }], ["a lost port", (s) => { s.link.s.lost = true; }],
+		["not RadioFoundry", (s) => { s.now = { kind: "stock" }; }], ["nothing known", (s) => { s.now = null; }],
+		["in its loader", (s, fake) => fake.enterBootloader()]]) {
+		x = await connected();
+		change(x.state, x.fake);
+		none(dfuse.writeView(), why);
+	}
+	// and the fixture's install page, as every test above this one drew it
+	const { sim, fake, image, manifest } = await installable("stock");
+	page(fake, sim, image, manifest);
+	none(dfuse.writeView(), "an install");
+});
+
+test("the registry says which radios restart into their loader: ROM loader radios only, a hint only beside it", () => {
+	for (const r of radios) {
+		assert.equal(typeof r.flash.bootloader_restart, "boolean", r.id);
+		if (r.flash.bootloader_restart) assert.equal(fb.boards[r.flash.board].family, PLAIN_FAMILY, r.id);
+		else assert.equal(r.flash.bootloader_restart_hint, null, r.id);
+		assert.ok(r.flash.bootloader_restart_hint === null || r.flash.bootloader_restart_hint.trim(), r.id);
+	}
+});
+
 test("the write step refuses a device that is not this radio's loader, in the page's words", async () => {
 	const { sim, fake, image, manifest } = await installable("stock", { layout: "@Internal Flash  /0x0800C000/01*016Kg,01*064Kg,07*128Kg" });
 	const { got } = page(fake, sim, image, manifest);
@@ -937,6 +1298,8 @@ test("the page registers the backend, practices against the ROM loader, and expe
 	assert.match(src, /import \* as dfuse from "\.\/dfuse\.js";/);
 	assert.match(src, /dfuse\.init\(\{ S, fb, next, render, reset, [^}]*connectBootloader, dropSerial,\s*[^}]*doneView, backupView, restoreView \}\);/);
 	assert.match(src, /new FakeRomRadio\(S\.sim, \{ state: simStock \? "stock" : "rfoundry"/);
+	// practice mode shows a refused restart into the loader, then the restart itself
+	assert.match(src, /new FakeRomRadio\(S\.sim, \{[^}]*restartRefusals: 1 \}\);/);
 	assert.match(src, /const hasCodec = \(\) => !S\.radio\?\.flash\.codec_none;/);
 	const done = src.slice(src.indexOf("function doneView("));
 	assert.match(done.slice(0, done.indexOf("\n}\n")), /const good = !hasCodec\(\) \|\| /);

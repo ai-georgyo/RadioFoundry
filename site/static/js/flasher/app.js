@@ -3386,8 +3386,10 @@ async function main() {
 		S.fakeC7.powerOn();
 	} else if (simRadio && dfuse.isDfuse(simRadio, S.data.fb)) {
 		// a ROM bootloader radio: read protected on its original firmware, or running RadioFoundry (no key, no stock file)
+		// Running RadioFoundry, it refuses the first restart into update mode and takes the next, so practice shows
+		// both what a refusal looks like and the restart itself (dfuse.js)
 		S.sim = { ...romSimulation(S.data.fb, simRadio.flash.board), radio: simRadio.id };
-		S.fakeRadio = new FakeRomRadio(S.sim, { state: simStock ? "stock" : "rfoundry", spiSize: 0x400000 });
+		S.fakeRadio = new FakeRomRadio(S.sim, { state: simStock ? "stock" : "rfoundry", spiSize: 0x400000, restartRefusals: 1 });
 		simRadio.backup = { ...simRadio.backup, spi_size: 0x400000 };
 	} else if (simRadio) {
 		S.sim = { ...(await simulation(S.data.fb, simRadio.id)), radio: simRadio.id };

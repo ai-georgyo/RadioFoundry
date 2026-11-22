@@ -417,6 +417,19 @@ export function romDevice(board, info) {
 		throw new WrongDeviceError(`the device shows the layout "${alt0 || "none"}", not ${(board.flash_end - board.rom_base) / 1024} KB of flash from ${hex(board.rom_base)}: nothing was sent`, alt0 || "?");
 }
 
+// The string index of each interface descriptor (one per alternate setting) of a raw configuration descriptor, in
+// order, without the ones that have no string. Descriptors are length-prefixed; a cut or malformed one ends the walk
+export function interfaceStringIndexes(raw) {
+	const out = [];
+	for (let i = 0; i + 2 <= raw.length;) {
+		const len = raw[i];
+		if (len < 2 || i + len > raw.length) break;
+		if (raw[i + 1] === 4 && len >= 9 && raw[i + 8] !== 0) out.push(raw[i + 8]);
+		i += len;
+	}
+	return out;
+}
+
 export class NormalModeError extends DfuError {
 	constructor(layout) {
 		super(`the radio is switched on normally, not in its bootloader (layout ${layout})`);
@@ -506,11 +519,30 @@ export class WebUsbTransport {
 		}
 	}
 
-	// What the bootloader shows: the strings the model fingerprint table will be built from
-	async fingerprint() {
+	// The alternate settings' names in descriptor order. The browser's own (interfaceName) when it has them: it reads
+	// them once, when the device appears, and a loader that was slow to answer then is left without any for as long as
+	// it stays connected (seen on a ROM loader: the device check refused it with no layout). Then they are read here,
+	// from the configuration descriptor's string indexes: two standard requests the loader answers like any other
+	async interfaceNames() {
 		const d = this.device;
 		const names = [];
 		for (const i of d.configuration.interfaces) for (const a of i.alternates) if (a.interfaceName) names.push(a.interfaceName);
+		if (names.length) return names;
+		try {
+			const r = await timed(d.controlTransferIn({ requestType: "standard", recipient: "device", request: 6, value: 0x0200, index: 0 }, 1024),
+				"configuration descriptor", this.timeoutMs);
+			for (const index of interfaceStringIndexes(new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength))) {
+				const s = await this.stringDescriptor(index);
+				if (s) names.push(s);
+			}
+		} catch (e) { /* no names: the caller's check refuses a device it can't identify */ }
+		return names;
+	}
+
+	// What the bootloader shows: the strings the model fingerprint table will be built from
+	async fingerprint() {
+		const d = this.device;
+		const names = await this.interfaceNames();
 		return { string1: await this.stringDescriptor(1), manufacturer: d.manufacturerName, product: d.productName,
 			serial: d.serialNumber, version: `${d.deviceVersionMajor}.${d.deviceVersionMinor}.${d.deviceVersionSubminor}`, interfaces: names };
 	}

@@ -769,7 +769,13 @@ export class FakeRomRadio extends FakeRadio {
 	// bytes), writes ([address, length, block number]), erased, unprotects, leftAt (the pointer at Leave).
 	// layout, string1: what the device shows, for a test of the device check. stallUpload false: a read the protection
 	// refuses is answered with no bytes instead of a stall (the documents allow either; the status is the same)
-	constructor(sim, { state = "stock", spiSize = 0x2000000, layout = null, string1 = "STMicroelectronics", stallUpload = true } = {}) {
+	// The restart into the loader from RadioFoundry (REBOOT, debuglink.md 3.11; rebootAnswer): taken unless
+	// restartRefusals, the number of requests the board's own rule still refuses (reason 5: each one counts it down, as
+	// a user who then does what the board's hint says), restartReason, a reason every request is refused with (3:
+	// transmitting), or restartStays, a radio that answers OK and stays up (a check failed again at the reset).
+	// reboots: every REBOOT payload that came in
+	constructor(sim, { state = "stock", spiSize = 0x2000000, layout = null, string1 = "STMicroelectronics", stallUpload = true,
+		restartRefusals = 0, restartReason = 0, restartStays = false } = {}) {
 		super(sim, { state: state === "rfoundry" ? "rfoundry" : "stock", spiSize, stubEntry: false });
 		const b = this.board, r = rng(743);
 		this.base = b.rom_base;
@@ -784,6 +790,7 @@ export class FakeRomRadio extends FakeRadio {
 		this.stallUpload = stallUpload;
 		this.unprotects = 0;
 		this.leaveWatchers = new Set();
+		Object.assign(this, { restartRefusals, restartReason, restartStays, reboots: [] });
 		this.resetDfu();
 	}
 
@@ -804,6 +811,38 @@ export class FakeRomRadio extends FakeRadio {
 		p.set(le32(0x20036450), 0); p[4] = this.flashKb & 0xFF; p[5] = this.flashKb >> 8; p.set(this.uid, 6);
 		p.set(le32(this.rdp ? 0x0000BB00 : 0x0000AA00), 18); p[22] = this.rdp; p[23] = this.rdp ? 0xBB : 0xAA; p[28] = 2;
 		return p;
+	}
+
+	// REBOOT's reply payload (debuglink.md 3.11): the status and a reason byte. The radio's checks in the firmware's
+	// order (the chip info, the token, transmitting, the protection, and last the board's own rule, which is about the
+	// loader mode only), then the restart. Mode 1 puts the radio in its loader, mode 0 starts the firmware again;
+	// either way the serial port is a new one
+	rebootAnswer(p) {
+		this.reboots.push(p.slice());
+		if (p.length !== 5 || p[0] > 1) return [2];
+		if (this.restartReason === 4) return [7, 4];
+		if (u32le(p, 1) !== u32le(this.uid, 0)) return [7, 1];
+		if (this.restartReason === 3) return [7, 3];
+		if (p[0] === 1 && this.rdp) return [7, 2];
+		if (this.restartReason) return [7, this.restartReason];
+		if (p[0] === 1 && this.restartRefusals > 0) {
+			this.restartRefusals--;
+			return [7, 5];
+		}
+		if (!this.restartStays) {
+			this.port++;
+			if (p[0] === 1) {
+				this.enterBootloader();
+				this.events.push("restart into the loader");
+			}
+		}
+		return [0, 0];
+	}
+
+	serialAnswer(req) {
+		const f = req[0] === 0xA5 ? parseFrames(req)[0] : null;
+		if (f?.cmd === 0x0D) return frame(f.cmd | 0x80, f.seq, new Uint8Array(this.rebootAnswer(f.payload)));
+		return super.serialAnswer(req);
 	}
 
 	dfuTransport() {

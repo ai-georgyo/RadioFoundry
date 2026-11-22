@@ -237,6 +237,10 @@ function plainReadme(o) {
 		"rfoundry checks the image against its manifest and prints exactly what it would erase and write.", "",
 		"3. INSTALL", "", ...both(cmd), "",
 		"rfoundry asks you to put the radio in its bootloader:", ...enter, "",
+		...(o.radio.flash.bootloader_restart ? [
+			"A radio that already runs RadioFoundry needs no keys: leave it switched on and connected, and rfoundry",
+			"restarts it into its bootloader by itself. If the radio refuses the restart, rfoundry says what to do and",
+			"then asks for the keys as above.", ""] : []),
 		"It then asks the radio whether it is read protected. A radio that already runs RadioFoundry is not: rfoundry",
 		"writes, the radio restarts, and rfoundry checks what it reports. Keep the cable in until it says it is done.", "",
 		"4. A FIRST INSTALL: REMOVE THE READ PROTECTION", "",

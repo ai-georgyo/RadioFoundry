@@ -11,10 +11,14 @@ FakeRom: the bootloader in an MCU's ROM, plain DfuSe as AN3156 describes it, ove
 on that route (family dfuse). No key and no vendor command; a read protection state in which it refuses to read, erase
 and write until a Read Unprotect, which erases everything and takes the device off the bus; a second alternate setting
 for the option bytes, which nothing may select.
+
+FakeRunning: the same radio while it runs RadioFoundry, as its debug link answers: who it is, and the restart into
+its processor's bootloader, which it takes or refuses.
 """
 import random
 import struct
 
+from . import debuglink
 from . import dfu as dfumod
 from .plan import BLOCK, FIRST_BLOCK
 
@@ -399,6 +403,100 @@ class FakeRomUsbDevice(FakeRom):
         return False
 
     def set_configuration(self):
+        pass
+
+
+class FakeRunning:
+    """A radio that runs RadioFoundry, as the open stream debuglink.Link talks to: VERSION, INFO_CHIP and REBOOT
+    (docs/spec/debuglink.md 3.9, 3.11); every other command is unknown. loader: the same radio's fake bootloader (a
+    FakeRomUsbDevice), off the bus while the firmware runs and on it once a restart into the bootloader is taken.
+
+    refuse: the reason the restart is refused with, before anything happens (5: the board's rule says not now, 3:
+    transmitting), or None: taken. A test changes it between two requests, as a user who does what the board's hint
+    says. stays: the radio answers OK and stays up (a check failed again at the reset, debuglink.md 3.11). rdp: the
+    read protection level INFO_CHIP reports. requests: the payload of every REBOOT that came in. After a restart
+    that was taken the port is gone: a write fails as on a device that left."""
+    port = "sim"
+
+    def __init__(self, board, loader, refuse=None, stays=False, rdp=0, family=debuglink.CHIP_STM32H7, name=None,
+                 uid=bytes(range(0x21, 0x2D))):
+        self.board, self.loader = board, loader
+        self.refuse, self.stays, self.rdp, self.family = refuse, stays, rdp, family
+        self.name = name or board.debuglink_names[0]
+        self.uid = uid
+        self.running = True
+        self.requests = []
+        self.out = bytearray()
+        loader.gone = True
+
+    def probe(self):
+        """What debuglink.probe() returns for this radio, its port the stream itself"""
+        return {"port": self, "board": self.name, "git": "00000000", "codec": "none", "features": "",
+                "uid": self.uid.hex()}
+
+    def enter_by_hand(self):
+        """Switched off and on with the bootloader's key held: the firmware is gone, the bootloader is on the bus"""
+        self.running = False
+        self.loader.power_cycle()
+
+    def _chip(self):
+        r = bytearray(29)
+        struct.pack_into("<IH", r, 0, 0x20036450, (self.board.flash_end - self.board.rom_base) // 1024)
+        r[6:18] = self.uid
+        r[22], r[23] = self.rdp, {0: 0xAA, 2: 0xCC}.get(self.rdp, 0x55)
+        r[24:28] = b"\xFF" * 4
+        r[28] = self.family
+        return bytes(r)
+
+    def _answer(self, cmd, payload):
+        ok = bytes([debuglink.ST_OK])
+        if cmd == debuglink.CMD_VERSION:
+            return ok + ("proto=1\ngit=00000000\nboard=%s\nfeatures=FM\ncodec=none\n" % self.name).encode()
+        if cmd == debuglink.CMD_INFO_CHIP:
+            return ok + self._chip()
+        if cmd != debuglink.CMD_REBOOT:
+            return bytes([debuglink.ST_UNKNOWN])
+        self.requests.append(bytes(payload))
+        if len(payload) != 5 or payload[0] > debuglink.REBOOT_BOOTLOADER:
+            return bytes([2])					# bad argument
+        mode, token = struct.unpack("<BI", payload)
+        to_loader = mode == debuglink.REBOOT_BOOTLOADER
+        refused = lambda reason: bytes([debuglink.ST_REFUSED, reason])	# noqa: E731
+        # the firmware's checks in its order (dl_reboot_check, then the platform's reboot_ok): the chip info, the
+        # token, transmitting, the protection, and last the board's own rule, which is about the bootloader mode only
+        if self.refuse == 4:
+            return refused(4)
+        if token != struct.unpack_from("<I", self.uid)[0]:
+            return refused(1)
+        if self.refuse == 3:
+            return refused(3)
+        if to_loader and (self.family not in debuglink.CHIP_ROM_FAMILIES or self.rdp != 0):
+            return refused(2)
+        if self.refuse is not None and (to_loader or self.refuse != 5):
+            return refused(self.refuse)
+        if not self.stays:
+            self.running = False				# the reply goes out first, then the reset
+            if to_loader:
+                self.loader.power_cycle()
+        return ok + b"\x00"					# the status, and reason 0
+
+    # the pyserial calls debuglink.Link makes
+    def write(self, data):
+        if not self.running:
+            raise OSError("device disconnected")
+        for cmd, seq, payload in debuglink.parse_frames(bytes(data)):
+            self.out += debuglink.frame(cmd | 0x80, seq, self._answer(cmd, payload))
+        return len(data)
+
+    def read(self, n=1):
+        out = bytes(self.out[:n])
+        del self.out[:n]
+        return out
+
+    def reset_input_buffer(self):
+        self.out.clear()
+
+    def close(self):
         pass
 
 

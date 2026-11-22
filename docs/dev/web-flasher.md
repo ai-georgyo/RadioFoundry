@@ -32,7 +32,7 @@ The flasher is plain ES modules. The logic ports rfoundry, and the tests check t
 | `update.js` | The Update task's build: which build a radio runs (below) and the build its update installs | |
 | `codeplug.js` | Codeplug formats and the converter registry | |
 | `migrate.js` | The original firmware's channels after an install: a stock codeplug found, converted, written and read back (below) | `tools/codeplug_port.py` |
-| `fake.js` | A simulated radio: bootloader with a flash model, RadioFoundry's serial port, a synthetic stock file. `FakeRomRadio`: a radio installed through its processor's ROM bootloader (the loader's commands and states, read protection, Read Unprotect; no key and no stock file) | `rfoundry/fakedfu.py` |
+| `fake.js` | A simulated radio: bootloader with a flash model, RadioFoundry's serial port, a synthetic stock file. `FakeRomRadio`: a radio installed through its processor's ROM bootloader (the loader's commands and states, read protection, Read Unprotect; no key and no stock file), and the debug link's restart into that loader, which it takes or refuses (`restartRefusals`, `restartReason`, `restartStays`) | `rfoundry/fakedfu.py` |
 | `stub.js`, `lz4.js` | The HR_C7000 boot stub: loaded through the boot ROM or handed over by RadioFoundry, then reads, sector writes and the LED | `stub/stubtool.py` |
 | `f4stub.js` | The STM32F4 loader: handed over by RadioFoundry, the board record (CONFIG) and its echo, then the install in the interlock's order and SPI flash writes | `stub/f4stub.py` |
 | `c7000v1.js` | Rebuilds a version 1 codec slot (from before the codec moved) as version 2 | |
@@ -40,7 +40,7 @@ The flasher is plain ES modules. The logic ports rfoundry, and the tests check t
 | `fakec7000.js` | A simulated HR_C7000 radio: boot ROM window, RadioFoundry's debug link (VERSION, 0x1A), the stub, both flash chips and the Baofeng updater (`FakeBfLoader`) | `tools/serial_loader.py` `FakeBootloader` |
 | `usmart.js`, `iap.js`, `bfloader.js`, `iapui.js` | The stock side of an HR_C7000 radio, by protocol: the stub loaded through a stock debug console (USMART, `flash.stock_console`), the factory update mode write (IAP or the Baofeng updater, `flash.update_mode`) and their steps | `tools/serial_loader.py` (`bfloader.js`) |
 | `c7000ui.js`, `radiotop.js` | The HR_C7000 backend: its steps (connect, back up and check, write, check) and the radio picture with its LED | |
-| `dfuse.js` | The `dfuse` backend: a radio installed through its processor's ROM bootloader. Its write step checks the device, asks whether the program memory is read protected, and runs the Read Unprotect as a step of its own that the user confirms ([below](#rom-bootloader-radios-plain-dfuse)) | `rfoundry/cli.py` `cmd_flash_dfuse` |
+| `dfuse.js` | The `dfuse` backend: a radio installed through its processor's ROM bootloader. Its write step checks the device, asks whether the program memory is read protected, and runs the Read Unprotect as a step of its own that the user confirms. A connected radio that runs RadioFoundry is restarted into the loader by the page where the board's firmware can do that (`restartIntoLoader`) ([below](#rom-bootloader-radios-plain-dfuse)) | `rfoundry/cli.py` `cmd_flash_dfuse`, `restart_into_bootloader` |
 | `dom.js` | DOM helpers and strings shared by `app.js` and the backends beside it | |
 | `app.js` | The page: the tasks, the shared steps and the `anyroad-dfu` backend | |
 
@@ -50,7 +50,9 @@ through the loader hand-over). `#sim` alone is the first radio on stock firmware
 (`fakeC7000Options()` and `c7000Simulation()` in `fakec7000.js`, `simulation()` in `fake.js`): a radio with a stock
 console gets one, with its first stock version. A radio of the `dfuse` backend gets `FakeRomRadio` and
 `romSimulation()`: `-stock` is read protected on its original firmware, so the practice run includes the Read
-Unprotect (its wait is 3 s there). `#sim=<radio>-romfail` is an HR_C7000 radio on stock firmware whose boot
+Unprotect (its wait is 3 s there). Running RadioFoundry, it refuses the first restart into update mode and takes
+the second, so an update's practice run shows the refusal with the board's hint and then the restart
+(`restartRefusals: 1`). `#sim=<radio>-romfail` is an HR_C7000 radio on stock firmware whose boot
 ROM refuses the load, to practice the factory update mode; `#sim=<radio>-slowcable` one on a cable too slow for the
 boot ROM's 48 ms window, to check that the page's answer sent ahead gets through; `#sim=<radio>-deafcable` one on a
 cable that carries the radio's data and none of the page's; a radio with the Baofeng updater enters it when switched on
@@ -817,14 +819,15 @@ the application starts at the flash base, and the radio is installed through the
 with the board's `[flash.bootloader]` keys. The download is ST's DfuSe as the ROM takes it (ST AN3156): no key, no
 vendor command, nothing XORed. Such a board has no codec route (`flash.codec_none` in `data/radios.json` is the
 reason), so the install has no current-firmware and no codec step: radio, build, write, done. An update is update,
-write, done: the radio enters the loader the same way. Which radios these are: [feature matrix](../feature-matrix.md).
+write, done: the radio enters the loader the same way, or by a restart the page asks for
+([below](#the-restart-into-the-loader)). Which radios these are: [feature matrix](../feature-matrix.md).
 
 The write step (`dfuse.js` `writeView`) is one panel in four states, after the plan is checked:
 
 | State | Shows | Next |
 |---|---|---|
 | (before any) | `installPlan()`: the plan, held to `checkPlain()`. A plan the write would refuse is refused here, with no Connect: nothing is erased for an image that can't be written. `unprotectWait(board)` is called here too: a board whose data has no `mass_erase_max_s` is refused with no Connect, whether or not the radio turns out to be protected (rfoundry refuses only at a protected radio) | enter |
-| enter | The board's loader steps, the picture, Connect | `connectBootloader()`, then `checkLoader()`: the device check, the protection probe |
+| enter | The board's loader steps, the picture, Connect. Above them, while the page holds the serial port of a radio that runs RadioFoundry and the board's `flash.bootloader_restart` is true: the offer to restart the radio into the loader ([below](#the-restart-into-the-loader)) | `connectBootloader()`, then `checkLoader()`: the device check, the protection probe |
 | protected | What a Read Unprotect erases, the precondition (`flash.dfuse.precondition`: the channels saved with the maker's software first, then the maker's recovery tried once, then the saved channels written back), the board's `notice`, a box to tick | Erase and Remove Protection, disabled until the box is ticked: `readUnprotect()`, then the transport is closed |
 | erasing | The bar counts `unprotectWait(board).least` from the moment the Read Unprotect is sent. The page then goes on once the loader has left USB (WebUSB's `disconnect` for the device, through `WebUsbTransport.watchLeave`, set up before `0x92` is sent), and at the latest at `unprotectWait(board).most`. The rule: least = max(`UNPROTECT_MIN_S` 60, 2 x the board's `mass_erase_max_s`), most = max(`UNPROTECT_WAIT_S` 120, 2 x least), in seconds: 60 s and 120 s for a 26 s bound. No button meanwhile | enter again: it says "The erase is over" (`flash.dfuse.reenter`) only when the loader was seen to leave; otherwise `flash.dfuse.reenter_unsure`: still on USB after N s, longer than the erase takes (at most the board's `mass_erase_max_s` from `data/flash-boards.json`), so the erase is over or was not taken, and the next probe decides. The user switches the radio off, enters the loader, and Connect asks the browser for the device afresh. The re-enter heading and text show only until the loader has answered the probe again; after that (a failed write, say) the step shows the plain "Enter Update Mode" steps. The two floors and the rule are the same in `dfuse.js` and rfoundry's `cli.py`, checked against rfoundry's own figures in the fixture `unprotect-wait.json` |
 | ready | "Found", and whether the protection was already off or was just removed | Install: `Dfu.run()`, then the done step |
@@ -833,7 +836,7 @@ What `dfu.js` does on this route, and why:
 
 | Function | Does |
 |---|---|
-| `romDevice(board, info)` | Before any request: refuses a device whose string 1 names a keyed bootloader (it would take a plain image as an encrypted one), and one whose alternate 0 is not the board's whole program flash, from the flash base to `flash_end` (or the board's `dfu_layout`, once read on a radio). A device that shows no layout is refused too. Throws `WrongDeviceError` |
+| `romDevice(board, info)` | Before any request: refuses a device whose string 1 names a keyed bootloader (it would take a plain image as an encrypted one), and one whose alternate 0 is not the board's whole program flash, from the flash base to `flash_end` (or the board's `dfu_layout`, once read on a radio). A device that shows no layout is refused too. Throws `WrongDeviceError`. The layout strings are the browser's alternate setting names; when it has none (it reads them once, as the device appears, and a loader slow to answer then stays without), `WebUsbTransport.interfaceNames` reads them from the device: the configuration descriptor's string indexes (`interfaceStringIndexes`) and those strings |
 | `WebUsbTransport.open()` | Claims the interface and selects no alternate setting, so it stays on 0, the internal flash. A ROM loader's second alternate is the option bytes, where one write can remove the loader for good: nothing selects it, no address pointer is set outside the board's program flash, and the test checks the source for both modules |
 | `Dfu.toIdle()` | dfuIDLE by the DFU standard's own requests: CLRSTATUS out of dfuERROR, ABORT out of an idle state of a transfer. A ROM loader stalls a request its state doesn't allow |
 | `Dfu.probeProtected(board)` | Sets the address pointer to the start of the flash and asks for 4 bytes there. A protected chip doesn't perform the read and reports dfuERROR with errVENDOR, whether it stalls the request or answers no bytes: true. The bytes came: false. Anything else, errVENDOR without the error state included, is thrown: neither a write nor an unprotect follows a guess. Nothing is modified |
@@ -863,7 +866,38 @@ task checks for it first (`recovery.first` `updatemode`). Untested with a radio:
 ABORT between Set Address Pointer and the read, the time the erase takes, and the leave.
 
 Tests: `site/tests/dfuse.test.mjs` (the loader's model in `fake.js`, the backend's contract, the write step against a
-stand-in for the DOM).
+stand-in for the DOM, the restart taken, refused, not carried out and not offered).
+
+### The restart into the loader
+
+The firmware of a board on this route may restart into the ROM bootloader when the debug link asks: `REBOOT` with the
+ROM bootloader mode ([debuglink.md](../spec/debuglink.md) 3.11). A board says so in the registry
+(`[flash.bootloader] restart`, [board-registry.md](board-registry.md)), which reaches the page as
+`flash.bootloader_restart` and `flash.bootloader_restart_hint` in `data/radios.json`. The page then asks for the
+restart itself, and rfoundry does the same (`cli.py` `restart_into_bootloader`,
+[release.md](release.md#the-rom-bootloader-route)). Nothing after the loader is reached differs: the device check, the
+probe, the Read Unprotect, the write order, the read-back and the leave are the ones above.
+
+| Part | Does |
+|---|---|
+| The offer (`writeView`, state enter) | Shown only while `S.link` is an open port, `S.now.kind` is `rfoundry` and the board has `bootloader_restart`. One button, **Restart into Update Mode**, with what follows said before the click: the loader is another USB device, so Connect makes the browser ask for it. While the offer shows it is the step's first button and Connect is not. The keys' steps stay below as the other way |
+| `link.js` `Link.restartIntoBootloader(chip)` | The host's half of the gate first, as `rfoundry_debug.py reboot --rom-dfu` has it: a chip family with a ROM bootloader at RDP level 0, else nothing is sent. Then `REBOOT` mode 1 with the chip UID's low word. Returns the reply's kind (`restartOutcome(status, data)`): `ok`, `not-now` (reason 5), `transmitting` (3), `protected` (2), `token` (1), `no-chip` (4), `unsupported` (status 1 or 4), `other`. Throws only when no reply came. The table and the words for the kinds (`RESTART_WHY`) are rfoundry's (`debuglink.py` `restart_outcome`), and a test compares them (the fixture `restart-vectors.json`) |
+| `dfuse.js` `restartIntoLoader(link, board, {uid})` | Asks only the radio the page was talking to: VERSION's board must be one of the board's `debuglink_names`, and INFO_CHIP's UID the one read at the connect (`S.now.uid`); otherwise `other`, and nothing is sent. A radio that gives no chip info has no token to send: `no-chip`. After `ok` it asks VERSION every `RESTART_TICK_MS` (500 ms) for `RESTART_CHECK_MS` (3 s): the radio resets 250 ms after its reply and its port goes with it, so the first request that fails means it left. One that still answers at the end is `stayed` (a check failed again at the reset) |
+
+What the page shows for each result:
+
+| Result | Shown | Then |
+|---|---|---|
+| `ok` | `flash.dfuse.restart_done`. The serial port is dropped and the offer goes | Connect: the browser's chooser. If the list stays empty, the keys' steps |
+| `not-now` | A notice, not an error: `flash.dfuse.restart_refused` (nothing was changed) and the board's `bootloader_restart_hint` as the board wrote it. The offer stays, so the user does what the hint says and selects the button again | The keys' steps are still there |
+| `stayed` | `flash.dfuse.restart_stayed` | The keys' steps |
+| `transmitting` | A notice, not an error: `flash.dfuse.restart_transmitting`. The offer stays for a try once the radio has stopped | The keys' steps are still there |
+| any other kind | `flash.dfuse.restart_failed` with the kind's words | The keys' steps |
+| no answer | `flash.dfuse.restart_no_answer` with the error | The keys' steps |
+
+The page can't see the loader arrive: WebUSB shows a device only once the user has picked it. So "it left its port" is
+all it claims, and the done text says what to do when the chooser lists nothing. rfoundry lists USB itself and waits
+for the device (`RESTART_WAIT_S`). Untested with a radio: the restart, and how long the loader takes to appear.
 
 ## Firmware images and custom builds
 

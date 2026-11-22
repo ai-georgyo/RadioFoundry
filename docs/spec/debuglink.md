@@ -607,6 +607,13 @@ so a host that asked for mode 1 and still gets answers reads the log.
 `rfoundry_debug.py reboot [--rom-dfu]` reads INFO_CHIP first, refuses `--rom-dfu` itself unless the family has the
 ROM bootloader and RDP is level 0, sends the token and prints the radio's reason when it refuses.
 
+The installers send mode 1 too, to update a radio that is installed through its ROM bootloader without the
+bootloader's keys: `rfoundry flash` and the web flasher, on a board whose registry entry says its firmware does this
+(`[flash.bootloader] restart`, [board-registry.md](../dev/board-registry.md)). They apply the same host check, ask
+only the radio they probed (its board name and chip UID), and read the reply the same way in both tools: OK, reason 5
+as "not possible now" with the board's own hint, any other reason or status as what it is. Then they wait a bounded
+time for the bootloader and fall back to the keys ([release.md](../dev/release.md#the-restart-into-the-bootloader)).
+
 ### 3.12 DMR_DATA
 
 Requests to the DMR data service (`docs/spec/dmr-data.md`), through the same mailbox as the UI's

@@ -213,8 +213,12 @@ BOARD_SCHEMA = {
         "backup": _req({"stock": _req(("none", "full")), "rfoundry": _req(("none", "full")), "spi_size": _req(int)}),
         # hold: the keys held to enter it, by their key names (the board's KEY_* in lower case, as the drawing's
         # key-<name> ids), for the web flasher's picture; steps stays the instructions
+        # restart: the radio's firmware restarts into this bootloader when asked over the debug link (REBOOT's ROM
+        # bootloader mode, docs/spec/debuglink.md 3.11), so the flashers ask a radio that runs RadioFoundry before
+        # they ask for the keys. restart_hint: what the user can do when the radio refuses just then (reason 5: the
+        # board's own rule), in the board's words; the flashers show it with the refusal (restart_problems)
         "bootloader": _req({"keys": _opt(str), "steps": _req(STR_LIST), "id": _opt(str), "sign": _opt(str),
-                            "hold": _opt(STR_LIST)}),
+                            "hold": _opt(STR_LIST), "restart": _opt(bool), "restart_hint": _opt(str)}),
         # layout: the bootloader's alt 0 interface string, only once read from a radio in its bootloader. The
         # flashers then accept no other device; without it they refuse a layout of only the bootloader's sectors
         # (rfoundry dfu.py normal_mode)
@@ -1199,6 +1203,26 @@ def mass_erase_problem(family, platform):
             "flashing tools need it to wait out a Read Unprotect" % platform["id"])
 
 
+def restart_problems(family, bootloader):
+    """Why a board's [flash.bootloader] restart keys can't stand on its family. restart says the firmware restarts
+    into the bootloader the flashers install through when the debug link asks (REBOOT's ROM bootloader mode). That
+    mode enters the MCU's ROM bootloader, so only a family whose loader is that one can use it (FAMILIES loader
+    "rom"): on any other the flashers would wait for a device they don't write through. restart_hint is the text shown
+    when the radio refuses the restart: without restart nothing shows it, and an empty one says nothing."""
+    out = []
+    if bootloader.get("restart") and FAMILIES[family].get("loader") != "rom":
+        out.append("flash.bootloader restart is for a family installed through the MCU's ROM bootloader (%s): the "
+                   "debug link's restart enters that bootloader, not family %s's"
+                   % (", ".join(f for f, v in FAMILIES.items() if v.get("loader") == "rom"), family))
+    if "restart_hint" in bootloader:
+        if not bootloader.get("restart"):
+            out.append("flash.bootloader restart_hint needs restart = true: it is shown when the radio refuses the "
+                       "restart")
+        if not bootloader["restart_hint"].strip():
+            out.append("flash.bootloader restart_hint is empty: leave it out, or say what the user can do")
+    return out
+
+
 def dfu_key_problem(family, dfu):
     """What a [flash.dfu] (dfu) lacks for a family whose bootloader has a key, or None: DFU_KEYED. The flashers tell
     the device by the strings before they send it an encrypted image, and derive and check the key by its hash; a view
@@ -1466,6 +1490,8 @@ def check(root=ROOT):
         if "dfu" in fl:
             for why in dfu_problems(fl["family"], fl["dfu"]):
                 bad(why)
+        for why in restart_problems(fl["family"], fl["bootloader"]):
+            bad(why)
         why = addr4_problem(fl["backup"]["spi_size"], b.mk.get("MCU_DEFS"))
         if why:
             bad(why)
@@ -1637,6 +1663,10 @@ def rfoundry_view(boards):
             "bootloader_steps": list(fl["bootloader"].get("steps", [])), "stock_download": fl.get("stock_download"),
             # the install notice ([flash] notice), which rfoundry prints where an install stops to ask; None without one
             "notice": fl.get("notice"),
+            # the firmware restarts into the bootloader when the debug link asks ([flash.bootloader] restart), and
+            # what the board says to do when it refuses just then (restart_hint), or None
+            "bootloader_restart": bool(fl["bootloader"].get("restart", False)),
+            "bootloader_restart_hint": fl["bootloader"].get("restart_hint"),
             # the key is None on a family without one (a ROM loader); the strings and the layout are None until
             # they were read on a radio
             "key_sha256": dfu.get("key_sha256") if dfu else None, "key_prefix": dfu.get("key_prefix") if dfu else None,
@@ -1731,6 +1761,10 @@ def site_view(boards, root=ROOT):
                  "bootloader": list(fl["bootloader"]["steps"]), "stock_versions": list(fl["stock_versions"]),
                  # the keys to hold, by key name: the flasher marks them on the radio's picture (radiotop.js)
                  "bootloader_hold": list(fl["bootloader"].get("hold", [])),
+                 # the firmware restarts into the bootloader when the page asks over the debug link, and the board's
+                 # words for a refusal, or None (dfuse.js)
+                 "bootloader_restart": bool(fl["bootloader"].get("restart", False)),
+                 "bootloader_restart_hint": fl["bootloader"].get("restart_hint"),
                  # the image starts with a first stage of this size, its first word this signature (board.mk BOOT_*)
                  "first_stage": {"size": b.first_stage[0], "head": b.first_stage[1].hex()} if b.first_stage else None,
                  "stock_console": stub.get("stock_console"), "update_mode": b.family["update_mode"],
@@ -2088,6 +2122,18 @@ def self_test():
         got = dfu_problems(rom, dict(usb, **{k: full[k]}))
         ok(len(got) == 1 and "has no key" in got[0], "dfu: a ROM loader given a %s is refused %r" % (k, got))
     ok(len(dfu_problems("serial-iap", usb)) == 1, "dfu: a table on a family that takes none")
+    hint = "Turn the knob one step and try again."
+    ok(restart_problems(rom, {"steps": []}) == [] and restart_problems(rom, {"restart": True}) == []
+       and restart_problems(rom, {"restart": True, "restart_hint": hint}) == []
+       and restart_problems(keyed, {"restart": False}) == [],
+       "restart: a ROM loader's board may say its firmware restarts into the bootloader, with or without a hint")
+    got = [restart_problems(f, {"restart": True}) for f in FAMILIES if FAMILIES[f].get("loader") != "rom"]
+    ok(all(len(g) == 1 and "ROM bootloader (%s)" % rom in g[0] for g in got),
+       "restart: refused on every family that is not installed through the ROM bootloader %r" % got[:1])
+    got = restart_problems(rom, {"restart_hint": hint}) + restart_problems(rom, {"restart": False, "restart_hint": hint})
+    ok(len(got) == 2 and all("needs restart = true" in g for g in got), "restart: a hint without the restart %r" % got)
+    got = restart_problems(rom, {"restart": True, "restart_hint": "  "})
+    ok(len(got) == 1 and "is empty" in got[0], "restart: an empty hint is refused %r" % got)
     ok(dfu_key_problem(keyed, full) is None and dfu_key_problem(rom, usb) is None
        and dfu_key_problem("serial-iap", usb) is None
        and all(k in (dfu_key_problem(keyed, {a: b for a, b in full.items() if a != k}) or "") for k in DFU_KEYED),
@@ -2501,6 +2547,12 @@ def self_test():
             got = check(tmp)
             ok(any("needs flash.dfu string1" in p for p in got) and not loads(),
                "a keyed bootloader with an empty USB string is refused at load (%s)" % got[:2])
+            # the debug link's restart enters the MCU's ROM bootloader, which a keyed board is not installed through
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^(\[flash\.bootloader\]\n)", r"\1restart = true\n", k_good))
+            got = check(tmp)
+            ok(any("flash.bootloader restart is for a family" in p for p in got),
+               "check finds a keyed bootloader's board that claims the restart into the bootloader (%s)" % got[:2])
             with open(kp, "w", encoding="utf-8") as f:
                 f.write(k_good)
         # a board installed through the MCU's ROM loader, its image at the flash base: nothing protected, no key
@@ -2546,6 +2598,16 @@ def self_test():
         ok(all(v["codec_none"] == reg[b].codec_none for b, v in views.items())
            and len(site) == len(reg) and all(r["flash"]["codec_none"] == reg[r["id"]].codec_none for r in site),
            "the views carry codec_none for every board: the reason, or None with a codec route")
+        # the restart into the bootloader: both views say the same, a hint only beside the restart, and only a board
+        # installed through its MCU's ROM bootloader has it
+        boot = {b: reg[b].data["flash"]["bootloader"] for b in reg}
+        ok(all(v["bootloader_restart"] is bool(boot[b].get("restart")) and v["bootloader_restart_hint"]
+               == boot[b].get("restart_hint") for b, v in views.items())
+           and all((r["flash"]["bootloader_restart"], r["flash"]["bootloader_restart_hint"])
+                   == (views[r["id"]]["bootloader_restart"], views[r["id"]]["bootloader_restart_hint"]) for r in site)
+           and all(reg[b].rom_loader and (v["bootloader_restart"] or v["bootloader_restart_hint"] is None)
+                   for b, v in views.items() if v["bootloader_restart"] or v["bootloader_restart_hint"]),
+           "the views carry the restart into the bootloader and its hint the same, on ROM loader boards only")
         if nb:
             v = views[nb]
             ok(v["codec_none"] and v["codec_tool"] is None and v["codec_stock"] == [] and v["codec"]["id"] is None

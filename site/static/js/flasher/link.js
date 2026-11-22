@@ -3,8 +3,9 @@
 // Talking to a radio that runs RadioFoundry, over its USB serial port (WebSerial): the debug link (docs/spec/debuglink.md:
 // VERSION, INFO_CHIP, READ_MEM) and the open-firmware CPS reads (docs/spec/open-firmware-cps.md 2.1 and 3: area 1 the
 // SPI flash, 5 the MCU flash, 9 the radio info, 10 the flash security registers). Read only, apart from the CPS
-// codeplug writes restore uses (X 1-3), which the radio limits to the codeplug areas, and HWOPT SET for a hardware
-// option an install learned (origversion.js).
+// codeplug writes restore uses (X 1-3), which the radio limits to the codeplug areas, HWOPT SET for a hardware
+// option an install learned (origversion.js), and REBOOT into the processor's own bootloader for an install through
+// it (dfuse.js).
 
 import { be32, concat, le32, sleep, u16be, u16le, u32le, toHex } from "./bytes.js";
 import { wire, note } from "../diag.js";
@@ -22,9 +23,39 @@ export const CABLES = CABLE_FILTERS;
 // it for the serial port (netmode.js)
 export const RFOUNDRY_NET = { vendorId: 0x1FC9, productId: 0x0096 };
 const SOF1 = 0xA5, SOF2 = 0x5A;
-export const CMD = { PING: 0x01, VERSION: 0x02, GET_VIEW: 0x09, INFO_CHIP: 0x0B, READ_MEM: 0x0C, STORAGE: 0x0F, HWOPT: 0x21, SUPPORT: 0x25, SATELLITE: 0x26 };
+export const CMD = { PING: 0x01, VERSION: 0x02, GET_VIEW: 0x09, INFO_CHIP: 0x0B, READ_MEM: 0x0C, REBOOT: 0x0D, STORAGE: 0x0F, HWOPT: 0x21, SUPPORT: 0x25, SATELLITE: 0x26 };
 // The status a command not built in, or with nothing to act on, answers (debuglink.md 2)
 const DL_UNAVAILABLE = 4;
+const DL_OK = 0, DL_UNKNOWN = 1, DL_REFUSED = 7;
+// REBOOT's mode 1 (debuglink.md 3.11): reset, then straight into the processor's ROM bootloader
+export const REBOOT_BOOTLOADER = 1;
+// INFO_CHIP's family bytes whose option word carries the RDP level, and so have a ROM bootloader to enter
+const CHIP_ROM_FAMILIES = [0, 2];
+// What a radio answered to the restart into its bootloader, by kind, as rfoundry reads it (debuglink.py
+// restart_outcome; a test compares the two): "ok" (taken: the reply goes out first, the radio resets 250 ms later),
+// "not-now" (reason 5: the board or its platform can't do it now), "transmitting" (3), "protected" (2: no ROM
+// bootloader on this chip, or RDP is not level 0), "token" (1), "no-chip" (4), "unsupported" (a firmware without the
+// command), "other" (anything else)
+const RESTART_REASONS = { 1: "token", 2: "protected", 3: "transmitting", 4: "no-chip", 5: "not-now" };
+// The kinds in words, for the ones that are not the board's "not now" (the page has the board's own hint for that)
+export const RESTART_WHY = {
+	transmitting: "the radio is transmitting",
+	protected: "its processor is read protected, or has no bootloader of its own to restart into",
+	token: "the radio did not accept the request's confirmation word",
+	"no-chip": "the radio could not read its processor's identity",
+	unsupported: "this firmware has no restart command",
+};
+
+// The kind of a REBOOT reply: its status byte and the bytes after it (the reason, when refused)
+export function restartOutcome(status, data = new Uint8Array(0)) {
+	if (status === DL_OK) return "ok";
+	if (status === DL_UNKNOWN || status === DL_UNAVAILABLE) return "unsupported";
+	if (status === DL_REFUSED && data.length) return RESTART_REASONS[data[0]] || "other";
+	return "other";
+}
+
+// REBOOT's payload for the restart into the bootloader: the mode, and the chip UID's low word as the token
+export const restartRequest = (token) => concat(new Uint8Array([REBOOT_BOOTLOADER]), le32(token));
 // STORAGE INFO's flags byte, after the three ranges (debuglink.md 3.13)
 const STORAGE_CLAIM_FIRST = 0x01;
 
@@ -362,8 +393,9 @@ export class Link {
 				` operation 0x${satelliteOperation.toString(16).padStart(2, "0")}` +
 				(satelliteOperation === 12 && payload.length >= 6 ?
 					` profiles ${payload[4] + 1}-${payload[4] + payload[5]} of ${payload[3]}` : "");
+			// data: what follows the status (a refusal's reason byte)
 			throw Object.assign(new LinkError(`command 0x${cmd.toString(16)}${operation}: status ${reply.payload[0]}`),
-				{ status: reply.payload[0], operation: cmd === CMD.SATELLITE ? payload[0] : undefined });
+				{ status: reply.payload[0], data: reply.payload.subarray(1), operation: cmd === CMD.SATELLITE ? payload[0] : undefined });
 		}
 		return reply.payload.subarray(1);
 	}
@@ -425,6 +457,22 @@ export class Link {
 		// user read 0xFF, not decoded there); firmware before the byte was STM32F4 only
 		return { idcode: u32le(r, 0), flashKb: u16le(r, 4), uid: toHex(r.subarray(6, 18)), token: u32le(r, 6), optcr: u32le(r, 18),
 			rdp: r[22], wrp: u16le(r, 24), bor: r[26], user: r[27], family: r.length > 28 ? r[28] : 0 };
+	}
+
+	// Ask the radio to restart into its processor's ROM bootloader (REBOOT mode 1, debuglink.md 3.11) and return what it
+	// said, a kind of restartOutcome(). chip: this radio's chip(). The host's half of the gate comes first, as
+	// rfoundry's (debuglink.py restart_into_bootloader): a chip family with a ROM bootloader, at RDP level 0, else
+	// nothing is sent. On "ok" the radio resets 250 ms after its reply, unless a check fails again by then (it then
+	// stays up). Throws only when no reply came
+	async restartIntoBootloader(chip) {
+		if (!chip || !CHIP_ROM_FAMILIES.includes(chip.family) || chip.rdp !== 0) return "protected";
+		try {
+			await this.request(CMD.REBOOT, restartRequest(chip.token));
+		} catch (e) {
+			if (!(e instanceof LinkError) || e.status === undefined) throw e;
+			return restartOutcome(e.status, e.data);
+		}
+		return "ok";
 	}
 
 	// STORAGE INFO (debuglink.md 3.13): whether the settings and journal region is ours, or still holds another

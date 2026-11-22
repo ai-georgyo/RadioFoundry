@@ -243,6 +243,19 @@ takes no backup of the memory chip: take it afterwards with the web installer (*
 An update is one pass: the same update mode key, no erase and no question about it, because the protection is gone
 after the first installation.
 
+On some of these radios RadioFoundry can restart into the update mode by itself, so an update needs no key. Your
+radio's "Installing" section says whether it can, and whether this has been tried on a radio. Switch the radio on
+normally, with RadioFoundry running, and connect it:
+
+| Tool | What to do |
+|---|---|
+| Web installer | Choose **Update** and connect. At the installation step, select **Restart into Update Mode**, then **Connect**. The browser asks you to choose the radio a second time, because in update mode it is another USB device |
+| rfoundry | Run `rfoundry flash` as for any update. It finds the running radio, restarts it into the update mode and installs. With more than one radio connected it restarts none: name the radio's port with `--port`, or use the key |
+
+The radio may refuse the restart at that moment. That is not a fault, and nothing on the radio changes. The installer
+says so and shows what your radio asks for first. Do that and try again, or use the update mode key: its steps stay on
+the screen. If the radio accepts the restart and the installer still finds no radio in update mode, use the key too.
+
 Use the web installer or rfoundry on these radios. Both send the firmware in the block size the processor's loader
 needs; another DFU tool may leave the last bytes of the firmware unwritten.
 

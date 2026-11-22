@@ -5,7 +5,9 @@
 //
 //   radio, build   the shared steps (app.js)
 //   write          the plan is made and held to the route's limits first (dfu.js checkPlain). Then: enter the loader
-//                  with the board's keys and connect; the device is checked (dfu.js romDevice) and asked whether its
+//                  with the board's keys, or, on a radio that runs RadioFoundry and whose firmware can, by a restart
+//                  the page asks for over the debug link (restartIntoLoader), and connect; the device is checked
+//                  (dfu.js romDevice) and asked whether its
 //                  program memory is read protected. Not protected: Install erases the image's sectors, writes them
 //                  and leaves at the application base. Protected (a radio on its original firmware): nothing can be
 //                  written until a Read Unprotect, which erases the whole program memory, the original firmware and
@@ -24,6 +26,8 @@
 
 import { h, t, notice, button, progressBar, logBox } from "./dom.js";
 import { Dfu, DfuError, WrongDeviceError, romDevice, checkPlain } from "./dfu.js";
+import { RESTART_WHY } from "./link.js";
+import { sleep } from "./bytes.js";
 import { makePlan, KEEP } from "./plan.js";
 import { segments } from "./manifest.js";
 import { register } from "./backends.js";
@@ -50,9 +54,39 @@ export function unprotectWait(board) {
 	return { least, most: Math.max(UNPROTECT_WAIT_S, 2 * least), bound };
 }
 
+// How long the page watches a radio that took the restart into its loader: it resets 250 ms after its reply
+// (docs/spec/debuglink.md 3.11), and its serial port goes with it. One that still answers after RESTART_CHECK_MS
+// stayed up: a check failed again at the reset
+export const RESTART_CHECK_MS = 3000, RESTART_TICK_MS = 500;
+
+// Ask a radio that runs RadioFoundry to restart into its processor's loader, over the debug link, as rfoundry does
+// (cli.py restart_into_bootloader). Only the radio the page was talking to is asked: the board it reports must be
+// this board's, and its chip UID the one read when it connected (uid; null when it gave none). {kind, why}:
+//   "ok"       it took the restart and its port went: the loader is the next USB device to pick
+//   "not-now"  the board's own rule refuses it just now (reason 5): nothing changed, the board's hint says what to do
+//   "stayed"   it answered OK and still runs after waitMs
+//   "other"    not the radio the page meant: nothing was asked
+//   "no-chip"  it gave no chip info, so there is no token to send: nothing was asked
+//   a refusal's kind (link.js restartOutcome), with why, its words
+// Throws when the radio doesn't answer
+export async function restartIntoLoader(link, board, { uid = null, waitMs = RESTART_CHECK_MS, tickMs = RESTART_TICK_MS } = {}) {
+	const v = await link.version();
+	const chip = await link.chip();
+	if (!board.debuglink_names.includes(v.board) || (chip && uid && chip.uid !== uid)) return { kind: "other", why: "another radio answers on this connection" };
+	if (!chip) return { kind: "no-chip", why: RESTART_WHY["no-chip"] };
+	const kind = await link.restartIntoBootloader(chip);
+	if (kind === "not-now") return { kind };
+	if (kind !== "ok") return { kind, why: RESTART_WHY[kind] || "it answered the request with an error" };
+	for (let waited = 0; waited < waitMs; waited += tickMs) {
+		await sleep(tickMs);
+		try { await link.version(); } catch (e) { return { kind }; }
+	}
+	return { kind: "stayed" };
+}
+
 let ctx = null;		// from app.js: {S, fb, next, render, reset, helpLink, manualKitLine, flashStarted, flashFinished, flashMark, errorText,
 			// connectBootloader, dropSerial, withPicture, driverHelp, driverWorked, ensureFirmware, notePlan, doneView,
-			// backupView, restoreView}; a test may add eraseWait: {seconds, maxSeconds, tickMs}
+			// backupView, restoreView}; a test may add eraseWait: {seconds, maxSeconds, tickMs} and restartWait: {waitMs, tickMs}
 const S = () => ctx.S;
 
 export function init(context) {
@@ -83,8 +117,8 @@ export async function checkLoader(transport, board, { log = () => {}, wait } = {
 	return { dfu, stage: (await dfu.probeProtected(board)) ? "protected" : "ready" };
 }
 
-// The write step. One panel in four states: enter (the loader's keys, Connect), protected (the confirmed Read
-// Unprotect), erasing (the wait), ready (Install)
+// The write step. One panel in four states: enter (the loader's keys, or the restart into it, then Connect),
+// protected (the confirmed Read Unprotect), erasing (the wait), ready (Install)
 export function writeView() {
 	const state = S();
 	if (!state.firmware) {	// an update goes straight from its first step to this one
@@ -133,7 +167,7 @@ export function writeView() {
 			e?.name === "NotFoundError" ? null : ctx.helpLink(), e?.name === "NotFoundError" ? null : ctx.manualKitLine()).childNodes);
 	};
 
-	const connect = () => button(t("flash.write.connect"), async (ev) => {
+	const connect = (primary = true) => button(t("flash.write.connect"), async (ev) => {
 		const btn = ev?.currentTarget;
 		if (btn) btn.disabled = true;
 		status.replaceChildren(h("p", { class: "muted", role: "status" }, t("flash.dfuse.probing")));
@@ -145,6 +179,7 @@ export function writeView() {
 			ctx.driverWorked();
 			diag.note("loader", { protected: found.stage === "protected", after_unprotect: unprotected });
 			status.replaceChildren();
+			restartNote.replaceChildren();
 			stage = found.stage;
 			draw();
 		} catch (e) {
@@ -152,6 +187,40 @@ export function writeView() {
 			failed(e);
 			if (btn) btn.disabled = false;
 		}
+	}, { primary });
+
+	// The restart from the running firmware, instead of the loader's keys. Offered while the page holds the serial
+	// port of a radio that runs RadioFoundry and the board's firmware can do it (radios.json flash.bootloader_restart).
+	// What the radio said stays under the offer (restartNote) until the loader is connected. A refusal is nobody's
+	// mistake: it is said with the board's own hint (flash.bootloader_restart_hint), and the keys' steps stay below
+	const restartNote = h("div");
+	const canRestart = () => !!state.radio.flash.bootloader_restart && state.now?.kind === "rfoundry" && !!state.link && !state.link.s?.lost
+		&& !(state.fakeRadio && state.fakeRadio.mode !== "normal");
+	const restart = () => button(t("flash.dfuse.restart_go"), async (ev) => {
+		const btn = ev?.currentTarget;
+		if (btn) btn.disabled = true;
+		restartNote.replaceChildren(h("p", { class: "muted", role: "status" }, t("flash.dfuse.restarting")));
+		status.replaceChildren();
+		let r;
+		try {
+			r = await restartIntoLoader(state.link, board, { uid: state.now?.uid || null, ...(ctx.restartWait || (state.fakeRadio ? { waitMs: 300, tickMs: 50 } : {})) });
+		} catch (e) {
+			r = { kind: "silent", why: ctx.errorText(e) };
+		}
+		diag.note("restart into the loader", { kind: r.kind });
+		if (r.kind === "ok") {
+			await ctx.dropSerial();		// the port went with the restart
+			restartNote.replaceChildren(notice(t("flash.dfuse.restart_done"), "ok"));
+		} else if (r.kind === "not-now") {
+			const hint = state.radio.flash.bootloader_restart_hint;
+			restartNote.replaceChildren(h("div", { class: "notice action" }, h("p", {}, t("flash.dfuse.restart_refused")),
+				hint ? h("p", {}, h("strong", {}, hint)) : null,
+				state.fakeRadio ? h("p", { class: "small" }, t("flash.sim.restart_note")) : null));
+		} else if (r.kind === "stayed") restartNote.replaceChildren(notice(t("flash.dfuse.restart_stayed"), "bad"));
+		// the one other refusal a user can end by themselves; the offer stays for the next try
+		else if (r.kind === "transmitting") restartNote.replaceChildren(notice(t("flash.dfuse.restart_transmitting"), "action"));
+		else restartNote.replaceChildren(notice(t(r.kind === "silent" ? "flash.dfuse.restart_no_answer" : "flash.dfuse.restart_failed", { error: r.why }), "bad"));
+		draw();
 	}, { primary: true });
 
 	const unprotect = (agree) => button(t("flash.dfuse.unprotect_go"), async (ev) => {
@@ -234,9 +303,14 @@ export function writeView() {
 	// after a Read Unprotect: "the erase is over" only when the loader was seen to leave USB. Only until the loader
 	// has answered the probe again: after that (a write that failed, say) these are the plain steps into the loader
 	const reenterText = () => (left ? t("flash.dfuse.reenter") : t("flash.dfuse.reenter_unsure", { s: waited, max: waits.bound }));
-	const enterSteps = () => [
+	const enterSteps = (offer) => [
 		h("h3", {}, t(unprotected && !probed ? "flash.dfuse.step_reenter" : "flash.write.bootloader_title")),
 		unprotected && !probed ? h("p", {}, reenterText()) : null,
+		// what happens next is said before the click: the loader is another USB device, which the browser asks for
+		offer ? h("div", { class: "notice info" }, h("p", {}, t("flash.dfuse.restart_offer")), h("p", {}, restart()),
+			h("p", { class: "small" }, t("flash.dfuse.restart_next"))) : null,
+		restartNote,
+		offer ? h("p", {}, t("flash.dfuse.restart_by_hand")) : null,
 		ctx.withPicture(h("ol", { class: "steps" }, state.radio.flash.bootloader.map((s) => h("li", {}, s)), h("li", {}, t("flash.write.then_connect")))),
 		state.fakeRadio ? h("p", {}, button(t("flash.sim.enter_bootloader"), () => { state.fakeRadio.enterBootloader(); log.add("(simulated) radio in update mode"); }, { quiet: true })) : null,
 		winHelp];
@@ -266,8 +340,9 @@ export function writeView() {
 			forward = write();
 		} else {
 			winHelp.replaceChildren(...[ctx.driverHelp()].filter(Boolean));
-			body = enterSteps();
-			forward = connect();
+			const offer = canRestart();
+			body = enterSteps(offer);
+			forward = connect(!offer);	// while the restart is offered, it is the step's first button
 		}
 		state.forward(forward);
 		// through h(): the DOM's own replaceChildren writes a null as the text "null". The log stays once a write ran
@@ -287,7 +362,8 @@ export function makerRecovery() {
 }
 
 // The backend (backends.js). An update is the install without the radio step: a radio that runs RadioFoundry enters
-// the loader the same way, and is not read protected. recovering: the help task's reinstall, the radio known
+// the loader the same way, or by the restart the write step offers, and is not read protected. recovering: the help
+// task's reinstall, the radio known
 const INSTALL = ["radio", "build", "write", "done"], RECOVER = ["build", "write", "done"], UPDATE = ["update", "write", "done"];
 register({
 	id: ID,
