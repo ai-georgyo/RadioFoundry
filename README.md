@@ -51,6 +51,7 @@ by the UI simulator (`make -C tests/host ui-gallery`).</sub>
 | [TYT MD-380](docs/testing/md380-bringup.md), MD-390, Retevis RT3 | ● | ● | ● | FM with CTCSS both ways, DMR voice and SMS in simplex and through a repeater or hotspot on either slot, and codeplug and ID database programming work on a UHF radio. Open: DCS, the tone deviation and the untested VHF image. |
 | [TYT MD-UV380](docs/testing/mduv380-bringup.md), MD-UV390, Retevis RT3S, MD-UV390 Plus 10 W | ● | ● | ● | Built on the UV380 family code, with the MD-UV380's keys, display, power tables and GPS. Run on radios by community testers. |
 | [TYT MD-9600](docs/spec/hardware-md9600.md), Retevis RT90 (mobile) | ● | ● | ● | One image serves every board revision. On a V1-V3 radio, FM and DMR on both bands, DMR voice and data, text messages, roaming, scan, dual watch, APRS, the hotspot, each split duplex half and the USB network services work on air, with every power level checked on a wattmeter on both bands. V4A/V5 boards are detected; on older boards the radio asks for the revision once. Open: V4 boards have not run on a radio, one V4A/V5 report has DMR transmit dropping out (#750), and SFR loses inbound voice frames. |
+| [Connect Systems CS7000 M17 PLUS](docs/testing/cs7000p-bringup.md) | ● | ● | ○ | Builds; nothing has run on a radio. Transmit is refused until the power amplifier is calibrated. No DMR voice: there is no codec route for this radio yet. |
 | [Retevis RT10](docs/spec/hardware-rt10.md) | ● | ● | ● | Boots from the boot ROM with the host link, stub entry, the watchdog and the crash log. FM receive with CTCSS/DCS decode, FM transmit, DMR transmit and receive with the radio's own codec, P25 (conventional, and trunked transmit) and NXDN at 4800 bit/s on stored channels, and APRS transmit work on the radio. |
 | Anytone AT-D868UV / AT-D878UV / AT-D878UVII Plus, BTECH DMR-6X2, Alinco DJ-MD5, Radioddity GD-AT10G | ○ | ○ | ○ | In progress ([#291](https://github.com/radiofoundry/radiofoundry/pull/291)). A new platform (GD32F30x) and a new DMR chip (SCT3258, which runs the vocoder itself), so it starts the Anytone family ([hardware-anytone.md](docs/spec/hardware-anytone.md)). |
 | Radioddity GD-77, TYT MD-760, GD-77S, Baofeng DM-1801 v1 / DM-860, RD-5R | ◐ | ◐ | ◐ | In progress ([#111](https://github.com/radiofoundry/radiofoundry/pull/111)). A new platform: a different MCU (NXP MK22FN512), the same HR_C6000 and AT1846S, a 128x64 mono LCD. A DM-1801 bought new today is not v1, and the look-alike DR-1801 is unrelated. |
@@ -98,7 +99,7 @@ build switch ([build-config](docs/build-config.md)).
 ## Interoperability
 
 **Across hardware.** One core runs on every radio, and never checks which radio it's on. A board file picks the chips
-and describes the bands, power levels, screen and keys. Today that's two MCUs (STM32F405, C-SKY CK803S), three DMR
+and describes the bands, power levels, screen and keys. Today that's three MCUs (STM32F405, STM32H743, C-SKY CK803S), three DMR
 modems (HR_C5000, HR_C6000, HR_C7000) and four RF chips (AT1846S, BK4819, FD6818, SKY72310) under the same code.
 
 **With the radios and software people already have.** We support the formats other radios use:
@@ -128,8 +129,8 @@ and supported stock files: [the codec](docs/dev/codec.md).
 
 ## Building
 
-You need make, Python 3.11 or later, and `arm-none-eabi-gcc` (STM32F405 radios) or a `csky-elf` GCC (HR_C7000
-radios).
+You need make, Python 3.11 or later, and `arm-none-eabi-gcc` (STM32 radios) or a `csky-elf` GCC (HR_C7000
+radios). `git submodule update --init` fetches the third-party code.
 
 ```
 tools/boards.py list        # the board ids
@@ -210,7 +211,7 @@ support for additional radios and to make the project's ambitious scope possible
 RadioFoundry is MIT licensed ([LICENSE](LICENSE)) and a clean-room project: code is written from prose specs, datasheets and
 public standards, independent of earlier radio firmwares. No GPL code, no non-commercial code, no vendor SDKs. The
 rules and checks: [docs/CLEANROOM.md](docs/CLEANROOM.md). Third-party code in `third_party/` (FreeRTOS, TinyUSB, ST's
-HAL and CMSIS) keeps its own permissive license ([LICENSES/](LICENSES/)). So do the few files in the tree ported from
+HAL and CMSIS for the STM32F4 and the STM32H7) keeps its own permissive license ([LICENSES/](LICENSES/)). So do the few files in the tree ported from
 permissively licensed code, each under its original notice: the full-rate voice decoder's dequantizer and tables come
 from mbelib (ISC). To build on RadioFoundry in
 another project: [using RadioFoundry in your project](FORKING.md).
@@ -246,11 +247,11 @@ of `core/`, put anything that costs flash behind a `CONFIG_` switch, and make su
 | `core/` | Radio-independent code: DMR stack (`core/dmr`), radio state machine (`core/radio`), UI (`core/ui`), hotspot, host link, codeplug, settings, CPS, debug link |
 | `hal/` | Interfaces the core uses (modem, RF, audio, codec, flash, display, input), and the `board_t` descriptor |
 | `drivers/` | Chip drivers shared across radios |
-| `platform/` | Per-SoC startup, clocks, interrupts and RTOS glue (`stm32f4`, `hrc7000`) |
+| `platform/` | Per-SoC startup, clocks, interrupts and RTOS glue (`stm32f4`, `stm32h7`, `hrc7000`); `platform/stm32` is what the STM32 families share |
 | `boards/` | One directory per radio: board descriptor, pins, feature defaults, linker script, codec hosting |
 | `boot/` | First stages in front of the application, for radios whose loader starts it directly (`boot/db25d`) |
 | `config/` | Build-time feature switches |
-| `third_party/` | Permissively licensed upstream code, as submodules (FreeRTOS, ST HAL and CMSIS, TinyUSB) |
+| `third_party/` | Permissively licensed upstream code, as submodules (FreeRTOS, TinyUSB, ST's HAL and CMSIS device package for each STM32 family) |
 | `tools/` | Flashing (`rfoundry`), release packaging, codec merge, CPS client, debug link client (`rfoundry_debug.py`), CI, SDR bench tools |
 | `tests/host/` | Unit and SIL tests, the UI simulator (`tests/host/sim`) |
 | `tests/hil/` | HIL tests: pytest against a radio and the SDR bench |

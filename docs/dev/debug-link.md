@@ -21,7 +21,7 @@ payload and a CRC-16/CCITT-FALSE. Requests carry at most 64 bytes, replies at mo
 | Protocol and commands | `core/debuglink/debuglink.c`, one `debuglink_<area>.c` per command family, view sections in `debuglink_view*.c` (switch `CONFIG_DEBUGLINK`, on wherever the host link is) |
 | Key injection | `core/input/input_task.c` |
 | Hook into the host port | `core/hostlink/hostlink.c` |
-| Chip commands | `core/debuglink/dl_chip.c`, `hal/hal_system.h`, `platform/stm32f4/sysboot.c` |
+| Chip commands | `core/debuglink/dl_chip.c`, `hal/hal_system.h`, `platform/stm32/sysboot.c` |
 | Host tool and Python module | `tools/rfoundry_debug.py` |
 | Host tests | `tests/host/debuglinkTest.c`; `debuglinkDmrDataTest.c` for the DMR data IP operations |
 

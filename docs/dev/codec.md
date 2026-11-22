@@ -53,6 +53,7 @@ A merge tool must:
 
 The board's `board.toml` `[codec]` table names the tool and the route: `stock`, the SHA-256 of each stock file the
 codec is merged from, or `profile` for a codec in a linker slot ([The board registry](board-registry.md#codec)).
+A radio with no codec route has `none`, the reason, and no tool.
 `codecs/` and `tools/codec_auto.py` find the tool there.
 
 Host tests of the voice path (`tests/host/ambeVoiceTest.c`) use vectors recorded from the codec's FEC, not the

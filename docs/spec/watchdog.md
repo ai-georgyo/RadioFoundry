@@ -17,7 +17,7 @@ and restarts the radio when the host link's task stops passing its loop for a mi
 A watchdog reset is a chip reset: the radio starts as at power-on. The transmitter must be off by then, which is the
 early-boot RF-off step's job (`board_rf_safe`, [crash-log.md](crash-log.md)), not the watchdog's.
 
-Code: `hal/hal_watchdog.h`, `core/app/watchdog.c` (the feed), `platform/stm32f4/watchdog.c`,
+Code: `hal/hal_watchdog.h`, `core/app/watchdog.c` (the feed), `platform/stm32/watchdog.c`,
 `platform/hrc7000/watchdog.c`, `core/debuglink/debuglink_watchdog.c` (bench tests).
 
 ## 1. The feed
@@ -39,6 +39,7 @@ number shows how close legitimate work comes to the timeout.
 | Platform | Watchdog | Timeout | Start |
 |---|---|---|---|
 | STM32F4 | IWDG on the LSI RC oscillator, prescaler 64, reload 2500 | 5 s at the typical 32 kHz; 3.4 s at the data sheet's fastest LSI (47 kHz), 9.4 s at its slowest (17 kHz) | right after `stm32_sysboot_check()` |
+| STM32H7 | IWDG1 on the LSI, prescaler 64, reload 2500 (the same `platform/stm32/watchdog.c`) | 5 s typical; 4.8 to 5.4 s over DS12110's LSI range (29.76 to 33.6 kHz) | right after `stm32_sysboot_check()` |
 | HR_C7000 | the SoC watchdog at 0x14010000 (`WDT_BASE`, `platform/hrc7000/platform.h`) | 4 s (the 24 MHz crystal, measured; 2.1) | right after `hrc_clock_init()`, which turns off whatever the loader left |
 
 ### 2.1 The HR_C7000 counter
@@ -58,11 +59,11 @@ Code that never feeds the watchdog must not run with it on.
 trips the watchdog unless the stub itself hangs. Every stub RadioFoundry can enter feeds the watchdog in every loop that can
 take time, and a watchdog build of RadioFoundry refuses to enter a stub that doesn't (3.1).
 
-| Exit | HR_C7000 | STM32F4 |
+| Exit | HR_C7000 | STM32F4, STM32H7 |
 |---|---|---|
 | Reboot (`hal_system_t.reboot`, the debug link's REBOOT, a crash restart) | `hrc_restart` is a watchdog reset, which leaves the watchdog guarding the next start (below) | `NVIC_SystemReset`: a system reset stops the IWDG |
 | ROM DFU entry (REBOOT mode 1, STM32 boards) | not offered | the request resets first; `stm32_sysboot_check()` jumps to the ROM before `main()` starts the IWDG |
-| Runtime stub entry (STUB ENTER, [debuglink.md](debuglink.md) 3.18) | `hrc_watchdog_stretch()` gives it 32 s and a feed, and the stub feeds it from its start-up on (3.2) | the IWDG can't be stopped: ENTER is refused for a stub whose image header doesn't say it feeds; `stm32_watchdog_stretch()` sets the longest timeout (about 32 s, at least 22 s) for the jump, and the stub feeds it from its first instruction on (3.1) |
+| Runtime stub entry (STUB ENTER, [debuglink.md](debuglink.md) 3.18) | `hrc_watchdog_stretch()` gives it 32 s and a feed, and the stub feeds it from its start-up on (3.2) | the IWDG can't be stopped: ENTER is refused for a stub whose image header doesn't say it feeds; `stm32_watchdog_stretch()` sets the longest timeout (about 32 s; at least 22 s on the F4, 31 s on the H7) for the jump, and the stub feeds it from its first instruction on (3.1) |
 | Power off | the supply goes; until it does the idle task feeds as usual (a knob that keeps the radio on leaves it running normally) | the same |
 
 **The HR_C7000 restart.** A soft reset (`SYS_SOFT_RSTN`) turns the watchdog off, and a watchdog reset keeps its enable
@@ -139,7 +140,7 @@ FreeRTOS call after the scheduler starts lets the idle task run and needs nothin
 | Operation | Where | Handling |
 |---|---|---|
 | Start-up before the scheduler (clocks, board early init, display, the radio chips' reset waits) | `platform/*/main.c`, `board_early_init` | `main()` feeds between steps; `hal_delay_ms()`'s busy wait feeds every millisecond before the scheduler runs |
-| SPI NOR erase and program (settings, journal, codeplug, CPS writes, TFTP) | `drivers/flash/spi_nor` | none needed: the busy polls are `hal_delay_ms(1)`, which sleeps once the scheduler runs |
+| SPI NOR erase and program (settings, journal, codeplug, CPS writes, TFTP) | `drivers/flash/spi_nor` | none needed: the busy polls are `hal_delay_ms(1)`, which sleeps once the scheduler runs. With `SPI_NOR_ADDR4` ([build-config.md](../build-config.md#board-defines)) the probe may wait up to 1 s for a chip that is still busy: before the scheduler starts `hal_delay_ms()` feeds the watchdog, after it sleeps |
 | SPI NAND mount, garbage collection, wear leveling, and every sector write, replace and erase (boards with SPI NAND storage) | `drivers/flash/nand_sectors` | busy waits of 10 µs: the layer calls `nand_dev_t.busy` once per block or sector, which such a board points at `watchdog_kick()`. A run of plain writes needs it as much as a collection: a zone import's dozens of sector writes in a row kept the idle task out past the hang check before the writes called it |
 | A single NAND page read, program or block erase | `drivers/flash/spi_nand` | at most a few ms each, fed through the above around them |
 | Settings saves, codeplug sector rewrites, CPS sessions, fast codeplug commits | `core/settings`, `core/storage`, `core/cps` | through the flash drivers above |

@@ -16,6 +16,7 @@ and what has been checked on it.
 | [TYT MD-380](#tyt-md-380) | TYT MD-390, Retevis RT3 | FM with CTCSS both ways, DMR voice and SMS in simplex and through a repeater or hotspot on either slot, and codeplug and ID database programming work on a UHF radio. Open: DCS, the tone deviation and the untested VHF image. |
 | [TYT MD-UV380](#tyt-md-uv380) | TYT MD-UV390, Retevis RT3S, TYT MD-UV390 Plus 10 W | Built on the UV380 family code, with the MD-UV380's keys, display, power tables and GPS. Run on radios by community testers. |
 | [TYT MD-9600](#tyt-md-9600) | Retevis RT90 | One image serves every board revision. On a V1-V3 radio, FM and DMR on both bands, DMR voice and data, text messages, roaming, scan, dual watch, APRS, the hotspot, each split duplex half and the USB network services work on air, with every power level checked on a wattmeter on both bands. V4A/V5 boards are detected; on older boards the radio asks for the revision once. Open: V4 boards have not run on a radio, one V4A/V5 report has DMR transmit dropping out (#750), and SFR loses inbound voice frames. |
+| [Connect Systems CS7000 M17 PLUS](#connect-systems-cs7000-m17-plus) |  | Builds; nothing has run on a radio. Transmit is refused until the power amplifier is calibrated. No DMR voice: there is no codec route for this radio yet. |
 | [Retevis RT10](#retevis-rt10) |  | Boots from the boot ROM with the host link, stub entry, the watchdog and the crash log. FM receive with CTCSS/DCS decode, FM transmit, DMR transmit and receive with the radio's own codec, P25 (conventional, and trunked transmit) and NXDN at 4800 bit/s on stored channels, and APRS transmit work on the radio. |
 <!-- end generated -->
 
@@ -54,6 +55,7 @@ These are the defaults. **Settings > Keys** can give other jobs to every key the
 | DM-32UV | SK1, SK2, and P1, P2 on Home |
 | DB25-D PRO | P3, TONE/T.SEL, the microphone's P4 and P5 |
 | DM-1801 Pro | SK1, SK2, SOS, A/B, VFO/MR |
+| CS7000 M17 PLUS | SK1, SK2, SK3, F1, F2, the top key |
 
 OK, Back, the arrows, the number keys, **\***, **#**, PTT and the volume stay as they are. Where the arrows are
 printed P1 and P2 (DM-32UV), what you set for them works on Home only: in the menus they stay left and right. On the DB25-D PRO that
@@ -87,6 +89,7 @@ yet, and the core doesn't use them.
 | DM-32UV | Pseudo, one receiver. Not checked on air (scan isn't checked on this radio yet) | **\***, **7**, or hold **SK2** | **SK2** (a press), **Left** / **Right** |
 | DB25-D PRO | Pseudo, one receiver. Not checked on air. Its second BK4819 chip is a local oscillator for the receive chain, not a second receiver | Hold the **TONE/T.SEL** key | A press of **TONE/T.SEL** |
 | DM-1801 Pro | Pseudo, one receiver. Not checked on air | Hold the **A/B** key, **\***, **7**, or hold **SK2** | The **A/B** key or **SK2** (a press), **Left** / **Right** |
+| CS7000 M17 PLUS | Pseudo, one receiver. Not checked on a radio | **\***, **7**, or hold **SK2** | **SK2** (a press), **#**, **1** |
 
 Holding **SK2** is dual watch on every radio that has an SK2, and on the DB25-D PRO holding the tone key is. A press of
 **SK2** (the tone key on the DB25-D PRO) switches A / B, and with dual watch off says "Turn on dual watch first". The
@@ -123,6 +126,7 @@ of 16 (0 is mute), and `rfoundry_debug.py volume knob` gives the knob back (over
 | MD-UV380 | Yes, as on the DM-1701 (the same audio path). Not checked on a radio |
 | DM-32UV | No. The knob works on the audio amplifier directly; the radio answers "not supported" |
 | DB25-D PRO | Yes. There is no knob: the level is the radio's own volume setting, so the PC changes that setting and it is saved, as if you had set it on the radio. `knob` puts it back to the default (step 8) |
+| CS7000 M17 PLUS | No. The knob works on the audio path directly; the radio answers "not supported" |
 
 ## Programming
 
@@ -136,6 +140,7 @@ port and addresses its driver knows.
 | DM-32UV | Programming cable (no USB) | Can't program it directly. RadioFoundry keeps the codeplug 7 MB into the radio's data flash, so the addresses qdmr's driver uses land in the stock area, where RadioFoundry refuses writes. Edit the codeplug in qdmr, save it as YAML, and write it with `dm32_migrate.py restore --yaml FILE` ([Moving from stock DM-32UV firmware](19-moving-from-stock-dm32.md)), which adds the offset. The radio reports radio type 6 (MD-UV380) for now |
 | DB25-D PRO | Programming cable, K1 jack ([below](#programming-the-db25-d-pro-over-the-cable)) | Reports type 6. The codeplug sits at the DM-1701's addresses, so qdmr's MD-UV380 driver should work. Not tried |
 | DM-1801 Pro | Programming cable | Not listed |
+| CS7000 M17 PLUS | The maker's programming cable on the accessory connector (it carries USB) | Radio type 7. Not tried. The radio stores no codeplug until its memory chip is handed over ([below](#installing-on-the-cs7000-m17-plus)) |
 
 ### Codeplug files from the original firmware
 
@@ -810,6 +815,120 @@ A 128 x 64 monochrome screen.
 - No hotspot, DTMF, USB network or IP services: they all need the transmitter.
 - No APRS: the radio doesn't pass its received audio to the decoder yet.
 - No air band or broadcast receiver, and no vibration motor.
+
+## Connect Systems CS7000 M17 PLUS
+
+A UHF handheld with a keypad, a channel selector, a volume knob with the power switch, GPS and a 160 x 128 color
+screen. **In development, for testers: nothing has been checked on a radio yet.** Know these four things first:
+
+- **It does not transmit yet.** RadioFoundry has no power or modulation calibration for this radio and guesses none,
+  so it refuses every transmission, FM and DMR, until the values have been measured on a bench.
+- **No DMR voice.** No voice codec is known for this radio. DMR calls show on the screen without audio, and you can't
+  talk on DMR. DMR data and FM don't need a codec.
+- **The first installation erases the original firmware and its bootloader for good.** RadioFoundry cannot put them
+  back: going back is the maker's own recovery procedure.
+- **RadioFoundry stores nothing on the radio's memory chip until you hand the chip over**, after a full backup.
+
+### Installing on the CS7000 M17 PLUS
+
+This radio is installed through its processor's own bootloader. Read
+[Radios installed through the processor's own bootloader](02-installing.md#radios-installed-through-the-processors-own-bootloader)
+first, then use these values.
+
+| Item | CS7000 M17 PLUS |
+|---|---|
+| Before the first installation | In this order: (1) **save your codeplug with the maker's programming software (CPS), and note the Radio Info screen** (versions, serial number) while the original firmware still runs; (2) get Connect Systems' recovery files and instructions for the CS7000 M17 PLUS from its software page; (3) **run that recovery once and check that the radio works on its original firmware afterwards**: it is the only way back; (4) the recovery loads Connect Systems' default codeplug (`ResetDefault_M17PLUS.rdbx`) over yours, so write your saved codeplug back with the CPS |
+| Stock firmware file | None |
+| Cable | The maker's programming cable on the accessory connector. It carries USB; the radio has no USB socket |
+| Bootloader key | Hold **SK1**, the side key above PTT, while you turn the radio on with the volume knob. The screen lights up gray and stays blank. Release the key |
+| First installation | The installer removes the processor's read protection, which **erases the original firmware and its bootloader**, and waits until the erase is over (at least 60 s, until the radio has left USB). Leave the radio on and connected until then. Then it asks you to switch the radio off and hold SK1 again, and writes RadioFoundry. Should the bootloader come back by itself after the erase, rfoundry says so and installs at once. If the radio does not go off with the knob, take the battery off for a few seconds ([why](#cs7000-m17-plus-power-switch)) |
+| Backup | The original firmware can't be backed up: it can't be read. The web installer offers a backup of the memory chip (32 MB: the original channels, settings and factory data) right after the installation; nothing is written to the chip before that backup. Take it and keep the file: it is the only copy. rfoundry takes no backup: take it as the Memory chip row says |
+| Memory chip | Nobody knows where the original firmware keeps its data on it, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer |
+| Original channels | Not brought over: the installer has no channel step for this radio, because the original firmware's codeplug format is not known. Program the radio in the [Codeplug Editor](04-programming.md#the-codeplug-editor) |
+| Tools | The web installer or rfoundry. Another DFU tool may leave the end of the firmware unwritten |
+| Bootloader USB device (Zadig) | The device with USB ID `0483` `DF11`, [driver steps](02-installing.md#windows-the-bootloader-driver) |
+| Updating | The same key, one pass, nothing erased but the firmware |
+| Going back | Connect Systems' recovery procedure, with its files and tools. Its bootloader key still works: the processor's bootloader can't be erased |
+| Board name | `cs7000p` |
+
+From a terminal, with an image file (the web installer's build, or its manual kit): `rfoundry flash IMAGE --board cs7000p --unprotect` the first time, without `--unprotect` for an update. There is no release image for this radio yet, so `--release` doesn't work. rfoundry writes the firmware only and takes no backup of the memory chip.
+
+### CS7000 M17 PLUS keys
+
+| Key | Role |
+|---|---|
+| OK | **OK** |
+| BACK | **Back** |
+| Up and Down | **Up**, **Down** |
+| **\***, **#**, number keys | as printed |
+| F1, F2 | **Previous zone**, **Next zone** |
+| SK1 (side, above PTT) | **Monitor**. Held while the radio is switched on, it starts the bootloader instead of RadioFoundry |
+| SK2 (side, below PTT) | **A/B**: press to switch A / B in dual watch, hold for dual watch on or off |
+| SK3 (side, lowest) | **Power level**: press for the next power level |
+| Top key (orange) | Hold: emergency. It transmits, so not before the radio is calibrated |
+| **PTT** | **PTT**. The accessory connector's PTT line is read as PTT too |
+| Channel selector | Does nothing yet: how the switch codes its 16 positions hasn't been measured. Use **Up** and **Down** |
+
+Which of the six keys above the number keys is which (F1, F2, OK, BACK, Up, Down) has not been checked on a radio.
+If they come out mixed up, that is why: report what each key does.
+
+These are the defaults, and the same jobs as on the other radios ([Key roles](#key-roles)). **Settings > Keys** can
+give SK1, SK2, SK3, F1, F2 and the top key other jobs.
+
+### CS7000 M17 PLUS bands and power levels
+
+Receive from 400 to 527 MHz. Transmit, once the radio is calibrated, from 400 to 405.9875 MHz and from 406.1125 to
+512 MHz. Neither 406.0-406.1 MHz, the distress beacon band, nor the 12.5 kHz on each side of it transmits: receive
+only.
+
+Two power levels, named **1W** and **4W** after the radio's certification. A channel without a power in the codeplug
+uses 1W. Neither level has been measured, and until both are, the radio does not transmit.
+
+### CS7000 M17 PLUS battery
+
+A 2-cell Li-ion pack: low below 6.2 V, critical below 6.0 V. The voltage scale is calculated from the circuit, not
+measured, and can be off by 4 % from radio to radio.
+
+### CS7000 M17 PLUS power switch
+
+The power switch is on the volume knob. RadioFoundry sees the knob turn off, saves and switches the radio off. The
+volume is the knob's alone, and RadioFoundry shows no volume bar on this radio.
+
+**If the radio stays on with a lit, blank screen after you turned the knob off, take the battery off for a few
+seconds.** This can happen when RadioFoundry has not run since the radio was switched on: after you switched it on
+with SK1 held (to install) and turned it off before RadioFoundry started, or after an installation that was cut
+short. It can also follow a hang while SK1 is held down. In each case nothing switches the radio off. The
+transmitter stays off. A fault in RadioFoundry itself can do the same, with the screen still showing: if the knob
+does not switch the radio off, take the battery off, and report it.
+
+A restart the radio makes by itself waits until Monitor (SK1) is released, so holding Monitor does not send it into
+the bootloader. If SK1 stays held for more than about 30 s, the restart goes on into the bootloader: the screen
+lights up blank, and the knob switches the radio off as usual.
+
+### CS7000 M17 PLUS display
+
+A 160 x 128 color screen. Its controller is not documented; RadioFoundry asks the display what it is and falls back
+to a standard set-up when it doesn't know the answer, so a blank or garbled screen is possible. The radio then still
+answers on USB.
+
+The display and the keypad are on a board of their own that RadioFoundry checks before it uses it. If that board is
+not the one RadioFoundry expects, the screen stays dark and the keypad does nothing; the side keys, PTT and USB
+still work. Report it.
+
+### What the CS7000 M17 PLUS lacks
+
+- Transmitting, until the radio is calibrated. That takes the hotspot with it.
+- DMR voice, both ways: no codec. Received calls are shown, not played.
+- M17. RadioFoundry has no M17 mode.
+- Bluetooth, the man-down sensor and the vibrator: not used.
+- The channel selector, until its positions are measured.
+- A volume bar: the knob sets the volume in the audio path.
+- Beeps while the radio transmits or sleeps between receive checks, and all beeps in a build without DMR.
+- Roger beep, 1750 Hz burst and DTMF on FM; APRS on FM and APRS receive. APRS positions go over DMR only.
+- Single frequency repeating, the split duplex repeater, P25 and NXDN: not written for this radio.
+- The air band and broadcast receivers: the radio has neither.
+- Chinese as the radio's language: the screen is too small for its font.
+- An update without the key: the radio can't enter its bootloader from the menu or the installer yet. Hold SK1.
 
 ## Planned radios
 

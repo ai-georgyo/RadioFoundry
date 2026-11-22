@@ -20,6 +20,11 @@ The web installer's "Select the Symptom" step covers most of these on screen. Th
 | "Preparing the radio failed", or the radio does not respond on its programming cable | Push the cable plug fully in and try again, or try a cable with an FTDI, CP210x or PL2303 chip. Slow cable mode is always on now: there is no separate button. If it still fails, select **Use Factory Update Mode**: hold the radio's update mode keys while you turn it on ([Radio reference](23-radios.md), your radio's "Installing" section). It needs the stock firmware file or a program memory backup for the codec ([Installing](02-installing.md#if-something-goes-wrong)) |
 | The web installer reports "Cable Problem Detected" | The programming cable itself is at fault, not the radio: it sends data nobody asked for, it dropped off the computer's USB, its adapter stopped responding, or the radio receives nothing through it. Unplug it from the computer, wait a few seconds, plug it straight into the computer (no hub), push the plug fully into the radio and select **Try Again**. If it returns, replace the cable with a better one, preferably one with an FTDI chip ([Installing](02-installing.md#if-something-goes-wrong)) |
 | Flashing stopped half way | Put the radio in its bootloader and run the same command again. rfoundry never erases the bootloader |
+| "The radio's program memory is read protected", and the installer stops | The radio is installed through its processor's own bootloader and still has its factory read protection. Nothing was changed. Removing the protection erases the original firmware and its bootloader for good: read [what that means](02-installing.md#radios-installed-through-the-processors-own-bootloader) first, then confirm the erase in the web installer, or run rfoundry again with `--unprotect` |
+| After the erase, or after an install that was cut short, the radio shows nothing and does not start | Expected: its program memory holds no firmware to start until RadioFoundry is written. Switch it off, put it in update mode again and let the installer continue, or install again. If it does not switch off, take the battery off for a few seconds (your radio's section in the [Radio reference](23-radios.md) says whether this can happen). The update mode is part of the processor and can't be erased |
+| "The radio is still read protected" after the erase | The radio did not take the command, or it was switched off or unplugged before the installer said so. Put it in update mode and confirm the erase again; this time leave it on and connected until the installer says to switch it off |
+| "The radio's settings area was not prepared, because the backup does not hold the whole memory chip" | The backup after the installation stopped before it had read the whole chip, so the installer did not prepare the radio's settings area: it prepares it only after a complete backup. The radio works, but keeps no settings and stores no codeplug yet. Back up again from the start page (**Back Up**, then **Everything**): a complete backup prepares it |
+| The device that answers "is not this radio's update mode" | Another radio's bootloader, or another device with the same USB ID, is connected. Nothing was sent. Check the radio you picked and that it is in update mode |
 
 ## Command line installs (advanced)
 
@@ -61,12 +66,27 @@ radio runs on the defaults in memory.
 To give the area to RadioFoundry (developers, over the debug link):
 
 ```
-tools/rfoundry_debug.py storage info     # shows region=foreign
+tools/rfoundry_debug.py storage info     # shows region   foreign
 tools/rfoundry_debug.py storage claim --out ~/rfoundry-backup    # saves a copy of the area, then erases it for RadioFoundry
 ```
 
 `storage claim` saves the area's old contents and the calibration copy to files in the `--out` directory before it
 erases anything. It refuses to save inside a git work tree.
+
+On a radio whose memory chip RadioFoundry must be given first
+([Installing](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)), this state is normal on every
+radio until the chip is handed over, and `storage info` shows the region as `foreign` even when the area is blank,
+and a line that starts `claim first`. Nobody knows where the original firmware keeps its data on such a chip, and once the chip is handed
+over the radio writes anywhere in its part of it, so the backup to take first is of the whole chip:
+
+- In the web installer: **Back Up**, then **Everything**. When the backup holds the whole chip, the installer hands
+  the chip over itself. The Codeplug Editor's **Write to Radio** does not: it sends you to this backup.
+- Over the debug link, `storage claim` on such a radio first saves the whole chip to one file in the `--out`
+  directory (`dataflash_...bin`, read twice and compared; it takes some minutes) and hands the chip over only when
+  all of it was read. If the read fails, nothing is changed. `--skip-full-backup` leaves the whole-chip file out:
+  use it only when you already hold a complete backup of this radio's chip.
+
+Keep that backup: after the hand-over it is the only copy of what the original firmware kept there.
 
 Some settings are "not kept" by design today: see the Status column in [Settings](17-settings.md).
 

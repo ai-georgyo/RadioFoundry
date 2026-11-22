@@ -12,7 +12,8 @@ open-firmware CPS protocol on the same port (`core/hostlink`), and it never chan
 - Firmware: `core/debuglink/` (switch `CONFIG_DEBUGLINK`, default on with `CONFIG_HOSTLINK`), key injection in
   `core/input/input_task.c`, the hook in `core/hostlink/hostlink.c`.
 - Chip commands: the portable checks in `core/debuglink/dl_chip.c` (host tested), the platform side in `hal/hal_system.h`
-  (`board.system`) and the platform's implementation (`platform/stm32f4/sysboot.c`, `platform/hrc7000/system.c`).
+  (`board.system`) and the platform's implementation (`platform/stm32/sysboot.c` for the STM32 families,
+  `platform/hrc7000/system.c`).
 - Host: `tools/rfoundry_debug.py` (command line and Python module), `tests/hil/` (pytest hardware-in-the-loop tests).
 
 ## 1. Coexistence on the host port
@@ -464,32 +465,37 @@ Ops 15-18 last until the channel changes (`dmr.target_manual`); in the DMR VFO o
 
 ### 3.9 INFO_CHIP
 
-INFO_CHIP, READ_MEM (3.10) and REBOOT (3.11) go through `board.system` (`hal/hal_system.h`). The fields, ranges and
-modes below are the STM32F4 platform's (`platform/stm32f4/sysboot.c`) unless the family byte says otherwise.
+INFO_CHIP, READ_MEM (3.10) and REBOOT (3.11) go through `board.system` (`hal/hal_system.h`). What a field holds, which
+ranges are readable and which modes exist depend on the chip family, the reply's last byte (`HAL_CHIP_*`). The STM32
+families share one implementation (`platform/stm32/sysboot.c`); what differs between them is in each one's
+`stm32_family.h`, `sysboot_soc.h` and `mem_window.h`.
 
 | Family (offset 29) | Platform | What INFO_CHIP reports |
 |---|---|---|
-| 0 | STM32F4 (`platform/stm32f4/sysboot.c`) | every field below |
-| 1 | HR_C7000 (`platform/hrc7000/system.c`) | the UID only. idcode, flash size and `FLASH_OPTCR` are 0, offsets 23-28 are `0xFF`. The SoC has no readable ID register (its eFuse is not mapped out), so the UID is the data flash's 128-bit unique ID, read once at boot: the SPI NOR's (0x4B, four dummy bytes) or, on a board whose data flash is SPI NAND, the NAND's ID page. Words 0-2 of it, with word 3 XORed into word 0. Until the flash has answered, INFO_CHIP answers UNAVAILABLE |
+| 0 | STM32F4 (`platform/stm32f4/`) | every field below |
+| 1 | HR_C7000 (`platform/hrc7000/system.c`) | the UID only. idcode, flash size and the option word are 0, offsets 23-28 are `0xFF`. The SoC has no readable ID register (its eFuse is not mapped out), so the UID is the data flash's 128-bit unique ID, read once at boot: the SPI NOR's (0x4B, four dummy bytes) or, on a board whose data flash is SPI NAND, the NAND's ID page. Words 0-2 of it, with word 3 XORed into word 0. Until the flash has answered, INFO_CHIP answers UNAVAILABLE |
+| 2 | STM32H7 (`platform/stm32h7/`) | the ID, the flash size, the UID, the option word, and the RDP level and byte. Offsets 25-28 are `0xFF`: this family keeps write protection in other registers and lays the BOR and user bits out differently, so the word at offset 19 is sent as read and nothing more is decoded |
 
-Read-only. Reply after the status (30 bytes in all; firmware before the family byte sent 29, and was STM32F4 only):
+Read-only. Reply after the status (30 bytes in all; firmware before the family byte sent 29, and was STM32F4 only).
+A field the family has no decode for is `0xFF` (`dl_chip_optbytes` in `core/debuglink/dl_chip.h`, host tested). A host
+that meets a family number it does not know uses the UID and nothing else.
 
 | Offset | Size | Field |
 |---|---|---|
-| 1 | 4 | DBGMCU IDCODE: device ID bits 11:0 (`0x413` = STM32F405/407), revision bits 31:16. May read 0 on some STM32F40x revisions when no debugger is attached |
-| 5 | 2 | flash size in KB (the flash size register at `0x1FFF7A22`) |
-| 7 | 12 | 96-bit unique ID (`0x1FFF7A10`), three u32, lowest word first. The lowest word is REBOOT's confirmation token |
-| 19 | 4 | `FLASH_OPTCR` as read |
-| 23 | 1 | RDP level: 0 (byte `0xAA`), 2 (byte `0xCC`), 1 (any other byte) |
-| 24 | 1 | the RDP byte (`FLASH_OPTCR` bits 15:8) |
-| 25 | 2 | write-protected sectors, bit n = sector n (from nWRP bits 27:16, where 0 means protected) |
-| 27 | 1 | BOR level field (bits 3:2): 0 = level 3 (2.7 V), 1 = level 2, 2 = level 1, 3 = off |
-| 28 | 1 | user bits: bit 0 WDG_SW, bit 1 nRST_STOP, bit 2 nRST_STDBY |
+| 1 | 4 | DBGMCU IDCODE: device ID bits 11:0 (`0x413` = STM32F405/407, `0x450` = STM32H742/743/753), revision bits 31:16 (STM32H7: `0x1003` = Y, `0x2003` = V). May read 0 on some STM32F40x revisions when no debugger is attached |
+| 5 | 2 | flash size in KB (the flash size word: `0x1FFF7A22` on the STM32F4, `0x1FF1E880` on the STM32H7) |
+| 7 | 12 | 96-bit unique ID (`0x1FFF7A10` on the STM32F4, `0x1FF1E800` on the STM32H7), three u32, lowest word first. The lowest word is REBOOT's confirmation token |
+| 19 | 4 | the option word as read: `FLASH_OPTCR` on the STM32F4, `FLASH_OPTSR_CUR` on the STM32H7 |
+| 23 | 1 | RDP level: 0 (byte `0xAA`), 2 (byte `0xCC`), 1 (any other byte). Families 0 and 2 |
+| 24 | 1 | the RDP byte (bits 15:8 of the option word in both families) |
+| 25 | 2 | STM32F4 only: write-protected sectors, bit n = sector n (from nWRP bits 27:16, where 0 means protected) |
+| 27 | 1 | STM32F4 only: BOR level field (bits 3:2): 0 = level 3 (2.7 V), 1 = level 2, 2 = level 1, 3 = off |
+| 28 | 1 | STM32F4 only: user bits: bit 0 WDG_SW, bit 1 nRST_STOP, bit 2 nRST_STDBY |
 | 29 | 1 | chip family (table above) |
 
-`rfoundry_debug.py chip` prints all of this (only the family and the UID for a family other than 0), and prints a note at RDP level 1 (the
-stock state: the ROM bootloader route stays closed) and a loud warning at RDP level 2 or when any application sector
-(3..11) is write protected.
+`rfoundry_debug.py chip` prints what the family reports (the family and the UID alone for a family without the ID
+registers), a note at RDP level 1 (the ROM bootloader route stays closed; on the STM32F4 radios it is the stock state)
+and a loud warning at RDP level 2 or when any application sector (3..11) of an STM32F4 is write protected.
 
 Example (an STM32F4 radio on the bench): idcode `0x0009A413`, 1024 KB, `FLASH_OPTCR` `0x0FFF55ED`: **RDP level 1**
 (byte `0x55`), no write protection, BOR off, user bits all 1.
@@ -506,6 +512,8 @@ A window is either memory (any address and length inside it) or registers. A reg
 32-bit words (address and length multiples of 4); anything else is refused. The firmware reads it one 32-bit load per
 word: a byte or unaligned access to a peripheral can fault the bus.
 
+Each STM32 family has its own `mem_window.h`, no hardware access in either (host tested).
+
 STM32F4 (INFO_CHIP family 0; `platform/stm32f4/mem_window.h`):
 
 | Range | Contents |
@@ -518,6 +526,22 @@ STM32F4 (INFO_CHIP family 0; `platform/stm32f4/mem_window.h`):
 
 RAM, CCM and the other peripheral addresses are always refused on the STM32F4 (CHIP_REG reaches the peripherals,
 3.24). The UID and the flash size register come through INFO_CHIP instead.
+
+STM32H7 (family 2; `platform/stm32h7/mem_window.h`):
+
+| Range | Contents |
+|---|---|
+| `0x08000000` up to the flash size (at most `0x081FFFFF`) | internal flash, both banks |
+| `0x1FF00000-0x1FF1E7FF` | system memory (ST's ROM bootloader) |
+| `0x1FF1E800-0x1FF1E8FF` | the ID words at the end of system memory: the unique ID, the flash size |
+| `0xE000ED00-0xE000ED3F` | the core's system control block, aligned words only: CPUID (`0x411FC271` on the STM32H742/743/753: Cortex-M7 r1p1) and the registers the STM32F4's block has |
+
+RAM (DTCM, AXI SRAM, the backup SRAM) and the peripheral addresses are refused on the STM32H7 too. Its option bytes
+are registers of the flash interface, not a memory range: INFO_CHIP carries the option word, and CHIP_REG reads the
+others.
+
+On the STM32H7 a read of a program flash word whose programming was interrupted takes a bus fault (RM0433 4.7.7): the
+radio restarts with a crash record instead of answering. The shared read has no guard for it.
 
 HR_C7000 (family 1; `platform/hrc7000/mem_window.h`). READ_MEM works before INFO_CHIP has a UID:
 
@@ -558,8 +582,8 @@ Request: mode u8, token u32. Reply: the status and a reason byte.
 
 | Mode | Effect |
 |---|---|
-| 0 | normal reset (`NVIC_SystemReset`; on the HR_C7000 a watchdog reset, transmitter off first ([watchdog.md](watchdog.md) 3)): the vendor bootloader runs, then the application |
-| 1 | ROM DFU: reset, then straight into ST's system-memory bootloader (USB DfuSe, `0483:DF11`). Only at RDP level 0 |
+| 0 | normal reset (`NVIC_SystemReset`; on the HR_C7000 a watchdog reset, transmitter off first ([watchdog.md](watchdog.md) 3)): the vendor bootloader runs where the board has one in flash, then the application |
+| 1 | ROM DFU: reset, then straight into ST's system-memory bootloader (USB DfuSe, `0483:DF11`). The STM32 families only, and only at RDP level 0 |
 
 The token must be the low 32 bits of the chip UID (INFO_CHIP offset 7), so a stray frame can't reboot the radio.
 The checks, at the request and again just before the reset:
@@ -567,17 +591,21 @@ The checks, at the request and again just before the reset:
 | Reason | Refused when |
 |---|---|
 | 1 | the token is not the UID's low word (both modes) |
-| 2 | mode 1 on a chip other than the STM32F4 (INFO_CHIP family), or mode 1 and RDP is not level 0. At level 1 the ROM bootloader refuses flash access, and its read-unprotect command mass-erases all of flash, the vendor bootloader included, which would leave the radio unable to load firmware without SWD. Level 2 disables the ROM bootloader |
+| 2 | mode 1 on a chip family without the RDP byte (`dl_chip_has_rdp`: any INFO_CHIP family but the STM32F4 and the STM32H7, a number the firmware does not know included), or mode 1 and RDP is not level 0. At level 1 the ROM bootloader refuses flash access, and its read-unprotect command mass-erases all of flash, a vendor bootloader included, which would leave a radio that is loaded through one unable to load firmware without SWD. Level 2 disables the ROM bootloader |
 | 3 | transmitting: radio state TX, or the hotspot sending (both modes) |
 | 4 | the chip info could not be read |
-| 5 | (logged only) the ROM DFU flag could not be stored in the backup register |
+| 5 | the platform can't do the mode: its `hal_system_t.reboot_ok` says no. On the STM32 that is mode 1 on a board that refuses the software entry to the ROM bootloader (the `board_rom_entry_ok()` hook where the platform has one: a board on which the ROM bootloader's own pins meet other outputs). A platform without the hook can do every mode. Also, logged only, the ROM DFU flag could not be stored in the backup register |
 
-On OK the reply goes out first and the firmware resets 250 ms later. If a check fails at that point (a PTT came
-in), it logs `debuglink: reboot ... aborted` and stays up. Mode 1 stores a flag in an RTC backup
-register that survives the reset, and the start-up code jumps into the ROM bootloader when it finds it.
+`reboot_ok` is the rule the platform's `reboot()` applies itself, so a mode refused at the request is never one it
+would have taken, and one it takes is never refused here. On OK the reply goes out first and the firmware resets
+250 ms later. If a check fails at that point (a PTT came in), it logs `debuglink: reboot ... aborted` and stays up.
+Mode 1 stores a flag in an RTC backup register that survives the reset, and the start-up code jumps into the ROM
+bootloader when it finds it (`stm32_sysboot_check`, the entry itself in the family's `sysboot_soc.h`). Only a flag
+that does not read back comes after the OK reply: the firmware logs `debuglink: reboot 1 failed (5)` and stays up,
+so a host that asked for mode 1 and still gets answers reads the log.
 
-`rfoundry_debug.py reboot [--rom-dfu]` reads INFO_CHIP first, refuses `--rom-dfu` itself unless RDP is level 0, sends
-the token and prints the radio's reason when it refuses.
+`rfoundry_debug.py reboot [--rom-dfu]` reads INFO_CHIP first, refuses `--rom-dfu` itself unless the family has the
+ROM bootloader and RDP is level 0, sends the token and prints the radio's reason when it refuses.
 
 ### 3.12 DMR_DATA
 
@@ -610,7 +638,7 @@ and the claim of a foreign region.
 
 | Op | Request | Reply after the status |
 |---|---|---|
-| 0 INFO | none | region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then address u32 + size u32 for the settings ring, the journal, the calibration copy |
+| 0 INFO | none | region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then address u32 + size u32 for the settings ring, the journal, the calibration copy, then flags u8 (bit 0: claim first, below; other bits 0) |
 | 1 READ | address u32, length u16 (1-1000) | address u32, the bytes. Only inside the three ranges of INFO, else `DL_ST_REFUSED`. Taken under the storage lock |
 | 2 CLAIM | token u32: the chip UID's low word (INFO_CHIP offset 7) | reason u8. `DL_ST_REFUSED` with reason 1 (bad token) or 4 (no chip info); `DL_ST_UNAVAILABLE` when the region isn't foreign. On OK the housekeeping task erases the region (10 sector erases, up to about 4 s, during which it does not watch the power knob); poll `storage.region` |
 
@@ -618,7 +646,18 @@ Every op answers `DL_ST_UNAVAILABLE` on a radio with no flash map: a memory chip
 (the driver drops a map its chip is too small for), where nothing is stored. The web tools read that INFO answer as region "nomap", apart from region 0 in an OK answer (a map whose flash didn't start). A build without the
 command answers `DL_ST_UNKNOWN_CMD`.
 
-`rfoundry_debug.py storage info | dump | claim` drives it; `claim` always dumps first, outside any git tree.
+**Claim first** (flags bit 0): the board builds with `STORAGE_CLAIM_FIRST` (`settings-store.md` 5). Its data flash
+holds another firmware's data in an unknown layout until the claim, the region is foreign on every unit until then,
+blank or not, and the claim opens the whole flash map to writes. A client takes a backup of the whole data flash,
+read completely, before it sends CLAIM on such a board; the dump of the three ranges is not enough. The firmware
+can't check that it did. Older builds end after the three ranges (26 bytes after the status): a host reads the
+missing flags byte as 0, and takes INFO by its length, so later fields can follow.
+
+`rfoundry_debug.py storage info | dump | claim` drives it; `claim` always dumps first, outside any git tree. On a
+claim-first board `claim` first reads the whole data flash through the CPS shim (`cps-protocol.md` 2.2, area 1),
+twice and compared, into one file in `--out DIR`, and claims only when every byte came back; `--skip-full-backup`
+leaves that out for an owner who has one. The web clients claim on such a board only after their own full backup
+(`settings-store.md` 5, "Claim").
 
 ### 3.14 AUDIO_PROBE
 
@@ -867,6 +906,7 @@ hook answers unavailable (4).
 |---|---|
 | HR_C7000 (`platform/hrc7000/mem_window.h`) | READ_MEM's register windows (3.10: system block, GPIO A-C, PIC), plus the timers `0x14000000-0x14000077` |
 | STM32F4 (`platform/stm32f4/mem_window.h`) | the peripheral buses `0x40000000-0x5FFFFFFF`, the FSMC control registers `0xA0000000-0xA0000FFF` and the Cortex-M4 private peripheral bus `0xE0000000-0xE00FFFFF` (SCB, NVIC, SysTick, DWT, DBGMCU). The access runs with bus faults ignored: a reserved address that faults is refused (7) |
+| STM32H7 (`platform/stm32h7/mem_window.h`) | the peripheral buses `0x40000000-0x5FFFFFFF` (the FMC, the flash interface and DBGMCU are inside them on this family) and the Cortex-M7 private peripheral bus `0xE0000000-0xE00FFFFF` (SCB, NVIC, SysTick, DWT). Bus faults are ignored the same way (`platform/stm32/sysboot.c`, shared) |
 
 Writes are logged. `rfoundry_debug.py reg CHIP REG [VALUE] [--page N]`, or `reg soc ADDR [VALUE]` for the SoC.
 
@@ -1098,9 +1138,9 @@ capacity and atomic commit behavior are specified in [satellite.md](satellite.md
 - Every injected key hold is capped at 10 s, one injected key at a time, 40 ms between them.
 - Radio requests are rate limited (20 ms).
 - INFO_CHIP and READ_MEM only read. READ_MEM reads only the platform's windows (3.10): flash, ROM, OTP and option bytes
-  on the STM32F4 (never RAM or peripherals); program flash, SRAM and a few register blocks without read side effects
-  (system block, GPIO, PIC), in aligned words only, on the HR_C7000. Nothing in the debug link writes or erases
-  internal flash or the option bytes.
+  on the STM32F4, flash, ROM and the ID words on the STM32H7 (never RAM or peripherals on either); program flash, SRAM
+  and a few register blocks without read side effects (system block, GPIO, PIC), in aligned words only, on the
+  HR_C7000. No debug link command writes or erases internal flash or the option bytes.
 - STUB ENTER is refused while transmitting, and the transmitter is switched to receive before the jump (3.18).
 - CRASH TEST needs its token and is refused while transmitting (3.19).
 - WATCHDOG TEST and LOAD need their token and are refused while transmitting; each ends in a reset (3.21).
@@ -1111,12 +1151,16 @@ capacity and atomic commit behavior are specified in [satellite.md](satellite.md
 - AIR (bench builds only) keys the transmitter only through the radio core, which applies its transmit checks and the
   lowest power level; without the core's hook TX_KEY is unavailable (3.28).
 - REBOOT needs the chip UID's low word as a token, is refused while transmitting, and the ROM DFU mode is refused
-  unless RDP is level 0. The host tool checks RDP too.
+  unless the chip family has ST's ROM bootloader and RDP is level 0, and where the platform says it can't do the mode
+  (`hal_system_t.reboot_ok`: a board that does not allow the software entry to the ROM bootloader). The host tool
+  checks the first two too.
 - Memory dumps are never written inside a git tree (the vendor bootloader is proprietary).
 - AUDIO_PROBE (diagnostic builds only) writes audio chip registers as asked, and CHIP_REG writes the RF chip registers
   the board offers and the SoC registers in the platform's windows (3.24); nothing else in the debug link writes chip
   registers. A CHIP_REG write can move the transmitter's frequency or power (the radio's band and power limits don't
-  apply to it) or stop a timer or an interrupt; a SoC register write is refused while transmitting.
+  apply to it) or stop a timer or an interrupt; a SoC register write is refused while transmitting. On the STM32
+  families the SoC windows hold the flash interface's registers: its key and control registers can erase flash and
+  change option bytes, a wrong option byte can lock the chip for good, and no tool or test here writes them.
 - STUB (bench builds only) writes arbitrary RAM and then runs it, giving the host full control: it is gated by a magic
   key, the exact length and a CRC-32, loads only into the platform's declared free RAM span, is refused while
   transmitting, and never returns (recover by a power cycle). Off in a release. The stub, not the debug link, is

@@ -31,7 +31,7 @@ free = stack - (deepest chain + port overhead + margin)
 
 | Term | Value |
 |---|---|
-| Port overhead | What the RTOS port keeps on a task's stack besides the chain (`STACK_OVERHEAD` in `platform.mk`). STM32F4: 208 bytes, the exception frame with the FPU's lazy space and alignment (27 words) plus the context switch's r4-r11, lr and s16-s31 (25 words); interrupts then run on the main stack. HR_C7000: 68 bytes, the 17-word frame of an interrupt or a yield; handlers run on the interrupt stack and don't nest |
+| Port overhead | What the RTOS port keeps on a task's stack besides the chain (`STACK_OVERHEAD` in `platform.mk`). The STM32 platforms (Cortex-M4F and Cortex-M7, the same RTOS port): 208 bytes, the exception frame with the FPU's lazy space and alignment (27 words) plus the context switch's r4-r11, lr and s16-s31 (25 words); interrupts then run on the main stack. HR_C7000: 68 bytes, the 17-word frame of an interrupt or a yield; handlers run on the interrupt stack and don't nest |
 | Margin | `STACK_MARGIN`, 128 bytes by default |
 
 A task over its stack prints `OVER` and its whole chain with each frame.

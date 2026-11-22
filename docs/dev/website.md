@@ -13,7 +13,7 @@ python3 site/build.py                       # build/site/
 python3 site/build.py --serve               # build, then http://localhost:8000 (WebUSB needs localhost or https)
 python3 site/build.py --firmware build/dist # with release images for the flasher (tools/release.py --out)
 python3 site/build.py --strict              # any warning fails (CI)
-site/tests/run.sh                           # the flasher's and the editor's tests (Node 20+)
+site/tests/run.sh                           # the flasher's and the editor's tests (Node 20.11+)
 ```
 
 Use `--serve` to test the Satellite TLE Update page locally. A plain static server cannot provide its `/api/amsat-tle` proxy.

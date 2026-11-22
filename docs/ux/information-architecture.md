@@ -39,6 +39,8 @@ Replying to whoever just spoke is automatic during the reply window: if a statio
 
 Screens consume only these. Each board maps physical inputs to them (`boards/<radio>/keymap`). Each action arrives with a gesture: `PRESS` (short, released before the long-press threshold), `LONG` (held past the threshold, default 600 ms, fires once at the threshold with a tick), `REPEAT` (navigation keys only, while held), and for `PTT` and `MONITOR` the raw `DOWN`/`UP`.
 
+A key the board reports in the first 10 key scans (100 ms, `INPUT_START_GUARD_SCANS`) counts as held at power-on: it gives no gesture until it is released, so a PTT held while switching on does not transmit.
+
 | Action | Meaning everywhere | Required? |
 |---|---|---|
 | `NAV_UP`, `NAV_DOWN` | Move focus; on Home and in value editors, change the value (channel, frequency, level) | yes |

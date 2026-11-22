@@ -7,7 +7,7 @@ cause, the rule for new code and the chips it applies to. Entry numbers are refe
 they stay fixed.
 
 Entries name the chips they apply to: HR_C6000 with the AT1846S (STM32F405 or MK22 hosts), HR_C5000 (STM32F405, single
-band) and HR_C7000 (C-SKY CK803S SoC). Which radios carry which chips is in [radios.md](radios.md), and what has been
+band), HR_C7000 (C-SKY CK803S SoC) and the STM32H743 as a host (section 18). Which radios carry which chips is in [radios.md](radios.md), and what has been
 checked on each is in [feature-matrix.md](../feature-matrix.md). A fact about one radio is on its hardware page.
 Status words: "on air" means verified with an SDR or a second radio; "built" means compiled and host tested only.
 
@@ -21,6 +21,7 @@ Status words: "on air" means verified with an SDR or a second radio; "built" mea
 | 10, 11, 12 | Flash and storage, calibration, memory and RAM limits |
 | 13, 14 | Build and toolchain, SFR |
 | 15, 16, 17 | Testing practice, input, scan |
+| 18 | STM32H7 hosts: reset, supply, outputs that outlive a reset, peripherals |
 
 ## 1. DMR modem timing: HR_C6000
 
@@ -149,7 +150,7 @@ of the speaker. Cause: a receive through the FM copy ([modem-hrc6000.md](modem-h
 mode (4:0x10 = 0x80), where I2S PCM doesn't reach the codec's line out ([modem-hrc6000.md](modem-hrc6000.md) 8). The
 I2S stream itself keeps running. No codec or system register lets I2S through in FM mode. Fix: while the FM copy holds
 the chip, the I2S stream copies each speaker block into a ring, and a feeder task writes it to the chip's prompt tone
-FIFO, which does reach the line out in FM mode (`platform/stm32f4/hrc/i2s_pcm.c`, `hrc_prompt_*`). Setting 0x06 bit 1
+FIFO, which does reach the line out in FM mode (`platform/stm32/hrc/i2s_pcm.c`, `hrc_prompt_*`). Setting 0x06 bit 1
 alone plays nothing: the FIFO needs samples. The feeder runs at the top task priority. At the audio task's priority it
 missed its 8 ms turn whenever the copy interrupt read its 512 bytes with interrupts masked, which gave a gap every
 32 ms. The FIFO and the I2S stream share the chip's clock, so they never drift. Checked on the SDR bench by ear and by
@@ -375,6 +376,36 @@ chip driver turns the sub-audio off when it enters DMR (`fd6818_set_mode`; `fd68
 each board's tune path; a radio's own counters can't show a transmission that doesn't decode, so a HIL check of a TX
 path asserts what the bench heard. Radios: boards with the FD6818 as the transceiver. Test: `fd6818Test`
 (`test_dmr_tone_off`, tests/host), `test_dmr_tx_after_toned_fm_channel` (tests/hil).
+
+**3.20 DAC code 0 is not 0 V while the output buffer is on.** An STM32H7 DAC channel with its buffer enabled reaches
+0.2 V at its lowest code (DS12110, DAC characteristics). Where the DAC is the reference of a power control loop, "0"
+then still asks for some drive: 0.2 V is tens of millivolts at the loop's reference behind a divider, and a PA floor
+measured at code 0 is not where a table expects it. Rule: "off" is the channel disabled, so the net's pull-down holds
+a true 0 V: the data register is written 0 with the buffer still on, so the pin goes to its minimum at once, and after
+a short wait the channel is disabled (`stm32_dac_off()`: data register 0, then `EN` clear). A fault path uses the
+form that touches nothing while the DAC's clock is off (`stm32_dac_force_zero()`). A ramp's first codes pass through
+the buffer's floor: measure the pin with the channel off and at code 1 before any drive value is trusted. STM32H7
+platform; built.
+
+**3.21 One DAC line as the power reference and the receive tuning voltage.** On a board whose APC reference DAC also
+feeds the front end's tuning voltage, a tuning value left on the DAC is a power request the moment the APC loop and
+the transmit rail come on, and a drive value left there detunes the receiver. Callers can't be trusted to keep the
+order: a burst timer, the radio task and a bench write over the debug link all reach the same line. Rule: an
+interlock at the sink. One function writes the DAC and one writes the control lines, each inside one
+interrupt-masked section, and they refuse (a) a value above the PA floor unless both transmit lines are on (a drive)
+or both are off (a tuning voltage), and (b) turning a transmit line on while the DAC is above the floor. The floor is
+0 until a PA floor has been measured. The sequencer (`drivers/rf/chainseq`) keeps the order on top of that: the DAC
+at 0 and the loop open whenever the transmit rail changes, the transmit rail off whenever the receive VCO is
+selected, never a tuning value while the loop is closed, and every error path, a refused write included, ends in its
+safe state (`chainseqTest`). Built.
+
+**3.22 A sub-audio output that reaches the reference oscillator must idle driven.** Where the CTCSS / DCS output (a
+PWM pin behind a filter) is summed into the reference oscillator's control voltage and the net has no pull resistor,
+a released pin floats and the carrier moves with it; a pin parked low or high offsets the carrier by half the path's
+swing against the level the reference was set at. Rule: the PWM runs at 50 % duty from the board's early init and is
+never released. The sub-audio generator moves the duty around that mean, clamped so it reaches neither 0 nor the
+period. The carrier is measured with the pin at 0 %, 50 % and 100 % during bring-up. Only a board whose net holds a
+defined level when the pin is released, with the reference set at that level, may release it when idle. Built.
 
 ## 4. AMBE codec calling
 
@@ -625,6 +656,45 @@ key, and fast typing kept the idle task out for 1.8 s. Scans read blocks (`codep
 `codeplug_channel_names_each`), a search by name reads the name alone (`codeplug_channel_name`, `codeplug_zone_name`),
 and a scan per drawn row is a scan per frame ([ui.md](ui.md) 2, [watchdog.md](watchdog.md) 4).
 
+**10.6 A blank settings area is no evidence on a flash of unknown layout.** The foreign-region guard looks at the
+settings ring and the journal only, and takes a blank region at the first start by programming an ownership mark.
+From then on every codeplug and CPS write anywhere in the map is allowed. On a flash that held another firmware's
+data in a layout nobody knows, those 40 KB being blank says nothing about the megabytes around them, and the first
+start would program the chip before a backup exists. Rule: such a board builds with `-DSTORAGE_CLAIM_FIRST=1`
+([settings-store.md](settings-store.md) 5): the region is foreign on every unit, blank or not, until the owner claims
+it after a backup of the whole chip. The define defaults to 0 and costs the other boards nothing. The operand order of
+its condition in `scan_region()` is kept on purpose: with `!ours` first the default no longer folds to the code the
+compiler made before, and 16 bytes moved on three boards. A board's own writes to the chip (a board record sector)
+don't pass `storage_ready()` and need their own rule: only into a sector that is blank or carries the board's own
+magic. `STORAGE INFO` carries the define as a flag ([debuglink.md](debuglink.md) 3.13), and every client honors
+it: the Codeplug Editor then does not claim, the installer's restore of channels does not either, the installer's
+channel step and the migration tools claim nothing and write nothing (`prepareStorage` without a whole-chip backup,
+`writeConverted`), the backup of everything claims only when it read the whole chip, and `rfoundry_debug.py storage
+claim` reads the whole chip first. Built (`storageClaimFirstTest`; the two start-up resumes, whose erases bypass
+`storage.c`, in `storageBootTest` and `storageBootClaimFirstTest`).
+
+**10.7 A SPI NOR chip keeps its state through an MCU reset.** A part without a reset pin keeps its address mode, its
+extended address register and a suspended erase or program when only the MCU resets, and other firmware may have left
+any of them set (a part with `ADP` set even powers up in 4-byte mode). Rule (`drivers/flash/spi_nor` with
+`SPI_NOR_ADDR4`): the probe reads the status registers first. A suspended part gets no reset and is not used (size 0
+and a log line; the reset command is only for a part that is neither busy nor suspended, and a power cycle clears the
+state). A busy part is waited for, up to 1 s. Otherwise Enable Reset `66h`, Reset `99h`, 100 us, then the JEDEC read.
+A part found in 4-byte mode is used, not refused: its security registers and unique ID are read in that mode's form.
+No status register is ever written. Built (`spiNorAddr4Test`).
+
+**10.8 A command with four address bytes replaces the extended address register.** On a part over 16 MB every
+4-byte-address command loads the register with its top byte (W25Q256JV 7.2). Code that runs later with 3-byte
+commands (other firmware after a return to stock, a loader) then reaches another 16 MB than it thinks. Rule: only the
+opcodes that always take four address bytes (`13h`, `12h`, `21h`), never the mode commands (`B7h`, `E9h`), so nothing
+depends on the address mode; the register is written back to 0 (`spi_nor_park()`: `C5h 00h`) after every program and
+erase, failed ones included, and after a read that reached past 16 MB; and once more before the radio powers off or
+jumps out of the application (`stm32_spi_flash_quiesce()`). The rule lives in the driver, as `spi_nor_read_parked()`,
+`spi_nor_program_parked()` and `spi_nor_erase_sector_parked()` (`SPI_NOR_ADDR4` builds): each returns false when the
+transaction or its park failed. The STM32 glue calls them, and `spiNorAddr4Test` runs them, a failed program, a
+failed erase and a refused park included. With interrupts masked or the scheduler suspended,
+`stm32_spi_flash_quiesce()` parks only when no transaction holds the bus and never calls the RTOS lock, so the
+caller's interrupt mask is left as it was. Built.
+
 ## 11. Calibration
 
 **11.1 Reference oscillator sign (HR_C5000 board).** regs 0x47 / 0x48 / 0x04 = 0x7F minus the calibration value, DAC2 =
@@ -642,10 +712,11 @@ fallback to a local copy, then a fixed drive (1408).
 
 **12.1 CCM RAM isn't zeroed at startup.** Buffers placed in the STM32 CCM must be initialized explicitly. A linker script
 may not map CCM at all: placing data in an unmapped .ccmram section is silently wrong. RadioFoundry's start-up
-(`platform/stm32f4/ccm.c`) copies `.ccmdata` and zeroes `.ccmbss` before `main`; `.ccmram` keeps whatever was there. An
+(`platform/stm32/ccm.c`) copies `.ccmdata` and zeroes `.ccmbss` before `main`; `.ccmram` keeps whatever was there. An
 initialized section must also be in the Makefile's `BIN_SECTIONS`: without it the image ends before the section's flash
 copy, the start-up copies erased flash, and every table reads 0xFF (a decoder benchmark then looks faster while its
-decodes fail).
+decodes fail). On an STM32H7 the same sections are the DTCM (128 KB): CPU only, never cached, and no DMA reaches it,
+as with the CCM.
 
 **12.2 Zero-initialized buffers in .data waste flash.** 25 MK22 buffers in a .data section stored 39.5 KB of zeros in
 flash; putting them in a .bss section of the same RAM bank saved 34.5 KB.
@@ -665,6 +736,14 @@ and a DMR VFO whose talk target is a contact reaches the search. The radio hung 
 host tests run on large pthread stacks and FreeRTOS' overflow hook only spins. Rule: no large buffers on a task's
 stack (static, under the lock that already serializes the caller); `make stack-check` runs in ci.sh and fails a task
 whose deepest chain doesn't fit ([stack-check.md](../dev/stack-check.md)).
+
+**12.6 The transmitter-off path is on every task's deepest chain.** An assertion in any task ends in `reboot()`, which
+calls `board_rf_safe()` ([crash-log.md](crash-log.md) 8), so whatever that hook does is added to the deepest chain of
+every task at once. A board whose hook also ran its RF sequencer's safe writes (a second pass over the same lines
+through the sequencer's ops and the board's interlock) put five tasks under the stack check's margin together. Rule:
+`board_rf_safe()` writes the lines itself, register writes only, and tells a sequencer of the new state without a
+write (`chainseq_safed()` in `drivers/rf/chainseq`), inside the same interrupt-masked section, so that no burst point
+from an interrupt runs between the writes and the sequencer's state.
 
 ## 13. Build and toolchain
 
@@ -716,16 +795,59 @@ order for the same reason. The figures then match CI byte for byte.
 STM32F4's 4, and keeps only the top 3 of each priority byte. FreeRTOS checks at scheduler start that
 `configMAX_SYSCALL_INTERRUPT_PRIORITY` has no bit the hardware lacks; at 5 (0x50) it had, so the check failed every
 boot, before the display or USB came up: a black screen that only the update mode survives. Rule: keep
-`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` even (`platform/stm32f4/main.c` asserts it at build time), and don't
+`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY` even (`platform/stm32/main.c` asserts it at build time), and don't
 let correctness depend on two interrupts one apart (4 and 5, 6 and 7) preempting each other: on the clone they are
 one level. STM32F4 boards; built, not run on a clone.
 
-**13.12 No double or 64-bit division in firmware code.** No core has a double-precision FPU; the Cortex-M4F's is
-single precision, the C-SKY core has none. A `double` constant, `sqrt()` or `cos()` pulls in soft-float calls and
+**13.12 No double or 64-bit division in firmware code.** No platform builds for a double-precision FPU: the
+Cortex-M4F's is single precision, the C-SKY core has none, and the Cortex-M7 platform names the single-precision FPU
+in its flags on purpose (the multilib CI's toolchain keeps), so a `double` is soft-float there too. A `double` constant, `sqrt()` or `cos()` pulls in soft-float calls and
 libm (several KB) and is slow; LTO only drops it when every caller is dead. A 64-bit division is a library call too,
 on every read of a hot clock. Rule: integer fixed point (1e-7 degree, x10 units, carried remainders); float only where
 a single-precision FPU does it in hardware. `tools/ci.sh` warns when a default or maximal image links double or libm
 code.
+
+**13.13 Two builds of an uncommitted tree differ by themselves.** The build stamps the tree's state into the image.
+`RFOUNDRY_VERSION` gets `-dirty` when a tracked file differs from HEAD or an untracked source sits in a built
+directory: six more characters, so sizes move. `RFOUNDRY_GIT_TIME` is the commit time on a clean tree and the wall
+clock on a dirty one. `core/cps/cps_openfw.c` also uses `__DATE__` and `__TIME__`. Ten source files compile these in.
+A refactor compared "before, clean" with "after, dirty" showed differences that were the stamp, and two dirty builds
+made in different seconds differ from each other. Rule: to compare two builds (13.4), pin the stamp on both sides:
+
+```
+export SOURCE_DATE_EPOCH=1700000000
+make BOARD=<b> BUILD=build/t-x GITVERSION=unknown RFOUNDRY_VERSION=<id> RFOUNDRY_GIT_TIME=<seconds> RELEASE= \
+     build/t-x/rfoundry_<b>.bin
+```
+
+Command-line values override the Makefile's. `GITVERSION=unknown` also keeps make from calling git, so builds running
+side by side never touch the index. `MAKEFLAGS` carries the pin into `tools/ci.sh`. Naming the image as the goal
+leaves out the registry and codec steps of the default goal. The pin doesn't cover the build source
+(`tools/build_source.py` reads the `origin` remote): a copy of the tree without `.git` also needs
+`BUILD_SOURCE=local BUILD_SOURCE_REPO=<owner>/<repo>`, or sizes differ. Compare every board the change can reach, not
+one (13.15), and every configuration's size from `tools/ci.sh --steps firmware`.
+
+**13.14 The STM32 code is in two directories.** `platform/stm32` holds what every STM32 family shares: `main.c`,
+`gpio.c`, `time.c`, `watchdog.c`, `crash_stm32.c`, `sysboot.c`, `ccm.c`, `platform.h`, `FreeRTOSConfig.h`,
+`common.ld`, and the opt-in `hrc/` (DMR glue, bus, PCM stream), `spi_flash/` and `gps_uart/`. A family directory
+(`platform/stm32f4`, `platform/stm32h7`) holds its clock, SPI and USB code and its halves of the shared files
+([architecture.md](../dev/architecture.md#the-stm32-family-contract)). A path in an older note, issue or bring-up
+record that says `platform/stm32f4/<one of those>` means `platform/stm32/`. Not moved: the codec host
+(`codec_call.*`, `codec_desc.h`, `hrc/vocoder.*`), `fsmc_keypad/`, `stub_entry.c`, `mem_window.h`. Three things to
+know when editing there. A comment edit in a file with a `configASSERT` must not add or remove a line: the assertion
+compiles `__LINE__` into the image (the two bytes that changed in each DMR image when the split moved two assertions
+into an included header, and a crash record of those assertions now carries the header's line numbers). The platform
+sources are built in file-name order across both directories; another order changes about 4,800 bytes of an LTO image
+at the same size (13.10). And bring-up records are keyed by source path and content, so a feature whose sources
+moved reads "needs re-run" in [feature-matrix.md](../feature-matrix.md) until its next recorded run.
+
+**13.15 The debug link's dispatcher sits at the compiler's inlining limit on the largest images.** `handle` in
+`core/debuglink/debuglink.c` inlines every `cmd_*` it calls, and with LTO GCC stops inlining into a function once it
+passes `large-function-insns` (2,700). The largest images are within a few units of that. A change that adds a
+handful of units to anything inlined there puts one command out of line and moves the image by about 250 bytes, up or
+down, on those images only. So: a size change of that order after a small edit to a debug link command is this, not
+the edit; compare the images of every board, not one; and `-fdump-ipa-inline` at the LTO link shows which call was
+left out. `dl_chip_optbytes` (`core/debuglink/dl_chip.h`) is written the way it is for this reason.
 
 ## 14. SFR (single frequency repeater)
 
@@ -911,8 +1033,8 @@ never did. Rule: on such a radio a host port write waits until the line has been
 can't stop a host that starts sending during the radio's answer; MMDVM and KISS hosts do that too, unchecked. A latched
 line reads as a held PTT, and a chip reset would start a new press, so a press on the shared line needs the pin to have
 read high since start-up and since the last good byte, and not to have gone low within 20 ms of the radio's own serial
-send (`drivers/input/sharedptt`). The start-up key guard can't catch it: the first scan reports nothing during the
-20 ms hold. A line that stays low that way for 2 s flashes the LEDs red and green fast until a power cycle. Don't
+send (`drivers/input/sharedptt`). The start-up key guard covers only power-on: a latch-up later in operation is
+caught only by `sharedptt`'s own rule (the pin must have read high since start-up and since the last good byte). A line that stays low that way for 2 s flashes the LEDs red and green fast until a power cycle. Don't
 reproduce it more than needed: a latch-up draws current. Radios: one confirmed.
 
 **16.6 A programming cable whose adapter stopped sending.**
@@ -971,3 +1093,122 @@ level), so every stop counted a carrier and probed for 700 ms instead of the 150
 took about 12 s. Rule: the scale also sits above the floor the scan reads, the lowest strength past the settle on the
 last 8 stops, by 6 dB plus 3 dB a level (`scan_floor`, `RADIO_DMR_SQL_L1_FLOOR_DB`). A call 20 dB over that floor
 still holds the scan, by the noise reading or by the strength alone (`test_scan_dmr_high_floor`).
+
+## 18. STM32H7 hosts: reset, supply, outputs that outlive a reset, peripherals
+
+Everything in this section is written from ST's documents (RM0433, DS12110, ES0392, AN2606, AN3156) and a schematic.
+It is built and host tested where a test is named. None of it has run on a radio.
+
+**18.1 No RAM write before the supply configuration.** After a power-on reset the chip is in Run* mode, and write
+accesses to the RAMs are not permitted until the supply configuration is written to `PWR_CR3` and `ACTVOSRDY` is set
+(RM0433 6.4.1). The low byte of `PWR_CR3` takes one write after a power-on reset. ST's start-up does this in
+`ExitRun0Mode()`, with a wait that has no bound, before any board code. Rule: the platform has its own reset handler
+(`platform/stm32h7/reset.S`; ST's is weak): interrupts masked; the supply write and a bounded wait, registers only,
+no stack; ST's `SystemInit` (it enables the FPU, which hard-float code needs before it runs, returns the RCC to its
+reset state and applies a silicon revision's RAM workaround); the backup domain check (18.2); the board's reset hook
+(18.3); then `.data`, `.bss` and `main`. No `USE_PWR_*` define is ever set, so ST's `ExitRun0Mode()` compiles empty.
+Nothing writes `PWR_CR3`'s low byte again, and no code changes the voltage scale: the clock table must fit VOS3, the
+reset value.
+
+**18.2 VBAT on VDD: a fast power cycle can leave the backup domain random** (ES0392 2.2.32, all revisions). On a
+board without a backup supply the domain's reset can be skipped, and `RCC_BDCR` and the RTC backup registers then
+hold random content. A random `LSEON` gives the oscillator control of its two pins whatever the GPIO registers say
+(RM0433 11.3.14); a random backup register reads as a request to enter the ROM bootloader. Rule
+(`stm32h7_reset_early()`): reset the backup domain by software on the first start after power came up (the power-on
+or brown-out flag set and neither the software nor a watchdog reset flag), and whenever `RCC_BDCR` shows `LSEON` or
+`LSEBYP`. A later software reset keeps its backup register. The reset flags are left for the crash log to read and
+clear.
+
+**18.3 Outputs behind a shift register are undefined from power-up.** A 74HC595 chain with no reset line and its
+outputs always enabled powers up with random outputs: every rail enable, PA control and LED on it. The C start-up is
+too late for them. Rule: a reset-time hook, `board_reset_safe()`, which the reset handler calls before `.data` and
+`.bss` exist. It first returns every pin to its reset mode (18.10), then shifts one whole safe word, which a single
+latch edge puts on all outputs (`hc595_shift()` needs only `const` data and register writes). Its contract is in
+`platform/stm32h7/soc.h`: interrupts masked, the reset clock, no `.data`, `.bss` or heap, no `SystemCoreClock`, no
+cycle counter. The chain's half period there is a fixed pass count, sized for one cycle a pass at the fastest clock
+the function can ever run at (18.6). The hardware must keep the PA off by itself until the word is out (a pull-down
+on the power reference that nothing drives at reset): firmware covers neither the chip's reset temporization nor the
+time a ROM bootloader runs. `board_rf_safe()` then makes its safe word from the shadow before it shifts it, so code
+that runs on after a fault can't bring a transmit bit back.
+
+**18.4 A power hold on an output that outlives a reset.** A latched expander keeps its outputs through a reset of the
+MCU. When the bit that holds the supply on with the power switch off is one of them, a reset word that sets the hold
+keeps the radio on for good in three cases: a fault or hang before the first switch reading, with the switch off
+(every reset sets the hold again); an ADC that never starts (the switch is never read); a software reset with the
+bootloader key down (the ROM bootloader runs and never writes the chain). Rule: the hold is clear in the reset word.
+It is set only after the switch has read on several times in a row, and never when the ADC didn't start. Every
+software reset, and every jump to the ROM bootloader, writes the reset word first (`board_reset_prepare()`,
+`board_sysboot_prepare()`). With the switch on the hold changes nothing, so the radio loses nothing by waiting; with
+it off, a reset ends with the radio off. A power-off the radio asks for itself with the switch still on leaves it in
+a quiet off state that feeds the watchdog and restarts only when the switch has gone off and on: never a loop of
+resets. One case stays: a watchdog reset with the bootloader key held and the switch off. No code of ours runs before
+the ROM, and the pack has to come off; a radio's pages say so. A latch on a GPIO differs: the pin floats at reset and
+releases by itself.
+
+**18.5 An SPI master needs `SSI` before `MASTER`.** With software slave management the block's internal slave-select
+input is the `SSI` bit. A master whose slave select reads low takes a mode fault, loses `MASTER`, and can't set `SPE`
+while `MODF` is set (RM0433 50.5.2). The STM32F4's block has the three bits in one register and one write; this one
+has them in `CR1` and `CFG2`. Rule (`platform/stm32h7/spi.c`): `CR1 = 0`, clear `MODF`, `CR1 = SSI`, `CFG1`, then
+`CFG2` with `MASTER | SSM`, `SPE`, `CSTART`. The function reads `MASTER` and `SPE` back, and a transfer on a block
+that didn't come up fails at once, not after a spin limit per byte. The bit rate is the block's kernel clock divided
+by 2^(br + 1), not the bus clock's.
+
+**18.6 A counted delay loop is not a time on this core.** A three-instruction loop takes one to three cycles a pass
+depending on the core: "16 passes" for 250 ns come out as 85 to 170 ns on a dual-issue Cortex-M7. Rule: bit-banged
+bus timing uses `stm32_wait_ns()` (`platform/stm32/platform.h`), which counts CPU cycles. The Cortex-M7's cycle
+counter takes no write until its lock is opened (`STM32_DWT_UNLOCK()`). The one exception is code that runs before
+the counter does (18.3).
+
+**18.7 RAM ECC loses the last incomplete word written before a reset.** The last write of less than a whole ECC word
+to a RAM is kept only if another incomplete word is written to the same RAM at another address afterwards (RM0433
+2.4). A crash record copied into the backup SRAM just before the reset may end in byte stores, and its last word is
+its CRC. Rule: `STM32_KEPT_RAM_FLUSH()`, the last statement before every reset: one byte to the backup SRAM's last
+byte. The macro turns the RAM's clock and write access on itself, because a build without the crash log has not.
+
+**18.8 Never write option bytes.** The way into the ROM bootloader by key depends on the option bytes as shipped
+(`BOOT_ADD1` on system memory, RDP below level 2), and RDP level 2 can't be undone. Rule: no image for this platform
+builds the HAL's flash modules or writes `FLASH_OPTKEYR`, `FLASH_OPTCR` or `FLASH_KEYR1/2`. The HAL configuration
+takes the flash module's header only, for the latency macros. Check on a linked image:
+`arm-none-eabi-nm build/<b>/*.elf | grep -i HAL_FLASH` prints nothing. The flashing tools never select the ROM
+bootloader's second alternate setting, which is the option bytes ([release.md](../dev/release.md#the-rom-bootloader-route)).
+The debug link's register window covers the SoC's peripheral space, the flash interface included, on both STM32
+families: a host can reach those registers there, the firmware never does ([debuglink.md](debuglink.md) 4).
+
+**18.9 Which data pad an I2S slave drives: the reference manual says both.** RM0433 Table 426 (50.9.6): in full
+duplex with `IOSWP` 0, SDI is the input and SDO the output, for master and slave. Section 50.9.2: a slave receives on
+SDO and transmits on SDI. With the wrong one assumed, the block's output is a push-pull driver on the line the other
+chip drives, for as long as audio runs. Rule (`platform/stm32h7/hrc/i2s_dir.h`, `stm32h7I2sDirTest`): nothing is
+assumed. Both data pads stay GPIO inputs. With the other chip's clock running, the pad whose net ends in a chip input
+alone is given to the block, in one sense and then the other, and the half counts whether the block drives it. Only
+after a verdict does the pad with the other chip's output on it leave GPIO input. The board says which pad is which
+(`STM32_I2S_TX_ON_SDI` in `MCU_DEFS`); a view key shows the verdict. Also on this block: `AFCNTR` must stay 0 in slave
+mode; a slave needs `CSTART` as well; and an underrun or overrun latches (the transmitter replays its last sample, the
+receiver stops) until software clears the flag, so the half has an error interrupt that does.
+
+**18.10 The ROM bootloader hands over a used chip.** Its Leave command may start the image with its USB interrupt and
+SysTick enabled and its own vector table (AN2606), and with some of its serial pins still driven push-pull. It also
+wants the image's initial stack pointer more than 16 bytes below the end of the RAM. Rule: the reset handler masks
+interrupts first; `stm32h7_soc_init()` in `main()` clears SysTick and every NVIC enable and pending bit, sets `VTOR`
+and only then enables interrupts; the board's reset hook returns every pin to its reset mode before it drives any;
+the RAM region in `memory.ld` ends 32 bytes short. The software entry to the ROM bootloader is a board's decision
+(`board_rom_entry_ok()`): the loader drives its serial ports' pins from the start, and on a board where those nets
+have other drivers the entry stays refused until checked on the bench. The key at power-on is the maker's route and
+is not asked.
+
+**18.11 Program flash is written in 32-byte words.** A download whose length is no multiple of 32 bytes leaves a
+partial flash word, which needs a force-write bit (RM0433 4.3.9). The documents don't say whether the ROM bootloader
+forces the last partial word. Rule: the tools fill the image with 0xFF to whole flash words (rfoundry, the web
+flasher). A third-party DfuSe tool may not: a radio's install text says to use ours.
+
+**18.12 Read Unprotect erases more than the program.** A regression from RDP level 1 to 0 erases the program flash,
+except sectors in a PCROP or secure-only area the option bytes keep (a partial erase), and with it the backup SRAM and
+the RTC backup registers (RM0433 4.5.3). AN3156 says the ROM bootloader then resets the option bytes to their defaults
+and leaves the bus without restarting, but an STM32H74x loader V9.0 leaves PCROP in place (AN2606 Table 146, fixed in
+V9.1). A protected chip refuses every read, write and erase until then. Rule: the tools probe the protection with a
+read that changes nothing, never conclude "protected" from an answer the documents don't describe, and ask before
+the erase. After it they wait at least twice the platform's mass erase bound from the command (`mass_erase_max_s`
+in `platform.toml`, the SoC's data sheet figure) and never under 60 s, and until the device has left USB, at most
+twice that wait and never under 120 s, before they tell the user to switch the radio off. They say "the erase is
+over" only after a disconnect was seen, and take a lost GETSTATUS reply after `0x92` as the command taken. A
+read-back mismatch at the same address on a second run is protection the regression left, not a one-off: no tool
+here writes option bytes.
