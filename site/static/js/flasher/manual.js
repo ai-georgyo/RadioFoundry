@@ -225,7 +225,7 @@ function plainReadme(o) {
 		: "Its update mode needs no key. The DMR voice codec is not part of RadioFoundry: rfoundry takes it from your stock firmware file.";
 	const stockPart = !codec ? [] : stock ? [
 		"THE STOCK FILE", "",
-		...wrap(`The commands below give rfoundry your stock firmware file (--stock), and it writes the DMR voice codec from it. A radio that runs RadioFoundry with working DMR voice keeps its codec: leave out --stock.`), ""]
+		...wrap(`The commands below give rfoundry your stock firmware file (--stock), and it writes the DMR voice codec from it. A radio that runs RadioFoundry with working DMR voice keeps its codec; the stock file is then not used.`), ""]
 		: ["THE STOCK FILE", "",
 			...wrap(`The kit has no stock firmware file, so the commands below install without the DMR voice codec (--codec none): FM works, DMR voice does not. For DMR voice copy your stock firmware file into the stock folder (${files.slice(0, 3).join(", ")}${files.length > 3 ? ", ..." : ""}) and put --stock "stock/NAME" in place of --codec none in the commands below.`),
 			...wrap("A radio that runs RadioFoundry with working DMR voice keeps its codec only if you leave out --codec none: with it rfoundry erases the codec."), ""];
