@@ -258,7 +258,9 @@ test("kit README: a ROM bootloader radio with a codec route takes the codec from
 	// what a first install erases names the codec too, before any command; and the codec step of an update
 	assert.ok(flat.includes("The voice codec is erased with the original firmware."));
 	assert.ok(r.indexOf("The voice codec is erased") < r.indexOf("1. SET UP") && r.indexOf("THE STOCK FILE") < r.indexOf("1. SET UP"));
-	assert.ok(flat.includes("A radio that runs RadioFoundry with working DMR voice keeps its codec: leave out --stock."));
+	// rfoundry keeps a working codec with --stock given too (decide_codec): the command needs no edit for it
+	assert.ok(flat.includes("A radio that runs RadioFoundry with working DMR voice keeps its codec; the stock file is then not used."));
+	assert.ok(!flat.includes("leave out --stock"));
 	assert.ok(flat.includes("if it runs RadioFoundry, rfoundry asks it about its codec first. Then rfoundry asks you to put the radio in its bootloader:"));
 	// the rest is the route's: the unprotect explained first, the processor's own bootloader, the board's notice
 	assert.ok(r.indexOf("erases the radio's whole program memory") < r.indexOf("--unprotect"));
