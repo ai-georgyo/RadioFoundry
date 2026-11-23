@@ -213,8 +213,9 @@ gates, the placed values rest on the tool for one step: 0xFF over the spans insi
 
 **Processor state.** The codec loads words at unaligned addresses and divides without a test for zero, so it needs
 `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP` off, their reset values. The host clears them once, before its first codec call,
-if one is set (`codec_cpu_traps_off()` in `platform/stm32/codec_cpu.h`, called from `present()`). A platform whose
-image can be started without a reset clears them at start-up as well. Nothing may set them later
+if one is set (`codec_cpu_traps_off()` in `platform/stm32/codec_cpu.h`, called from `present()`). The STM32
+start-up clears them as well, on every family, with the same function: an image a bootloader jumps to is started
+without a reset. Nothing may set them later
 ([gotchas.md](gotchas.md) 13.16).
 
 Later step, not planned: pack code and table objects into fewer bytes. The maps hold what that needs (objects,
