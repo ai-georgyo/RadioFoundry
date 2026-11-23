@@ -4,9 +4,10 @@
 
 What the firmware does and what the hardware needs: one page per subsystem, written before the code and kept true to
 it. Behavior specs are radio-independent. A radio's own facts (pins, chips, quirks, measurements) are on its pages,
-named by the board id: `hardware-<id>.md`, `codec-<id>.md` and, for some, `<id>-migration.md`. The radios and their
-chips are in [radios.md](radios.md); which radio has which feature is in [feature-matrix.md](../feature-matrix.md).
-Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read [docs/dev](../dev/README.md) for process.
+named by the board id: `hardware-<id>.md`, `codec-<id>.md` and, for some, `calibration-<id>.md` and
+`<id>-migration.md`. The radios and their chips are in [radios.md](radios.md); which radio has which feature is in
+[feature-matrix.md](../feature-matrix.md). Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read
+[docs/dev](../dev/README.md) for process.
 
 ## Radio features and the user interface
 
@@ -120,5 +121,6 @@ Reading a vendor codeplug and moving a radio from the vendor firmware. User step
 |---|---|
 | [radios.md](radios.md) | The hardware survey: every radio's chips and the port order |
 | `hardware-<id>.md` | One radio: MCU and memory map, pins, chips, keys, display, power, bootloader and image format, calibration |
+| `calibration-<id>.md` | One radio's factory calibration, where the maker's own is known: where it is stored, its layout and coding, what each field drives, and what a reader must refuse |
 
 The bring-up records for each radio are in [docs/testing](../testing/README.md).
