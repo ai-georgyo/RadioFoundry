@@ -189,9 +189,9 @@ run-boards:: cs7000pMakerCalTest
 # The codec route (vocoder_cs7000p.c, included by the test as the firmware builds it) against sector 7 as
 # tools/codec_extract.py merges a synthetic codec for this board: the descriptor and both windows pass the boot
 # check's steps with the board's own profile, a changed byte anywhere in a window fails them, and a descriptor that
-# names flash outside the sector is refused. Not run here: with "pinned" as its second argument the test takes sector
-# 7 of an image merged from the maker's file, outside the repository, and also asks for the two CRC-32s the profile
-# pins
+# names flash outside the sector is refused. The file may also be a whole merged image (its last 128 KB, as merged
+# here too). Not run here: with "pinned" as its second argument the test takes an image merged from the maker's file,
+# outside the repository, and also asks for the two CRC-32s the profile pins
 TESTS   += cs7000pCodecTest
 cs7000pCodecTest: $(CS7000P_T)/cs7000pCodecTest.c $(CS7000P)/vocoder_cs7000p.c $(ROOT)/platform/stm32/codec_desc.h \
                   $(ROOT)/platform/stm32/hrc/vocoder.h $(ROOT)/hal/hal_vocoder.h $(CORE)/config.h
@@ -199,3 +199,6 @@ cs7000pCodecTest: $(CS7000P_T)/cs7000pCodecTest.c $(CS7000P)/vocoder_cs7000p.c $
 run-boards:: cs7000pCodecTest
 	python3 -I $(ROOT)/tools/codec_extract.py --test-desc codec_desc_cs7000p.bin --board cs7000p
 	./cs7000pCodecTest codec_desc_cs7000p.bin
+	python3 -I -c "import sys; d = open(sys.argv[1], 'rb').read(); open(sys.argv[2], 'wb').write(b'\xff' * (0x100000 - len(d)) + d)" \
+		codec_desc_cs7000p.bin codec_merged_cs7000p.bin
+	./cs7000pCodecTest codec_merged_cs7000p.bin

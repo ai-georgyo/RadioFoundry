@@ -8,8 +8,9 @@
 // byte changed anywhere in a window, a blanked span and the fill between two windows included, fails the check; a
 // descriptor that names flash outside sector 7 or over itself is refused before any byte is read.
 // No codec here: the tool's synthetic codec is random bytes with the real layout, so its two CRC-32s are its own and
-// not the pinned ones. A second argument "pinned" says the file is sector 7 of an image merged from the maker's file,
-// outside the repository: the two CRC-32s must then be the pinned ones, as the boot check asks. Nothing of this has
+// not the pinned ones. The file may also be a whole merged image, whose last 128 KB are sector 7. A second argument
+// "pinned" says the file is from the maker's file, outside the repository: the two CRC-32s must then be the pinned
+// ones, as the boot check asks. Nothing of this has
 // run on a radio.
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +38,12 @@ static int failures;
 
 static uint8_t flash[0x20000];
 static uint8_t sound[sizeof flash];		// the sector as the tool wrote it
+
+// A whole merged image (rfoundry merge, tools/codec_extract.py) runs from the application's base to the descriptor's
+// end, so its last 128 KB are sector 7: the test takes either file
+#define IMAGE_BASE	0x08000000u		// boards/cs7000p/board.mk APP_BASE
+#define MERGED		(CODEC_DESC_ADDR + (uint32_t)sizeof(codec_desc_t) - IMAGE_BASE)
+static uint8_t file[MERGED + 1];		// one byte more: a longer file is neither
 static bool pinned;				// the sector holds the maker's codec: its CRC-32s are the profile's
 
 static const stm32_codec_profile_t *prof(void)
@@ -296,8 +303,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "pinned") != 0)) {
-		printf("usage: cs7000pCodecTest SECTOR [pinned] (SECTOR: tools/codec_extract.py --test-desc SECTOR --board "
-		       "cs7000p; with \"pinned\": the last 128 KB of an image merged from the maker's file)\n");
+		printf("usage: cs7000pCodecTest FILE [pinned] (FILE: sector 7, as tools/codec_extract.py --test-desc FILE "
+		       "--board cs7000p writes it, or a whole merged image, whose last 128 KB are sector 7; with \"pinned\": "
+		       "from the maker's file)\n");
 		return 1;
 	}
 	pinned = argc == 3;
@@ -306,13 +314,18 @@ int main(int argc, char **argv)
 		printf("FAIL %s: can't open %s\n", __FILE__, argv[1]);
 		return 1;
 	}
-	size_t n = fread(sound, 1, sizeof sound, f);
-	int more = fgetc(f);
+	size_t n = fread(file, 1, sizeof file, f);
 	fclose(f);
 	// The tool writes from the end of the application's region (boards/cs7000p/memory.ld) to the end of bank 1: one
-	// sector, so the region ends where the codec's flash starts
-	CHECK(n == sizeof sound && more == EOF);
-	if (n == sizeof sound) {
+	// sector, so the region ends where the codec's flash starts. A merged image ends there too
+	CHECK(MERGED == 0x100000u && MERGED - sizeof sound == CODEC_FLASH_LO - IMAGE_BASE);
+	const uint8_t *s7 = n == sizeof sound ? file : n == MERGED ? file + MERGED - sizeof sound : NULL;
+	if (s7 == NULL) {
+		printf("FAIL %s: %s is %zu bytes: neither sector 7 (%zu) nor a merged image (%u)\n", __FILE__, argv[1], n,
+		       sizeof sound, (unsigned)MERGED);
+		failures++;
+	} else {
+		memcpy(sound, s7, sizeof sound);
 		memcpy(flash, sound, sizeof flash);
 		test_sector();
 		test_changed_bytes();

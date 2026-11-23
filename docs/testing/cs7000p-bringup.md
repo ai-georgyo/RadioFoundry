@@ -102,7 +102,7 @@ The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), ea
 | `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`), the reference coding's (`why=14`), the transmit arm's (`why=13`, `why=15`) at every level, mode and stage with nothing admitted without both, and `why=16` (a trim stored after the admission included), `why=17` and `why=18` (a bench drive at every armed stage, the key-up constants) at the top stage; armed and listed, FM on the table's drive at f_tx (pinned), tone channels at their level's depth (pinned), a tone without a level refused, DMR at the top stage on the table's drive, DMR pair at f_tx and trim B with bursts under the chain's rules, the switch window and extension refusals, the arm lowered before the key-up or the bursts, a lower stage ending a covered transmission |
 | `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict, which field groups a key-up on the maker's table needs, a tone's level from it |
 | `cs7000pPinsTest`, `cs7000pPanelTest`, `cs7000pKeysTest`, `cs7000pSpeakerTest`, `cs7000pSubPwmTest`, `cs7000pStoreTest` | the pin set-up and its never-driven list, the LCD board check and the panel ID, the keys and the selector, the speaker lines, PC8's duty in per mille and the maker's level as a depth (and the old depth option's build failure), the flash map |
-| `cs7000pCodecTest` | the codec's boot check with the board's own profile (`vocoder_cs7000p.c`) on a sector 7 that holds a synthetic codec in the real layout: the descriptor, both CRC-32s, the first word, the entry offsets; a byte changed in the code, in a blanked span, in the block or in a gap fails it. With `pinned` as its second argument it takes sector 7 of an image merged from the maker's file, outside the repository, and also asks for the two pinned CRC-32s |
+| `cs7000pCodecTest` | the codec's boot check with the board's own profile (`vocoder_cs7000p.c`) on a sector 7 that holds a synthetic codec in the real layout: the descriptor, both CRC-32s, the first word, the entry offsets; a byte changed in the code, in a blanked span, in the block or in a gap fails it. It takes sector 7 alone or a whole merged image (its last 128 KB). With `pinned` as its second argument the file is merged from the maker's file, outside the repository, and the test also asks for the two pinned CRC-32s |
 
 ## At a glance: what is assumed
 
@@ -555,9 +555,16 @@ install rows below are already done: go on at the `probe` row.
 | An update without `--stock`: the plan shows sector 7 as "keep (codec in the radio stays: ...)", and afterwards `codec=` is as before | keep: the update erased only the image's sectors (0 to 4 for today's default image) | The update says the keep is void: the radio was in its loader without a vector table, or the probe was not remembered. Give `--stock`. `codec=absent` after a keep: the loader erased more than asked; report it |
 | `tests/hil/test_codec_info.py` and `tests/hil/test_codec_cpu.py` | the same checks as tests (`codec_check`) | |
 
-To check a merged image without a radio: the last 131072 bytes of the merged file are sector 7, and
-`tests/host/cs7000pCodecTest FILE pinned` runs the boot check's steps on them with the pinned CRC-32s. The file
-stays outside the repository.
+To check a merged image without a radio, run the boot check's steps on its sector 7 (its last 131072 bytes, which
+the test takes itself from a whole merged image) with the pinned CRC-32s:
+
+```
+make -C tests/host cs7000pCodecTest
+tests/host/cs7000pCodecTest build/cs7000p/rfoundry_cs7000p_codec.bin pinned
+```
+
+It ends `# cs7000pCodecTest pinned PASSED (0 failures)`. A file that is neither 131072 bytes (sector 7 alone) nor
+1048576 (a merged image) is refused by its size. The file stays outside the repository.
 
 ### 10.2 DMR voice, receive
 
