@@ -608,10 +608,11 @@ gpsPowerTest: gpsPowerTest.c $(ROOT)/drivers/gps/gps_rx/gps_power.c $(ROOT)/driv
 	$(CC) $(CFLAGS) -Wshadow -o $@ gpsPowerTest.c $(ROOT)/drivers/gps/gps_rx/gps_power.c
 
 # The STM32 codec descriptor (platform/stm32/codec_desc.h): its checks, and codec sectors 10 and 11 as
-# tools/codec_extract.py merges them (docs/spec/codec-placement.md)
+# tools/codec_extract.py merges them (docs/spec/codec-placement.md). And the processor state the codec needs
+# (platform/stm32/codec_cpu.h)
 TESTS   += codecDescTest
 
-codecDescTest: codecDescTest.c $(ROOT)/platform/stm32/codec_desc.h
+codecDescTest: codecDescTest.c $(ROOT)/platform/stm32/codec_desc.h $(ROOT)/platform/stm32/codec_cpu.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ codecDescTest.c
 
 # The two-level analog keypad (drivers/input/adckeys) a hand microphone may use

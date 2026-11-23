@@ -10,8 +10,13 @@
 
 #if CONFIG_DMR	// the whole file: DMR only
 #include <string.h>
+#include "platform.h"
 #include "codec_call.h"
+#include "codec_cpu.h"
 #include "vocoder/ambe2_flags.h"
+
+// codec_cpu.h has the trap bits by number, for the host tests: the numbers are the core header's
+_Static_assert(CODEC_CCR_TRAPS == (SCB_CCR_UNALIGN_TRP_Msk | SCB_CCR_DIV_0_TRP_Msk), "CCR trap bits");
 
 #define CODEC_SIGNATURE		0x4FF0E92Du	// push.w {r4-r11, lr}
 
@@ -70,6 +75,11 @@ static bool matches(const codec_desc_t *d, const stm32_codec_profile_t *p)
 static bool present(void)
 {
 	if (presence < 0) {
+		// Once, before the first codec call: encode and decode both come through here first
+		if (codec_cpu_traps_off(&SCB->CCR)) {
+			__DSB();
+			__ISB();
+		}
 		const codec_desc_t *d = (const codec_desc_t *)CODEC_DESC_ADDR;
 		prof = NULL;
 		for (uint8_t i = 0; i < stm32_codec_profiles.count && prof == NULL; i++) {
