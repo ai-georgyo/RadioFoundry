@@ -6,6 +6,10 @@ Recipes from docs/spec/codec-dm1701.md ("Container and encryption", "Extraction 
 docs/spec/codec-md380.md ("Extraction recipe"). Used by rfoundry (merge from a stock file) and by
 tools/codec_extract.py (the command line merge tool).
 
+A profile's "container" names the kind of file it is: absent, the "OutSecurityBin" container this module reads itself;
+"twin", the container of twinfw.py (docs/spec/codec-cs7000p.md), whose key is the file's own. Profiles, placement,
+the descriptor and the merge are the same for both.
+
 The codec is DVSI's and the radio maker's, not ours: nothing here stores it; it is read from the user's file on the
 user's machine and only ever written to a file or a radio the user chooses.
 """
@@ -16,6 +20,7 @@ import struct
 import zlib
 
 from . import codecmap
+from . import twinfw
 
 FLASH_BASE = 0x08000000      # internal flash: the bootloader, then the application from APP_BASE
 APP_BASE = 0x0800C000
@@ -24,7 +29,8 @@ KEY_LEN = 1024
 HEADER_LEN = 0x100
 MAGIC = b"OutSecurityBin"
 CODEC_SIG = 0x4FF0E92D
-# The descriptor the merge writes at the end of sector 11 (platform/stm32/codec_desc.h; docs/spec/codec-placement.md)
+# The descriptor the merge writes at the end of the last flash sector (platform/stm32/codec_desc.h;
+# docs/spec/codec-placement.md)
 DESC_ADDR = 0x080FFF80
 DESC_LEN = 0x80
 DESC_MAGIC = 0x43534544      # "DESC"
@@ -54,6 +60,14 @@ MD9600_CODEC = "md9600-s11v2"
 MD9600_CODEC_S11 = "md9600-s11"		# the MD-9600 layout before the application took sector 9
 # The count word of the single-segment container form (the MD-380 D002.032 file: one segment, count 0xFFFFFFFF)
 SINGLE_SEGMENT = 0xFFFFFFFF
+# A profile's "container": the kind of stock file. Absent means OUTSECURITY, the container this module parses;
+# TWIN is twinfw.py's. No code tests a radio's name for it
+OUTSECURITY = "outsecurity"
+TWIN = "twin"
+# Connect Systems CS7000 M17 PLUS (docs/spec/codec-cs7000p.md, "Key recovery"): the key of the maker's firmware
+# container, 256 bytes. It is the file's own key: the radio's bootloader has none (boards.py key_sha256 is None)
+CS7000P_KEY_SHA256 = "72315db3eff46e6856a1ca214236828b04cea9ee0f60bbd837dbfde71b0177c0"
+CS7000P_CODEC = "cs7000p-v90096-s7"
 
 # One profile per supported stock file, keyed by its SHA-256 (codec-dm1701.md and codec-md380.md, "Stock files" and
 # "Codec in the stock image"). Window = (flash address, length, SHA-256 of the decrypted bytes): "code" (its first word
@@ -71,6 +85,21 @@ SINGLE_SEGMENT = 0xFFFFFFFF
 # say where; its "placed" SHA-256s are None, and a copy is checked by taking it back to the stock windows' SHA-256s
 # (unplace). "former": the placements earlier releases wrote, each with the codec id they reported, so a radio that
 # still holds one is recognized and its codec read back from there and moved (docs/spec/codec-placement.md, "Layouts").
+#
+# A profile in the TWIN container (twinfw.py) has "segments" empty and instead "payload", the (offset, length) its
+# header must give, and "image", the (link address, length) of the image the payload holds twice; its "key_sha256" is
+# the container's own key, which no code may compare with a bootloader key or take for one. "app_base": where the
+# board's RadioFoundry image starts, for merge() and split_merged() (default APP_BASE). "tables" and "extra" are then
+# simply the windows after the code, in the order the merge lays them out.
+#
+# A placement with "join" writes every window after the code as one block: from "tables", "tables_len" bytes, each
+# window where "tables" and "extra" say, 0xFF between them, and the descriptor names the block as its one table
+# window (it holds five at most). "blank": the spans the codec map lists as not the codec's (code.holes, a table
+# window's holes) are 0xFF in what the merge writes. "gates": three CRC-32s that follow from the stock CRC-32s, the
+# map and the layout without any byte (gates()): of the rewritten code, of the same with only its ranges, and of
+# the joined block, each before a hole inside a range or a table is blanked. Every merge compares its bytes with
+# them before it blanks. Both "placed" SHA-256s of such a profile are set: a copy is checked by them and never taken
+# back to stock, since a blanked copy has lost its holes.
 PROFILES = {
     "0314efd4c62625661a2d693261ae682dff8a1b075a30620f3dbda4be065de32d": {
         "name": "DM-1701(CSV)-V02.06.bin",
@@ -2378,6 +2407,61 @@ PROFILES = {
             "placed": {"code": (0x9980744B, "77305ad9e631390a069d5026979679dc81c1f63ad08d1a39c36be2804baa3969"),
                        "tables": (0x9F244E33, "fdfabc8c26120a696e18cc5553e9cf222c2f92f8365ee57e80365969176ba03d")}}],
     },
+    # Connect Systems CS7000 M17 PLUS, the maker's DMR program V9.00.96 (docs/spec/codec-cs7000p.md), in the TWIN
+    # container. The maker's linker spread the codec: three code ranges with the maker's own code between them, two
+    # code islands and twenty table windows. "code" is the three ranges as one window at their stock distances (none
+    # of their mutual branches changes); "tables" is island 1 and "extra" island 2, then T1 to T20. The merge puts the
+    # code at the start of sector 7 plus its stock address modulo 16 and every further window right after the one
+    # before it, each at its own stock address modulo 16 (pack_after), joined into one block, and blanks every span
+    # the page calls not the codec's (the map's holes). The descriptor stays at 0x080FFF80, the end of sector 7.
+    # boards/cs7000p/vocoder_cs7000p.c pins both "placed" CRC-32s
+    "1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59": {
+        "name": "M17_PLUS_HOST_V9.00.96_20260303_1.bin",
+        "version": "V9.00.96",
+        "board": "cs7000p",
+        "container": TWIN,
+        "key_sha256": CS7000P_KEY_SHA256,
+        "codec_profile": CS7000P_CODEC,
+        "size": 0x1AD53E,
+        "segments": [],
+        "payload": (0x80, 0x1AD4BC),
+        "image": (0x08020000, 0xD6A56),
+        "app_base": 0x08000000,
+        "code": (0x080A4F24, 0x15C98, "a5efac225921575c7482c0e077cd321221730178b66eebe65b2913760b88feee"),
+        "tables": (0x080D9A10, 0x874, "739982dc4456bea1a8ce808981dfc2bd164d0f31bc06e7de000e2fc464da6f09"),	# island 1
+        "extra": [
+            (0x080F1768, 0xE4, "731a14b3839ad491b6477b88605cb76f8c3e983cd87606254777ef3ed4d528a3"),	# island 2
+            (0x080C469C, 0x74, "20aff10a1ab504491ad4f24ddfe6509b1392e12d1858f664daca436166333f8e"),	# T1
+            (0x080CE9E0, 0x12A0, "b1b5830c22bc96bdf789ba3e31d5f04a0ba0e9f69fe483276fcb807dd41a3118"),	# T2
+            (0x080D0D28, 0x1034, "a0b2e233da9493eee3c52eb11f8f9dd170e521456f8bad8c53e46fb277ffbb60"),	# T3
+            (0x080DF228, 0x460, "b1ad3ce2792698bc6dc02aa406645f2c396c798b5aa946e1091970cd04d5735e"),	# T4
+            (0x080E0770, 0x3C0, "11d823bd776976cad9b1ef621fdf2e996199dd2a909c9b08e95282dd807eaec3"),	# T5
+            (0x080E9ECC, 0x200, "d721117ac5b980a5784d209d11df9b049c832ed7b300500ac8a246ddb95c1a71"),	# T6
+            (0x080ED098, 0x1C8, "49ee00e5cbe72c87e92bceff45a69e65acafc305fc9b9fa56cecc9c2bd8fb297"),	# T7
+            (0x080F0974, 0x116, "1c95cee56c2cbb35f2babaa39f13627f4aa10c0cdbc3ddc0ae431e7917a35c35"),	# T8
+            (0x080F148C, 0x100, "df7b43d5d94331aa558573f3c2532efb13d889f35db49fd0330b91e1618ebdb8"),	# T9
+            (0x080F1924, 0xD8, "6f758b1089bc524dea3b5eea17814d9d27eb4ea0dafd83f3fd7750dc5f253232"),	# T10
+            (0x080F1E84, 0xA2, "a861d8a6c3cef15d7af5ffbb41054844e37cad763b0232e491cf532e432f7707"),	# T11
+            (0x080F21DC, 0x68, "39a89b07c20513d1e1acddd368a535c088df2aad0878d77c1a98a0b0e63297fe"),	# T12
+            (0x080F22A8, 0x64, "16b9306bfbbefa54b84599bdb59972079c7a06dd2e6fb648bf0bbb37e33bca27"),	# T13
+            (0x080F2814, 0x48, "163b99fc4146ab87620d3563e8560ab960c9f6c8c948c9279e5ab9e60e8da65d"),	# T14
+            (0x080F2B64, 0x40, "48c753062c1dec3ea8e84e977d6cc5ff90e556e28da221ca5d9b4cb9c5f0613d"),	# T15
+            (0x080F3638, 0x2C, "d31f87f8b0f589ac3bc5dc52e1ecd628c0eeb1cd4c38ee8a4e63321e3446190f"),	# T16
+            (0x080F4674, 0x20, "124bb7ae360bd4e6ab8226cc7024804223fb6aa10c3981ea288af423fcc790fb"),	# T17
+            (0x080F4B5C, 0x18, "6679872ccda55797e8d51692e9a59bcc0ac2c87eaff31736302976be446a6375"),	# T18
+            (0x080F4E04, 0x14, "0af022f016edcb28a3b29d60abdf42846456f22b8b4579a14b2069c7f6f31017"),	# T19
+            (0x080F5994, 0x1F, "cadd4de2615a7d73588a2a450d1765dda3d655123ed61cab2c099af019024154"),	# T20
+        ],
+        "placement": {"code": 0x080E0004, "tables": 0x080F5CA0, "tables_len": 0x3E83, "tag": 0x00090096,
+                      "join": True, "blank": True,
+                      "gates": {"code": 0xE24A92CF, "ranges": 0xB4A36974, "tables": 0x7BC061E9},
+                      "extra": [0x080F6518, 0x080F65FC, 0x080F6670, 0x080F7918, 0x080F8958, 0x080F8DC0, 0x080F918C,
+                                0x080F9398, 0x080F9564, 0x080F967C, 0x080F9784, 0x080F9864, 0x080F990C, 0x080F9978,
+                                0x080F99E4, 0x080F9A34, 0x080F9A78, 0x080F9AA4, 0x080F9ACC, 0x080F9AE4, 0x080F9B04]},
+        # From this tool's own run on the maker's file (tools/codec_extract.py --placed), after the three gates held
+        "placed": {"code": (0xA6BAF942, "59d7e923aa32594eb064e6b887e718c3d13e9be92eb5845af95b5dfc1b41d411"),
+                   "tables": (0x1DD4537C, "f729ac367feb3945852682a229ca045448af2433daacb1752b51ea697b8bd637")},
+    },
 }
 
 # Stock files that are not codec donors but are known DM-1701 files: the key can be derived from them (any of them;
@@ -2489,6 +2573,19 @@ NO_CODEC_FILES = {
 }
 
 
+# Files of a radio's maker that are known by SHA-256 and hold the codec in a layout nobody has mapped: named so the
+# user is told which file to use instead, never tried with another build's lengths or site list
+# (docs/spec/codec-cs7000p.md, "Firmware files")
+UNMAPPED_FILES = {
+    "690392a8930a19145db66b813b3dd75e69cd729da23c302442c7a6d4d8a7392c":
+        {"board": "cs7000p", "name": "M17_PLUS_HOST_V9.00.95_20260226.bin", "version": "V9.00.95"},
+    "347293b12682eb017a82a03278232d68d608a42d02ce78e2d4c36f9d3a49eda0":
+        {"board": "cs7000p", "name": "M17_PLUS_HOST_V9.00.09_20250110.bin", "version": "V9.00.09"},
+    "e16bf6f4eccde779a77b10300b7da2d40e4fa996b70962bf7380691a444c7a1e":
+        {"board": "cs7000p", "name": "M17PLUS_HOST_V9.00.05_20241029.bin", "version": "V9.00.05"},
+}
+
+
 class StockError(Exception):
     pass
 
@@ -2544,6 +2641,53 @@ def no_codec(data):
             "holds it" % (f["name"], f["why"]))
 
 
+def unmapped(data):
+    """Why a maker's file whose codec has not been mapped (UNMAPPED_FILES) can't be a codec source, naming the files
+    of its radio that can, or None for any other file"""
+    f = UNMAPPED_FILES.get(sha256(data))
+    if f is None:
+        return None
+    use = list(dict.fromkeys(p["name"] for p in PROFILES.values() if p["board"] == f["board"]))
+    return ("this file is %s (%s): the codec in this version is laid out differently and has not been mapped, so it "
+            "can't be taken from it. Use %s" % (f["name"], f["version"], " or ".join(use)))
+
+
+def unmapped_board(data):
+    """The board id of a file in UNMAPPED_FILES, or None"""
+    f = UNMAPPED_FILES.get(sha256(data))
+    return f["board"] if f else None
+
+
+def boot_file(data):
+    """Why a bootloader file in the TWIN container can't be used, or None for any other file. No hash is known for
+    such files: the header says what it is (twinfw.header_kind)"""
+    if data.startswith(MAGIC) or twinfw.header_kind(data) != "boot":
+        return None
+    return ("this is a bootloader file in the maker's container (its header gives the payload offset at 0x%02X): it "
+            "holds no firmware and no codec" % twinfw.BOOT_OFF_AT)
+
+
+def container_kind(data):
+    """The kind of stock container a file is in: OUTSECURITY by its magic, TWIN by its header's words
+    (twinfw.header_kind: a file of that kind that was cut short or padded still counts, and so does its bootloader
+    file), or None for anything else (a flash readout, an application image)"""
+    if data.startswith(MAGIC):
+        return OUTSECURITY
+    return TWIN if twinfw.header_kind(data) is not None else None
+
+
+def pack_after(end, wins, modulo=16):
+    """Where stock windows [(addr, length, ...)] go when each follows the one before it: the lowest address at or
+    above the end of the one before (the first: end) that has the window's stock address modulo 16, so every window
+    moves by a multiple of 16 (docs/spec/codec-placement.md). Returns the addresses"""
+    out = []
+    for w in wins:
+        at = end + (w[0] - end) % modulo
+        out.append(at)
+        end = at + w[1]
+    return out
+
+
 def windows(prof):
     """Every codec window of a profile in the stock file, in a fixed order: [(addr, length, sha256)], code first, then
     tables, then extra. Where the merge puts them in the radio: layout()."""
@@ -2575,13 +2719,16 @@ def _form(prof, form):
 
 def placed_windows(prof, form=None):
     """Where the merge puts a profile's codec: [(addr, length, sha256)], code first, then the table windows (the extra
-    ones at their stock address, unchanged, unless the placement moves them too). Without "placement", the stock windows.
+    ones at their stock address, unchanged, unless the placement moves them too; one block for a placement that joins
+    them). Without "placement", the stock windows.
     form: one of forms() (default: the current placement). A SHA-256 is None where the profile has none for the placed
     bytes (check_form checks those through the stock windows)"""
     form = _form(prof, form)
     if form is None:
         return windows(prof)
     pl, pd = form["placement"], form["placed"]
+    if pl.get("join"):		# the code, then every other window as one block
+        return [(pl["code"], prof["code"][1], pd["code"][1]), (pl["tables"], pl["tables_len"], pd["tables"][1])]
     tab = prof["tables"]
     extra = list(prof.get("extra", ()))
     if "extra" in pl:
@@ -2592,8 +2739,11 @@ def placed_windows(prof, form=None):
 
 def carve(prof, form=None):
     """The stock windows [(addr, length)] as a placement carves them, in placed_windows() order: the tables cut to
-    "tables_len" where the placement keeps only the codec's data"""
+    "tables_len" where the placement keeps only the codec's data. A placement that joins its windows carves every
+    stock window whole (windows() order: the block is made of them)"""
     pl = _form(prof, form)["placement"]
+    if pl.get("join"):
+        return [w[:2] for w in windows(prof)]
     tab = prof["tables"]
     return [prof["code"][:2], (tab[0], pl.get("tables_len", tab[1]))] + [x[:2] for x in prof.get("extra", ())]
 
@@ -2634,6 +2784,8 @@ def unplace(prof, form, parts):
     windows: [(stock address, bytes)] as the stock file holds them, each checked against the profile's stock SHA-256,
     or None when the copy isn't this profile's codec in that form. Nothing is trusted from the copy: every rewritten
     site must hold what the form says (codecmap.relocate) and every window must come out as stock has it"""
+    if _form(prof, form)["placement"].get("join"):
+        return None	# a joined, blanked copy has lost its holes: it is checked by its placed SHA-256s (check_form)
     m = code_map(prof)
     wins = carve(prof, form)
     if m is None or [a for a, _ in parts] != [a for a, _, _ in placed_windows(prof, form)]:
@@ -2666,14 +2818,101 @@ def check_form(prof, form, parts):
     return unplace(prof, form, parts) is not None
 
 
-def place(prof, segments):
-    """The decrypted stock windows [(stock address, bytes)] as the merge writes them (layout()). With "placement": the
-    code moved (codec map: its self references rewritten), the table window cut to the codec's data with the islands'
-    calls into the code re-encoded, the extra windows unchanged (or, where the placement says, every window moved as
-    its own block, codecmap.relocate), then the descriptor. Every result is checked against "placed": its SHA-256, and
-    its CRC-32 where the profile has no SHA-256."""
-    if not prof.get("placement"):
-        return list(segments)
+def _join_layout(prof, m, parts):
+    """The windows of a placement that joins them, moved: (bytes of each window at its placed address, the stock
+    addresses, the placed addresses), windows() order. Every site is checked for its stock value before it is
+    rewritten (codecmap.relocate), the result is taken back to stock once and compared, and the layout is checked:
+    the code below the block, each piece inside the block and after the one before, the last one ending where the
+    block ends, everything below the descriptor"""
+    pl = prof["placement"]
+    wins = carve(prof, {"placement": pl})
+    src = [a for a, _ in wins]
+    dst = [pl["code"], pl["tables"]] + list(pl["extra"])
+    parts = [bytes(d) for d in parts]
+    out = codecmap.relocate(m, wins, parts, src, dst)
+    if codecmap.relocate(m, wins, out, dst, src) != parts:
+        raise StockError("the moved codec doesn't come back to the stock windows")
+    lo, end = pl["tables"], pl["tables"] + pl["tables_len"]
+    if dst[0] + len(out[0]) > lo:
+        raise StockError("the placed code (to 0x%08X) overlaps the block of tables at 0x%08X" % (dst[0] + len(out[0]), lo))
+    at = lo
+    for a, d in zip(dst[1:], out[1:]):
+        if a < at:
+            raise StockError("the window placed at 0x%08X starts below the block or inside the window before it" % a)
+        at = a + len(d)
+    if at != end:
+        raise StockError("the last window ends at 0x%08X, the block at 0x%08X" % (at, end))
+    if end > DESC_ADDR:
+        raise StockError("the placed codec (to 0x%08X) reaches the descriptor" % end)
+    return out, src, dst
+
+
+def _block(pl, dst, pieces):
+    """The joined block: each piece at its placed address, 0xFF between them"""
+    block = bytearray(b"\xFF" * pl["tables_len"])
+    for a, d in zip(dst[1:], pieces):
+        block[a - pl["tables"]:a - pl["tables"] + len(d)] = d
+    return bytes(block)
+
+
+# A joined placement's gates, in the order they are compared: the key in "gates" and what a refusal calls the bytes
+GATES = (("code", "rewritten code"), ("ranges", "rewritten code's ranges"), ("tables", "joined tables"))
+
+
+def _gate_crcs(pl, m, out, dst):
+    return {"code": zlib.crc32(out[0]) & 0xFFFFFFFF,
+            "ranges": zlib.crc32(codecmap.ranges_only(out[0], m)) & 0xFFFFFFFF,
+            "tables": zlib.crc32(_block(pl, dst, out[1:])) & 0xFFFFFFFF}
+
+
+def gate_crcs(prof, segments):
+    """The three CRC-32s of a merge's bytes that a joined placement's "gates" must equal, {"code", "ranges",
+    "tables"}: of the code after its rewrites, of the same with everything outside its ranges 0xFF, and of the joined
+    block, each before any hole is blanked. segments: the stock windows [(addr, bytes)], as placed_parts() takes them"""
+    m = code_map(prof)
+    if m is None:
+        raise StockError("no codec map for %s: its code can't be moved" % prof["name"])
+    try:
+        out, _, dst = _join_layout(prof, m, [d for _, d in segments])
+    except codecmap.MapError as e:
+        raise StockError("can't move the codec: %s" % e)
+    return _gate_crcs(prof["placement"], m, out, dst)
+
+
+def gates(prof):
+    """A joined placement's three gates derived without any codec byte, {"code", "ranges", "tables"} as gate_crcs()
+    measures them: from the stock CRC-32s the codec map carries (the code, its ranges, the islands, the table
+    windows), the map's sites and the layout. CRC-32 is affine, so a rewritten window's follows from the stock one's
+    (codecmap.relocate_crcs, ranges_crc) and a concatenation's from its parts' (crc_join). None where the map lacks a
+    CRC-32"""
+    m = code_map(prof)
+    pl = prof["placement"]
+    wins = carve(prof, {"placement": pl})
+    src = [a for a, _ in wins]
+    dst = [pl["code"], pl["tables"]] + list(pl["extra"])
+    known = {(i["start"], i["len"]): codecmap.stock_crc(i) for i in m["islands"]}
+    known.update({(w["flash"], w["len"]): codecmap.stock_crc(w) for w in m["table_windows"]})
+    crcs = [codecmap.stock_crc(m["code"])] + [known.get(w) for w in wins[1:]]
+    ranges = codecmap.ranges_crc(m, wins, src, dst)
+    if ranges is None or any(c is None for c in crcs):
+        return None
+    moved = codecmap.relocate_crcs(m, wins, crcs, src, dst)
+    parts, at = [], pl["tables"]
+    for a, (_, n), c in zip(dst[1:], wins[1:], moved[1:]):
+        if a > at:
+            parts.append((b"\xFF" * (a - at), a - at))
+        parts.append((c, n))
+        at = a + n
+    return {"code": moved[0], "ranges": ranges, "tables": codecmap.crc_join(parts)}
+
+
+def placed_parts(prof, segments):
+    """The decrypted stock windows [(stock address, bytes)] of a profile with "placement" as the merge writes them,
+    [(address, bytes)] in placed_windows() order, without the descriptor and before the check against "placed" (place
+    makes it): the code moved (codec map: its self references rewritten), the table window cut to the codec's data
+    with the islands' calls into the code re-encoded, the extra windows unchanged; or, where the placement says, every
+    window moved as its own block (codecmap.relocate); or these joined into one block ("join": the bytes are
+    compared with the placement's "gates" first, then the map's holes are filled with 0xFF where it says "blank")"""
     pl = prof["placement"]
     m = code_map(prof)
     if m is None:
@@ -2681,7 +2920,25 @@ def place(prof, segments):
     (_, code), (tab_addr, tables) = segments[0], segments[1]
     extra = list(segments[2:])
     try:
-        if "extra" in pl:
+        if pl.get("join"):
+            out, src, dst = _join_layout(prof, m, [d for _, d in segments])
+            moved, tab, tab_addr, extra = out[0], _block(pl, dst, out[1:]), pl["tables"], []
+            want = pl.get("gates")
+            if want:		# the bytes against what follows from the stock CRC-32s and the map, on every merge
+                got = _gate_crcs(pl, m, out, dst)
+                for k, what in GATES:
+                    if got[k] != want[k]:
+                        raise StockError("the %s's CRC-32 0x%08X is not the 0x%08X that follows from the map"
+                                         % (what, got[k], want[k]))
+            if pl.get("blank"):
+                code_holes, table_holes = codecmap.holes(m), codecmap.table_holes(m)
+                if not code_holes and not table_holes:
+                    raise StockError("the placement blanks the codec map's holes, and the map lists none")
+                if set(table_holes) - set(src[1:]):	# a hole nobody would blank: the map and the profile disagree
+                    raise StockError("the codec map lists a hole in a table window the profile doesn't carve")
+                moved = codecmap.blank(moved, code_holes)
+                tab = _block(pl, dst, [codecmap.blank(d, table_holes.get(a, [])) for a, d in zip(src[1:], out[1:])])
+        elif "extra" in pl:
             wins = carve(prof)
             parts = [code, tables[:wins[1][1]]] + [d for _, d in extra]
             out = codecmap.relocate(m, wins, parts, [a for a, _ in wins], [a for a, _, _ in placed_windows(prof)])
@@ -2697,14 +2954,24 @@ def place(prof, segments):
                 raise StockError("a branch into the code lies outside the tables the merge keeps")
     except codecmap.MapError as e:
         raise StockError("can't move the codec: %s" % e)
+    return [(pl["code"], moved), (tab_addr, tab)] + extra
+
+
+def place(prof, segments):
+    """The decrypted stock windows [(stock address, bytes)] as the merge writes them (layout()). With "placement": the
+    windows as placed_parts() gives them, then the descriptor. Every result is checked against "placed": its SHA-256,
+    and its CRC-32 where the profile has no SHA-256."""
+    if not prof.get("placement"):
+        return list(segments)
+    parts = placed_parts(prof, segments)
     crcs = _crcs(forms(prof)[0])
-    for i, ((_, n, want), got, what) in enumerate(zip(placed_windows(prof), [moved, tab] + [d for _, d in extra],
-                                                      ["code", "tables"] + ["table 0x%08X" % a for a, _ in extra])):
+    for i, ((_, n, want), (_, got), what) in enumerate(zip(placed_windows(prof), parts,
+                                                           ["code", "tables"] + ["table 0x%08X" % a for a, _ in parts[2:]])):
         if want is not None and sha256(got) != want:
             raise StockError("the moved %s doesn't match the profile (sha256 %s)" % (what, sha256(got)))
         if want is None and zlib.crc32(got) != crcs[i]:
             raise StockError("the moved %s doesn't match the profile (crc32 0x%08X)" % (what, zlib.crc32(got)))
-    return [(pl["code"], moved), (tab_addr, tab)] + extra + [(DESC_ADDR, descriptor(prof))]
+    return parts + [(DESC_ADDR, descriptor(prof))]
 
 
 def from_form(prof, form, parts):
@@ -2744,8 +3011,10 @@ def find_profile(stock, profiles=None, board=None):
     digest = sha256(stock)
     prof = (profiles.get(profile_key(digest, board)) if board else None) or profiles.get(digest)
     if prof is None:
-        if no_codec(stock):
-            raise StockError(no_codec(stock))
+        # a file with a profile is never judged by its header; one without gets its own reason where it has one
+        why = no_codec(stock) or unmapped(stock) or boot_file(stock)
+        if why:
+            raise StockError(why)
         known = KNOWN_FILES.get(digest)
         raise StockError("%s (sha256 %s...), not a supported codec source. Supported: %s"
                          % ("this file is " + known if known else "unknown stock file", digest[:16],
@@ -2753,14 +3022,17 @@ def find_profile(stock, profiles=None, board=None):
     return prof
 
 
-def extract(stock, key, profiles=None, board=None):
-    """Check the stock file and return (profile, segments): every codec window decrypted and checked, placed as the
-    merge writes them, [(flash address, bytes)] in layout() order (segments[0] is the code). board: the radio being
-    flashed; another radio's file is refused before it is decrypted with this radio's key, which could only fail as
-    a window mismatch that blames the key."""
+def stock_segments(stock, key, profiles=None, board=None):
+    """Check the stock file and return (profile, windows): every codec window decrypted and checked, as the stock
+    file holds them, [(stock address, bytes)] in windows() order. board: the radio being flashed; another radio's
+    file is refused before it is decrypted with this radio's key, which could only fail as a window mismatch that
+    blames the key. A file in a container that carries its own key (TWIN) is decrypted with that key, derived from
+    the file: key is not used for it."""
     prof = find_profile(stock, profiles, board)
     if board is not None and prof["board"] != board:
         raise StockError("%s is a firmware file for the %s, not the %s" % (prof["name"], prof["board"], board))
+    if prof.get("container") == TWIN:
+        return prof, twinfw.carve(stock, prof, windows(prof), file_key(stock, prof), code_map(prof))
     if prof.get("file_radio"):
         key = file_key(stock, prof)
     if len(stock) != prof["size"]:
@@ -2778,6 +3050,13 @@ def extract(stock, key, profiles=None, board=None):
         out.append((addr, plain))
     if struct.unpack_from("<I", out[0][1], 0)[0] != CODEC_SIG:
         raise StockError("codec first word is not 0x%08X" % CODEC_SIG)
+    return prof, out
+
+
+def extract(stock, key, profiles=None, board=None):
+    """Check the stock file (stock_segments) and return (profile, segments): every codec window decrypted and
+    checked, placed as the merge writes them, [(flash address, bytes)] in layout() order (segments[0] is the code)."""
+    prof, out = stock_segments(stock, key, profiles, board)
     return prof, place(prof, out)
 
 
@@ -2791,13 +3070,18 @@ def codec_only(prof):
 
 
 def file_key(stock, prof):
-    """The key a codec source for another radio (file_radio) is encrypted with, derived from the file itself"""
+    """The key a stock file is encrypted with where that is not the bootloader key of the radio being flashed, derived
+    from the file itself: a codec source for another radio (file_radio), or a file in a container with a key of its
+    own (TWIN)"""
+    if prof.get("container") == TWIN:
+        return twinfw.derive_key(stock, prof["key_sha256"])
     return derive_key(stock, prof["key_sha256"])
 
 
 def is_container(data):
-    """True for a stock firmware file (the OutSecurityBin container); a flash readout is plain bytes."""
-    return data.startswith(MAGIC)
+    """True for a stock firmware file (container_kind: either container, whole or not); a flash readout is plain
+    bytes."""
+    return container_kind(data) is not None
 
 
 def from_flash(flash, base=FLASH_BASE, profiles=None):
@@ -2907,58 +3191,60 @@ def codec_segments(prof, segments):
 
 
 def merge(image, prof, segments):
-    """The built application image (plain, from 0x0800C000) with every codec segment (extract()) written at its
-    address, as one contiguous image (0xFF between the parts)."""
-    if image.startswith(MAGIC):
-        raise StockError("the image is an official firmware file; pass the RadioFoundry build (rfoundry_%s.bin)"
-                         % prof.get("board", "dm1701"))
+    """The built application image (plain, from the board's application base: the profile's "app_base", default
+    APP_BASE) with every codec segment (extract()) written at its address, as one contiguous image (0xFF between the
+    parts). The same inputs give the same bytes."""
+    base = prof.get("app_base", APP_BASE)
+    board = prof.get("board", "dm1701")
+    if image.startswith(MAGIC) or twinfw.header_kind(image) is not None:
+        raise StockError("the image is an official firmware file; pass the RadioFoundry build (rfoundry_%s.bin)" % board)
     first = min(a for a, _ in segments)
-    if APP_BASE + len(image) > first:
+    if base + len(image) > first:
         raise StockError("the application image ends at 0x%08X, inside the codec window at 0x%08X: rebuild with "
-                         "the window reserved (boards/%s/%s.ld)" % (APP_BASE + len(image), first,
-                                                                    prof.get("board", "dm1701"),
-                                                                    prof.get("board", "dm1701")))
+                         "the window reserved (boards/%s's linker script)" % (base + len(image), first, board))
     end = max(a + len(d) for a, d in segments)
     if end > FLASH_END:
         raise StockError("merged image would pass the end of flash")
-    out = bytearray(b"\xFF" * (end - APP_BASE))
+    out = bytearray(b"\xFF" * (end - base))
     out[0:len(image)] = image
     for a, d in segments:
-        out[a - APP_BASE:a - APP_BASE + len(d)] = d
+        out[a - base:a - base + len(d)] = d
     return bytes(out)
 
 
 def split_merged(image, profiles=None):
-    """The reverse of merge(): (application image, profile, codec segments) when the image carries a codec where a
-    profile's layout() puts it, None when it holds none (a plain image, which the planner checks as usual). A merged
-    image has no manifest, so the codec windows are checked by their SHA-256 (which also names the radio) and every
-    byte outside the application and the windows must be 0xFF, as merge() leaves it. Raises StockError for an image
-    with the codec signature where a profile puts its code whose windows don't match that profile."""
+    """The reverse of merge(): (application image, profile, codec segments) when the image (from the profile's
+    application base, as merge() takes it) carries a codec where a profile's layout() puts it, None when it holds none
+    (a plain image, which the planner checks as usual). A merged image has no manifest, so the codec windows are
+    checked by their SHA-256 (which also names the radio) and every byte outside the application and the windows must
+    be 0xFF, as merge() leaves it. Raises StockError for an image with the codec signature where a profile puts its
+    code whose windows don't match that profile."""
     profiles = PROFILES if profiles is None else profiles
     candidates = []
     for prof in profiles.values():
         wins = layout(prof)
+        base = prof.get("app_base", APP_BASE)
         first = min(a for a, _, _ in wins)
-        if APP_BASE + len(image) <= first:
+        if base + len(image) <= first:
             continue
-        code = wins[0][0] - APP_BASE
+        code = wins[0][0] - base
         if len(image) >= code + 4 and struct.unpack_from("<I", image, code)[0] == CODEC_SIG:
             candidates.append(prof)	# looks merged: a mismatch below is an error, not a plain image
-        if APP_BASE + len(image) < max(a + n for a, n, _ in wins):
+        if base + len(image) < max(a + n for a, n, _ in wins):
             continue
-        segs = [(a, image[a - APP_BASE:a - APP_BASE + n]) for a, n, _ in wins]
+        segs = [(a, image[a - base:a - base + n]) for a, n, _ in wins]
         if prof.get("placement"):
             if sha256(segs[-1][1]) != wins[-1][2] or not check_form(prof, forms(prof)[0], segs[:-1]):
                 continue
         elif any(sha256(d) != want for (_, d), (_, _, want) in zip(segs, wins)):
             continue
-        rest = bytearray(image[first - APP_BASE:])
+        rest = bytearray(image[first - base:])
         for a, d in segs:
             rest[a - first:a - first + len(d)] = b"\xFF" * len(d)
         if rest.count(0xFF) != len(rest):
             raise StockError("the image holds the %s codec, but also other data between or after its windows: not "
                              "an image rfoundry merge (or the build's codec step) wrote" % prof["codec_profile"])
-        return image[:first - APP_BASE].rstrip(b"\xFF"), prof, segs
+        return image[:first - base].rstrip(b"\xFF"), prof, segs
     if candidates:
         raise StockError("the image has a codec at 0x%08X, but not the one from %s: a merged image must be made from "
                          "a supported stock file" % (layout(candidates[0])[0][0], candidates[0]["name"]))
@@ -3093,8 +3379,11 @@ def build_synthetic_stock(key, rng, profile_sha=None):
     """A synthetic stock file with the layout of a real profile (default the DM-1701 V02.06 CSV), for tests:
     random key-independent content with the statistics of a firmware image (mostly zero bytes), random codec windows
     at the stock addresses. A codec-only profile (file_radio) gets key as its own key. Returns (stock bytes, profiles
-    dict for it, code, tables)."""
+    dict for it, code, tables). A profile in the TWIN container gets a file of that kind (twinfw.build_synthetic:
+    its key is the first 256 bytes of key, its codec holds every site of the real map)."""
     real = PROFILES[profile_sha or "0314efd4c62625661a2d693261ae682dff8a1b075a30620f3dbda4be065de32d"]
+    if real.get("container") == TWIN:
+        return twinfw.build_synthetic(key[:twinfw.KEY_LEN], rng, real, code_map(real))
     segs = real["segments"]
     payload_len = sum(length for _, length in segs)
     # firmware-like plain text: about 60 % zero bytes, the rest random
