@@ -387,9 +387,10 @@ the saved copy or the stock file. That is the cost of the rule: after a cut upda
 a user with neither a saved copy nor the file is refused until one is there.
 
 **What the tools cannot rule out.** Another program (a generic DFU tool) can leave a torn codec sector and then
-write a vector table. RadioFoundry then faults at every start, in the boot check, until an install through the ROM
-bootloader with `--stock` or `--codec none` writes or erases the sector; the ROM bootloader stays reachable. The
-firmware does not guard the boot check's flash reads against this.
+write a vector table. The firmware's boot check reads the codec's flash under a guard first (a read that faults is a
+refusal, `platform/stm32/hrc/vocoder.c` on a family with flash ECC), so RadioFoundry starts without the codec (FM
+works) until an install through the ROM bootloader with `--stock` or `--codec none` writes or erases the sector.
+Untested on a radio. Anything else that reads the sector (a codec read-back, `dump`) still faults there.
 
 ## The release workflow
 

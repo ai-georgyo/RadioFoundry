@@ -85,6 +85,9 @@ static inline void stm32h7_backup_unlock(void)
 #define STM32_FLASH_HI			0x08200000u
 #define STM32_IS_RAM(a) \
 	(((a) >= 0x20000000u && (a) < 0x20020000u) || ((a) >= 0x24000000u && (a) < 0x24080000u))
+// hrc/vocoder.c: every 32-byte word of the program flash carries an error correction code, and a double error on a
+// read is a bus fault (docs/spec/hardware-cs7000p.md 2.3), so the codec's flash is read under a guard first
+#define STM32_FLASH_ECC			1
 // The reset cause: RCC_RSR (RM0433 8.7.39)
 #define STM32_RESET_FLAGS		RCC->RSR
 #define STM32_RESET_FLAGS_CLEAR()	(RCC->RSR |= RCC_RSR_RMVF)

@@ -149,11 +149,12 @@ word carries an error correction code. A single wrong bit is corrected. A double
 wrong data. A word that a power cut left half erased or half programmed can read so. A whole written word reads
 clean, and so, it is assumed, does erased flash: the install route relies on that when its probe reads the first
 sector after a cut install (untested on a radio). The firmware has no handler that recovers (`USE_FLASH_ECC` is 0):
-a bus fault is a crash record and a restart.
+a bus fault is a crash record and a restart. The one exception is the codec's boot check: it reads its flash under a
+guard first (below).
 
 | Read of program flash | When | With a torn word there |
 |---|---|---|
-| The boot check of the codec (`present()` in `platform/stm32/hrc/vocoder.c`): the descriptor, then every placed byte of sector 7 for its CRC-32, with plain loads | at every start, with DMR built | a fault at every start: the image never comes up |
+| The boot check of the codec (`present()` in `platform/stm32/hrc/vocoder.c`): first every flash word of sector 7 under a guard (`flash_reads()`: at priority -1 with data bus faults ignored, `CCR.BFHFNMIGN`, one 32-byte word at a time), then the descriptor and every placed byte for its CRC-32 | at every start, with DMR built | the guard refuses the sector: the radio starts without the codec (no DMR voice, FM works) until an install through the ROM bootloader writes or erases it. Untested on a radio: no torn word has been read |
 | The codec read-back over the debug link (READ_MEM) | when a tool saves the codec | a restart instead of an answer |
 | `dump` or `peek` over the debug link | on request | the same |
 

@@ -324,14 +324,15 @@ bus fault on this chip (RM0433 4.7.7). A `dump` or `peek` across such a word res
 instead of answering. Install again; a whole image leaves no such word in the range it wrote.
 
 The same limit and the codec ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 2.3): the boot check reads the
-descriptor and all 105243 placed bytes of sector 7 at every start, so a torn word there would be a fault at every
-start, not a failed CRC-32.
+descriptor and all 105243 placed bytes of sector 7 at every start. It first reads every flash word of the sector
+under a guard, so a torn word there is meant to cost DMR voice ("No codec"), not the start-up. Untested: no torn
+word is made on purpose.
 
 | Look for | Proves | If not |
 |---|---|---|
 | Nothing: **nobody cuts the power during an install to see this.** What stands in for the test is the installers' rule, run against the fake loader with a cut at every block of sector 7: sector 7 is left as it is only at a radio that is not read protected and holds a vector table, which every install writes last. Otherwise it is written whole or erased whole | (host tests only) | |
-| After an install that was cut by accident (USB or power): the same command again. A merge runs whole. A keep is void ("the radio holds no vector table ..."): rfoundry merges from its saved copy of the codec or from `--stock FILE`, or refuses and names `--stock FILE` and `--codec none`. **Record what it printed** | the rule on a radio, without provoking it | The radio then faults at every start (a crash record with a bus fault, a restart loop, or nothing on USB): loader mode and `--codec none` erase sector 7; if it starts after that, the codec's sector was the cause. Record it |
-| **The limit that stays.** A sector 7 left torn by another program (a generic DFU tool) under a vector table that program wrote: RadioFoundry faults at every start until an install through the ROM loader with `--stock FILE` or `--codec none`. The firmware does not guard the boot check's reads. Use rfoundry or the web flasher only | not checked on purpose | |
+| After an install that was cut by accident (USB or power): the same command again. A merge runs whole. A keep is void ("the radio holds no vector table ..."): rfoundry merges from its saved copy of the codec or from `--stock FILE`, or refuses and names `--stock FILE` and `--codec none`. **Record what it printed** | the rule on a radio, without provoking it | The radio then faults at every start (a crash record with a bus fault, a restart loop, or nothing on USB), or starts with no codec after a merge: loader mode and `--codec none` erase sector 7; if it starts after that, the codec's sector was the cause. A restart loop means the boot check's guard did not hold: **record the crash record** |
+| **The limit that stays.** A sector 7 left torn by another program (a generic DFU tool) under a vector table that program wrote: the boot check's guard should start RadioFoundry without the codec, until an install through the ROM loader with `--stock FILE` or `--codec none`; a codec read-back or a `dump` there still faults. Use rfoundry or the web flasher only | not checked on purpose | |
 
 ## 4. Power, the knob, the expander
 
