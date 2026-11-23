@@ -10,7 +10,7 @@ the board gives the addresses in its `hal_flash_map_t` (`board.flash->map`) and 
 | Section | Topic |
 |---|---|
 | 1, 2, 3 | Areas, settings records, fields and the append-only rule |
-| 4, 5 | The sector journal, the foreign region guard |
+| 4, 4.1, 5 | The sector journal, factory ranges, the foreign region guard |
 | 6 | Testing |
 
 ## 1. Areas
@@ -28,6 +28,8 @@ settings start from the defaults at every boot and nothing can be written.
 | `calibration_addr` / `_size` | the calibration working copy (the CPS window, `cps-protocol.md` 2.4); 0 when the board has none |
 | `native_addr` / `native_size` | reserved for the native codeplug (`codeplug-native.md` 4) |
 | `staging_addr` / `staging_size` | a new codeplug image waits here, checked, before it replaces the stored one (the TFTP write, `tftp.md` 4); never written by the open-firmware CPS (above `openfw_end`); 0 when the board has none |
+| `satellite_addr` / `satellite_size` | satellite TLE data (`satellite.md` 6), apart from the staging area; 0 when the board has none |
+| `factory[]` | up to `HAL_FLASH_FACTORY_MAX` (4) byte ranges of the maker's data (its factory calibration, its records): bytes no writer of ours changes (4.1). Read only on a board built with `STORAGE_FACTORY_KEEP`. Size 0 ends the list; empty on every other board. The last field of the map |
 
 The settings ring and journal go where no open-firmware tool reads or writes, and the CPS shim refuses to write there.
 Each board fixes the values in its `hal_flash_map_t`, and its hardware page lists the map. The usual order, low to
@@ -279,6 +281,71 @@ waiters. A give alone only makes a lower-priority waiter ready, and the writer t
 the waiter would wait out the whole run (6 s for a zone import on an SPI NOR radio). The last give therefore yields
 one tick when a task is waiting: each waiter waits one record at most.
 
+### 4.1 Factory ranges
+
+A board whose maker keeps data of its own on the data flash (a factory calibration, records the maker's tools read)
+lists those bytes in `hal_flash_map_t.factory` and builds with `-DSTORAGE_FACTORY_KEEP=1` (`MCU_DEFS` in its
+`board.mk`, as `STORAGE_CLAIM_FIRST`; the default 0 is in `hal_flash.h`). A range may lie inside an open-firmware
+image and share its sectors with codeplug bytes. Which boards list any: [feature-matrix.md](../feature-matrix.md) and
+each board's hardware page.
+
+Without the define the helpers `hal_flash_factory_unit()` and `hal_flash_factory_bytes()` are constant false and
+nothing below is compiled: core/storage, the satellite store and the STM32 flash glue are the code they were before the
+ranges existed. Only the data grew, by the map's `factory` field and the `hal_flash_t.factory_grant` pointer, each the
+last field of its struct, so no other field moved. `storageJournalLogTest` (6) holds the journal's flash operations to
+that.
+
+| Term | Means |
+|---|---|
+| factory bytes | the bytes of the listed ranges |
+| kept sector | a sector holding factory bytes (`hal_flash_factory_unit(map, STORAGE_SECTOR, ...)`) |
+| whole kept sector | a kept sector of factory bytes only |
+
+**The list's checks.** `storage_init()` checks the list before it reads anything. A list that fails leaves the
+region none (`storage.region=none`): nothing of the core is written anywhere, because a wrong list says the map is
+wrong. One log line says so.
+
+| Rule | Why |
+|---|---|
+| the ranges of size other than 0 first, then entries of all zeros | size 0 ends the list |
+| ascending and apart (at least one byte between two ranges) | adjacent ranges are one range; one form for every list |
+| inside the chip | |
+| every sector a range touches clear of the settings ring, the journal, the calibration window and the native, staging and satellite areas | those areas are erased whole |
+| at most 4048 factory bytes (`STORAGE_SECTOR` - 48) in a kept sector that also holds other bytes; a whole kept sector has no limit | the journal's J0 carries a kept sector's factory bytes beside its header when that sector is rewritten |
+| no `replace` op on the flash | a copy-on-write flash replaces a sector in one step from one buffer |
+
+**Writes.** In this version no rewrite carries factory bytes over yet, so no kept sector is erased or programmed by
+anything of the core:
+
+| Writer | On a kept sector |
+|---|---|
+| `storage_sector_write` | the sector holds exactly `data`: skipped, true. Else refused, false: nothing erased, the journal not touched |
+| `storage_write` (patch and sector paths, and an erase, `buf` NULL) | a range that touches a kept sector: true when the flash already holds it (or, for an erase, is blank), else refused whole, before J0 or any sector is touched |
+| the replay at `storage_init` | a pending entry whose target is a kept sector (only a firmware without the list can leave one) is refused where the core erases and programs (below): the target stays as it is, the entry stays pending, at every start. A sector entry whose target already equals J1 is marked done |
+| settings ring, journal, claim, native erase | their areas are clear of every kept sector (the checks) |
+| every erase and program of `core/storage` (`wr()`, `er()`) | refused in a kept sector, once more at the one place they reach the driver: a path that missed a rule above, or a read that failed between a check and a write, never reaches the maker's bytes (counted in `storage.errors` too) |
+| `storage_staging_size()`, the satellite store | an area touching a kept sector is none (each is also asked for apart from `storage_init`) |
+
+Refusals are counted in `storage_stats_t.factory_refused`.
+
+**Driver backstop.** A flash driver may offer `hal_flash_t.factory_grant(unit)`: it then refuses every erase and
+program in an erase unit holding factory bytes, nothing sent to the chip, except inside the one unit core/storage
+granted for a rewrite that carries the bytes over (`UINT32_MAX`, or any address that doesn't start a unit, closes it).
+Core/storage grants none yet.
+
+| Driver | Backstop |
+|---|---|
+| STM32 SPI NOR glue (`platform/stm32/spi_flash`) | under `STORAGE_FACTORY_KEEP`: the units holding factory bytes of the board's map and of its small map (whichever the chip holds, or neither); with `SPI_NOR_ADDR4` also every address whose low 24 bits land there, which a slip to 3-byte addresses would reach, granted or not. Counted (`stm32_spi_flash_factory_refusals()`), the first one logged |
+| HR_C7000 platform | its own write floor (`hrc_flash_cfg_t.write_floor`) |
+| others | none |
+
+**Reads.** The debug link's STORAGE READ also takes a span inside one factory range (`debuglink.md` 3.13), on a list
+`storage_init()` accepted, in a foreign region too (before a claim), so a host can compare the maker's bytes with a
+backup.
+
+**Not protected:** a byte the maker keeps that the board doesn't list, and anything a tool writes past the firmware
+(a direct chip write).
+
 ## 5. Foreign region guard
 
 The flash of a radio that ran other firmware may hold that firmware's data where our settings ring and journal go.
@@ -387,6 +454,7 @@ the other firmware's layout is known: the utility's channel step after it recogn
 | `settingsTest.c` `test_foreign` | another firmware's bytes in the ring / J0 / J1: foreign, no flash operation at all, writes refused, RAM defaults, the read window's limits; claim erases and saves; junk beside our record, our J0 header beside junk, a cut inside a journal rewrite after the mark, a cut inside the first mark: ours |
 | `cpsTest.c` `test_foreign` | a foreign region: reads answered, `X 1` and codeplug edits refused, flash unchanged; after a claim, CPS writes work |
 | `tests/host/storageClaimFirstTest.c` | the store built with `STORAGE_CLAIM_FIRST=1`: a blank flash, a blank region with other data around it and a region with other bytes are all foreign, with no program or erase on any sector, every write refused and counted, RAM defaults; the claim touches the region only and leaves the mark, and the next start is ours; our journal header alone is ours and nothing is marked; a power cut at every flash operation of the claim and the save after it (ours once the mark is whole, else foreign with nothing written at that start, and a second claim works); once claimed, a cut at every operation of the saves that erase a ring sector (two laps of a two-sector ring) and inside both kinds of journal rewrite never makes the region foreign |
-| `tests/host/storageJournalLogTest.c` | the journal's flash operations pinned: a scripted run (sector writes and the skip, patches inside a sector, across a sector end and of the largest size, the sector path, an erase, the native area's erase, a foreign region and its claim, `storage_init` on every J0 and J1 shape of the format, a power cut at the start, one unit in, the middle and the end of every program and erase of each, then a start and one more write), every operation, result, stats and the flash hashed against a golden value taken from the storage.c of commit 51dedf59 |
+| `tests/host/storageJournalLogTest.c` | the journal's flash operations pinned: a scripted run on a map with no factory ranges (sector writes and the skip, patches inside a sector, across a sector end and of the largest size, the sector path, an erase, the native area's erase, a foreign region and its claim, `storage_init` on every J0 and J1 shape of the format, a power cut at the start, one unit in, the middle and the end of every program and erase of each, then a start and one more write), every operation, result, stats and the flash hashed against a golden value taken from the storage.c before the factory ranges. Built as every board builds storage.c and again with `STORAGE_FACTORY_KEEP=1` (`storageJournalLogKeepTest`): one hash |
+| `tests/host/storageFactoryTest.c` | `STORAGE_FACTORY_KEEP=1`, a map with a range inside a sector, two whole kept sectors and a range across a sector end, on the simulated NOR counting erases and programs per sector: every rule of the list's checks (region none, not one read, program or erase, one log line) and lists that pass at each limit; `replace` with a list refused; `hal_flash_factory_unit` and `_bytes` at the edges; `storage_sector_write` and `storage_write` (patch path, sector path, erase) refused on a kept sector, also when only a factory byte differs, and true when the flash holds the bytes; free sectors between written as ever; a sector entry and a patch entry left for a kept sector refused at every start, also with a power cut inside the replay, and finished under a map without the list; a claim; the debug read inside a range; the staging and satellite areas; no kept sector erased or programmed in any of them. Then the STM32 glue on a fake SPI NOR driver: the backstop with and without a grant, a grant off a unit's start, both maps; built again with `SPI_NOR_ADDR4` (`storageFactoryAddr4Test`): the address 16 MB up, a grant of it included |
 | `tests/hil/test_cps.py` `test_storage_region` | on the radio: the region state matches the view, reads inside the window work and outside it are refused (skips with instructions when foreign) |
 | `tests/hil/test_cps.py` `test_settings_survive_restart` | opt-in `--allow-reboot`: the channel position survives a restart |

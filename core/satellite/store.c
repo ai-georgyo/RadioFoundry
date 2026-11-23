@@ -132,7 +132,8 @@ static const hal_flash_map_t *sat_map(void)
 	    (m->satellite_addr % STORAGE_SECTOR) != 0u || (m->satellite_size % STORAGE_SECTOR) != 0u ||
 	    board.flash == NULL || board.flash->read == NULL || board.flash->write == NULL || board.flash->erase == NULL ||
 	    board.flash->erase_size != STORAGE_SECTOR || m->satellite_addr > board.flash->size ||
-	    m->satellite_size > board.flash->size - m->satellite_addr) {
+	    m->satellite_size > board.flash->size - m->satellite_addr ||
+	    hal_flash_factory_unit(m, STORAGE_SECTOR, m->satellite_addr, m->satellite_size)) {
 		return NULL;
 	}
 	return m;

@@ -628,7 +628,7 @@ and the claim of a foreign region.
 | Op | Request | Reply after the status |
 |---|---|---|
 | 0 INFO | none | region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then address u32 + size u32 for the settings ring, the journal, the calibration copy, then flags u8 (bit 0: claim first, below; other bits 0) |
-| 1 READ | address u32, length u16 (1-1000) | address u32, the bytes. Only inside the three ranges of INFO, else `DL_ST_REFUSED`. Taken under the storage lock |
+| 1 READ | address u32, length u16 (1-1000) | address u32, the bytes. Only inside one of the three ranges of INFO or, on a board built with `STORAGE_FACTORY_KEEP`, inside one factory range of the flash map (`hal_flash_map_t.factory`, `settings-store.md` 4.1; not after `storage_init` refused the list), else `DL_ST_REFUSED`. INFO doesn't list the factory ranges: a host takes them from the board registry. Taken under the storage lock |
 | 2 CLAIM | token u32: the chip UID's low word (INFO_CHIP offset 7) | reason u8. `DL_ST_REFUSED` with reason 1 (bad token) or 4 (no chip info); `DL_ST_UNAVAILABLE` when the region isn't foreign. On OK the housekeeping task erases the region (10 sector erases, up to about 4 s, during which it does not watch the power knob); poll `storage.region` |
 
 Every op answers `DL_ST_UNAVAILABLE` on a radio with no flash map: a memory chip smaller than the board's map needs

@@ -9,12 +9,14 @@
 // result, the stats and the flash after each step go into one 64-bit FNV-1a hash, compared with the golden value
 // below.
 //
-// The golden value was produced once from the storage.c of commit 51dedf59:
+// The golden value was produced once from the storage.c before the factory ranges existed (commit 51dedf59):
 //   git show 51dedf59:core/storage/storage.c > $TMPDIR/storage_before.c
 //   make -C tests/host -B storageJournalLogTest JOURNAL_LOG_STORAGE=$TMPDIR/storage_before.c
 //   tests/host/storageJournalLogTest		(prints the hash)
-// The Makefile builds this test with today's storage.c. A change to the journal that moves any flash operation fails
-// here; one that means to has to say so by changing the golden value, with the reason in its commit.
+// The Makefile builds this test with today's storage.c twice, with STORAGE_FACTORY_KEEP 0 (every board but those that
+// keep the maker's bytes) and 1 (those, on a map whose list is empty): both must give the same hash. A change to
+// the journal that moves any flash operation fails here; one that means to has to say so by changing the golden
+// value, with the reason in its commit.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -410,6 +412,7 @@ int main(void)
 	CHECK(seen_cuts == cut_points && seen_cuts > 250);
 	CHECK(seen_replays > 150 && seen_writes > 400 && seen_foreign > 20);
 	CHECK(hash == GOLDEN);
-	printf("# storageJournalLogTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
+	printf("# storageJournalLogTest%s %s (%d failures)\n", STORAGE_FACTORY_KEEP ? " (factory keep)" : "",
+	       failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }
