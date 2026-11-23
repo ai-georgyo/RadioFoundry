@@ -7,7 +7,7 @@
 // The matrix is on the LCD board, which is not in the maker's schematic: the OEM's 2018 LCD board is the working
 // assumption. Which function switch is which key is in no document: CS7000P_FN_KEYS is the order read on a radio
 // (board.keys_raw, one key at a time), and so is the channel selector's code table (board.chsw_raw, one detent at a
-// time). Which way round the selector counts up is not confirmed yet (docs/testing/cs7000p-bringup.md).
+// time; clockwise counts up, confirmed on the radio).
 #ifndef CS7000P_KEYS_H
 #define CS7000P_KEYS_H
 
@@ -83,9 +83,8 @@ static inline uint32_t cs7000p_keys_settle(uint32_t raw, uint32_t *last, uint32_
 // Position by code, 0 to 15, numbered from any detent (the switch turns endlessly); -1: no position. Which code each
 // detent gives is in no document. Read on a radio, one detent at a time over a whole turn (board.chsw_raw,
 // 2026-11-22): F D C 8 9 1 0 4 5 7 6 2 3 B A E, a Gray code (one line changes per detent, the last back to the
-// first too). Position n is the n-th code of that list, from 0. The direction the list was read in is taken as
-// clockwise; if the selector counts the wrong way round on a radio, the list was read anticlockwise and the table is
-// its mirror (position 16 - n)
+// first too). Position n is the n-th code of that list, from 0. The list runs clockwise: with it the channel goes
+// up when the selector is turned clockwise (confirmed on the radio)
 static const int8_t cs7000p_chsw_position[CS7000P_CHSW_CODES] = {
 	// code 0  1   2   3  4  5   6  7  8  9   A   B  C  D   E  F
 	6, 5, 11, 12, 7, 8, 10, 9, 3, 4, 14, 13, 2, 1, 15, 0,
