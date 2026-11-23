@@ -107,8 +107,8 @@ The manifest (`format` `rfoundry-release/1`, written and checked by `tools/rfoun
 `git_time` is the commit's time, which the codeplug editor compares with a radio's `git_time=` (debug link VERSION) to
 offer the release to a build that isn't one. Manifests from before it have none; the site's build then looks the
 commit up in its clone. `ranges` says where the `.bin` goes: one range, the application at the board's base. `sectors` are the flash sectors
-the image covers. `codec.windows` are where the merge puts the codec: on an STM32F4 radio the code, the tables and the
-descriptor ([codec-placement.md](../spec/codec-placement.md), "STM32 radios"). `codec.profile` is the id the firmware
+the image covers. `codec.windows` are where the merge puts the codec: on an STM32 radio the code, the tables (or the joined block)
+and the descriptor ([codec-placement.md](../spec/codec-placement.md), "STM32 radios"). `codec.profile` is the id the firmware
 reports for a matching codec (`codec=` in the debug link's VERSION, [debuglink.md](../spec/debuglink.md) 3.1).
 
 ## Sector maps
@@ -130,7 +130,7 @@ hold the codec. Whether an update can leave the codec alone (keep) depends on th
 |---|---|---|---|
 | STM32F4 | The sectors from the application's start to the codec sectors | The tables stay at their stock address, the code moves into the last sectors, a descriptor says where ([codec-placement.md](../spec/codec-placement.md) "STM32 radios") | Yes: the update writes only the application's sectors |
 | HR_C7000 | From the application base to the slot | A slot at the end of the region ([codec-placement.md](../spec/codec-placement.md) "HR_C7000 radios") | Per route: through the stub yes (it writes only the image's sectors), through an updater that erases the whole area no |
-| STM32H7 | From the first byte of the flash. An STM32H743 has two banks of eight 128 KB sectors (0x08000000 and 0x08100000, RM0433 Table 15), numbered 0 to 15 in the registry; the linker script keeps the image in the first bank, and rfoundry refuses an image that reaches the second ([the ROM bootloader route](#the-rom-bootloader-route)) | None in program flash on a board with `[codec] none` | Nothing to keep: the update writes only the image's sectors |
+| STM32H7 | From the first byte of the flash to the codec's sector, or to the end of the first bank on a board with `[codec] none`. An STM32H743 has two banks of eight 128 KB sectors (0x08000000 and 0x08100000, RM0433 Table 15), numbered 0 to 15 in the registry; the linker script keeps the image in the first bank, and rfoundry refuses an image that reaches the codec's sector or the second bank ([the ROM bootloader route](#the-rom-bootloader-route)) | The last sector of the first bank, with the descriptor at its end, on a board with a codec route ([codec-placement.md](../spec/codec-placement.md) "STM32 radios"); none on a board with `[codec] none` | Yes: an update writes only the image's sectors ([the codec on this route](#the-codec-on-this-route) says when a keep is void) |
 
 The exact map of a radio is in its hardware spec (`hardware-<id>.md`) and in `tools/rfoundry/rfoundry/registry.json`.
 
@@ -143,7 +143,8 @@ On a board whose bootloader is in the MCU's ROM the first sector of the plan hol
 program flash is needed to reach the bootloader, so an install or update cut off anywhere is flashed again the same
 way. Every install through a ROM bootloader uses `vector_last` (rfoundry's `plan.py`, the web flasher's `plan.js`
 `vectorLast`), at block level: the sector at `app_base` is erased first, every other block is written and read back,
-and the vector table's block is written and read back last. An install cut short leaves no vector table, so at a
+and the vector table's block is written and read back last. A codec sector the plan writes or erases is among those
+other blocks. An install cut short leaves no vector table, so at a
 normal power-on the radio starts nothing until the same install has run again (the boot pin, not the vectors,
 enters the ROM bootloader); no half image runs in between. `--dry-run` prints "order: sector N erased first and
 written last (a cut install leaves no application to start)". The way in does depend on the chip's option bytes,
@@ -157,26 +158,31 @@ from the saved copy; no half application runs in between.
 ## Releases from before the codec moved
 
 Releases made before the codec moved on an STM32F4 radio carried a second range for read-only data and named the old
-codec profile (without the `-s11` suffix). rfoundry and the web flasher refuse a manifest with two ranges or with an
+codec profile (without the layout's suffix, `-s<n>`). rfoundry and the web flasher refuse a manifest with two ranges or with an
 old profile, and `tools/stm32_dfu.py` refuses a release image whose manifest lists two ranges.
 
 ## Codec handling
 
-rfoundry picks one of two modes; `--dry-run` prints the exact sectors either would erase and write.
+rfoundry picks one of two modes; `--dry-run` prints the exact sectors either would erase and write. The ROM
+bootloader route has a third, blank, and settles a keep once more after the loader has answered
+([the codec on this route](#the-codec-on-this-route)).
 
 **Keep (the default when it is known to be safe).** Erase and write only the sectors the image covers; never touch the codec sectors, so the codec already in the radio stays. Flash can't be read back
 over the bootloader (the radio is at RDP level 1), so rfoundry needs another way to know the codec is there:
 
 1. **RadioFoundry is running.** Before the user switches the radio into its bootloader, rfoundry asks over the debug link
    (`rfoundry probe`, or automatically at the start of `rfoundry flash`). VERSION's `codec=` is the firmware's own check,
-   the same one that gates DMR voice (on an STM32F4 radio: the descriptor, the signature word and the CRC-32 of both
+   the same one that gates DMR voice (on an STM32 radio: the descriptor, the signature word and the CRC-32 of both
    windows at their placed addresses). If it reports the board's codec profile (`codec.id` in the registry), keep is safe. If it reports
    the id of an earlier layout (the profiles' `former` entries, the registry's `codec_former`), the codec sits where this
    release's image goes: rfoundry reads it back over the debug link, checks it and merges it in the new layout
    ([codec-placement.md](../spec/codec-placement.md), "Moving to a new layout").
    The answer is remembered for 30 minutes (rfoundry's settings directory), because the debug link is gone once the
-   radio is in its bootloader. A build from before the codec moved reports the profile without `-s11`: its codec code is in
-   sectors the update overwrites, so keep is not safe.
+   radio is in its bootloader. The remembered answer is dropped before the first erase of an install that erases a
+   codec sector (and on the ROM bootloader route before a Read Unprotect of a board with a codec route), so a cut
+   merge is never followed by a keep on the word of a probe from before it. A build from before the codec moved
+   reports the profile without the layout's suffix (`-s<n>`): its codec code is in sectors the update overwrites, so
+   keep is not safe.
 2. **Otherwise the codec is written (merge),** from the copy rfoundry saved from this radio if it has one, else from
    the stock file. A vendor firmware doesn't hold the codec where RadioFoundry keeps it, so `--stock-installed` never makes keep safe.
 3. `--codec keep` forces keep in every case. Where the radio is known to have no codec, the keep expects none, so the
@@ -192,9 +198,12 @@ kept or checked: no answer over the debug link, the radio back on stock firmware
 (`rfoundry/codecsave.py`, `site/static/js/flasher/codecsave.js`). There is no read-back during the update itself, so
 a radio on a build from before the move needs the stock file once unless a copy was saved earlier.
 
-Why a wrong guess is harmless: the firmware never runs the codec without checking it first (descriptor, signature and both CRCs, `boards/<id>/vocoder_<id>.c`). If the bytes in sectors 10 and 11 aren't the expected codec, `present()` is false: FM
+Why a wrong guess is harmless: the firmware never runs the codec without checking it first (descriptor, signature and both CRCs, `boards/<id>/vocoder_<id>.c`). If the bytes in the codec's sectors aren't the expected codec, `present()` is false: FM
 works, DMR calls show "No codec: voice off", and the debug link reports `codec=absent`. The fix is to flash again with
 `--stock`. rfoundry checks this itself after flashing: it waits for the radio to restart and reads `codec=` again.
+One case is not harmless: on a SoC whose program flash has error correction, a flash word that a power cut left half
+written can fault when it is read, before any check runs. The ROM bootloader route has a rule for that
+([the codec on this route](#the-codec-on-this-route)).
 
 **Merge.** The user supplies the stock firmware file (`--stock`). rfoundry checks it by SHA-256 against the codec
 profile, decrypts the two windows, checks their SHA-256 and the signature (`rfoundry/stockfw.py`, the same library
@@ -240,7 +249,7 @@ steps; `rfoundry/fakedfu.py` `FakeRom` is the model both are tested against.
 | Protection probe | Set Address Pointer to the flash base, then an UPLOAD of 4 bytes. A read-protected chip answers `dfuERROR` with `errVENDOR` (AN3156 4.1). Nothing changes on the radio. Any other answer stops the install | A protected chip refuses every read, erase and write. "Protected" leads to the next step, so it is never concluded from an answer the documents don't describe |
 | Read Unprotect | Only with `rfoundry flash --unprotect` (the web flasher: its own confirmed step), after a question. Command `0x92`. The chip removes the read protection and erases the program flash and RAM, except areas its option bytes keep (PCROP, secure-only; an STM32H74x loader V9.0 does not clear PCROP, AN2606 Table 146), and leaves the bus. Both tools take a lost GETSTATUS reply after `0x92` as the command taken: the device may leave at once. A reply other than `dfuDNBUSY` with status 0 is a refusal. Refused when the board lists a protected region in `progmem` (`protect.check_whole`) | It removes the original firmware and its bootloader for good: going back is the maker's procedure with the maker's files |
 | Second entry | rfoundry waits until the device has left USB, at most the longest wait, and until at least the least wait has passed since the command. Both come from `cli.unprotect_wait(board)`: least = max(`UNPROTECT_MIN_S` 60, 2 x the platform's `mass_erase_max_s`), most = max(`UNPROTECT_WAIT_S` 120, 2 x least), in seconds. A board whose registry entry has no mass erase time is refused before the Read Unprotect. A USB bus that cannot be listed during the wait does not end the install: it counts as not seen to leave, and the wait runs to its end. Only then does it say to switch the radio off. If a bootloader is already back on the bus at a new address (the radio reset into it with its bootloader key still held), rfoundry writes to it at once and says to leave it on, with no switch-off line. Otherwise, once the radio is back, it prints "in its bootloader again: leave it on and connected while it is written" before the write. A device still on USB at the longest wait gets a warning that the erase is over or was not taken: that wait is at least four times the chip's mass erase bound. The probe runs again and must say unprotected | The chip does not restart by itself after the erase. Twice the bound, because a chip with two flash banks may erase them one after the other, and the RAM erase and option byte change that follow have no time given. The web flasher's `unprotectWait` (`dfuse.js`) applies the same rule with the same two floors, and a test compares it with rfoundry's own figures (the fixture `unprotect-wait.json`) |
-| Plan check | Before the device is looked for, and again in `Dfu.run` (`check_plain` in `dfu.py`): every sector of the plan is in the board's program flash and overlaps its application region (`app_region`, the linker script's), and every block is inside its sector, and the plan has the vector-last order (the sector at `app_base` erased first and written last). An image that reaches past the region is refused, before any Read Unprotect. The web flasher (`checkPlain` in `dfu.js`) checks the same when the write step is drawn, before Connect | The bootloader's address pointer also reaches RAM, system memory and the option bytes. Flash past the application region is kept unused because the bootloader must not erase it: on an STM32H743 that is the second bank, where one ROM version leaves an erase early and the next flash command can hang (AN2606 Table 146, V9.1) |
+| Plan check | Before the device is looked for, and again in `Dfu.run` (`check_plain` in `dfu.py`): every sector the plan erases or writes is in the board's program flash and either overlaps its application region (`app_region`, the linker script's) or is one of the board's codec sectors (`board.codec_sectors()`). A sector outside the application region is written with codec content only, or erased and left blank; an erase-only step is only ever on such a sector. Every block is inside its sector, and the plan has the vector-last order (the sector at `app_base` erased first and written last). An image that reaches past the region is refused, before any Read Unprotect. The web flasher (`checkPlain` in `dfu.js`) checks the same when the write step is drawn, before Connect | The bootloader's address pointer also reaches RAM, system memory and the option bytes. Flash past the application region and the codec's sectors is kept unused because the bootloader must not erase it: on an STM32H743 that is the second bank, where one ROM version leaves an erase early and the next flash command can hang (AN2606 Table 146, V9.1). A codec sector is one that holds a window of a profile's layout, and every layout ends at the descriptor, in the first bank; a test pins that for every board on this route |
 | Erase and write | Both tools erase each sector of the plan, then send every 1024-byte block as block 2 right after its own Set Address Pointer. No vendor command, no XOR | The bootloader takes plain DfuSe requests. It places a block at (block number - 2) x wTransferSize + pointer, and AN3156 5.1 calls wTransferSize the length of the buffer the host sent, while the DFU functional descriptor has a field of that name. With block 2 the block's address is the pointer under either reading. The keyed route numbers its blocks from 2 after one Set Address Pointer per sector, as its bootloader expects |
 | Whole flash words | Every block is filled with 0xFF to a multiple of 32 bytes (`FLASH_WORD` in `dfu.py`) | An STM32H7 programs 256-bit flash words and a partial one needs a force-write bit (RM0433 4.3.9). The documents don't say whether the bootloader forces the last partial word of a download. An image ends on a 4-byte boundary. A third-party DfuSe tool may not pad |
 | Read back | Everything except the vector table's block is read back before that block is written (Set Address Pointer to the block, ABORT, an UPLOAD of block 2, ABORT) and compared with what was sent. The vector table is then written and read back; then Leave. A difference, or a read the bootloader refuses, stops the install without starting the image. Whatever fails once the vector table's write has begun (a write the bootloader reports as failed, a read it refuses, a mismatch, a USB error, a lost device) has the table's sector erased again (`Dfu._unvector`, the web flasher's `unvector`), after dfuIDLE is reached by state as above. If that erase cannot be sent, the message says "Its vector table could not be erased again (...): at a normal power-on the radio may start an image whose vector table did not pass its check". An error that is not the tool's own is reported as "USB error at the vector table: ..." | The bootloader reports no error for a write to a write-protected sector (AN3156 5.1, 5.3), and a block placed at another address than meant would go unseen. A vector table that is in flash and did not pass its check must not be left to start at the next normal power-on. The radio stays in the ROM bootloader, so the same command runs again |
@@ -278,6 +287,108 @@ platform's `reboot_ok`) and answer the status with a reason byte, as the firmwar
 
 Updates of a radio that already runs RadioFoundry use the same route. Its chip is no longer read protected after the
 first install, so no Read Unprotect follows.
+
+### The codec on this route
+
+A board of this family with a codec route (`[codec] stock`) has a codec step: `--stock`, `--stock-installed` and
+`--codec` apply as on the keyed route, and the codec's sector follows the application region
+([Sector maps](#sector-maps)). A board with `[codec] none` has no codec step and takes no stock file. `--key` is
+refused on both: the bootloader has no key. Nothing on this route has run on a radio.
+
+A Read Unprotect erases the codec with everything else, and a radio on its maker's firmware cannot be read. So the
+first codec always comes from the user's stock file. Later ones come from the copy the tools saved over the debug
+link, or from the file again.
+
+| Plan mode | The codec's sectors | Chosen when |
+|---|---|---|
+| keep | Not in the plan: `--dry-run` shows them as "keep" | The radio runs RadioFoundry and reports the board's codec id, and the loader then confirms it (below) |
+| merge | Erased and written whole: the codec, 0xFF, the descriptor in the sector's last block | A stock file, a saved copy, or an image with the codec merged in |
+| blank (`plan.BLANK`) | Erased and left blank; nothing is written there | `--codec none` (the web flasher: Install without the codec). The radio runs without DMR voice until an install with `--stock` |
+
+`--codec none` is for this route only; another family refuses it. `--codec keep` never erases a codec sector, on any
+route. `make_plan` refuses codec data in keep and blank mode, an image that reaches a codec sector, and blank mode
+for a board whose image shares a sector with its codec.
+
+**The hazard.** An STM32H7's program flash has error correction on every 32-byte flash word. A word that a power cut
+left half erased or half programmed can read with a double error, and that read is a bus fault, not wrong data (from
+the HAL's `HAL_FLASHEx_BusFault_IRQHandler`; the firmware has no handler that recovers from it). The boot check reads
+the descriptor and every codec window with plain loads at every start, and the codec read-back over the debug link
+reads the same bytes. So "a half-written codec fails its CRC-32" holds on an STM32F4 radio and not here: an image
+started over a codec sector that an unfinished install touched could fault at every start. The rule:
+
+> **No image is started over a codec sector that an unfinished install may have touched.** A codec sector is left as
+> it is only when the loader shows that the radio is not read protected and holds a vector table. In every other
+> case the plan writes the sector whole or erases it whole.
+
+A vector table proves it. Every install on this route erases the sector at the application base first and writes
+the vector table's block last, after every other block, the codec's sector included, was written and read back. A
+radio with a vector table therefore finished its last install, and its codec sector is as that install left it:
+blank, or a codec that was read back, or untouched since an earlier finished install. Blank flash reads clean. A
+USB cut leaves whole blocks; only a power cut during an erase or a block write leaves a torn word, and then the
+vector table is missing.
+
+The loader's answer is the protection probe's: where the 4 bytes at the application base came, `Dfu.start_blank`
+says whether they are 0xFFFFFFFF (the initial stack pointer of a vector table never is). **The keep is settled**
+after that answer, before the Read Unprotect question, before the erase question and before `--yes` takes effect
+(`settle_keep` in `cli.py`; the web flasher does the same in its write step):
+
+| The loader says | Decision so far | Result |
+|---|---|---|
+| read protected | merge, or blank | unchanged |
+| read protected | keep, whatever its reason (a remembered probe, `--codec keep`) | void: "the radio's program memory is read protected, and removing the protection erases the codec with everything else" |
+| not protected, no vector table | merge, or blank | unchanged |
+| not protected, no vector table | keep | void: "the radio holds no vector table: its last install did not finish, so its codec sector may be half written" |
+| not protected, a vector table | any | unchanged: the codec's sector is whole |
+
+A void keep is decided again, in this order: a saved copy of the codec and not `--codec keep`: merge from it; a
+stock file given and not `--codec keep`: merge from it; otherwise the install is refused with nothing changed, and
+the message names `--stock FILE` and `--codec none`. Where the decision changes, the codec is taken from its source
+(which can still refuse a bad file with nothing erased), the plan is made and checked again, and the new decision
+and plan are printed. `--dry-run` asks no loader: it says that a keep holds only for a radio that is not read
+protected and has a vector table.
+
+| Radio | Command | Decision |
+|---|---|---|
+| On the maker's firmware, protected | `flash IMAGE --board <id> --unprotect --stock FILE` | merge from the stock file |
+| The same | without `--stock` | refused before the loader is asked; the message names `--stock FILE` and `--codec none` |
+| The same | `--codec none` | blank: installed without a codec |
+| The same, with a probe remembered from another radio or an earlier state | `flash IMAGE --unprotect` | keep at first; void once the loader says "protected"; merge from a saved copy, or refused |
+| Runs RadioFoundry, `codec=<the board's id>` | `flash IMAGE` | keep: the codec's sector is not in the plan. Once per radio the codec is read back over the debug link and saved, as on every board |
+| Runs RadioFoundry, `codec=absent` | `flash IMAGE --stock FILE`, or with a saved copy | merge |
+| An install was cut (no vector table) | the same command again | a merge runs again whole. A keep is void: merge from the saved copy or the stock file, else refused |
+| Any | `flash MERGED_IMAGE` (from `rfoundry merge` or `codecs/`) | merge from the image |
+
+**The order of a merge.** Erase: the sector at the application base first, then the image's other sectors and the
+codec's, in the board's order. Write: the image's sectors but the first; then the codec's sector from its start to
+its end, in 1024-byte blocks (128 of them in a 128 KB sector, which a plan prints as "blocks 2..129": the codec's
+blocks, blocks of 0xFF, and the descriptor in the last); then the rest of the first sector. All of that is read
+back. Then the vector table's block is written and read back, and the image is started. Which block holds the
+codec's last byte is the layout's (`hardware-<id>.md`).
+
+| Cut | State left | The next install |
+|---|---|---|
+| During the erases | No vector table. The codec's sector holds the old codec whole, or is blank, or is half erased (a torn word is possible after a power cut) | Finds no vector table: it writes the codec's sector whole (merge) or erases it (blank); it never keeps it |
+| While the codec's sector is written | No vector table. The descriptor's block is the sector's last: until every codec block is written, the descriptor's place is blank | The same |
+| Inside the sector's last block | No vector table. A part of a descriptor, which fails its own CRC, over codec blocks that were all written before it; a torn word is possible | The same |
+| A block the loader did not write (it reports no error) | The read-back before the vector table finds it; the vector table is not written | The same |
+| Inside the vector table's block | `Dfu.run` erases the first sector again where it still can. Where it cannot, a part of a vector table may stand: by then every other block, the codec's sector's included, was written and read back | The codec's sector is whole either way |
+| After the vector table | Everything was read back | |
+
+A descriptor never validates over a half-written codec: its block is sent after every block before it, a whole
+descriptor needs its last word (its CRC), and nothing reads it until an install has finished. It also never stands
+in for the check: the firmware runs the codec only after both window CRC-32s match the bytes, and no tool trusts a
+descriptor without checking the bytes. Erasing the codec's sector erases the descriptor with the codec: they share
+the sector.
+
+An update in keep mode erases and writes the image's sectors only. A keep-mode update that is cut leaves the
+codec's sector untouched and no vector table; the next run cannot tell that from a cut merge, so it merges from
+the saved copy or the stock file. That is the cost of the rule: after a cut update the codec is written again, and
+a user with neither a saved copy nor the file is refused until one is there.
+
+**What the tools cannot rule out.** Another program (a generic DFU tool) can leave a torn codec sector and then
+write a vector table. RadioFoundry then faults at every start, in the boot check, until an install through the ROM
+bootloader with `--stock` or `--codec none` writes or erases the sector; the ROM bootloader stays reachable. The
+firmware does not guard the boot check's flash reads against this.
 
 ## The release workflow
 
@@ -329,9 +440,13 @@ against a fake bootloader with a flash model (`python3 -m unittest discover -s t
 them). `rfoundry flash IMAGE --simulate rfoundry-codec` runs the whole command against that fake. For a board on the
 ROM bootloader route, `rfoundry flash --board <id> --simulate` stops at the read protection, and with `--unprotect` it
 runs through the unprotect, the second entry, the write and the leave (`--simulate blank`: a chip that is not
-protected). Where the board's firmware restarts into the bootloader, `--simulate rfoundry-nocodec` is a running radio
-that takes the restart and `--simulate rfoundry-refuses` one that refuses it (reason 5), so both are seen without a
-radio. A simulation without an image file makes one up. What only a radio can
+protected). A board on that route with a codec route also takes `--stock synthetic` (a made-up stock file) or
+`--codec none` there: without either, the simulated install of a radio on stock firmware is refused before the
+loader is asked, as a real one is. Where the board's firmware restarts into the bootloader, `--simulate
+rfoundry-codec` and `rfoundry-nocodec` are a running radio that takes the restart and `--simulate rfoundry-refuses`
+one that refuses it (reason 5; with a codec route it holds its codec, so it needs no stock file), so both are seen
+without a radio. The codec step comes before the restart, while the radio still runs RadioFoundry. A simulation
+without an image file makes one up. What only a radio can
 answer, in this order (the first flash of a new build is always a merge, so the radio has a known codec):
 
 1. `rfoundry detect` with the radio in its bootloader.

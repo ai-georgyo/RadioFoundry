@@ -10,12 +10,13 @@ The flasher is plain ES modules. The logic ports rfoundry, and the tests check t
 
 | Module | Does | Ported from |
 |---|---|---|
-| `stockfw.js` | Stock file container, decryption, codec extraction, key derivation (column vote and runner-up search; the byte-pair refinement some keys need isn't ported) | `rfoundry/stockfw.py` |
+| `stockfw.js` | Stock file container, decryption, codec extraction, key derivation (column vote and runner-up search; the byte-pair refinement some keys need isn't ported). A profile names its container; the second kind is `twinfw.js`. A joined, blanked placement (`placedParts`) is checked against the profile's placed SHA-256s; the gates are rfoundry's ([codec-placement.md](../spec/codec-placement.md), "STM32 radios") | `rfoundry/stockfw.py` |
+| `twinfw.js` | The second stock container: a short header, then the image twice under a 256-byte key. `parse`, `headerKind` (a firmware file, the maker's bootloader file, or neither, from two header words), `deriveKey` (from the two copies), `carve` (every window from both copies) | `rfoundry/twinfw.py` |
 | `vendorfile.js` | Every vendor file a user picks, on every radio's page (below) | |
 | `explain.js` | Why a vendor file can't be used, as one of six problems, and what an error report says about the file (below) | |
 | `bytes.js` | Byte helpers (hex, CRC, concatenation) shared by the modules | |
-| `codecmap.js` | Codec maps: which words a relocated codec rewrites ([codec-placement.md](../spec/codec-placement.md)) | `rfoundry/codecmap.py` |
-| `plan.js` | Sector plans: keep, merge, and restore (a whole image put back exactly) | `rfoundry/plan.py` |
+| `codecmap.js` | Codec maps: which words a relocated codec rewrites, a ref's anchor (`held`), and the holes a merge blanks (`holes`, `tableHoles`, `blank`) ([codec-placement.md](../spec/codec-placement.md)); for `fake.js` also what a layout implies at one site (`layoutSites`) and that value written into a synthetic window (`plantSite`). It does not run the loader's checks: the maps arrive normalized through `data/flash-boards.json` | `rfoundry/codecmap.py` |
+| `plan.js` | Sector plans: keep, merge, blank (the codec's sectors erased and left blank, on the ROM bootloader route), and restore (a whole image put back exactly) | `rfoundry/plan.py` |
 | `manifest.js` | Release manifest checks | `rfoundry/manifest.py` |
 | `decide.js` | Keep or merge the codec | `rfoundry/cli.py` `decide_codec` |
 | `dfu.js` | The AnyRoad DFU bootloader over WebUSB. `WebUsbTransport.open` refuses the radio switched on normally (`normalMode`: the board's `dfu_layout`, else a layout of only the bootloader's sectors) before it claims the interface. `run` erases and writes in the board's sector order; for a codec move (`plan.js` `vectorLast`) the application's first sector is erased first and written last, and every plain-route install has the same order with the vector table's block last. Every USB call fails after 10 s with no reply (`USB_TIMEOUT_MS`, a lost connection to the user), so a radio that stops answering can't hold the page. The plain route for a `dfuse` family board, with no key and nothing XORed: `runPlain`, `checkPlain`, `probeProtected`, `readUnprotect` and `romDevice` ([below](#rom-bootloader-radios-plain-dfuse)) | `rfoundry/dfu.py` |
@@ -32,7 +33,7 @@ The flasher is plain ES modules. The logic ports rfoundry, and the tests check t
 | `update.js` | The Update task's build: which build a radio runs (below) and the build its update installs | |
 | `codeplug.js` | Codeplug formats and the converter registry | |
 | `migrate.js` | The original firmware's channels after an install: a stock codeplug found, converted, written and read back (below) | `tools/codeplug_port.py` |
-| `fake.js` | A simulated radio: bootloader with a flash model, RadioFoundry's serial port, a synthetic stock file. `FakeRomRadio`: a radio installed through its processor's ROM bootloader (the loader's commands and states, read protection, Read Unprotect; no key and no stock file), and the debug link's restart into that loader, which it takes or refuses (`restartRefusals`, `restartReason`, `restartStays`) | `rfoundry/fakedfu.py` |
+| `fake.js` | A simulated radio: bootloader with a flash model, RadioFoundry's serial port, a synthetic stock file. `FakeRomRadio`: a radio installed through its processor's ROM bootloader (the loader's commands and states, read protection, Read Unprotect, the 4-byte read answered from its fake flash, so a practice run can show a blank start; no key), and the debug link's restart into that loader, which it takes or refuses (`restartRefusals`, `restartReason`, `restartStays`). A board with a codec route gets a synthetic stock file of its container and the profile for it (`romSimulation()` is `async`: it builds the file). `FakeRomRadio`'s states include `rfoundry-nocodec`; a radio that runs RadioFoundry reports the board's codec id, `absent`, or `none` for a board without a codec route | `rfoundry/fakedfu.py` |
 | `stub.js`, `lz4.js` | The HR_C7000 boot stub: loaded through the boot ROM or handed over by RadioFoundry, then reads, sector writes and the LED | `stub/stubtool.py` |
 | `f4stub.js` | The STM32F4 loader: handed over by RadioFoundry, the board record (CONFIG) and its echo, then the install in the interlock's order and SPI flash writes | `stub/f4stub.py` |
 | `c7000v1.js` | Rebuilds a version 1 codec slot (from before the codec moved) as version 2 | |
@@ -40,7 +41,7 @@ The flasher is plain ES modules. The logic ports rfoundry, and the tests check t
 | `fakec7000.js` | A simulated HR_C7000 radio: boot ROM window, RadioFoundry's debug link (VERSION, 0x1A), the stub, both flash chips and the Baofeng updater (`FakeBfLoader`) | `tools/serial_loader.py` `FakeBootloader` |
 | `usmart.js`, `iap.js`, `bfloader.js`, `iapui.js` | The stock side of an HR_C7000 radio, by protocol: the stub loaded through a stock debug console (USMART, `flash.stock_console`), the factory update mode write (IAP or the Baofeng updater, `flash.update_mode`) and their steps | `tools/serial_loader.py` (`bfloader.js`) |
 | `c7000ui.js`, `radiotop.js` | The HR_C7000 backend: its steps (connect, back up and check, write, check) and the radio picture with its LED | |
-| `dfuse.js` | The `dfuse` backend: a radio installed through its processor's ROM bootloader. Its write step checks the device, asks whether the program memory is read protected, and runs the Read Unprotect as a step of its own that the user confirms. A connected radio that runs RadioFoundry is restarted into the loader by the page where the board's firmware can do that (`restartIntoLoader`) ([below](#rom-bootloader-radios-plain-dfuse)) | `rfoundry/cli.py` `cmd_flash_dfuse`, `restart_into_bootloader` |
+| `dfuse.js` | The `dfuse` backend: a radio installed through its processor's ROM bootloader. Its write step checks the device, asks whether the program memory is read protected, settles a keep of the codec by the loader's answer, and runs the Read Unprotect as a step of its own that the user confirms. A board with a codec route has the codec step. A connected radio that runs RadioFoundry is restarted into the loader by the page where the board's firmware can do that (`restartIntoLoader`) ([below](#rom-bootloader-radios-plain-dfuse)) | `rfoundry/cli.py` `cmd_flash_dfuse`, `restart_into_bootloader` |
 | `dom.js` | DOM helpers and strings shared by `app.js` and the backends beside it | |
 | `app.js` | The page: the tasks, the shared steps and the `anyroad-dfu` backend | |
 
@@ -50,9 +51,10 @@ through the loader hand-over). `#sim` alone is the first radio on stock firmware
 (`fakeC7000Options()` and `c7000Simulation()` in `fakec7000.js`, `simulation()` in `fake.js`): a radio with a stock
 console gets one, with its first stock version. A radio of the `dfuse` backend gets `FakeRomRadio` and
 `romSimulation()`: `-stock` is read protected on its original firmware, so the practice run includes the Read
-Unprotect (its wait is 3 s there). Running RadioFoundry, it refuses the first restart into update mode and takes
-the second, so an update's practice run shows the refusal with the board's hint and then the restart
-(`restartRefusals: 1`). `#sim=<radio>-romfail` is an HR_C7000 radio on stock firmware whose boot
+Unprotect (its wait is 3 s there), and with a codec route its codec step offers the simulated stock file. Running
+RadioFoundry, it refuses the first restart into update mode and takes the second, so an update's practice run shows
+the refusal with the board's hint and then the restart (`restartRefusals: 1`). `#sim=<radio>-romfail` is an HR_C7000
+radio on stock firmware whose boot
 ROM refuses the load, to practice the factory update mode; `#sim=<radio>-slowcable` one on a cable too slow for the
 boot ROM's 48 ms window, to check that the page's answer sent ahead gets through; `#sim=<radio>-deafcable` one on a
 cable that carries the radio's data and none of the page's; a radio with the Baofeng updater enters it when switched on
@@ -81,11 +83,12 @@ under 64 KB. Each remaining file is identified against every radio the flasher k
 
 | Step | How | Result |
 |---|---|---|
-| 1 | SHA-256 in a codec profile or a C-SKY profile. A file in the known files without a profile goes on to step 2. A file known to hold no codec (`stockfw.py` `NO_CODEC_FILES`, such as another firmware project's build) is named and stops here | the codec (and the key); the key only for a known file without a profile; `not-vendor` for a file without a codec, with rfoundry's message |
+| 1 | SHA-256 in a codec profile or a C-SKY profile. A file in the known files without a profile goes on to step 2. A file known to hold no codec (`stockfw.py` `NO_CODEC_FILES`, such as another firmware project's build) is named and stops here. So is a known version of a radio's firmware whose codec has no map (`UNMAPPED_FILES`, exported as `unmapped_files`) | the codec (and the key); the key only for a known file without a profile; `not-vendor` for a file without a codec, with rfoundry's message; kind `codec-unmapped` with the file's name for an unmapped version, which `explain.js` turns into `unmapped` with the files to use instead |
 | 2 | A TYT/Baofeng container (`OutSecurityBin`) no profile knows: every known bootloader key is tried, the chosen radio's first. A key that decrypts it names the radio, and the decrypted application is searched for the codec's signature word | the key; "the codec, no recipe for this build" |
 | 3 | The C-SKY codec search: the codec's own hashes wherever the file or readout holds it (`c7000.js`) | the codec; "no recipe" when only the signature matches. The signature is the same on every C-SKY radio, so such a file is credited to no radio and never written back as original firmware |
 | 4 | An STM32 readout, by the codec windows' hashes (`stockfw.fromFlash`) | named, not used: the page asks for the manufacturer's file instead |
 | 5 | A C-SKY radio's whole program flash dump whose bootloader ID string names the chosen radio and whose application area holds code (`c7000.js` `isProgmemDump`), with no codec step 3 knows | kind `progmem`: a restore source, never a codec source. The restore puts it back as a backup's program memory is (application and codec slot, never the bootloader) |
+| 6 | Asked last by `identifyFile()`: a maker's bootloader file in the second container (`stockfw.bootFile`: the header gives the payload offset where a bootloader file has it). `unpack()` sets a file under 64 KB aside as too small for a firmware image before any header is read, so a bootloader file that small is reported as that | `not-vendor`, with its own sentence: it holds no firmware and no codec |
 
 The best file for the chosen radio is used:
 
@@ -155,7 +158,9 @@ picked holds a vendor firmware container: a file with the `OutSecurityBin` or th
 For `dump` it offers **Send This Firmware to the RadioFoundry Team to Be Mapped** with the program memory dump itself
 (reason `progmem-dump`): the backend takes a dump by the bootloader ID in its first 48 KB. It
 comes both when the codec can't be taken from the file and when a later step fails on a file identified for this radio
-(placing the codec, restoring). Readouts, other files and a file identified as another radio's are never offered. The
+(placing the codec, restoring). Readouts, other files and a file identified as another radio's are never offered.
+Neither is a file of the second container (`twinfw.js`): the service takes only the two headers named above, and
+its unmapped versions are known by name and published by their maker. The
 text asks for the manufacturer's original file only. The file goes to the backend only on the user's click, with:
 
 - its name;
@@ -385,7 +390,8 @@ a radio, such as another bootloader protocol or a stock firmware's own read-back
 |---|---|
 | `id` | The `flash.backend` value |
 | `available(radio, fb, task)` | Whether the page can run `install` or `backup` on the radio (grayed out in the radio list otherwise) |
-| `steps(task, {recovering})` | The task's step ids, or null for the shared default |
+| `steps(task, {recovering, radio})` | The task's step ids, or null for the shared default. `radio` is the radio the steps are for (`app.js` `stepsFor()` passes it): a backend can add a step for some of its radios, as the `dfuse` one adds `codec` before `write` for a board with a codec route |
+| `installNow` | Optional: the install has no current-firmware step, and the shared codec step decides for a radio not known to run RadioFoundry as if it ran this (`"stock"`: its original firmware). `codecView()` uses it for the decision only, in a local `now`; `S.now` is not set by it. With it the step leaves out the line that sends the user back to select the radio (`flash.codec.or_connect`) |
 | `views` | A view function per step the backend owns |
 | `stepLabel(step, task)` | Optional: the `flash.step.*` key of a step's name |
 | `recovery` | The help task: `first` (`updatemode` checks the bootloader first, `fix` goes to the choices), `stock` (`file`: stock firmware from the user's stock file; `restore`: from a backup; `maker`: the page can't put it back, and `maker()` returns the words that say whose procedure it is), `reach` and `stockText` (string keys), optionally `calm` (a string key: the reassurance, where the shared one would promise the original firmware back), and optionally `extra(radio, fb)`: more reinstall choices, each `{id, title, text, prepare()}` (string keys; `prepare` runs once the install task is set up) |
@@ -860,10 +866,39 @@ with other SPI wiring against f4stub's test profile.
 A board of the `dfuse` family ([board-registry.md](board-registry.md)) has no bootloader of its own in program flash:
 the application starts at the flash base, and the radio is installed through the processor's ROM bootloader, entered
 with the board's `[flash.bootloader]` keys. The download is ST's DfuSe as the ROM takes it (ST AN3156): no key, no
-vendor command, nothing XORed. Such a board has no codec route (`flash.codec_none` in `data/radios.json` is the
-reason), so the install has no current-firmware and no codec step: radio, build, write, done. An update is update,
-write, done: the radio enters the loader the same way, or by a restart the page asks for
-([below](#the-restart-into-the-loader)). Which radios these are: [feature matrix](../feature-matrix.md).
+vendor command, nothing XORed. The install has no current-firmware step. Which radios these are:
+[feature matrix](../feature-matrix.md).
+
+| Board | Install | After an install cut short | Update |
+|---|---|---|---|
+| With a codec route | radio, build, codec, write, done | build, codec, write, done | update, codec, write, done |
+| With `flash.codec_none` (the reason, in `data/radios.json`) | radio, build, write, done | build, write, done | update, write, done |
+
+The radio enters the loader the same way for an update, or by a restart the page asks for
+([below](#the-restart-into-the-loader)). With a codec route the codec step is the shared one
+(`views.codec` is `ctx.codecView()`): the stock file is picked there and the codec comes from it
+(`stockfw.extract` with no key: the file's container carries its own), or from the saved copy
+(`codecSegments()`). A board without `key_sha256` needs no key: the step shows no key line and asks for none. A radio
+not known to run RadioFoundry counts as on its original firmware (`decideCodec` gets `runsStock`), since there is
+no current-firmware step to say so. `installPlan(board, fw, decision, codec, prof)` makes the plan in the decision's
+mode, with the profile's layout windows for a merge, and holds it to `checkPlain()`.
+
+**The keep is settled in the write step**, when the loader has answered, by the rule of
+[release.md](release.md#the-codec-on-this-route): a keep decision is void at a protected radio (stage `protected`)
+and at one whose first four bytes read blank (`ready` with `blank` from `checkLoader()`: no vector table, so its
+last install did not finish). The page then decides again with `probe: null, runsStock: true` and what it has. With
+a saved copy or a stock file it goes on as a merge, with the new plan drawn. Otherwise the panel shows the reason
+(`flash.dfuse.codec_erased` or `flash.dfuse.codec_unknown`) and two buttons: back to the codec step to select the
+stock file, and **Install without the codec**, which asks `confirmNoCodec` and then plans in mode `BLANK` with
+`expectCodec` false: the codec's sector is erased and nothing is written there. No Read Unprotect and no Install is
+offered while a void keep stands. A keep at a radio that is not protected and has a vector table stands, and the
+codec's sector is not sent. The rule is one exported function, `voidKeep(decision, found)` in `dfuse.js`. A void keep
+that becomes a merge is said beside the new plan in the codec step's own words (`flash.codec.mode.merge` or
+`merge_saved`, and the decision's `whyKey`); the void state shows no plan. Install on a decision with `expectCodec`
+false (a forced Keep of a codec known to be missing, at a radio with a vector table) asks `confirmNoCodec` once, as
+the keyed route does. A write step reached without the codec step's decision decides from what the radio reported,
+or shows the refusal and no Connect. After an install in mode `BLANK` the done step (`app.js` `doneView`) shows
+`flash.nocodec.text` and `flash.nocodec.fix_later` as a warning in place of the line that DMR voice is available.
 
 The write step (`dfuse.js` `writeView`) is one panel in four states, after the plan is checked:
 
@@ -882,9 +917,9 @@ What `dfu.js` does on this route, and why:
 | `romDevice(board, info)` | Before any request: refuses a device whose string 1 names a keyed bootloader (it would take a plain image as an encrypted one), and one whose alternate 0 is not the board's whole program flash, from the flash base to `flash_end` (or the board's `dfu_layout`, once read on a radio). A device that shows no layout is refused too. Throws `WrongDeviceError`. The layout strings are the browser's alternate setting names; when it has none (it reads them once, as the device appears, and a loader slow to answer then stays without), `WebUsbTransport.interfaceNames` reads them from the device: the configuration descriptor's string indexes (`interfaceStringIndexes`) and those strings |
 | `WebUsbTransport.open()` | Claims the interface and selects no alternate setting, so it stays on 0, the internal flash. A ROM loader's second alternate is the option bytes, where one write can remove the loader for good: nothing selects it, no address pointer is set outside the board's program flash, and the test checks the source for both modules |
 | `Dfu.toIdle()` | dfuIDLE by the DFU standard's own requests: CLRSTATUS out of dfuERROR, ABORT out of an idle state of a transfer. A ROM loader stalls a request its state doesn't allow |
-| `Dfu.probeProtected(board)` | Sets the address pointer to the start of the flash and asks for 4 bytes there. A protected chip doesn't perform the read and reports dfuERROR with errVENDOR, whether it stalls the request or answers no bytes: true. The bytes came: false. Anything else, errVENDOR without the error state included, is thrown: neither a write nor an unprotect follows a guess. Nothing is modified |
+| `Dfu.probeProtected(board)` | Sets the address pointer to the application base (`board.app_base`, as rfoundry's `probe_protected`) and asks for 4 bytes there: the vector table's first word, which decides whether a keep stands. A protected chip doesn't perform the read and reports dfuERROR with errVENDOR, whether it stalls the request or answers no bytes: true. The bytes came: false, and they are kept: `startBlank` is whether all four are 0xFF, which no vector table's initial stack pointer is. Anything else, errVENDOR without the error state included, is thrown: neither a write nor an unprotect follows a guess. Nothing is modified |
 | `Dfu.readUnprotect(board)` | `protect.checkWhole(board.protect, "progmem")` first, then the one-byte command and one GETSTATUS. A lost GETSTATUS reply is taken as the loader having left the bus (it may leave at once); any reply that is not `dfuDNBUSY` with status 0 is refused. The loader erases the program memory and leaves the bus, so the disconnect is the result: the next probe, on the loader entered again, says whether it worked |
-| `checkPlain(plan)` | The route's limits on a plan, as rfoundry's `check_plain`: every sector erased or written is in the board's program flash (the loader takes RAM, system memory and option byte addresses as readily) and overlaps its application region (`app_region` in `data/flash-boards.json`, the linker script's); every block is `BLOCK` bytes and inside its sector; the plan erases the sector at `app_base` first and writes it last (`plan.js` `vectorLast`, which `dfuse.js` `installPlan` sets). Flash past the application region is kept unused because the loader must not erase it: on a dual-bank chip one ROM version leaves an erase in the second bank early, and the next flash command can hang (ST AN2606, the loader's known limitations). A board whose data has no `app_region` is held to its program flash alone |
+| `checkPlain(plan)` | The route's limits on a plan, as rfoundry's `check_plain`: every sector erased or written is in the board's program flash (the loader takes RAM, system memory and option byte addresses as readily) and either overlaps its application region (`app_region` in `data/flash-boards.json`, the linker script's) or is one of the board's codec sectors (`codecSectors(board)` in `plan.js`). A sector outside the application region is written with codec content only or erased only (mode `BLANK`), and an erase-only step is only ever on such a sector. Every block is `BLOCK` bytes and inside its sector; the plan erases the sector at `app_base` first and writes it last (`plan.js` `vectorLast`, which `dfuse.js` `installPlan` sets). Flash past the application region and the codec's sectors is kept unused because the loader must not erase it: on a dual-bank chip one ROM version leaves an erase in the second bank early, and the next flash command can hang (ST AN2606, the loader's known limitations). A board whose data has no `app_region` is held to its program flash alone |
 | `Dfu.runPlain(plan, key, progress)` | `run()` takes it for a board of the family that has no key (a board with a key always needs its key). Checks `app_base` against the program flash, then `checkPlain()`. Erases the plan's sectors (the sector at `app_base` first), writes every block except the first one at `app_base`, reads them all back and compares them (`readBack(parts)`: Set Address Pointer, ABORT, UPLOAD of block 2, ABORT, per block), then writes that block (the vector table) and reads it back, then sets the pointer to the application base and leaves. Whatever fails once the vector table's write has begun (its write, its read-back, an error of the browser's, a lost device) erases its sector again through `unvector(head)`, after `toIdle()`, and is thrown as a `DfuError`. `readBack` only says what failed; `runPlain` adds what that leaves to start. rfoundry's `Dfu.run` does the same, step for step. A block that reads back different, or a read the loader refuses, throws with the image not started: the loader reports no error for a write it did not carry out (AN3156 5.1, 5.3). Until the vector table is written an install cut short has nothing to start at a normal power-on. Refused before any request: a key, a protected region, and whatever `checkPlain()` refuses |
 | `WebUsbTransport.watchLeave(left)` | Calls `left()` once this device has left the bus: WebUSB's `disconnect` event for it, which comes even after `close()`. Returns the function that stops the watch, or null without WebUSB. `dfuse.js` sets it up before the Read Unprotect is sent |
 
@@ -900,16 +935,20 @@ What the page can't do on such a radio, and says:
 | Task | Behavior |
 |---|---|
 | Original firmware back | The first install erased it with its bootloader. `recovery.stock` is `maker`: the help task's choice leads to words (the maker's own procedure), not to a file picker or a restore |
-| Restore from a backup | `restores.targets` is `["codeplug"]`: channels and settings over the debug link. The program memory in a backup holds RadioFoundry and no codec, so the firmware comes back with Install, and no restore erases a sector an install doesn't |
+| Restore from a backup | `restores.targets` is `["codeplug"]`: channels and settings over the debug link. The program memory in a backup holds RadioFoundry, never the original firmware, so the firmware comes back with Install (and the codec with its codec step), and no restore erases a sector an install doesn't |
 | Backup of the original firmware | None: a protected chip can't be read. The backup is the debug link one, after the install |
 | The original firmware's channels | None brought over (`stockChannels` false): where that firmware keeps its codeplug is not known. The memory chip is claimed only by a complete backup of everything |
 
 The loader itself is in the chip's system memory, so update mode stays reachable whatever the install did: the help
 task checks for it first (`recovery.first` `updatemode`). Untested with a radio: the device's strings, the probe's
-ABORT between Set Address Pointer and the read, the time the erase takes, and the leave.
+ABORT between Set Address Pointer and the read, the time the erase takes, the leave, and every part of the codec
+step on this route.
 
 Tests: `site/tests/dfuse.test.mjs` (the loader's model in `fake.js`, the backend's contract, the write step against a
-stand-in for the DOM, the restart taken, refused, not carried out and not offered).
+stand-in for the DOM, the restart taken, refused, not carried out and not offered). It runs the route's own tests on
+a fixture board without a codec route (`fixtures.py` `rom_board_without_codec`) and the codec step's on the
+registry's board with one. `site/tests/twinfw.test.mjs` checks the second container's port against Python's
+(`fixtures.json` `twin` and `rom`; `flash-boards.json` `unmapped_files`).
 
 ### The restart into the loader
 
@@ -1041,13 +1080,19 @@ launcher, `requirements.txt` and the license. The zip is reproducible: sorted en
 | `kitRoute(radio)` | `dfu` (`usb-dfu` family), `serial` (`serial-loader`), `dfuse` (`dfuse`: plain, through the ROM bootloader), or null: rfoundry refuses `serial-iap`, so that radio gets no kit |
 | `missingApi(radio, task, step, apis)` | The API an install step needs and the browser lacks: the `anyroad-dfu` write (USB, or serial on the loader route), the `c7000-stub` connect (serial), the `dfuse` write (USB) |
 | `kitReadme(o)` | `README.txt`, a pure function: per-OS setup, the radio's `[flash.bootloader] steps` (a docs link when there are none), the `--dry-run` and install commands with the kit's file names, where to get help. English, like rfoundry's output. A `serial` radio whose codec has no stock file (only a program flash read) gets the `stubtool.py --progmem` command first |
-| `makeKit(o)` | Fetches and checks the tool zip, adds `README.txt` (CRLF), `firmware/<base>.bin` and `.json` (`<base>`: the manifest's `image.file`, else `rfoundry_<board>`), `stock/<file>` (no `stock` folder on the `dfuse` route) |
+| `makeKit(o)` | Fetches and checks the tool zip, adds `README.txt` (CRLF), `firmware/<base>.bin` and `.json` (`<base>`: the manifest's `image.file`, else `rfoundry_<board>`), `stock/<file>` (on the `dfuse` route only for a board with a codec route and a stock file picked) |
 | `kitPanel`, `kitLine` | The panel `render()` draws in place of a step `missingApi` names, with the stock file picker when the kit has none; the line under a failure |
 
-The `dfuse` route's README is its own (`plainReadme`): no `--stock` anywhere, and before the setup what a first
-install erases and that going back is the maker's procedure. The plain command stops on a read protected radio; the
-`--unprotect` command is a section of its own after it. The driver step names the device by its USB ID until the
-board has a `[flash.dfu] product`. The panel says that no stock file is needed and offers no picker.
+The `dfuse` route's README is its own (`plainReadme`): before the setup it says what a first install erases and
+that going back is the maker's procedure. The plain command stops on a read protected radio; the `--unprotect`
+command is a section of its own after it. The driver step names the device by its USB ID until the board has a
+`[flash.dfu] product`. What it says about the stock file depends on the board:
+
+| Board | Kit | Commands | Panel |
+|---|---|---|---|
+| With a codec route, a stock file picked | `stock/<file>` (`flash.dfuse.kit_stock`) | `--stock "stock/<file>"` | the shared stock part |
+| With a codec route, no file | `stock/PUT-YOUR-STOCK-FILE-HERE.txt`, as on the other routes (`flash.dfuse.kit_no_stock` names the files to select for DMR voice); the README says to copy the file there and to put `--stock "stock/NAME"` in place of `--codec none` | `--codec none` | the stock file picker |
+| Without a codec route | no `stock` folder (`flash.dfuse.kit_plain`) | neither option | says that no stock firmware file is needed and offers no picker |
 
 The stock file is `S.stock` (the inner file of a vendor zip), else the file the C7000 codec step took
 (`S.vendorPick`); a file with a problem is left out. The line sits under a failed bootloader connect (not a cancelled
