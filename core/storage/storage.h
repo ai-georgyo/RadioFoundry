@@ -25,7 +25,9 @@ void storage_quick_unlock(void);
 
 // After the board's flash works, before the settings and the codeplug are read: check that the settings ring and the
 // journal are ours (else the region is foreign, below), then finish a journaled rewrite that a power cut
-// interrupted. False if there is no usable flash or the region is foreign (then every write is refused)
+// interrupted. False if there is no usable flash or the region is foreign (then every write is refused). With
+// STORAGE_FACTORY_KEEP (hal_flash.h), a factory list that fails its checks (docs/spec/settings-store.md 4.1) leaves the
+// region none: nothing is written at all
 bool storage_init(void);
 // Flash usable and the region ours: writes allowed
 bool storage_ready(void);
@@ -57,8 +59,9 @@ bool storage_claim_request(void);
 bool storage_claim_pending(void);
 // Erase the region and take it (false if not foreign or the flash failed). Slow: some 10 sector erases
 bool storage_claim(void);
-// The flash ranges the debug link may read (the settings ring, the journal, the calibration copy): true when the
-// whole of [addr, addr + len) is inside one of them
+// The flash ranges the debug link may read (the settings ring, the journal, the calibration copy and, with
+// STORAGE_FACTORY_KEEP, each factory range of a list storage_init accepted): true when the whole of [addr, addr + len)
+// is inside one of them
 bool storage_debug_read_allowed(uint32_t addr, uint32_t len);
 
 // --- Settings slots (the record format, shared with core/settings so the guard knows our records) ---
@@ -75,12 +78,17 @@ typedef enum {
 } storage_slot_t;
 storage_slot_t storage_slot_check(const uint8_t slot[STORAGE_SLOT_SIZE]);
 
+// --- Factory ranges (STORAGE_FACTORY_KEEP, docs/spec/settings-store.md 4.1) ---
+// A kept sector holds bytes of a factory range (hal_flash_map_t.factory). Nothing below erases or programs one: a
+// write that would change it is refused (the stats' factory_refused), one that leaves it as it is succeeds
+
 // Rewrite the erase unit at addr (aligned) with data (STORAGE_SECTOR bytes), through the journal. Skipped when the
-// flash already holds exactly that
+// flash already holds exactly that; refused in a kept sector otherwise
 bool storage_sector_write(uint32_t addr, const uint8_t *data);
 
 // Write any range: each sector it touches is read into the shared buffer, merged and rewritten as above. False if
-// the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF)
+// the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF). A
+// range that touches a kept sector: true when the flash already holds it, else refused whole, nothing erased
 bool storage_write(uint32_t addr, const void *buf, uint32_t len);
 
 // The shared sector buffer (STORAGE_SECTOR bytes): NULL while someone else has it
@@ -96,7 +104,7 @@ const hal_flash_map_t *storage_map(void);
 #define STORAGE_STAGE_MAGIC_TFTP	0x5452444Fu	// bytes 4F 44 52 54 in memory order
 #define STORAGE_STAGE_MAGIC_CPSF	0x4652444Fu	// bytes 4F 44 52 46
 // The staging area's size in whole sectors when the board has a usable one (on the flash, clear of the settings, the
-// journal, both open-firmware images, the native area and the calibration window), else 0
+// journal, both open-firmware images, the native area, the calibration window and every kept sector), else 0
 uint32_t storage_staging_size(void);
 
 // --- The native codeplug area (docs/spec/codeplug-native.md 4) ---
@@ -132,6 +140,10 @@ typedef struct {
 	uint16_t foreign_slots;		// settings slots (and journal sectors) that were neither erased nor ours at boot
 					// (0 in a foreign region: a blank one that must be claimed first)
 	bool claim_pending;
+#if STORAGE_FACTORY_KEEP
+	uint32_t factory_refused;	// writes refused because they would change a kept sector, and erases and programs
+					// that reached one (also in errors)
+#endif
 } storage_stats_t;
 
 void storage_get_stats(storage_stats_t *s);

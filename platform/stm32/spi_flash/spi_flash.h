@@ -20,6 +20,14 @@ bool stm32_spi_flash_read_security(uint8_t reg, uint32_t offset, void *buf, uint
 bool stm32_spi_flash_cps_security_read(uint32_t addr, void *buf, uint32_t len);
 // JEDEC memory type and capacity, 0 = none
 uint16_t stm32_spi_flash_device(void);
+#if STORAGE_FACTORY_KEEP
+// Erases and programs refused because they fell in an erase unit holding factory bytes of the board's map or its
+// small map (hal_flash_map_t.factory, docs/spec/settings-store.md 4.1) outside the unit core/storage granted
+// (hal_flash_t.factory_grant): nothing was sent to the chip for them. With SPI_NOR_ADDR4 also an address that 3-byte
+// addressing would take there (the address modulo 16 MB). The STM32 counterpart of the HR_C7000 platform's write
+// floor
+uint32_t stm32_spi_flash_factory_refusals(void);
+#endif
 // Leave the chip as other code expects to find it, before the radio powers off or goes to a boot loader: a part
 // larger than 16 MB (a board built with SPI_NOR_ADDR4) gets its extended address register written to 0, which every
 // write, erase and high read already does at its end. From a task it waits for the bus lock. With interrupts masked

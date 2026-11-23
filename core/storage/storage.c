@@ -13,9 +13,15 @@
 //   J1  the new content of the sector being rewritten
 // J0 programmed is the commit point. Then for each sector: J1 = the sector merged with the data, "staged", the
 // sector erased and programmed from J1, "done". Replay: a sector not staged is still intact, so it is merged again.
+// With STORAGE_FACTORY_KEEP the map's factory ranges (hal_flash_map_t.factory) are the maker's bytes: the list is
+// checked at storage_init, and no erase or program of this file reaches a sector holding some (settings-store.md
+// 4.1). Without it none of that is compiled, and every board's code is what it was before the ranges existed.
 #include <string.h>
 #include "config.h"
 #include "storage/storage.h"
+#if STORAGE_FACTORY_KEEP
+#include "debuglink/dlog.h"
+#endif
 
 #define J_MAGIC		0x4C4E4A4Fu	// "OJNL"
 #define J_HDR_LEN	16u		// magic, target, data CRC, header CRC
@@ -26,6 +32,7 @@
 #define P_DATA		24u
 #define P_MAX		(STORAGE_SECTOR - P_DATA)
 #define CHUNK		256u
+#define K_DATA		48u		// where a sector's kept bytes would start in J0 (settings-store.md 4.1)
 
 static bool ready;			// usable flash (the region may still be foreign)
 static storage_region_t region;
@@ -33,6 +40,9 @@ static bool claim_pending;
 static uint8_t buffer[STORAGE_SECTOR] RFOUNDRY_COLD_RAM;	// task-side only (storage_buffer_acquire)
 static bool buffer_taken;
 static storage_stats_t stats;
+#if STORAGE_FACTORY_KEEP
+static bool factory_valid;		// the map's factory list passed storage_init's checks
+#endif
 
 uint32_t storage_crc32(uint32_t crc, const void *buf, uint32_t len)
 {
@@ -71,6 +81,74 @@ static bool overlaps(uint32_t a, uint32_t alen, uint32_t b, uint32_t blen)
 	return blen != 0 && a < b + blen && b < a + alen;
 }
 
+// Whether any byte of [addr, addr + len) is in a sector holding factory bytes (a kept sector). Constant false without
+// STORAGE_FACTORY_KEEP
+static bool kept(const hal_flash_map_t *m, uint32_t addr, uint32_t len)
+{
+	return hal_flash_factory_unit(m, STORAGE_SECTOR, addr, len);
+}
+
+#if STORAGE_FACTORY_KEEP
+// The factory bytes in the sector at base
+static uint32_t kept_count(const hal_flash_map_t *m, uint32_t base)
+{
+	uint32_t n = 0;
+	for (unsigned i = 0; i < HAL_FLASH_FACTORY_MAX; i++) {
+		uint64_t a = m->factory[i].addr, e = a + m->factory[i].size;
+		uint64_t lo = a > base ? a : base, hi = e < (uint64_t)base + STORAGE_SECTOR ? e : (uint64_t)base + STORAGE_SECTOR;
+		n += hi > lo ? (uint32_t)(hi - lo) : 0u;
+	}
+	return n;
+}
+
+// The factory list (settings-store.md 4.1): the ranges of size other than 0 first, then entries of all zeros;
+// ascending and apart (adjacent ranges are one range), inside the chip; every sector a range touches clear of the
+// settings ring, the journal and the calibration, native, staging and satellite areas (the open-firmware images may
+// hold one: the maker's data can sit inside them); a sector holding some kept bytes but not only kept bytes holds
+// at most what J0 can carry beside a header (STORAGE_SECTOR - K_DATA); and no copy-on-write flash (replace)
+// underneath, whose one-step rewrite takes the new sector from one buffer
+static bool factory_list_ok(const hal_flash_map_t *m)
+{
+	bool end = false;
+	uint64_t prev_end = 0;
+	for (unsigned i = 0; i < HAL_FLASH_FACTORY_MAX; i++) {
+		uint32_t a = m->factory[i].addr, n = m->factory[i].size;
+		if (end || n == 0) {
+			if (n != 0 || a != 0) {
+				return false;
+			}
+			end = true;
+			continue;
+		}
+		if ((i > 0 && a <= prev_end) || a > board.flash->size || n > board.flash->size - a ||
+		    board.flash->replace != NULL) {
+			return false;
+		}
+		prev_end = (uint64_t)a + n;
+		// The sectors the range touches, first to last
+		uint32_t first = a & ~(STORAGE_SECTOR - 1u);
+		uint32_t span = (((a + n - 1u) & ~(STORAGE_SECTOR - 1u)) - first) + STORAGE_SECTOR;
+		if (overlaps(first, span, m->settings_addr, m->settings_size) ||
+		    overlaps(first, span, m->journal_addr, 2u * STORAGE_SECTOR) ||
+		    overlaps(first, span, m->calibration_addr, m->calibration_size) ||
+		    overlaps(first, span, m->native_addr, m->native_size) ||
+		    overlaps(first, span, m->staging_addr, m->staging_size) ||
+		    overlaps(first, span, m->satellite_addr, m->satellite_size)) {
+			return false;
+		}
+		// Only its first and last sector can be partly kept; another range may share either
+		uint32_t ends[2] = { first, first + span - STORAGE_SECTOR };
+		for (unsigned k = 0; k < 2; k++) {
+			uint32_t c = kept_count(m, ends[k]);
+			if (c != STORAGE_SECTOR && c > STORAGE_SECTOR - K_DATA) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+#endif
+
 uint32_t storage_staging_size(void)
 {
 	const hal_flash_map_t *m = storage_map();
@@ -81,7 +159,8 @@ uint32_t storage_staging_size(void)
 	uint32_t a = m->staging_addr, n = m->staging_size;
 	bool clear = !overlaps(a, n, m->settings_addr, m->settings_size) && !overlaps(a, n, m->journal_addr, 2u * STORAGE_SECTOR) &&
 		     !overlaps(a, n, m->openfw_eeprom, 0x10000u) && !overlaps(a, n, m->openfw_flash, m->openfw_end - m->openfw_flash) &&
-		     !overlaps(a, n, m->native_addr, m->native_size) && !overlaps(a, n, m->calibration_addr, m->calibration_size);
+		     !overlaps(a, n, m->native_addr, m->native_size) && !overlaps(a, n, m->calibration_addr, m->calibration_size) &&
+		     !kept(m, a, n);
 	return clear ? n - n % STORAGE_SECTOR : 0;
 }
 
@@ -96,13 +175,34 @@ static bool rd(uint32_t addr, void *buf, uint32_t len)
 	return board.flash->read(addr, buf, len) || fail();
 }
 
+#if STORAGE_FACTORY_KEEP
+// Every program and erase of this file goes through wr() and er(), and each refuses a kept sector once more: a path
+// that misses the writers' own rule (4.1), or a read that failed between a check and a write, still never reaches
+// the maker's bytes. No rewrite that carries them over exists yet, so no sector is open to them
+static bool factory_refuse(void)
+{
+	stats.factory_refused++;
+	return fail();
+}
+#endif
+
 static bool wr(uint32_t addr, const void *buf, uint32_t len)
 {
+#if STORAGE_FACTORY_KEEP
+	if (kept(storage_map(), addr, len)) {
+		return factory_refuse();
+	}
+#endif
 	return board.flash->write(addr, buf, len) || fail();
 }
 
 static bool er(uint32_t addr)
 {
+#if STORAGE_FACTORY_KEEP
+	if (kept(storage_map(), addr, 1)) {
+		return factory_refuse();
+	}
+#endif
 	return board.flash->erase(addr) || fail();
 }
 
@@ -387,10 +487,22 @@ bool storage_init(void)
 	ready = false;
 	region = STORAGE_REGION_NONE;
 	claim_pending = false;
+#if STORAGE_FACTORY_KEEP
+	factory_valid = false;
+#endif
 	if (m == NULL || board.flash->size == 0 || board.flash->erase_size != STORAGE_SECTOR ||
 	    board.flash->write == NULL || board.flash->erase == NULL) {
 		return false;
 	}
+#if STORAGE_FACTORY_KEEP
+	// A list that fails says the map is wrong: nothing of ours is written anywhere (region none), rather than a guess
+	// at which bytes are the maker's
+	if (!factory_list_ok(m)) {
+		dlog("storage: factory list refused: nothing is written");
+		return false;
+	}
+	factory_valid = true;
+#endif
 	ready = true;
 	storage_lock();
 	region = scan_region(m);
@@ -456,6 +568,23 @@ static bool inside(uint32_t addr, uint32_t len, uint32_t base, uint32_t size)
 	return size != 0 && addr >= base && len <= size && addr - base <= size - len;
 }
 
+// Inside one factory range, on a list storage_init accepted (the maker's bytes, for a compare with a backup).
+// Constant false without STORAGE_FACTORY_KEEP
+static bool factory_readable(const hal_flash_map_t *m, uint32_t addr, uint32_t len)
+{
+#if STORAGE_FACTORY_KEEP
+	for (unsigned i = 0; factory_valid && i < HAL_FLASH_FACTORY_MAX; i++) {
+		if (inside(addr, len, m->factory[i].addr, m->factory[i].size)) {
+			return true;
+		}
+	}
+#endif
+	(void)m;
+	(void)addr;
+	(void)len;
+	return false;
+}
+
 bool storage_debug_read_allowed(uint32_t addr, uint32_t len)
 {
 	const hal_flash_map_t *m = storage_map();
@@ -464,7 +593,7 @@ bool storage_debug_read_allowed(uint32_t addr, uint32_t len)
 	}
 	return inside(addr, len, m->settings_addr, m->settings_size) ||
 	       inside(addr, len, m->journal_addr, 2u * STORAGE_SECTOR) ||
-	       inside(addr, len, m->calibration_addr, m->calibration_size);
+	       inside(addr, len, m->calibration_addr, m->calibration_size) || factory_readable(m, addr, len);
 }
 
 // A write refused because the region is foreign (counted), or because there is no flash
@@ -490,6 +619,14 @@ bool storage_sector_write(uint32_t addr, const uint8_t *data)
 		storage_unlock();
 		return true;
 	}
+#if STORAGE_FACTORY_KEEP
+	if (kept(m, addr, STORAGE_SECTOR)) {
+		// A sector holding the maker's bytes is never rewritten here yet: refused, the journal not touched
+		stats.factory_refused++;
+		storage_unlock();
+		return false;
+	}
+#endif
 	if (board.flash->replace != NULL) {
 		// Copy on write underneath: the new sector replaces the old in one step, so the journal's copy, header and
 		// the erase would only wear the flash (on NAND, 11 page programs against 2)
@@ -553,6 +690,21 @@ bool storage_write(uint32_t addr, const void *buf, uint32_t len)
 		return len == 0;
 	}
 	storage_lock();
+#if STORAGE_FACTORY_KEEP
+	if (kept(m, addr, len)) {
+		// A range touching a sector that holds the maker's bytes: done when the flash holds it already (the bytes,
+		// or erased for an erase), else refused whole, before anything is erased (the patch path rewrites its
+		// sectors itself, past storage_sector_write)
+		bool unchanged = p != NULL ? same(addr, p, len) : blank(addr, len);
+		if (unchanged) {
+			stats.sector_skips++;
+		} else {
+			stats.factory_refused++;
+		}
+		storage_unlock();
+		return unchanged;
+	}
+#endif
 	uint8_t *b = storage_buffer_acquire();
 	bool ok = b != NULL;
 	if (ok && p != NULL && len <= P_MAX) {

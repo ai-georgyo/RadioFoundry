@@ -8,6 +8,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// A board whose maker keeps data of its own inside the flash map (a factory calibration, records the maker's tools
+// read) builds with -DSTORAGE_FACTORY_KEEP=1 (MCU_DEFS in its board.mk) and lists those bytes in
+// hal_flash_map_t.factory (docs/spec/settings-store.md 4.1). Every other board builds without it: the helpers below
+// are then constant false, and nothing of the rule is compiled into core/storage or a flash driver. A define and not
+// only the list, so that the boards that keep nothing pay nothing for it
+#ifndef STORAGE_FACTORY_KEEP
+#define STORAGE_FACTORY_KEEP	0
+#endif
+
+// A byte range of the data flash
+typedef struct {
+	uint32_t addr;
+	uint32_t size;
+} hal_flash_range_t;
+
+#define HAL_FLASH_FACTORY_MAX	4u
+
 // Where the core keeps its data in the board's data flash. Every area is whole erase units. A size of 0 means the
 // board has no such area (the feature then runs from RAM only, or is refused)
 typedef struct {
@@ -36,7 +53,56 @@ typedef struct {
 	// Satellite TLE data (docs/spec/satellite.md): separate from update staging so TFTP and CPS-fast never share it
 	uint32_t satellite_addr;
 	uint32_t satellite_size;
+	// The maker's data on the flash (its factory calibration, its records): bytes no writer of ours changes, in any
+	// storage state, and the debug link may read (docs/spec/settings-store.md 4.1). Byte ranges, ascending and apart,
+	// whose erase units are clear of every area above but the open-firmware images; size 0 ends the list. Read only
+	// with STORAGE_FACTORY_KEEP. The last field, so that no other field moves
+	hal_flash_range_t factory[HAL_FLASH_FACTORY_MAX];
 } hal_flash_map_t;
+
+// Whether any byte of [addr, addr + len) lies in an erase unit (unit bytes, aligned) that holds a byte of a factory
+// range: an erase there takes the maker's bytes with it, a program there may change them. False for a NULL map or len
+// 0, and always false without STORAGE_FACTORY_KEEP. Every entry of size other than 0 counts, one past a size 0 entry
+// too: storage_init() refuses such a list, and a driver's backstop must not depend on that
+static inline bool hal_flash_factory_unit(const hal_flash_map_t *m, uint32_t unit, uint32_t addr, uint32_t len)
+{
+#if STORAGE_FACTORY_KEEP
+	if (m == NULL || len == 0u) {
+		return false;
+	}
+	// 32-bit divisions (no 64-bit division helper in a driver's path), 64-bit sums: a range may end at the top of the
+	// address space
+	const uint32_t u = unit != 0u ? unit : 1u;
+	const uint64_t last = (uint64_t)addr + len - 1u;
+	for (unsigned i = 0; i < HAL_FLASH_FACTORY_MAX; i++) {
+		// The range widened to the erase units it touches, first and last byte
+		const hal_flash_range_t *r = &m->factory[i];
+		if (r->size == 0u) {
+			continue;
+		}
+		const uint64_t r_last64 = (uint64_t)r->addr + r->size - 1u;
+		const uint32_t r_last = r_last64 > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)r_last64;
+		const uint32_t first = r->addr - r->addr % u;
+		const uint64_t end = (uint64_t)(r_last - r_last % u) + u - 1u;
+		if (addr <= end && first <= last) {
+			return true;
+		}
+	}
+	return false;
+#else
+	(void)m;
+	(void)unit;
+	(void)addr;
+	(void)len;
+	return false;
+#endif
+}
+
+// Whether any byte of [addr, addr + len) is a byte of a factory range itself. The same rules as above
+static inline bool hal_flash_factory_bytes(const hal_flash_map_t *m, uint32_t addr, uint32_t len)
+{
+	return hal_flash_factory_unit(m, 1u, addr, len);
+}
 
 // The end of the highest area of a map whose flash erases in units of erase_size (an area of size 0 is none): a chip
 // smaller than this can't hold the map, and a driver then offers none (an address past the chip fails, it never
@@ -94,6 +160,11 @@ typedef struct {
 	// Optional (NULL: not known): the chip's ID as init read it, manufacturer << 16 | device (SPI NOR: memory type << 8
 	// | capacity code; SPI NAND: the device byte), 0 when nothing answered. No bus transfer: the support info reads it
 	uint32_t (*jedec)(void);
+	// Optional, a driver with a backstop under STORAGE_FACTORY_KEEP: the driver refuses every erase and program in an
+	// erase unit holding factory bytes (hal_flash_factory_unit), nothing sent to the chip, except in the one unit
+	// core/storage opened here (its address) for a rewrite that carries those bytes over; UINT32_MAX, or an address
+	// that doesn't start a unit, closes it. NULL: no backstop
+	void (*factory_grant)(uint32_t unit);
 } hal_flash_t;
 
 #endif

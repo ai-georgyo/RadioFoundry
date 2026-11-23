@@ -6,7 +6,7 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
-#if SPI_NOR_ADDR4
+#if SPI_NOR_ADDR4 || STORAGE_FACTORY_KEEP
 #include "debuglink/dlog.h"
 #endif
 
@@ -15,6 +15,10 @@
 static const stm32_spi_flash_cfg_t *cfg;
 static SemaphoreHandle_t lock;
 static bool ready;
+#if STORAGE_FACTORY_KEEP
+static uint32_t factory_refusals;	// erases and programs refused in a unit holding factory bytes (spi_flash.h)
+static uint32_t grant = UINT32_MAX;	// the one such unit core/storage opened (hal_flash_t.factory_grant), or none
+#endif
 #if SPI_NOR_ADDR4
 // A transaction holds the bus: set once take() has it, cleared before give() lets it go. What a masked caller reads
 // instead of the lock (stm32_spi_flash_quiesce)
@@ -114,11 +118,62 @@ static bool rd(uint32_t addr, void *buf, uint32_t len)
 	return ok;
 }
 
+#if STORAGE_FACTORY_KEEP
+// The backstop under core/storage's own rule (docs/spec/settings-store.md 4.1): an erase or a program in an erase unit
+// holding factory bytes (hal_flash_map_t.factory) of the board's map or its small one, whichever the chip holds or
+// none (where the maker keeps its data doesn't depend on the map in use), goes to the chip only inside the unit
+// core/storage granted. The grant opens that unit at its own address only: the 16 MB alias test below holds for every
+// operation, granted or not. Refused: counted, the first one logged
+static bool kept(uint32_t addr, uint32_t len)
+{
+	return hal_flash_factory_unit(cfg->map, SPI_NOR_SECTOR_SIZE, addr, len) ||
+	       hal_flash_factory_unit(cfg->small_map, SPI_NOR_SECTOR_SIZE, addr, len);
+}
+
+static bool factory(uint32_t addr, uint32_t len)
+{
+	bool granted = grant != UINT32_MAX && addr >= grant && addr - grant < SPI_NOR_SECTOR_SIZE &&
+		       len <= SPI_NOR_SECTOR_SIZE - (addr - grant);
+	bool hit = !granted && kept(addr, len);
+#if SPI_NOR_ADDR4
+	// A slip to 3-byte addressing (the extended address register, which every transaction parks at 0) would reach
+	// the cell 16 MB lower: the bytes above 16 MB are tested again where they would land (no map lies above 16 MB)
+	for (uint64_t a = addr; !hit && a < (uint64_t)addr + len; ) {
+		uint64_t next = (a | 0xFFFFFFu) + 1u;
+		uint64_t end = (uint64_t)addr + len < next ? (uint64_t)addr + len : next;
+		hit = a >= 0x1000000u && kept((uint32_t)a & 0xFFFFFFu, (uint32_t)(end - a));
+		a = end;
+	}
+#endif
+	if (hit && factory_refusals++ == 0u) {
+		dlog("flash: erase or program at 0x%x refused: factory bytes", (unsigned)addr);
+	}
+	return hit;
+}
+
+// A unit address only: anything else (UINT32_MAX among it) closes the grant, so a wrong address never opens parts of
+// two units
+static void factory_grant(uint32_t unit)
+{
+	grant = unit % SPI_NOR_SECTOR_SIZE == 0u ? unit : UINT32_MAX;
+}
+
+uint32_t stm32_spi_flash_factory_refusals(void)
+{
+	return factory_refusals;
+}
+#endif
+
 static bool wr(uint32_t addr, const void *buf, uint32_t len)
 {
 	if (!in_range(addr, len)) {
 		return false;
 	}
+#if STORAGE_FACTORY_KEEP
+	if (factory(addr, len)) {
+		return false;
+	}
+#endif
 	take();
 #if SPI_NOR_ADDR4
 	bool ok = spi_nor_program_parked(&nor, addr, buf, len);
@@ -134,6 +189,11 @@ static bool er(uint32_t addr)
 	if (!in_range(addr, 1)) {
 		return false;
 	}
+#if STORAGE_FACTORY_KEEP
+	if (factory(addr, 1)) {
+		return false;
+	}
+#endif
 	take();
 #if SPI_NOR_ADDR4
 	bool ok = spi_nor_erase_sector_parked(&nor, addr);
@@ -158,6 +218,9 @@ hal_flash_t stm32_spi_flash = {
 	.erase = er,
 	.map = NULL,	// set by init
 	.jedec = jedec,
+#if STORAGE_FACTORY_KEEP
+	.factory_grant = factory_grant,
+#endif
 };
 
 bool stm32_spi_flash_read_security(uint8_t reg, uint32_t offset, void *buf, uint32_t len)

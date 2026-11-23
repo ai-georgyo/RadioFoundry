@@ -1603,19 +1603,45 @@ storageClaimFirstTest: storageClaimFirstTest.c $(STORE) $(wildcard $(CORE)/stora
 	$(CC) $(CFLAGS) -DSTORAGE_CLAIM_FIRST=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageClaimFirstTest.c $(STORE)
 
 # The journal's flash operations pinned: a scripted run, every operation and its result hashed against a golden value
-# taken once from the storage.c of commit 51dedf59 (docs/spec/settings-store.md 6). JOURNAL_LOG_STORAGE builds it on
-# another storage.c (the golden's source, storageJournalLogTest.c)
+# taken once from the storage.c before the factory ranges (docs/spec/settings-store.md 6). Built as every board builds
+# storage.c and as a board that keeps factory bytes does, on a map that lists none: one hash. JOURNAL_LOG_STORAGE
+# builds it on another storage.c (the golden's source, storageJournalLogTest.c)
 JOURNAL_LOG_STORAGE ?= $(CORE)/storage/storage.c
-TESTS   += storageJournalLogTest
+TESTS   += storageJournalLogTest storageJournalLogKeepTest
 
 storageJournalLogTest: storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c
 
+storageJournalLogKeepTest: storageJournalLogTest.c $(CORE)/storage/storage.c sim/sim_flash.c $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageJournalLogTest.c \
+		$(CORE)/storage/storage.c sim/sim_flash.c
+
+# core/storage and the STM32 data flash glue as a board that keeps factory bytes builds them (STORAGE_FACTORY_KEEP,
+# docs/spec/settings-store.md 4.1): the list's checks, no erase or program of a sector holding factory bytes, the
+# debug read, the staging and satellite areas, the glue's backstop and its grant (on a fake SPI NOR driver). Again
+# with SPI_NOR_ADDR4: also the address 16 MB up
+FACTORY_SRC := storageFactoryTest.c $(CORE)/storage/storage.c sim/sim_flash.c $(ROOT)/platform/stm32/spi_flash/spi_flash.c \
+	$(CORE)/satellite/store.c $(CORE)/satellite/orbit.c $(CORE)/satellite/frequency.c
+FACTORY_DEPS := $(FACTORY_SRC) $(wildcard $(CORE)/storage/*.h $(CORE)/satellite/*.h sim/sim_flash.h stubs/stm32flash/*.h) \
+	$(wildcard $(ROOT)/platform/stm32/spi_flash/*.h) $(ROOT)/hal/hal_flash.h
+FACTORY_FLAGS := -DSTORAGE_FACTORY_KEEP=1 -DCONFIG_SATELLITE_TLE=1 -Istubs/stm32flash -I$(ROOT)/platform/stm32/spi_flash \
+	-I$(ROOT)/hal -I. -Wshadow
+TESTS   += storageFactoryTest storageFactoryAddr4Test
+
+storageFactoryTest: $(FACTORY_DEPS)
+	$(CC) $(CFLAGS) $(FACTORY_FLAGS) -o $@ $(FACTORY_SRC)
+
+storageFactoryAddr4Test: $(FACTORY_DEPS)
+	$(CC) $(CFLAGS) $(FACTORY_FLAGS) -DSPI_NOR_ADDR4=1 -o $@ $(FACTORY_SRC)
+
 run: run-settings
-run-settings: settingsTest storageClaimFirstTest storageJournalLogTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
+run-settings: settingsTest storageClaimFirstTest storageJournalLogTest storageJournalLogKeepTest storageFactoryTest storageFactoryAddr4Test spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
 	./settingsTest
 	./storageClaimFirstTest
 	./storageJournalLogTest
+	./storageJournalLogKeepTest
+	./storageFactoryTest
+	./storageFactoryAddr4Test
 	./spiNorTest
 	./spiNorAddr4Test
 	./spiNandTest
