@@ -13,6 +13,8 @@ static bool armed, cut;
 static uint32_t units, violations, reads;
 static uint32_t bad_addr, bad_len;
 static uint32_t unread_addr, unread_len;
+static uint32_t misread_addr, misread_left;	// the misread_left-th read covering misread_addr flips a bit there
+static uint32_t grant = UINT32_MAX, ungranted;
 static sim_flash_log_fn log_fn;
 
 static bool sim_init(void) { return true; }
@@ -49,13 +51,29 @@ static bool read_op(uint32_t addr, void *buf, uint32_t len)
 		return false;
 	}
 	memcpy(buf, &sim_flash_data[addr], len);
+	if (misread_left != 0 && misread_addr >= addr && misread_addr - addr < len && --misread_left == 0) {
+		((uint8_t *)buf)[misread_addr - addr] ^= 1u;
+	}
 	return true;
+}
+
+// The backstop of a driver that keeps factory bytes (hal_flash_t.factory_grant): with STORAGE_FACTORY_KEEP, an erase
+// or a program in a unit holding factory bytes of the map, outside the granted unit, is refused and counted
+static bool refused(uint32_t addr, uint32_t len)
+{
+	bool granted = grant != UINT32_MAX && addr >= grant && addr - grant < SIM_FLASH_SECTOR &&
+		       len <= SIM_FLASH_SECTOR - (addr - grant);
+	if (!granted && hal_flash_factory_unit(sim_flash.map, SIM_FLASH_SECTOR, addr, len)) {
+		ungranted++;
+		return true;
+	}
+	return false;
 }
 
 static bool write_op(uint32_t addr, const void *buf, uint32_t len)
 {
 	const uint8_t *p = buf;
-	if (cut || !in_range(addr, len)) {
+	if (cut || !in_range(addr, len) || refused(addr, len)) {
 		return false;
 	}
 	if (bad_len != 0 && addr < bad_addr + bad_len && addr + len > bad_addr) {
@@ -79,7 +97,7 @@ static bool write_op(uint32_t addr, const void *buf, uint32_t len)
 static bool erase_op(uint32_t addr)
 {
 	uint32_t base = addr & ~(SIM_FLASH_SECTOR - 1u);
-	if (cut || !in_range(base, SIM_FLASH_SECTOR)) {
+	if (cut || !in_range(base, SIM_FLASH_SECTOR) || refused(base, 1)) {
 		return false;
 	}
 	if (!spend()) {
@@ -122,9 +140,15 @@ static bool sim_erase(uint32_t addr)
 	return ok;
 }
 
+static void sim_grant(uint32_t unit)
+{
+	grant = unit % SIM_FLASH_SECTOR == 0 ? unit : UINT32_MAX;
+}
+
 hal_flash_t sim_flash = {
 	.init = sim_init, .size = 0, .erase_size = SIM_FLASH_SECTOR,
 	.read = sim_read, .write = sim_write, .erase = sim_erase, .map = NULL,
+	.factory_grant = sim_grant,
 };
 
 void sim_flash_create(uint32_t size, const hal_flash_map_t *map)
@@ -140,6 +164,9 @@ void sim_flash_create(uint32_t size, const hal_flash_map_t *map)
 	units = violations = 0;
 	bad_len = 0;
 	unread_len = 0;
+	misread_left = 0;
+	grant = UINT32_MAX;
+	ungranted = 0;
 }
 
 void sim_flash_free(void)
@@ -164,6 +191,7 @@ void sim_flash_power_on(void)
 {
 	cut = false;
 	armed = false;
+	grant = UINT32_MAX;	// the driver's RAM
 }
 
 uint32_t sim_flash_units(void) { return units; }
@@ -183,6 +211,15 @@ void sim_flash_bad_read(uint32_t addr, uint32_t len)
 	unread_addr = addr;
 	unread_len = len;
 }
+
+void sim_flash_misread(uint32_t addr, uint32_t nth)
+{
+	misread_addr = addr;
+	misread_left = nth;
+}
+
+uint32_t sim_flash_granted(void) { return grant; }
+uint32_t sim_flash_ungranted(void) { return ungranted; }
 
 void sim_flash_set_log(sim_flash_log_fn fn)
 {
