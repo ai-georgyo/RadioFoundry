@@ -5,14 +5,14 @@
 //
 // The merge on the user's machine (rfoundry, tools/codec_extract.py, the web flasher) writes the codec's tables at
 // their stock address (0x080D19F0..0x080E3A72 from V02.06 CSV, the codec's own data), its code right after them at
-// 0x080E3A74, and the descriptor at the end of sector 11 (platform/stm32f4/codec_desc.h). The code reaches its tables
+// 0x080E3A74, and the descriptor at the end of sector 11 (platform/stm32/codec_desc.h). The code reaches its tables
 // through absolute addresses, which don't change. The merge rewrites what does: one pointer into the code and the 12
 // calls from the code that stock keeps in the table window back into the code (the codec map). V02.01, V02.02 and
 // V02.03 CSV carry the same codec 0x40 lower, and the merge places it the same way, 0x40 lower. The V02.06 and V02.03
 // noCSV files carry it higher (tables from 0x080D4794 and 0x080D4754), and the merge places it the same way after
 // its tables. The MD-9600 files carry the same codec; the merge moves their tables into sectors 10 and 11 with the code (below).
 // None of it is part of this repository or a release. The calls and the checks are the shared ones
-// (platform/stm32f4/hrc/vocoder.c); this file says which build and where. Without a valid descriptor and codec,
+// (platform/stm32/hrc/vocoder.c); this file says which build and where. Without a valid descriptor and codec,
 // present() is false and the radio is FM only.
 #include "../uv380_family/uvf.h"
 #include "config.h"

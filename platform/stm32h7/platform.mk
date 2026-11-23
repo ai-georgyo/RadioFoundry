@@ -70,6 +70,8 @@ PLATFORM_DIRS := platform/stm32 platform/stm32h7
 PLATFORM_SRC := $(foreach f,$(sort $(notdir $(wildcard $(addsuffix /*.c,$(PLATFORM_DIRS))))),$(wildcard $(addsuffix /$(f),$(PLATFORM_DIRS))))
 # The shared linker script (common.ld), after this directory on the linker's search path
 PLATFORM_LD_DIRS := platform/stm32
+# The file with file-scope assembly, kept out of link time optimization (the Makefile's LTO_EXCLUDE)
+LTO_EXCLUDE := platform/stm32/codec_call.c
 # The FreeRTOS port is the Cortex-M4F one: the same core registers and FPU frame, and it refuses only the Cortex-M7
 # revisions r0p0 and r0p1 (port.c), which this part's core (r1p1) is not
 PLATFORM_INC := -Iplatform/stm32 -I$(HALDIR)/Inc -I$(CMSIS_DEV)/Include -I$(CMSIS_CORE)/Include -I$(RTOS)/include \

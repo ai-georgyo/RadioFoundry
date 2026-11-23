@@ -24,7 +24,7 @@ KEY_LEN = 1024
 HEADER_LEN = 0x100
 MAGIC = b"OutSecurityBin"
 CODEC_SIG = 0x4FF0E92D
-# The descriptor the merge writes at the end of sector 11 (platform/stm32f4/codec_desc.h; docs/spec/codec-placement.md)
+# The descriptor the merge writes at the end of sector 11 (platform/stm32/codec_desc.h; docs/spec/codec-placement.md)
 DESC_ADDR = 0x080FFF80
 DESC_LEN = 0x80
 DESC_MAGIC = 0x43534544      # "DESC"

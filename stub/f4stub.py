@@ -165,7 +165,7 @@ SUM_MAX = 800                          # SUMS records per request (the stub allo
 READ_PACK = 16                         # blocks per READ request
 ERASE_TIMEOUT = 6.0                    # 128 KB: 2 s worst case in the data sheet, the stub gives up at 4 s
 RUN_ADDR = 0x20000000                  # the stub's link address, which RadioFoundry reports as STUB INFO's load_addr
-DESC_LEN = 0x80                        # the codec descriptor at the end of the codec flash (platform/stm32f4/codec_desc.h)
+DESC_LEN = 0x80                        # the codec descriptor at the end of the codec flash (platform/stm32/codec_desc.h)
 DESC_MAGIC = 0x43534544                # "DESC"
 SRAM_SIZE = 128 * 1024                 # stub/stm32f4/f4stub.ld: .bss and the stack use all of it after the jump
 

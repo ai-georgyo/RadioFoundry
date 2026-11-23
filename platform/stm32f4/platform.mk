@@ -61,7 +61,7 @@ PLATFORM_SRC := $(foreach f,$(sort $(notdir $(wildcard $(addsuffix /*.c,$(PLATFO
 # The shared linker script (common.ld), after this directory on the linker's search path
 PLATFORM_LD_DIRS := platform/stm32
 # The file with file-scope assembly, kept out of link time optimization (the Makefile's LTO_EXCLUDE)
-LTO_EXCLUDE := platform/stm32f4/codec_call.c
+LTO_EXCLUDE := platform/stm32/codec_call.c
 PLATFORM_INC := -Iplatform/stm32 -I$(HALDIR)/Inc -I$(CMSIS_DEV)/Include -I$(CMSIS_CORE)/Include -I$(RTOS)/include \
 	-I$(RTOS)/portable/GCC/ARM_CM4F -I$(TUSB) -Idrivers/usb
 

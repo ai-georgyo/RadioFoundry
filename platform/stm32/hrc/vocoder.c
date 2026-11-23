@@ -24,7 +24,7 @@
 
 #define HALF			(VOCODER_FRAME_SAMPLES / 2)
 
-// CCM: CPU only, which is all the codec needs; not zeroed by the start-up code (enc_start() and dec_start() clear it).
+// CPU-only RAM (common.ld's .ccmram), all the codec needs; not zeroed by the start-up code (enc_start(), dec_start()).
 // One block holds the encoder's state or the decoder's, never both: DMR and NXDN voice are simplex, so a call only
 // encodes or only decodes (core/dmr/ambe/ambeVoice.c decodes nothing while a transmission runs). Each init touches only
 // its own block (codec-dm1701.md, "State sizes"), so the first encode after decoding, or the first decode after

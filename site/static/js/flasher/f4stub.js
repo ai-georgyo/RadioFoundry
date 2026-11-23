@@ -66,7 +66,7 @@ export function f405Sectors(flashKb = 1024) {
 // than the flash the firmware owns. Some radios' chips read 512 KB while the board's flash reaches 1 MB (the codec sits
 // in the top sectors): the loader refuses everything past the register's size, so their install goes through the
 // bootloader. owned: [[lo, hi)] (data/f4-stub.json). An unknown size (null, 0) is not short
-// The codec descriptor at the end of the codec flash (platform/stm32f4/codec_desc.h)
+// The codec descriptor at the end of the codec flash (platform/stm32/codec_desc.h)
 const DESC_LEN = 0x80, DESC_MAGIC = 0x43534544;
 
 // The segments the loader writes for a build merged with the codec: the build, then the codec's sectors (codec: [lo,

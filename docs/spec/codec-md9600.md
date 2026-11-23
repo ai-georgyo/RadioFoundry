@@ -109,10 +109,10 @@ and 04.03 value, +0xB68, is the 06.09 REC build's and was not checked). +0x1C0 i
 
 State: D 0x7EC, E 0x16E0, FEC 0x44 each (guard pages: 0x7E8, 0x16DC and 0x40 fault in decoder init, encoder init and
 FEC init); stack 3822 bytes peak; no fixed RAM address; no FPU instruction executed. Identical to the reference build.
-**This is RadioFoundry's STM32 vocoder call interface unchanged** (`platform/stm32f4/codec_call.c` and the boards'
+**This is RadioFoundry's STM32 vocoder call interface unchanged** (`platform/stm32/codec_call.c` and the boards'
 glue): a board only needs the code base, the FEC decode offset and the window table.
 
-Encode flags: the shared host (`platform/stm32f4/hrc/vocoder.c`) passes one flags word on every encode call, the
+Encode flags: the shared host (`platform/stm32/hrc/vocoder.c`) passes one flags word on every encode call, the
 same word as on the DM-1701 and MD-380 (`drivers/vocoder/ambe2_flags.h`, 0x1840 by default; the bits:
 [codec-md380.md](codec-md380.md), "Encode flags"). On the MD-9600 builds the bits are unverified: the code is the
 same family, but they were not measured on it.
@@ -196,7 +196,7 @@ both windows as blocks:
 |---|---|---|
 | Code (0xF1EE to 0x102F6 bytes by build) | start of sector 11, 0x080E0000 | the code is position independent except for 1 self reference, its absolute references into the table window and 12 calls from the table window's island; the codec map lists them |
 | Table window (0x10FE6 to 0x110C6 bytes by build) | start of sector 10, 0x080C0000 plus the build's address modulo 16 (06.09 and 16.45: 0x080C000C) | too long to share sector 11 with the code (the two windows together are up to 135,044 bytes); every build leaves at least 61 KB of sector 10 and 64 KB of sector 11 free |
-| Descriptor | end of sector 11, 0x080FFF80 | `platform/stm32f4/codec_desc.h`: tag, code window, table window, a CRC-32 of each |
+| Descriptor | end of sector 11, 0x080FFF80 | `platform/stm32/codec_desc.h`: tag, code window, table window, a CRC-32 of each |
 
 The codec's flash is sectors 10 and 11 (`CODEC_FLASH_LO` 0x080C0000 in the firmware profiles). The application never
 links past 0x080BFFFF, so an update erases sectors 3-9 only and keeps the codec.

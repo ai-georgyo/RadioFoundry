@@ -275,7 +275,7 @@ class SectorMap(unittest.TestCase):
         self.assertIn("#define CODEC_TABLES_LEN\t0x%05Xu" % prof["placement"]["tables_len"], voc)
         self.assertIn("#define CODEC_TABLES_CRC\t0x%08Xu" % prof["placed"]["tables"][0], voc)
         self.assertIn('"%s"' % prof["codec_profile"], voc)
-        desc = open(os.path.join(HERE, "..", "..", "..", "platform", "stm32f4", "codec_desc.h")).read()
+        desc = open(os.path.join(HERE, "..", "..", "..", "platform", "stm32", "codec_desc.h")).read()
         self.assertIn("#define CODEC_DESC_ADDR\t\t0x%08Xu" % stockfw.DESC_ADDR, desc)
         self.assertIn("#define CODEC_DESC_MAGIC\t0x%08Xu" % stockfw.DESC_MAGIC, desc)
 

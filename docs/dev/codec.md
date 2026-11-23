@@ -29,7 +29,7 @@ For source builds, drop the stock file into `codecs/` and `make` runs the board'
 | Part | Where |
 |---|---|
 | The interface the core calls | `hal/hal_vocoder.h` (`board.vocoder`) |
-| STM32 radios' hosting: state init, per-frame calls, the descriptor checks | `platform/stm32f4/hrc/vocoder.c` |
+| STM32 radios' hosting: state init, per-frame calls, the descriptor checks | `platform/stm32/hrc/vocoder.c` |
 | Which stock builds a radio accepts: entry offsets, placement, CRCs | `boards/<b>/vocoder_<b>.c` |
 | HR_C7000 radios' hosting: the slot header, the copy to RAM | `platform/hrc7000/vocoder.c`; the slot and windows in the board's linker script, the profile prefix in its `board.mk` |
 | The window kept free in flash | the board's linker script |

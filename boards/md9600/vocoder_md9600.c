@@ -4,12 +4,12 @@
 // build of the codec that has a map is accepted (the profiles below, one per original firmware file: 03.28, 03.29,
 // 04.03, 06.03, 06.09, 06.24, 16.24, 16.45, 26.38, 26.41, 26.42, 26.45, 26.57 and 126.61, each in the CSV, CSV-GPS, REC and
 // GPS-REC variants it exists in); the codec is board-independent, so any of them serves every revision. The calls are
-// the other STM32F4 hosts', at the same entry offsets (platform/stm32f4/hrc/vocoder.c).
+// the other STM32F4 hosts', at the same entry offsets (platform/stm32/hrc/vocoder.c).
 //
 // The merge on the user's machine (rfoundry, tools/codec_extract.py, the web flasher) writes the codec's code at the
 // start of sector 11 (0x080E0000), its table window, moved as one block, at the start of sector 10 (0x080C0000 plus the
 // stock address modulo 16, so a profile names its own) and the descriptor at the end of sector 11
-// (platform/stm32f4/codec_desc.h). It rewrites every address that changes (the codec map): the code's pointers into
+// (platform/stm32/codec_desc.h). It rewrites every address that changes (the codec map): the code's pointers into
 // itself and into the tables, and the calls from the island in the table window back into the code. None of it is part
 // of this repository or a release. The calls and the checks are the shared ones; this file says which build and where.
 // Without a valid descriptor and codec, present() is false and the radio is FM only. That is also what a codec where an
