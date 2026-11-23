@@ -30,8 +30,9 @@ next bytes to a debug frame.
 ## 2. The open-firmware shim (`core/cps`, `CONFIG_CPS_OPENFW`)
 
 `core/cps/cps_openfw.c` is the protocol engine with no RTOS or USB in it. `cps_port.c` hooks it to the host link
-and the board's reboot. Host tests drive the engine directly (`tests/host/cpsTest.c`), and `tests/host/cpsSim`
-serves it on stdin / stdout for `tools/cps_client.py`.
+and the board's reboot. Host tests drive the engine directly (`tests/host/cpsTest.c`, built again with
+`STORAGE_FACTORY_KEEP=1` as `cpsKeepTest` for the maker's bytes of 2.3, a power cut at every operation of a commit
+included), and `tests/host/cpsSim` serves it on stdin / stdout for `tools/cps_client.py`.
 
 Our own tools can move the same image faster with the debug link's CODEPLUG command: 4 KB blocks, CRC-32 sums so
 only changed blocks move, LZ4 both ways and a staged commit ([cps-fast.md](cps-fast.md), `CONFIG_CPS_FAST`).
@@ -104,6 +105,13 @@ written and verified (about 100 ms). Rules:
 - **Calibration** (`calibration_addr`, `calibration_size` in the board's flash map; for example 512 bytes inside
   a 4 KB sector): only the window's bytes take the CPS's values, and the rest of
   the sector is kept. A board with no calibration window (size 0) takes the sector as plain data. *Open decision: refuse calibration writes entirely.*
+- **The maker's bytes** (`hal_flash_map_t.factory`, a board that builds with `STORAGE_FACTORY_KEEP`;
+  `settings-store.md` 4.1): a sector holding some is written like any other, and its factory bytes stay. `X 1` reads
+  the stored sector, so a CPS that sends none of the range's bytes in `X 2` changes nothing there; bytes it does send
+  for the range are dropped at `X 3`, which is acknowledged all the same (a CPS writing whole sectors from another
+  radio's image keeps working). A sector that is factory bytes whole is never erased: `X 3` is acknowledged and
+  changes nothing. A CPS that reads back to verify sees the radio's bytes in the range, not the ones it sent. Which
+  boards list ranges: [feature-matrix.md](../feature-matrix.md).
 - **VFO A** (EEPROM 0x7590): a commit whose VFO A record differs from what the radio would show (the CPS edited the
   VFO) is decoded into the settings store's VFO fields. A record written back unchanged is ignored. The VFO
   follows after the next boot or reload.
@@ -150,7 +158,8 @@ python3 tools/cps_client.py --exec "tests/host/cpsSim --populate" info     # aga
 ### 2.6 Counters
 
 The debug link's `storage` view section (`debuglink.md` 3.7) shows `cps.requests reads commits refused overflows
-last session pending`.
+last session pending`. A commit whose bytes for a factory range were dropped counts as a commit here and in storage's
+`storage.factory` counters (`settings-store.md` 4.1), shown only on a board that keeps factory bytes.
 
 ### 2.7 Open decisions
 

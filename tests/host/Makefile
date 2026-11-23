@@ -291,7 +291,7 @@ ifneq ($(TSHARK),)
 endif
 
 clean:
-	rm -f mdnsTest.pcap tftpTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_test.bin codec_desc_md380.bin \
+	rm -f mdnsTest.pcap tftpTest.pcap tftpKeepTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_test.bin codec_desc_md380.bin \
 		codec_desc_md9600.bin codec_desc_md9600own.bin
 	rm -rf gen
 	rm -f $(TESTS) dmrDataTest.out ipGatewayTest.pcap ipGatewayTest16.pcap ipGatewayTestShared.pcap ipGatewayTestAir440.pcap \
@@ -1574,10 +1574,19 @@ mdnsTest: $(MDNST) $(CORE)/net/mdns.h $(CORE)/dmr/ipGateway.h
 tftpTest: $(TFTPT) $(CORE)/net/tftp.h $(CORE)/net/tftp_codeplug.h $(CORE)/net/tftp_iddb.h $(CORE)/codeplug/dmr_iddb.h $(CORE)/dmr/ipGateway.h $(ROOT)/hal/hal_flash.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_CPS_FAST=0 -o $@ $(TFTPT)
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then codeplug.bin over factory ranges, a power cut at every operation of the commit and of
+# tftp_codeplug_resume, and the ID database refused where it would reach one (its frames in tftpKeepTest.pcap, unchecked)
+tftpKeepTest: $(TFTPT) $(CORE)/net/tftp.h $(CORE)/net/tftp_codeplug.h $(CORE)/net/tftp_iddb.h $(CORE)/codeplug/dmr_iddb.h $(CORE)/dmr/ipGateway.h $(ROOT)/hal/hal_flash.h sim/sim_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 '-DTFTP_PCAP="tftpKeepTest.pcap"' -I$(ROOT)/hal -I. -Wshadow \
+		-DCONFIG_CPS_FAST=0 -o $@ $(TFTPT)
+TESTS   += tftpKeepTest
+
 run: run-net
-run-net: mdnsTest tftpTest
+run-net: mdnsTest tftpTest tftpKeepTest
 	./mdnsTest
 	./tftpTest
+	./tftpKeepTest
 ifneq ($(TSHARK),)
 	@"$(TSHARK)" -r mdnsTest.pcap -o ip.check_checksum:TRUE -o udp.check_checksum:TRUE -z expert,note -q > netTest.expert
 	@"$(TSHARK)" -r tftpTest.pcap -o ip.check_checksum:TRUE -o udp.check_checksum:TRUE -z expert,note -q >> netTest.expert
@@ -1836,9 +1845,18 @@ TESTS   += cpsTest
 cpsTest: cpsTest.c $(CPS) $(wildcard $(CORE)/cps/*.h $(CORE)/codeplug/*.h $(CORE)/settings/*.h $(CORE)/storage/*.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DRFOUNDRY_GIT_STAMP='"20261125093007"' -o $@ cpsTest.c $(CPS)
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then X 1-3 on a map with factory ranges in the EEPROM image, a power cut at every operation of a commit
+TESTS   += cpsKeepTest
+
+cpsKeepTest: cpsTest.c $(CPS) $(wildcard $(CORE)/cps/*.h $(CORE)/codeplug/*.h $(CORE)/settings/*.h $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -DRFOUNDRY_GIT_STAMP='"20261125093007"' -o $@ cpsTest.c \
+		$(CPS)
+
 run: run-cps
-run-cps: cpsTest
+run-cps: cpsTest cpsKeepTest
 	./cpsTest
+	./cpsKeepTest
 .PHONY: run-cps
 
 # The fast codeplug protocol (core/cps/cps_fast.c, docs/spec/cps-fast.md): LZ4 both ways, blank blocks, CRC compare,
@@ -1849,9 +1867,19 @@ TESTS   += cpsFastTest
 cpsFastTest: cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -o $@ cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then blocks holding factory ranges written direct and staged, a power cut at every operation of a staged
+# commit and of cps_fast_resume
+TESTS   += cpsFastKeepTest
+
+cpsFastKeepTest: cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -o $@ cpsFastTest.c $(CPS) $(CPSF) \
+		$(CORE)/net/tftp_codeplug.c
+
 run: run-cpsfast
-run-cpsfast: cpsFastTest
+run-cpsfast: cpsFastTest cpsFastKeepTest
 	./cpsFastTest
+	./cpsFastKeepTest
 .PHONY: run-cpsfast
 
 # app.c's start-up order on a region that isn't ours, the staging area holding another firmware's bytes: the two
