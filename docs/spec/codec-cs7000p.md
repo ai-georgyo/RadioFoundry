@@ -555,8 +555,9 @@ of 16.
 * A word of this flash that a power cut left half written can read as a bus fault
   ([hardware-cs7000p.md](hardware-cs7000p.md) 2.3). The installers therefore never start an image over a sector 7
   that an unfinished install touched ([release.md](../dev/release.md#the-codec-on-this-route)). The boot check
-  itself reads sector 7 with plain loads: a sector 7 that another program left torn makes the image fault at every
-  start, until an install through the ROM bootloader writes or erases the sector.
+  first reads every flash word of sector 7 under a guard (a bus error there is a refusal, not a fault), so a sector 7
+  that another program left torn costs DMR voice, not the start-up, until an install through the ROM bootloader
+  writes or erases the sector. Untested on a radio.
 * The image has sectors 0 to 6 (`boards/cs7000p/memory.ld`). An update that writes only those keeps the codec
   (`[flash] keep_codec = true`).
 
