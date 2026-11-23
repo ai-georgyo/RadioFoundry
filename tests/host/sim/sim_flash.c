@@ -16,6 +16,11 @@ static uint32_t unread_addr, unread_len;
 static uint32_t misread_addr, misread_left;	// the misread_left-th read covering misread_addr flips a bit there
 static uint32_t grant = UINT32_MAX, ungranted;
 static sim_flash_log_fn log_fn;
+// The erases and programs of a recorded run (sim_flash_ops_begin): where each starts, in units after the start, and its
+// units
+#define OPS_MAX		1024u
+static bool rec_on, rec_over;
+static uint32_t rec_units0, rec_ops, op_start[OPS_MAX], op_units[OPS_MAX];
 
 static bool sim_init(void) { return true; }
 
@@ -122,9 +127,24 @@ static bool sim_read(uint32_t addr, void *buf, uint32_t len)
 	return ok;
 }
 
+static void record(uint32_t n)
+{
+	if (rec_on && n != 0) {
+		if (rec_ops == OPS_MAX) {
+			rec_over = true;
+			return;
+		}
+		op_start[rec_ops] = units - n - rec_units0;
+		op_units[rec_ops++] = n;
+	}
+}
+
 static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 {
 	bool ok = write_op(addr, buf, len);
+	if (ok) {
+		record(len);
+	}
 	if (log_fn != NULL) {
 		log_fn('w', addr, len, buf, ok);
 	}
@@ -134,6 +154,9 @@ static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 static bool sim_erase(uint32_t addr)
 {
 	bool ok = erase_op(addr);
+	if (ok) {
+		record(1);
+	}
 	if (log_fn != NULL) {
 		log_fn('e', addr, 0, NULL, ok);
 	}
@@ -224,4 +247,36 @@ uint32_t sim_flash_ungranted(void) { return ungranted; }
 void sim_flash_set_log(sim_flash_log_fn fn)
 {
 	log_fn = fn;
+}
+
+void sim_flash_ops_begin(void)
+{
+	rec_on = true;
+	rec_over = false;
+	rec_ops = 0;
+	rec_units0 = units;
+}
+
+uint32_t sim_flash_cut_points(uint32_t *pt, uint32_t max)
+{
+	uint32_t n = 0;
+	rec_on = false;
+	for (uint32_t i = 0; i < rec_ops; i++) {
+		uint32_t c[4] = { op_start[i], op_start[i] + 1u, op_start[i] + op_units[i] / 2u,
+				  op_start[i] + op_units[i] - 1u };
+		for (unsigned k = 0; k < 4; k++) {
+			// 0 would disarm the cut; a later point past the operation's end is the next one's
+			bool dup = c[k] == 0 || (k > 0 && c[k] >= op_start[i] + op_units[i]);
+			for (uint32_t j = 0; !dup && j < n; j++) {
+				dup = pt[j] == c[k];
+			}
+			if (!dup) {
+				if (n == max) {
+					return 0;
+				}
+				pt[n++] = c[k];
+			}
+		}
+	}
+	return rec_over ? 0 : n;
 }
