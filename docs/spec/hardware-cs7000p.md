@@ -30,7 +30,7 @@ What the radio refuses until it is calibrated or checked:
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |
 | Beeps and PCM audio | the I2S direction probe (section 6) | the transmit pad is seen driven in one of the two senses |
 | Software entry to the ROM bootloader | `board_rom_entry_ok()`, the rule in `romentry_cs7000p.h` (section 2.5): the debug link answers such a `REBOOT` as refused | allowed under that rule by default (`CS7000P_SOFT_ROM_ENTRY`); 0 refuses it always |
-| Channel selector | `CS7000P_CHSW_VERIFIED` (section 9.4): on, with the table read on one radio | which way round it counts up is confirmed on a radio |
+| Channel selector | `CS7000P_CHSW_VERIFIED` (section 9.4): on, with the table read on one radio | 0 turns it off |
 
 ---
 
@@ -1067,8 +1067,8 @@ PB10, PB11), an open contact 1. Read on one radio, one detent at a time over a w
 a Gray code: one line changes per detent, the last back to the first too. `keys_cs7000p.h` holds it as position by
 code, `CS7000P_CHSW_VERIFIED` is 1 and `CAP_ENCODER` is set: `drivers/input/chswitch` gives the position, and the
 difference modulo 16 becomes steps, the shorter way round, half a turn in one reading counted as 8 forward. A code
-settles after 30 ms. The direction the list was read in is taken as clockwise, the core's forward: if the selector
-counts the wrong way round, the table is mirrored (open question 11). `CS7000P_CHSW_VERIFIED=0` turns the selector
+settles after 30 ms. The list runs clockwise, the core's forward: on the radio the channel goes up when the selector
+is turned clockwise. `CS7000P_CHSW_VERIFIED=0` turns the selector
 off; a table that is not a full set of 16 positions makes no steps (and `cs7000pKeysTest` fails).
 
 PB10 (ECN2) is low on eight of the sixteen detents, in two runs of four (`8 9 1 0` and `2 3 B A`): there the software
@@ -1323,7 +1323,7 @@ the source comments use.
 | 8 | **The I2S data direction of a slave.** RM0433 Table 426 against 50.9.2. Also the clock polarity, and whether the chip is the master | no beeps; with the wrong sense assumed, two outputs on one line | Not assumed: probed (section 6.3). `board.i2s` shows the verdict and both counts; a scope on PC11 / PC12 confirms it once |
 | 9 | FM receive audio through the chip from a 450 kHz IF; the IF level (AK2365A `IFOG`); the 0.16 V bias at the chip's input | no FM audio, poor DMR sensitivity | Audio at the speaker against generator level; DMR BER ([dmr-bench.md](../testing/dmr-bench.md)) |
 | 10 | **The LCD board**: on one radio the board check passes, the panel answers ID 7C 89 F0 (ST7735) and the display and keys work. Still open: offsets and insets by eye, other board revisions | a blank or garbled display; the keys | `board.lcd_board` (only PE0 low), the `board.panel` ID bytes, `board.keys_raw` |
-| 11 | Which way round the selector counts up (its code and the function keys' positions are read: 9.4) | channels step the wrong way | Turn the selector clockwise on a radio: the channel goes up. If not, mirror the table in `keys_cs7000p.h` |
+| 11 | Answered on one radio: the function keys' positions, the selector's code and its direction (9.4). Open only for another LCD board revision or selector part | wrong keys, channels stepping the wrong way | `board.keys_raw` and `board.chsw_raw`, one key and one detent at a time |
 | 12 | The backlight curve; the key lights' polarity | too dark, no dimming | [backlight-curve.md](../testing/backlight-curve.md) |
 | 13 | The battery scale (a model, +/-4 %), the knob's switch-open threshold (`POW_DET` 0.7 V), the hold's margin at low battery | a wrong battery display; the radio switches off when the knob's contact bounces at low battery | A bench supply sweep against `board.vbat_mv`; `POW_DET` with the knob on at the lowest battery and as the knob goes off; knob off at 6.0 V from normal running (the hold set) |
 | 14 | Silicon revision, the ROM loader's version, the RDP level and option bytes as shipped. One radio: revision V, loader 0x92; RDP read 0xAA only after the install (as shipped: not read) | USB PHY errata, loader quirks (on 0x90: whether a cold SK1 entry connects without a second reset, AN2606 Table 146; PCROP left by the Read Unprotect), whether the first install always needs the unprotect | `board.mcu_rev`, `board.rom_loader`, `board.rdp`; `rfoundry detect` in loader mode, before and after the maker's recovery |

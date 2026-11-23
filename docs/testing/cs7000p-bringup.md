@@ -49,17 +49,17 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | FM receive, a carrier on 433.500 MHz | **With the first image the receiver was 10.5 kHz high** (centered at 433.490 MHz tuned, `rssi_raw` about 2990 and `noise_raw` about 380 there against 1250 and 1300 on channel; idle 770 and 1100): the reference DAC was off. With the DAC on at mid-scale the carrier is centered on channel. The second image wrote the control word but left the DAC's level at 0, and the squelch still stayed shut. The hold is now 4:0x25 = 0x0C with the level at mid-scale plus the offset (hardware page 6, [hrc6000-registers.md](../spec/hrc6000-registers.md) 3.22) | question 1 except the fine offset; the squelch reading's direction and scale |
 | PC8's duty 0, 512, 1023 at the passband's edge | `rssi_raw` 2019, 2380, 2711: about 2 kHz end to end | question 4's size |
 | `rfoundry_debug.py reboot --rom-dfu` | refused by the first image (the entry was off); taken by the image that allows it, and the screen went gray: the ROM bootloader was reached from the running image | question 18's entry itself (not the pin questions) |
-| The channel selector, 16 detents | `chsw_raw` `F D C 8 9 1 0 4 5 7 6 2 3 B A E`: a Gray code, now the table; with it the selector changes channels (the direction was not reported) | question 11 except the direction |
+| The channel selector, 16 detents | `chsw_raw` `F D C 8 9 1 0 4 5 7 6 2 3 B A E`: a Gray code, now the table; with it the channel goes up when the selector is turned clockwise | question 11 |
 | The volume knob | `vol_raw` 7 just above the power click, 3178 at full volume | `CS7000P_VOL_FULL_RAW` |
 | `board.hrc` with the second image | `1 r10=0x80 r25=0x0c`: the receive hold is written and reads back | stage 8's hold row |
 | `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 |
 | A key press | beeps | PCM to the chip's line out, the amplifier and the speaker switch (stage 8's beep row) |
 | The six function keys with the corrected order | each does what its label says | question 11's key half |
-| FM receive with the level fix (the bias at mid-scale) | the squelch opens on a signal on channel | question 1 except the fine offset |
+| FM receive with the level fix (the bias at mid-scale, written in one step) | the squelch opens on a signal on channel, also after minutes of idling; the audio is clear and at a sensible level. An image that wrote the level through zero at every receive entry opened the squelch after a start and later stopped | question 1 except the fine offset; question 9's audio |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
 
-Not checked on it yet: received audio's quality and level, which way round the selector counts, the fine reference
-offset, the battery against a meter, the claim and the full backup, DMR, and everything of stage 11.
+Not checked on it yet: the fine reference offset, sensitivity, CTCSS and DCS, the battery against a meter, the claim
+and the full backup, DMR, and everything of stage 11.
 
 The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), each on the board's own source:
 
@@ -89,7 +89,7 @@ and the table at the end has one row per open question.
 | Polarities read from documents only: `DMR_SLEEP`, `A-PDN`, the AK2365A's select, `VCOVCC_SW`, the hold, `EXP_LAMP` | 4, 5, 8, 9 | 32, 12 |
 | The expander's bit order on the hardware: the chain has no read-back, so only the outputs show it | 4 | 34 |
 | The LCD board is the OEM's 2018 board, with an ST7735-class controller | 5 | 10 |
-| The channel selector's direction: its code table was read on a radio, the way it was turned taken as clockwise | 5 | 11 |
+| The channel selector on another unit: its code table and direction were read on one radio | 5 | 11 |
 | The I2S data direction: probed, never assumed; anything but `ok` or `swapped` stops the stage | 8 | 8 |
 | The HR_C6000 keeps its reference hold (4:0x25 = 0x0C) through a DMR transmission; what the DAC does in a DMR TX slot is not measured | 8, 11 | 1 |
 | The reference oscillator's bias: which register, the coding, the on-frequency level | 9, 11 | 1, 35 |
@@ -511,7 +511,7 @@ checked above, and what to change.
 | 8 | Nothing: the I2S direction is probed. Clock polarity low; the chip is the master | 8 | `ckpol` in `audio_cs7000p.c` |
 | 9 | The chip demodulates FM from the IF; IF buffer gain 6 dB | 9, 10 | the AK2365A words in `rfplan_cs7000p.c` |
 | 10 | The LCD board is the 2018 OEM board; an ST7735-class controller; 160 x 128, offsets 0 | 5 | `CS7000P_LCD_FORCE`, `CS7000P_PANEL_TYPE`, `CS7000P_PANEL_MADCTL_XOR` |
-| 11 | The selector's direction (its codes and the six function keys' order were read on a radio, 2026-11-22) | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
+| 11 | The selector's codes and direction and the six function keys' order, read on one radio (2026-11-22), hold on another | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
 | 12 | Backlight window 20 to 70 % duty; key lights on with the bit high | 5 | `CS7000P_BL_MIN`, `CS7000P_BL_MAX` |
 | 13 | The battery model; the knob reads off below `POW_DET` 0.7 V (`CS7000P_KNOB_OPEN_POW_DET_MV`); the hold works at low battery | 4, 7, 11 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV`, `CS7000P_KNOB_OPEN_POW_DET_MV` |
 | 14 | Either silicon revision; any ROM loader version (0x90 may need a second reset); read protected as shipped | 1, 3 | recorded. Unprotected as found: stage 1's readout before stage 2 |
