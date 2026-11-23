@@ -25,7 +25,7 @@ view keys below on a radio and never transmits.
 | Item | State |
 |---|---|
 | Build, host tests, stack check | pass |
-| On a radio | one unit: starts; display, keys, USB and the debug link work; FM receive measured to the squelch ([First radio](#first-radio)). Audio, DMR and every transmission: not checked |
+| On a radio | one unit: starts; display, keys, the channel selector, beeps, USB and the debug link work; the FM squelch opens on a signal ([First radio](#first-radio)). DMR and every transmission: not checked |
 | Transmit | refused until the PA and the modulation are calibrated (stage 11) |
 | DMR voice | off: no codec route is known for this radio |
 | VOX | not written (`BOARD_NOT_WRITTEN`): the level detector has no supply while receiving |
@@ -48,15 +48,18 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | `board.pll=locked r=2 vco_hz=383550000` on 433.500 MHz; unlocked with the LO side high (483.45 MHz) | the synthesizer programs and locks on the low side; the high side is out of the VCO's range there | question 2 |
 | FM receive, a carrier on 433.500 MHz | **With the first image the receiver was 10.5 kHz high** (centered at 433.490 MHz tuned, `rssi_raw` about 2990 and `noise_raw` about 380 there against 1250 and 1300 on channel; idle 770 and 1100): the reference DAC was off. With the DAC on at mid-scale the carrier is centered on channel. The second image wrote the control word but left the DAC's level at 0, and the squelch still stayed shut. The hold is now 4:0x25 = 0x0C with the level at mid-scale plus the offset (hardware page 6, [hrc6000-registers.md](../spec/hrc6000-registers.md) 3.22) | question 1 except the fine offset; the squelch reading's direction and scale |
 | PC8's duty 0, 512, 1023 at the passband's edge | `rssi_raw` 2019, 2380, 2711: about 2 kHz end to end | question 4's size |
-| `rfoundry_debug.py reboot --rom-dfu` | refused by the first image (the entry was off); taken by the image that allows it. What the radio did after the request was not reported | question 18 in part |
-| The channel selector, 16 detents | `chsw_raw` `F D C 8 9 1 0 4 5 7 6 2 3 B A E`: a Gray code, now the table | question 11 except the direction |
+| `rfoundry_debug.py reboot --rom-dfu` | refused by the first image (the entry was off); taken by the image that allows it, and the screen went gray: the ROM bootloader was reached from the running image | question 18's entry itself (not the pin questions) |
+| The channel selector, 16 detents | `chsw_raw` `F D C 8 9 1 0 4 5 7 6 2 3 B A E`: a Gray code, now the table; with it the selector changes channels (the direction was not reported) | question 11 except the direction |
 | The volume knob | `vol_raw` 7 just above the power click, 3178 at full volume | `CS7000P_VOL_FULL_RAW` |
 | `board.hrc` with the second image | `1 r10=0x80 r25=0x0c`: the receive hold is written and reads back | stage 8's hold row |
-| `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 (the audio itself not confirmed) |
+| `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 |
+| A key press | beeps | PCM to the chip's line out, the amplifier and the speaker switch (stage 8's beep row) |
+| The six function keys with the corrected order | each does what its label says | question 11's key half |
+| FM receive with the level fix (the bias at mid-scale) | the squelch opens on a signal on channel | question 1 except the fine offset |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
 
-Not checked on it yet: audio at the speaker, a beep, which way round the selector counts, the battery against a
-meter, the claim and the full backup, DMR, and everything of stage 11.
+Not checked on it yet: received audio's quality and level, which way round the selector counts, the fine reference
+offset, the battery against a meter, the claim and the full backup, DMR, and everything of stage 11.
 
 The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), each on the board's own source:
 
