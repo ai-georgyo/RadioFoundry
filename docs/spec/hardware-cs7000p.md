@@ -675,14 +675,16 @@ with that DAC on**, on the synthesizer rail (the amplifier's supply and referenc
 
 The driver's set-ups leave 4:0x25 = 0x0E: with it the pin 75 DAC is on only while the chip transmits. With
 `ref_dac_hold` the IF host writes 4:0x25 = 0x0C after every mode set-up and at every receive entry, so the DAC stays
-on while receiving, at mid-scale plus the offset in 4:0x04. Then it sets the reference offset, `CS7000P_REF_OFFSET`,
-which is 0.
+on while receiving, and its level, the two-point bias 4:0x47 / 0x48, as 512 (mid-scale) plus the reference offset,
+`CS7000P_REF_OFFSET`, which is 0. While the chip transmits the DAC idles at mid-scale plus the same offset in
+4:0x04.
 
 **Measured on one radio (2026-11-22).** With the DAC off (the first image wrote 0x26, the manual's recipe, which does
 nothing on this pin) MOD2 sits at 0 V, the control voltage near 2.84 V, and the receiver is about 10.5 kHz high at
 433.5 MHz: a 433.500 MHz carrier is centered with the radio tuned to 433.490 MHz, and the squelch never opens on
 channel. With the DAC on at mid-scale the same carrier is centered on 433.500 MHz (signal and noise readings equal to
-the passband's center). PC8's duty moves the passband by about 2 kHz end to end, which gives about 8 kHz per volt of
+the passband's center). The second image wrote the right control word but left the bias at 0: the DAC was on at 0 V
+and the squelch still did not open on channel. The bias is now mid-scale plus the offset. PC8's duty moves the passband by about 2 kHz end to end, which gives about 8 kHz per volt of
 control voltage at this frequency. The table of control words is in
 [hrc6000-registers.md](hrc6000-registers.md) 3.22.
 

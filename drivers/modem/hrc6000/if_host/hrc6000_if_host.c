@@ -12,11 +12,17 @@
 // to the chip's TX slot timing, bits 5 and 4 let the MCU switch them. Every set-up of the driver that writes it
 // leaves 0x0E, and with that the DAC on pin 75 is on only while the chip transmits. The hold is that value with
 // bit 1 clear, 0x0C: measured on a radio whose reference oscillator hangs on that pin (the registers page has the
-// table), the DAC is on while receiving exactly with bit 3 set and bits 5 and 1 clear, and sits at mid-scale, moved by
-// the offset in 4:0x04. The manual's own recipe (bit 5 set, bit 3 clear, the level in 4:0x47 / 0x48) does nothing on
-// that pin. Written whole, not read and modified
+// table), the DAC is on while receiving exactly with bit 3 set and bits 5 and 1 clear. The manual's own word for it
+// (bit 5 set, bit 3 clear) does nothing on that pin. Written whole, not read and modified.
+//
+// Its level while held is the two-point bias, 4:0x47 and 0x48 bits 1-0: ten bits, unsigned, over the DAC's whole
+// range (the manual's 0 to 3.3 V). With the bias at 0, which is what an offset of 0 writes there, the DAC is on at
+// 0 V and the oscillator as far off as with the DAC off: seen on the same radio. While the chip transmits the same
+// DAC idles at mid-scale and 4:0x04 moves it, in steps of the same size. So the held level is mid-scale plus the
+// offset: receive and transmit then sit on one frequency, and the board's offset trims both
 #define DAC_CTL_SETUP	0x0Eu
 #define DAC_CTL_HOLD	((uint8_t)(DAC_CTL_SETUP & ~0x02u))
+#define REF_DAC_MID	512
 
 // hrc6000_fm_tx_t.uhf: the deviation table's band
 #define UHF_FROM_HZ	300000000u
@@ -37,6 +43,12 @@ static void ref_offset(hrc6000_if_t *h, uint32_t hz)
 	const hrc6000_if_cfg_t *c = h->cfg;
 	int8_t off = c->ref_offset != NULL ? c->ref_offset(c->ctx, hz) : 0;
 	count(h, hrc6000_set_ref_offset(h->dev, off, false));
+	if (c->ref_dac_hold) {
+		// The held DAC's level, in place of the bias the driver's call wrote (the offset alone, near 0 V)
+		uint16_t level = (uint16_t)(REF_DAC_MID + off);
+		count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
+		count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
+	}
 }
 
 // The receive I/Q order for hz. write: also on the chip, if the order changes (4:0x01 holds the same value in every
