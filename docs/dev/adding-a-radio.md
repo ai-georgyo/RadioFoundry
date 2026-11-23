@@ -170,10 +170,12 @@ one without a label.
      `[codec] stock` entry, so the web flasher and rfoundry find the codec in whatever file or readout the
      owner has.
    - For each of those models, check the bootloader's USB identity, entry keys and key against `[flash]`.
-   - A radio installed through its processor's own ROM bootloader (`[flash] family = "dfuse"`) has no key and no
-     stock file. Check instead the read protection the maker ships, what a Read Unprotect erases, and that the
-     maker's own recovery procedure works on the unit, before the first install
-     ([release.md](release.md#the-rom-bootloader-route)). A radio with no codec route says so in `[codec] none`.
+   - A radio installed through its processor's own ROM bootloader (`[flash] family = "dfuse"`) has no bootloader
+     key. It takes a stock file only for its codec, where it has a codec route, and the first codec can only come
+     from that file ([release.md](release.md#the-codec-on-this-route)). Check instead the read protection the maker
+     ships, what a Read Unprotect erases, and that the maker's own recovery procedure works on the unit, before
+     the first install ([release.md](release.md#the-rom-bootloader-route)). A radio with no codec route says so in
+     `[codec] none`.
    - Walk the web flasher through each starting point:
      - the vendor's download as the owner gets it (a zip or a `.bin`);
      - a readout of the radio;

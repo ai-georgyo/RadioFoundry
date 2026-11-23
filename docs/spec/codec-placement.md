@@ -2,7 +2,8 @@
 # Codec placement: moving the stock codec to where RadioFoundry wants it
 
 Status: implemented. Which radios have run the placed codec on the air is in the radios' own codec and hardware pages;
-one STM32 radio's placed codec has been checked only in an emulator (Open items).
+some STM32 radios' placed codecs have been checked only in an emulator, and a joined, blanked layout not as merged
+(Open items).
 
 Each radio still runs the AMBE+2 codec its own stock firmware carries, merged on the user's machine
 ([../dev/codec.md](../dev/codec.md)). What changes is where it runs. Until now RadioFoundry left the codec at the addresses
@@ -31,7 +32,8 @@ a **codec map**: one per supported stock build, made once by static analysis and
 ## Codec maps
 
 A map is a JSON file, `tools/rfoundry/rfoundry/codec_maps/<board>/<profile>.json`, in format `rfoundry-codec-map/1`. It
-holds addresses, lengths, offsets and hashes, never codec bytes. rfoundry, `tools/hrc7000_codec.py` and the web flasher
+holds addresses, lengths, offsets and hashes, and no codec bytes but the first word of a code range where the
+radio's codec page prints one as its check value (`code.ranges`). rfoundry, `tools/hrc7000_codec.py` and the web flasher
 (through `data/flash-boards.json`) read the same files.
 
 | Field | Content |
@@ -39,14 +41,16 @@ holds addresses, lengths, offsets and hashes, never codec bytes. rfoundry, `tool
 | `profile`, `board`, `isa` | The build's id, the radio, and `thumb2` (STM32) or `csky` (HR_C7000) |
 | `stock` | File name, SHA-256 (null when the build is known only from a radio read), version |
 | `code` | Stock flash address, length, run address (the flash address on STM32; the RAM address stock copies it to on HR_C7000), SHA-256, the length reachable from the entries, the alignment a move must keep |
+| `code.ranges` | Optional. The codec's own ranges inside the code window, where the stock linker put other code between them: `id`, `off`, `len`, `sha256`, `crc32`, `first_word`. The merge checks each after carving |
+| `code.holes` | Optional. The spans of the code window that are not the codec's: `off`, `len`, `what`. A merge writes 0xFF over them ("STM32 radios", Holes) |
 | `entries` | Entry points as offsets from the code start |
 | `self_refs` | Every word or movw/movt pair in the code that holds an address inside the code's own run range: offset, value. Rewritten when the code moves |
-| `table_refs` | Every site in the code that holds the address of codec data: offset, kind (literal word or instruction pair), target. Rewritten when the tables move |
+| `table_refs` | Every site in the code that holds the address of codec data: offset, kind (literal word or instruction pair), target. Rewritten when the tables move. `anchor`, optional: the address the value moves with, when the value lies just outside its object (a reader that steps before it loads). The value keeps its distance to the anchor, 1 to 15 bytes |
 | `islands` | Code that stock keeps inside a table window (STM32), with `island_ptrs` (code words that point at it) and `island_refs` (its references to codec data) |
 | `branches` | The calls from the islands into the code: site, target. Re-encoded when the code moves |
 | `objects` | The data objects the table refs point into: start, length (and a conservative length), and how the length is known |
 | `groups` | Objects the code indexes across, which must keep their distance |
-| `table_windows` | The stock table windows (as the profiles carve them), and the minimal window from the first object to the end of the last, with its SHA-256 |
+| `table_windows` | The stock table windows (as the profiles carve them), and the minimal window from the first object to the end of the last, with its SHA-256. `holes`, optional, on a window: the spans in it that are not the codec's, as `code.holes`, with offsets from the window's start |
 | `outside_refs` | References from the codec to anything outside its windows; empty for every supported build |
 | `compaction` | The packed size of code plus objects and islands, for the one-sector packing |
 
@@ -59,6 +63,17 @@ map is added here.
 
 A map is used only for the build its hashes name. The merge checks the stock file (or the carved code and tables) by
 SHA-256, applies the map, and checks the result.
+
+`anchor`, `code.ranges`, `code.holes` and a table window's `holes` are optional, and the format name stays
+`rfoundry-codec-map/1`: a map without them loads to the same data as before. What the loader (`codecmap.check`)
+refuses in a map that has them:
+
+| Key | Refused |
+|---|---|
+| `anchor` | On anything but a table ref; an anchor equal to the value or 16 bytes or more from it |
+| `code.ranges` | A first range that does not start at offset 0, a last range that does not end at the code's end, ranges out of order, code between two ranges that is not exactly one listed hole |
+| `code.holes` | Holes without ranges; a hole outside the code, of length 0 or overlapping another; a site (4 bytes) or an entry (2 bytes) in a hole; a self ref's value or a branch's target in a hole |
+| `holes` on a table window | A hole outside the window, of length 0 or overlapping another; an address a table ref or an island ref holds (its target, and its anchor) in a hole; an island ref's or a branch's site, or an island pointer's target, in a hole |
 
 ## HR_C7000 radios
 
@@ -96,22 +111,22 @@ The runtime stub's window (`HRC_STUB_BASE`) follows the codec window. The slot t
 ## STM32 radios
 
 The codec runs in place from internal flash, so it moves at the merge, and the firmware finds it through a
-**descriptor**: 128 bytes at 0x080FFF80, the end of sector 11.
+**descriptor**: 128 bytes at 0x080FFF80, the last 128 bytes of the codec's flash sector.
 
 | Field | Content |
 |---|---|
 | Magic, version | "DESC", 1 |
 | Profile tag | Which stock build; the firmware supports only the builds whose calling convention it knows |
 | Code | Flash address, length, CRC-32 |
-| Table windows | Count, then up to five (address, length, CRC-32) |
+| Table windows | Count, then up to five (address, length, CRC-32). A build with more windows has them joined (Joined windows, below) |
 | CRC-32 | Of the 124 bytes before it |
 
 All STM32 stock codecs seen so far are builds of one library, with the same entry offsets, argument lists and state
 sizes. The codec page of the first radio hosted ("Per-frame calls") specifies them. Its V02.06 build is the reference
 build that the other codec research pages compare with; [radios.md](radios.md) links each radio's pages.
 
-**State.** `platform/stm32/hrc/vocoder.c` keeps one CCM block, the size of the encoder's state, for the encoder's
-state or the decoder's, never both. Voice is simplex (the caller decodes nothing while a transmission runs,
+**State.** `platform/stm32/hrc/vocoder.c` keeps one block in CPU-only RAM, the size of the encoder's state, for the
+encoder's state or the decoder's, never both. Voice is simplex (the caller decodes nothing while a transmission runs,
 [dmr-voice.md](dmr-voice.md)), and each half of the init touches only its own state, so the first encode after a
 decode runs the encoder's half on the zeroed block (encoder init, FEC init on its own small block, encoder
 parameters, encoder set) and the first decode after an encode runs the decoder's (decoder init, decoder set, the
@@ -133,7 +148,7 @@ addresses, sectors and rewrite counts are in its codec page.
 
 The firmware (`boards/<radio>/vocoder_<radio>.c`) checks the descriptor, that the code and every table window are
 where this build expects them with the expected CRCs, and the code's first word. Only then does it call the codec, and
-it reports the profile with an `-s11` suffix (`<profile>-s11`). A build from before the move
+it reports the profile with a suffix that names the layout's sector (`<profile>-s<n>`). A build from before the move
 reports the stock id, so the flashing tools see that the codec isn't where the new layout keeps it.
 
 **One id, many builds.** A board reports one codec id for every stock build it accepts; the descriptor's tag tells
@@ -160,6 +175,47 @@ The placed CRC-32 of each window follows from a known layout's CRC-32 and the ma
 (`codecmap.relocate_crcs`: CRC-32 is affine over XOR, and only the listed sites change). A profile whose placed
 windows have no SHA-256 is checked by these CRCs at the merge, and a copy read from a radio is checked by taking it
 back to the stock windows and comparing their SHA-256s.
+
+**Joined windows.** A build whose linker scattered the codec has more table windows and islands than the descriptor
+holds. Its merge lays every window after the code end to end, in the profile's order, each at the lowest address that
+has its stock address modulo 16 (`stockfw.pack_after`). The descriptor names them as one table window, with 0xFF
+between them and all of it under one CRC-32. The profile says so with `placement.join`; its `placement.tables_len` is
+then the block's length and `placement.extra` where each window sits. The firmware cannot tell the pieces apart and
+has no need to: it calls entry offsets only, and every placed byte is under a CRC-32 it pins. A copy in this form is
+checked by its placed SHA-256s.
+
+**Holes.** A stock window can hold code or data that is not the codec's: between the codec's ranges, inside one, or
+inside a table window. The map lists those spans (`code.holes`, `holes` on a table window) and the code's own ranges
+(`code.ranges`). A profile with `placement.blank` has its merge write 0xFF over the spans, after every carved window
+passed its SHA-256 and the rewritten copy was taken back to stock once. So nothing of the maker's that is not the
+codec reaches the merged image.
+
+| Rule | Why |
+|---|---|
+| No site lies in a hole, and no ref or branch points into one (the loader's checks, above) | A blanked span is never read or run by the codec |
+| The placed CRC-32s and SHA-256s are over the placed bytes, the 0xFF of the holes and between joined windows included | The firmware's boot check covers every placed byte |
+| A copy with holes blanked is never taken back to stock (`stockfw.unplace` gives none) | The holes' bytes are gone. The copy is checked by its placed SHA-256s |
+| The merge refuses a map hole in a table window the profile does not carve, and `placement.blank` with a map that lists no hole | A span that would stay unblanked without a word |
+
+**Gates.** The placed CRC-32s of a blanked layout cannot be derived without the bytes of the blanked spans inside
+the ranges and the tables. Three CRC-32s on the way to them can: they follow from the stock CRC-32s, the map and the
+layout alone. The profile carries them as `placement.gates`, and every merge compares its bytes with them before it
+blanks:
+
+| Gate | The bytes | Derived by |
+|---|---|---|
+| `code` | The code window after its rewrites, nothing blanked | `codecmap.relocate_crcs` |
+| `ranges` | The same with everything outside `code.ranges` 0xFF | `codecmap.ranges_crc`: each range's stock CRC-32 taken through the rewrites inside it, joined with the 0xFF between |
+| `tables` | The joined block before its holes are blanked | `codecmap.crc_join` over the rewritten islands, the table windows and the 0xFF between them |
+
+`stockfw.gates(prof)` derives the three without a byte, and a test compares them with the profile's. After the
+gates, the placed values rest on the tool for one step: 0xFF over the spans inside the ranges and the tables.
+
+**Processor state.** The codec loads words at unaligned addresses and divides without a test for zero, so it needs
+`CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP` off, their reset values. The host clears them once, before its first codec call,
+if one is set (`codec_cpu_traps_off()` in `platform/stm32/codec_cpu.h`, called from `present()`). A platform whose
+image can be started without a reset clears them at start-up as well. Nothing may set them later
+([gotchas.md](gotchas.md) 13.16).
 
 Later step, not planned: pack code and table objects into fewer bytes. The maps hold what that needs (objects,
 groups, compaction), but it rewrites far more of the codec than window moves do.
@@ -215,6 +271,9 @@ in the application's flash, moves the codec as above instead of handing the radi
   have not been exercised by a move before; the placed CRCs agree with the maps, the bytes have not been run.
 * Window moves on a radio: voice RX and TX after the move, an update in keep mode after it, and a move stopped at
   each step and run again (the radios' codec pages).
+* A joined, blanked layout has not run on a radio. In an emulator the joined layout ran with the code between the
+  ranges undefined; no run has had the spans inside the ranges and the tables blanked, and the merged image itself
+  has not been run (the radio's codec page).
 * The bootloader route writes sector 3 last, but its blocks in order, the vector table first: the bootloader takes
   each sector's blocks from its start. Power lost during those last 16 blocks may leave a start the bootloader runs;
   the bootloader key combination still recovers the radio. The stub route avoids that window by writing the first word

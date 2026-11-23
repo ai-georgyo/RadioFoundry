@@ -288,7 +288,7 @@ firmware keeps its own rules for what it writes (the CPS shim refuses its areas,
 
 | Key | Meaning |
 |---|---|
-| `tool` | The tool that extracts or merges it: `codec_extract` or `hrc7000_codec`. Required unless `none` is set |
+| `tool` | The tool that extracts or merges it: `codec_extract` or `hrc7000_codec`. Required unless `none` is set. `codec_extract` serves both stock containers of the STM32 radios; the stock file's profile says which ([codec.md](codec.md)) |
 | `stock` | A list of SHA-256 digests: the stock files rfoundry merges the codec from (stock-file placement) |
 | `profile` | The codec id the firmware reports, for a codec in a linker slot |
 | `sources` | Where a slot codec comes from, for messages |

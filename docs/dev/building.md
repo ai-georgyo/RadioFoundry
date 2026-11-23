@@ -116,11 +116,13 @@ Users flash with the web installer or `rfoundry`: [Installing](../user/02-instal
 | Platform | Flash |
 |---|---|
 | `stm32f4` | `rfoundry flash build/<b>/rfoundry_<b>.bin --board <b> [--stock FILE]` ([tools/rfoundry](../../tools/rfoundry/README.md)): keeps the radio's codec or merges it from the stock file, erases only the sectors it needs. The older two-step route still works: `tools/codec_extract.py --stock FILE`, then `tools/stm32_dfu.py IMAGE --model <b> --key <key file>`, which erases every application sector. Moving a radio from stock with its codeplug: `tools/<id>_migrate.py` where a board has one ([the migration specs](../spec/README.md#migrating-from-stock)) |
-| `stm32h7` | `rfoundry flash build/<b>/rfoundry_<b>.bin --board <b> [--unprotect]`: plain DfuSe to the bootloader in the processor's ROM (`[flash] family = "dfuse"`). No key, no codec step, no stock file. The image starts at the first byte of the program flash and is sent in whole 32-byte flash words. `--unprotect` is for the first install on a read-protected radio: it erases the whole program flash ([release.md](release.md#the-rom-bootloader-route)). `tools/stm32_dfu.py` is for the keyed bootloaders and doesn't serve this route |
+| `stm32h7` | `rfoundry flash build/<b>/rfoundry_<b>.bin --board <b> [--unprotect] [--stock FILE]`: plain DfuSe to the bootloader in the processor's ROM (`[flash] family = "dfuse"`). No key. A board with a codec route takes `--stock FILE` for the codec, as on the other platforms, and `--codec none` installs without a codec; a board with `[codec] none` has no codec step and takes no stock file ([release.md](release.md#the-codec-on-this-route)). The image starts at the first byte of the program flash and is sent in whole 32-byte flash words. `--unprotect` is for the first install on a read-protected radio: it erases the whole program flash ([release.md](release.md#the-rom-bootloader-route)). `tools/stm32_dfu.py` is for the keyed bootloaders and doesn't serve this route |
 | `hrc7000` | `tools/hrc7000_codec.py` merges the codec; `tools/serial_loader.py IMAGE` writes it through the vendor bootloader over the programming cable (`--wrap` makes the vendor file for the vendor's updater), or `rfoundry` over the serial route ([release.md](release.md#the-serial-route-hr_c7000-radios)) |
 
 Without a codec the firmware runs, with FM only. See [The codec](codec.md). A board whose registry entry says
-`[codec] none` has no codec route: the build writes no `_codec.bin` for it and `tools/codec_auto.py` says so.
+`[codec] none` has no codec route: the build writes no `_codec.bin` for it and `tools/codec_auto.py` says so. A file
+in `codecs/` that is a known version of the radio's firmware without a codec map is named, with the file to use
+instead, and the build goes on as with no supported file.
 
 With the radio's stock firmware file in `codecs/`, `make` also writes `<image>_codec.bin`, the image with the codec
 merged in (`tools/codec_auto.py` picks the stock file by SHA-256 and runs the board's codec tool). Flash that file with
