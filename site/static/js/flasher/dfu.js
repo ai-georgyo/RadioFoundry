@@ -12,9 +12,10 @@
 // is ever addressed. A ROM loader's second alternate setting is the option bytes, where one write can remove the
 // loader for good: nothing here selects an alternate setting (the interface stays on 0, the internal flash), and no
 // address pointer is ever set outside the board's program flash. Nor is a sector past the board's application region
-// erased or written (checkPlain): flash the build keeps unused is flash the loader must not be asked to erase.
+// erased or written, but the board's codec sectors (checkPlain): any other flash the build keeps unused is flash the
+// loader must not be asked to erase.
 
-import { BLOCK, FIRST_BLOCK } from "./plan.js";
+import { BLOCK, FIRST_BLOCK, codecSectors } from "./plan.js";
 import * as protect from "./protect.js";
 import { hex, le32, sha256, sleep } from "./bytes.js";
 
@@ -54,11 +55,15 @@ const inside = (s, lo, hi) => s.addr >= lo && s.addr + s.size <= hi;
 // The program flash only: every sector the plan erases or writes, and every block's address. The loader's address
 // pointer also reaches RAM, system memory and the option bytes (AN3156 5.2).
 //
-// The application region only (board.app_region, [start, end): the linker script's, where data/flash-boards.json
-// carries it). Flash past it is flash the build keeps unused, and it can be unused because the loader must not be
-// asked to erase it: one version of a dual-bank chip's ROM loader leaves an erase in the second bank early, and a
-// flash command after it can hang (AN2606, that loader's known limitations). A build never reaches there; a file
-// that is not this board's image can.
+// The application region (board.app_region, [start, end): the linker script's, where data/flash-boards.json
+// carries it) and the board's codec sectors (plan.js codecSectors) only. Any other flash past the region is flash the
+// build keeps unused, and it can be unused because the loader must not be asked to erase it: one version of a
+// dual-bank chip's ROM loader leaves an erase in the second bank early, and a flash command after it can hang (AN2606,
+// that loader's known limitations). A build never reaches there; a file that is not this board's image can. A codec
+// sector is one that holds a window of a stock profile's layout, and every layout ends at the codec descriptor, the
+// end of the first megabyte of program flash: the codec sectors follow the region and stay below a second bank
+// (rfoundry's tests hold every board of this route to that). Such a sector is written with the codec and nothing else,
+// or erased and left blank (plan.js BLANK); no sector of the region is ever erased without being written.
 //
 // And whole blocks only (FLASH_WORD above).
 //
@@ -70,10 +75,19 @@ const inside = (s, lo, hi) => s.addr >= lo && s.addr + s.size <= hi;
 export function checkPlain(plan) {
 	const board = plan.board, name = board.name || "radio";
 	const region = board.app_region || null;
-	for (const s of [...plan.erase, ...plan.writes.map((st) => st.sector)]) {
+	const codec = new Set(board.codec?.windows ? codecSectors(board).map((s) => s.addr) : []);
+	// every sector the plan erases or writes; one that is erased and gets no block is left blank
+	const written = new Set(plan.writes.map((st) => st.sector.addr));
+	const touched = [...plan.erase.filter((s) => !written.has(s.addr)).map((s) => [s, "erase", ""]), ...plan.writes.map((st) => [st.sector, "write", st.content])];
+	for (const [s, action, content] of touched) {
 		if (!inside(s, board.rom_base, board.flash_end)) throw new DfuError(`sector at ${hex(s.addr)} is outside the ${name}'s program flash`);
-		if (region && !(s.addr < region[1] && s.addr + s.size > region[0]))
+		if (!region) continue;
+		if (s.addr < region[1] && s.addr + s.size > region[0]) {
+			if (action === "erase") throw new DfuError(`the plan erases sector ${s.index} (${hex(s.addr)}) of the ${name}'s application flash and writes nothing there. Refusing`);
+		} else if (!codec.has(s.addr) || (action === "write" && content !== "codec")) {
+			// past the region only a codec sector is touched, and only to hold the codec or nothing
 			throw new DfuError(`the image reaches sector ${s.index} (${hex(s.addr)}), outside the ${name}'s application flash ${hex(region[0])}..${hex(region[1] - 1)}: it is not an image of this radio. Refusing`);
+		}
 	}
 	for (const st of plan.writes) {
 		for (const [num, blk] of st.blocks) {
@@ -107,6 +121,15 @@ export class Dfu {
 		this.t = transport;
 		this.log = log;
 		this.wait = wait;
+		this.start = null;	// the 4 bytes at the application base, once probeProtected has read them
+	}
+
+	// True when the flash at the application base is erased (probeProtected read it): the radio holds no vector table,
+	// whose first word, the initial stack pointer, is never 0xFFFFFFFF. An install through the plain route erases the
+	// sector at the application base first and writes the vector table last, so this is a radio whose last install did
+	// not finish (or one that was never written, or was erased whole). rfoundry's Dfu.start_blank
+	get startBlank() {
+		return !!this.start && this.start.length === 4 && this.start.every((b) => b === 0xFF);
 	}
 
 	async getStatus() {
@@ -167,14 +190,18 @@ export class Dfu {
 	}
 
 	// Whether a ROM loader's program memory is read protected, asked without changing anything: the address pointer
-	// is set to the start of the flash (allowed with the protection on, AN3156 5.2) and 4 bytes are asked for there. A
+	// is set to the application base, where the image's vector table is (the start of the flash on a board whose image
+	// starts there; allowed with the protection on, AN3156 5.2, and a protected chip refuses a read anywhere in its
+	// flash), and 4 bytes are asked for there. A
 	// protected chip does not perform the read and reports dfuERROR with errVENDOR (AN3156 4.1, figures 3 and 4),
-	// whether it stalls the request or answers it with no bytes. true: protected, false: the bytes came. Anything
+	// whether it stalls the request or answers it with no bytes. true: protected, false: the bytes came, and are kept
+	// (start, startBlank). Anything
 	// else is no answer, and is thrown: "protected" leads to the erase of everything, so it is never concluded from
 	// an answer the documents don't give (errVENDOR without the error state is one)
 	async probeProtected(board) {
+		this.start = null;
 		await this.toIdle();
-		await this.command(SET_ADDRESS, board.rom_base, `set address ${hex(board.rom_base)}`);
+		await this.command(SET_ADDRESS, board.app_base, `set address ${hex(board.app_base)}`);
 		await this.toIdle();	// a read is taken in dfuIDLE only (AN3156 figure 3); ABORT leaves dfuDNLOAD-IDLE
 		let data = null, refused = null;
 		try {
@@ -191,6 +218,7 @@ export class Dfu {
 		if (refused || st.status !== 0 || st.state === ST_ERROR || data.length !== 4)
 			throw new DfuError(`the read protection check got no clear answer (${refused ? refused.message : `${data.length} bytes`}, status ${st.status}, state ${STATE_NAMES[st.state] || st.state}): nothing was written`);
 		await this.toIdle();
+		this.start = data.slice();
 		return false;
 	}
 
@@ -215,7 +243,8 @@ export class Dfu {
 		if (st.state !== ST_DNBUSY || st.status !== 0) throw new DfuError(`read unprotect was refused: status ${st.status}, state ${STATE_NAMES[st.state] || st.state}`);
 	}
 
-	// The plain route: the plan's sectors erased, then written and read back with the vector table's block last
+	// The plain route: the plan's sectors erased (a codec sector the plan leaves blank is erased with them and gets no
+	// block), then written and read back with the vector table's block last
 	// (checkPlain), then Leave at the application base (the loader loads
 	// the stack pointer there and jumps to the reset vector, AN3156 5.5). Every block is sent as block 2 right after its
 	// own Set Address Pointer: the loader places a block at (block number - 2) x wTransferSize + pointer, and AN3156

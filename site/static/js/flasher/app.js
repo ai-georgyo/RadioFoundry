@@ -19,13 +19,13 @@
 // on its stock firmware (no hardware; for trying the flow), #sim=<board> for one that already runs RadioFoundry, #sim for the
 // first radio on stock firmware. The fake is built from the board's data.
 
-import { hex, sha256, toHex, fromHex, startsWith, sleep } from "./bytes.js";
+import { hex, sha256, toHex, fromHex, sleep } from "./bytes.js";
 import { unzip } from "./zip.js";
 import * as stockfw from "./stockfw.js";
 import { openVendorFile, describe as describeVendorFile, analysisCandidate, offerFile, logId, whyNot } from "./vendorfile.js";
 import { pickProblem, errorProblem, vendorContext, supportedFiles, foldSupported, keepNote, nowFor, nowChoice, OFFER } from "./explain.js";
 import { confirmNoCodec } from "./nocodec.js";
-import { makePlan, KEEP, MERGE } from "./plan.js";
+import { makePlan, KEEP, MERGE, BLANK } from "./plan.js";
 import { radioPicture, holdKeys, hasNoScreen } from "./radiotop.js";
 import { validRef, refShort, defaultRef, firmwareName, betaLink } from "./version.js";
 import { verify, segments, forDevBuild } from "./manifest.js";
@@ -382,7 +382,7 @@ const RECOVER_INSTALL = ["build", "codec", "write", "done"];
 // The radio's backend (backends.js) decides a task's steps; the shared ones otherwise. An update whose build the user
 // edits (or whose build the radio doesn't say) takes the build step after its first
 function stepsFor() {
-	const s = (S.radio && backendOf(S.radio).steps(S.task, { recovering: !!S.recovering })) || STEPS[S.task];
+	const s = (S.radio && backendOf(S.radio).steps(S.task, { recovering: !!S.recovering, radio: S.radio })) || STEPS[S.task];
 	return S.task === "update" && S.editBuild ? [s[0], "build", ...s.slice(1)] : s;
 }
 const backend = () => backendOf(S.radio);
@@ -1495,8 +1495,9 @@ const buildErrorNotice = (err) => (err.el ||= err.fit ? notice(err.text, "bad") 
 async function loadOwnImage(f, redraw) {
 	// The radio's original firmware file, picked where the RadioFoundry image goes (OPENDIGITALRADIO-15: a backup's
 	// stock-firmware.bin): not an error but the codec step's file. One for this radio is kept for that step; either way
-	// the user is told to choose a build here
-	if (startsWith(f.data, fb().magic)) {
+	// the user is told to choose a build here. A maker's file in either container (stockfw.js containerKind: cut or
+	// padded too, and a maker's bootloader file) is never taken for an image
+	if (stockfw.containerKind(f.data, fb())) {
 		const st = await pickedStock(f);
 		const kept = stockForRadio(st) && !st.problem;
 		if (kept) S.stock = st;
@@ -2145,9 +2146,15 @@ function codecView() {
 		}
 		const stockProf = S.stock ? stockfw.profileFor(fb().profiles, S.stock.info.sha, S.board.id) : null;
 		const haveStock = stockProf?.board === S.board.id;
+		// a radio whose update mode takes the image as it is (no key_sha256) needs no key: nothing asks for one
+		const noKey = !S.board.key_sha256;
 		// a picked build of this radio without a codec profile still gives the key (the opener derived it)
-		const keyStored = S.sim || !!S.key || !!savedKey(S.board);
-		const keyKnown = keyStored || (S.stock?.match?.board === S.board.id && !!S.stock.match.key);
+		const keyStored = !noKey && (S.sim || !!S.key || !!savedKey(S.board));
+		const keyKnown = noKey || keyStored || (S.stock?.match?.board === S.board.id && !!S.stock.match.key);
+		// an install whose backend has no "current firmware" step (backends.js installNow): a radio not known to run
+		// RadioFoundry is taken to run what the backend says. Not kept in S.now: it is the backend's word for this
+		// radio, not the user's answer, and would stand as one on another radio's "current firmware" step
+		const now = S.now || (S.task === "install" && backend().installNow ? nowFor(backend().installNow) : null);
 		// the copy an earlier visit read from this radio: an update that stopped halfway leaves none in the radio, and a
 		// radio back on stock firmware or in its bootloader can't say what it holds
 		if (!S.savedCodec && !S.sim) {
@@ -2159,9 +2166,9 @@ function codecView() {
 		try {
 			S.decision = decideCodec(S.board, fw.manifest, {
 				haveStock, haveSaved: !!S.savedCodec, savedKept: savedKept(), requested: S.requested || null,
-				probe: S.now?.kind === "rfoundry" ? S.now.probe : null,
-				stockInstalled: S.now?.kind === "stock" ? S.now.version : null,
-				runsStock: S.now?.kind === "stock",
+				probe: now?.kind === "rfoundry" ? now.probe : null,
+				stockInstalled: now?.kind === "stock" ? now.version : null,
+				runsStock: now?.kind === "stock",
 			});
 		} catch (e) {
 			S.decision = null;
@@ -2214,7 +2221,8 @@ function codecView() {
 		} else if (needs.length) {
 			parts.push(h("div", { class: "notice action" }, h("strong", {}, t("flash.codec.action_title")),
 				needs.length > 1 ? h("ul", {}, needs.map((n) => h("li", {}, n))) : h("p", {}, needs[0]), where, picker, loaded));
-			if (!S.decision && S.now?.kind !== "rfoundry" && !openfwRecognizedNow()) parts.push(h("p", { class: "small muted" }, t("flash.codec.or_connect")));
+			// "go back and select it" names the current firmware step: not said where the install has none
+			if (!S.decision && S.now?.kind !== "rfoundry" && !openfwRecognizedNow() && !backend().installNow) parts.push(h("p", { class: "small muted" }, t("flash.codec.or_connect")));
 		} else if (!S.decision) {
 			parts.push(notice(err, "bad"));
 		} else {
@@ -2604,7 +2612,11 @@ function doneView() {
 			status.replaceChildren(h("dl", { class: "kv-list" },
 				h("dt", {}, t("flash.now.firmware")), h("dd", {}, firmwareName(p)),
 				h("dt", {}, t("flash.now.codec")), h("dd", {}, hasCodec() ? codecText(p.codec) : t("flash.dfuse.done_codec"))),
-			notice(!good ? t("flash.done.no_codec") : t(hasCodec() ? "flash.done.ready" : "flash.dfuse.done_ready"), good ? "ok" : "bad"), ...(good ? [] : [helpLink(), reportLine()]));	// the DOM writes a null as "null"
+			// an install that left the codec out and erased its flash (plan.js BLANK, asked for in the write step): the
+			// radio runs, and what it lacks and how to add it is said again, not "DMR voice is available"
+			notice(!good ? t("flash.done.no_codec") : S.decision?.mode === BLANK ? `${t("flash.nocodec.text")} ${t("flash.nocodec.fix_later")}`
+				: t(hasCodec() ? "flash.done.ready" : "flash.dfuse.done_ready"), !good ? "bad" : S.decision?.mode === BLANK ? "warn" : "ok"),
+			...(good ? [] : [helpLink(), reportLine()]));	// the DOM writes a null as "null"
 			if ((S.task === "install" || S.task === "update") && !S.sim) {
 				const features = new Set([...String(p.features || "").split(","), ...String(S.firmware?.manifest?.features || "").split(",")]);
 				if (features.has("SATELLITE_TLE"))
@@ -3357,7 +3369,8 @@ async function main() {
 	c7ui.init({ S, next, render, reset, helpLink, manualKitLine, fb, flashStarted, flashFinished, flashMark, noteReadout, errorText, analysisOffer, problemNotice, failureNotice, useAdapter,
 		stubJson: () => fetch(`${ROOT}data/c7000-stub.json`).then((r) => r.json()) });
 	dfuse.init({ S, fb, next, render, reset, helpLink, manualKitLine, flashStarted, flashFinished, flashMark, errorText, connectBootloader, dropSerial,
-		withPicture, driverHelp, driverWorked, ensureFirmware, notePlan, doneView, backupView, restoreView });
+		withPicture, driverHelp, driverWorked, ensureFirmware, notePlan, noteDecision, codecView, confirmNoCodec, stockGivesCodec, savedKept, failureNotice,
+		doneView, backupView, restoreView });
 	// #sim=<board>[-stock|-romfail|-slowcable|-deafcable|-openfw|-openfw-nocodec]: that board, running RadioFoundry, its stock firmware or another
 	// open firmware (a board the page backs up from one: openfw.js; -nocodec: one without the codec, for the stock-file
 	// fallback); -romfail: an HR_C7000 radio on stock firmware whose boot ROM refuses the load, for the factory update
@@ -3386,10 +3399,10 @@ async function main() {
 		}
 		S.fakeC7.powerOn();
 	} else if (simRadio && dfuse.isDfuse(simRadio, S.data.fb)) {
-		// a ROM bootloader radio: read protected on its original firmware, or running RadioFoundry (no key, no stock file)
-		// Running RadioFoundry, it refuses the first restart into update mode and takes the next, so practice shows
-		// both what a refusal looks like and the restart itself (dfuse.js)
-		S.sim = { ...romSimulation(S.data.fb, simRadio.flash.board), radio: simRadio.id };
+		// a ROM bootloader radio: read protected on its original firmware, or running RadioFoundry (no key; a synthetic
+		// stock file where the radio has a codec route). Running RadioFoundry, it refuses the first restart into update
+		// mode and takes the next, so practice shows both what a refusal looks like and the restart itself (dfuse.js)
+		S.sim = { ...(await romSimulation(S.data.fb, simRadio.flash.board)), radio: simRadio.id };
 		S.fakeRadio = new FakeRomRadio(S.sim, { state: simStock ? "stock" : "rfoundry", spiSize: 0x400000, restartRefusals: 1 });
 		simRadio.backup = { ...simRadio.backup, spi_size: 0x400000 };
 	} else if (simRadio) {

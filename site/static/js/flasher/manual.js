@@ -13,15 +13,19 @@ import { h, t, button, download, filePicker } from "./dom.js";
 export class KitError extends Error {}
 
 // How rfoundry installs a radio (registry.json family): "dfu" over USB with the bootloader's key, "serial" over the
-// programming cable, "dfuse" over USB through the processor's own ROM bootloader (plain: no key, no stock file, and a
-// first install that needs --unprotect), null where rfoundry has no install (a radio installed through the RAM stub:
-// the web flasher or stub/stubtool.py)
+// programming cable, "dfuse" over USB through the processor's own ROM bootloader (plain: no key, a first install
+// that needs --unprotect, and a stock file only where the radio has a codec route: plainCodec), null where rfoundry
+// has no install (a radio installed through the RAM stub: the web flasher or stub/stubtool.py)
 export function kitRoute(radio) {
 	return { "usb-dfu": "dfu", "serial-loader": "serial", dfuse: "dfuse" }[radio?.flash?.family] || null;
 }
 
 // The routes that reach the radio as a USB DFU device: their setup is the WinUSB driver and the udev rule
 const usbRoute = (route) => route === "dfu" || route === "dfuse";
+
+// A radio of the "dfuse" route with a codec route (radios.json flash.codec_none: null, or why the radio has none): its
+// codec comes from the user's stock file (--stock), and without one the install leaves the codec out (--codec none)
+const plainCodec = (radio) => kitRoute(radio) === "dfuse" && !radio.flash.codec_none;
 
 // The browser API an install step needs that this browser lacks: "usb" or "serial", else null. step: the step about
 // to be drawn; stub: the install goes through the STM32F4 loader (serial) rather than the bootloader (USB)
@@ -192,16 +196,31 @@ export function kitReadme(o) {
 	return L.join("\n") + "\n";
 }
 
-// README.txt for the "dfuse" route: no stock file, no codec and no key, so no --stock anywhere. What it must say that
-// the other routes' README doesn't: a first install erases the radio's whole program memory, its original firmware and
-// that firmware's bootloader with it (rfoundry stops and says so until --unprotect is given), and going back is the
-// maker's procedure. The bootloader used is the processor's own, which nothing can write
+// README.txt for the "dfuse" route: no key anywhere. What it must say that the other routes' README doesn't: a first
+// install erases the radio's whole program memory, its original firmware and that firmware's bootloader with it
+// (rfoundry stops and says so until --unprotect is given), and going back is the maker's procedure. The bootloader
+// used is the processor's own, which nothing can write. A radio without a codec route has no stock file and no codec,
+// so no --stock anywhere. One with a codec route (plainCodec) takes its codec from the user's stock file: the commands
+// carry --stock with the kit's file, and --codec none where the kit has none (an install without DMR voice, which the
+// README says before any command)
 function plainReadme(o) {
 	const name = o.radio.name, m = o.manifest || {};
 	const img = `firmware/${o.base}.bin`;
 	const docs = (page, anchor = "") => `${o.site}docs/user/${page}.html${anchor ? "#" + anchor : ""}`;
 	const both = (args) => [`  Windows:        venv\\Scripts\\python ${args}`, `  macOS, Linux:   venv/bin/python ${args}`];
-	const cmd = `rfoundry.py flash ${q(img)}`;
+	const codec = plainCodec(o.radio);
+	const files = stockFiles(o.board);
+	const stock = codec && o.stock ? `stock/${o.stock}` : null;
+	const cmd = `rfoundry.py flash ${q(img)}${stock ? ` --stock ${q(stock)}` : codec ? " --codec none" : ""}`;
+	// what the kit says of the codec: where it comes from, or that this install leaves it out and how to add it
+	const about = !codec ? "No stock firmware file is needed, and none is used."
+		: "Its update mode needs no key. The DMR voice codec is not part of RadioFoundry: rfoundry takes it from your stock firmware file.";
+	const stockPart = !codec ? [] : stock ? [
+		"THE STOCK FILE", "",
+		...wrap(`The commands below give rfoundry your stock firmware file (--stock), and it writes the DMR voice codec from it. A radio that runs RadioFoundry with working DMR voice keeps its codec: leave out --stock.`), ""]
+		: ["THE STOCK FILE", "",
+			...wrap(`The kit has no stock firmware file, so the commands below install without the DMR voice codec (--codec none): FM works, DMR voice does not. For DMR voice copy your stock firmware file into the stock folder (${files.slice(0, 3).join(", ")}${files.length > 3 ? ", ..." : ""}) and put --stock "stock/NAME" in place of --codec none in the commands below.`),
+			...wrap("A radio that runs RadioFoundry with working DMR voice keeps its codec only if you leave out --codec none: with it rfoundry erases the codec."), ""];
 	const steps = o.radio.flash.bootloader || [];
 	const enter = steps.length ? steps.map((s, i) => `  ${i + 1}. ${s}`) : [`  rfoundry names the keys to hold. Your radio's section: ${docs("23-radios")}`];
 	const L = [`RadioFoundry for the ${name}: manual install kit`, "",
@@ -212,23 +231,27 @@ function plainReadme(o) {
 		"WHAT'S INSIDE", "",
 		`  ${img.padEnd(40)} the firmware you chose (${[m.version, m.variant].filter(Boolean).join(", ") || "RadioFoundry"})`,
 		`  ${`firmware/${o.base}.json`.padEnd(40)} its manifest: rfoundry checks the image against it`,
+		...(stock ? [`  ${stock.padEnd(40)} your stock firmware file: the codec`] : []),
 		`  ${"rfoundry.py".padEnd(40)} starts rfoundry from this folder, nothing to install`,
 		`  ${"tools/, stub/".padEnd(40)} rfoundry and the tools it uses`,
 		`  ${"requirements.txt".padEnd(40)} the Python packages rfoundry needs`,
 		`  ${"LICENSE".padEnd(40)} MIT`, "",
-		...wrap(`The ${name} is installed through its processor's own bootloader, which is part of the chip and can't be erased: that update mode always stays available. No stock firmware file is needed, and none is used.`), "",
+		...wrap(`The ${name} is installed through its processor's own bootloader, which is part of the chip and can't be erased: that update mode always stays available. ${about}`), "",
 		"READ THIS BEFORE A FIRST INSTALL", "",
 		"A radio on its original firmware is read protected, and its bootloader writes nothing until the protection is",
 		"removed. Removing it (a Read Unprotect) erases the radio's whole program memory: the original firmware and",
 		"that firmware's bootloader. rfoundry can't put them back. Going back to the original firmware is the maker's",
 		"own recovery procedure, with the maker's files: have them, and save your channels with the maker's",
 		"programming software, before you install.",
+		...(codec ? ["", ...wrap("The voice codec is erased with the original firmware. rfoundry writes it again from your stock firmware file: keep that file.")] : []),
 		...(o.radio.flash.notice ? ["", ...wrap(o.radio.flash.notice)] : []), "",
+		...stockPart,
 		"1. SET UP (ONCE)", "", ...kitSetup("dfuse", o.board), "",
 		"2. CHECK FIRST (WRITES NOTHING)", "", ...both(`${cmd} --dry-run`), "",
 		"rfoundry checks the image against its manifest and prints exactly what it would erase and write.", "",
 		"3. INSTALL", "", ...both(cmd), "",
-		"rfoundry asks you to put the radio in its bootloader:", ...enter, "",
+		...(codec ? ["Leave the radio as it is when you start: if it runs RadioFoundry, rfoundry asks it about its codec first.",
+			"Then rfoundry asks you to put the radio in its bootloader:"] : ["rfoundry asks you to put the radio in its bootloader:"]), ...enter, "",
 		...(o.radio.flash.bootloader_restart ? [
 			"A radio that already runs RadioFoundry needs no keys: leave it switched on and connected, and rfoundry",
 			"restarts it into its bootloader by itself. If the radio refuses the restart, rfoundry says what to do and",
@@ -276,7 +299,7 @@ export async function toolEntries(site, root = "", fetchFn = globalThis.fetch) {
 }
 
 // Every file of the kit, in order: [{name, data}]. tool: toolEntries(); fw: {manifest, image}; stock: {name, data} or
-// null; text: kitReadme(). stockFolder false: a route that uses no stock file gets no stock folder
+// null; text: kitReadme(). stockFolder false: a radio whose install uses no stock file gets no stock folder
 export function kitEntries(tool, fw, base, stock, text, { stockFolder = true } = {}) {
 	const out = [{ name: "README.txt", data: text.replace(/\n/g, "\r\n") }];	// CRLF: Notepad of any age
 	out.push({ name: `firmware/${base}.bin`, data: fw.image }, { name: `firmware/${base}.json`, data: JSON.stringify(fw.manifest, null, 1) + "\n" });
@@ -293,7 +316,8 @@ export async function makeKit(o, fetchFn = globalThis.fetch) {
 	if (!o.firmware?.image) throw new KitError("no firmware yet: choose and build it first");
 	const when = o.when || new Date();
 	const base = kitBase(o.firmware.manifest, o.radio.flash.board);
-	const plain = kitRoute(o.radio) === "dfuse";	// no stock file on this route, even if one was picked for another radio
+	// no stock file for a radio without a codec route, even if one was picked for another radio
+	const plain = kitRoute(o.radio) === "dfuse" && !plainCodec(o.radio);
 	const stock = o.stock?.data && !plain ? { name: o.stock.name.split(/[\\/]/).pop(), data: o.stock.data } : null;
 	const text = kitReadme({ radio: o.radio, board: o.board, base, manifest: o.firmware.manifest, stock: stock?.name || null,
 		site: o.url, repo: o.site?.repo, community: o.site?.community, git: o.site?.git, date: day(when) });
@@ -334,10 +358,12 @@ export function kitPanel(args, api, { pickStock = null } = {}) {
 	}
 	const status = h("p", { class: "small", "aria-live": "polite" });
 	const files = stockFiles(o.board);
-	// the plain route uses no stock file: said, and no picker
-	const stockPart = route === "dfuse" ? h("li", {}, t("flash.dfuse.kit_plain")) : o.stock?.data
-		? h("li", {}, t("flash.kit.has_stock", { name: o.stock.name }))
-		: files.length ? h("li", {}, t("flash.kit.no_stock", { files: files.slice(0, 3).join(", ") }),
+	// the plain route without a codec route uses no stock file: said, and no picker. With one, the shared branch in
+	// this route's words: the file gives the codec and no key, and without it the install leaves the codec out
+	const dfuse = route === "dfuse", plain = dfuse && !plainCodec(o.radio);
+	const stockPart = plain ? h("li", {}, t("flash.dfuse.kit_plain")) : o.stock?.data
+		? h("li", {}, t(dfuse ? "flash.dfuse.kit_stock" : "flash.kit.has_stock", { name: o.stock.name }))
+		: files.length ? h("li", {}, t(dfuse ? "flash.dfuse.kit_no_stock" : "flash.kit.no_stock", { files: files.slice(0, 3).join(", ") }),
 			pickStock ? filePicker(t("flash.codec.stock_pick"), ".bin,.zip", pickStock) : null)
 			: h("li", {}, t("flash.kit.readout"));
 	const el = h("section", { class: "panel kit" },

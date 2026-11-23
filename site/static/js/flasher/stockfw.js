@@ -3,9 +3,17 @@
 // TYT / Baofeng stock firmware files in the browser: container, decryption, codec extraction, key derivation.
 // A port of tools/rfoundry/rfoundry/stockfw.py; the profiles come from that file through data/flash-boards.json, so
 // both read the same table. The codec and the key are only ever handled on the user's machine.
+//
+// A profile's "container" names the kind of file it is: absent, the "OutSecurityBin" container this module reads
+// itself; "twin", the container of twinfw.js, whose key is the file's own. Profiles, placement, the descriptor and the
+// merge are the same for both.
 
-import { u32le, sha256, startsWith, crc32, hex } from "./bytes.js";
-import { byCodeSha, moveCode, moveBranches, branchesIn, moveWindow, unmoveWindow, tableWindow, relocate, MapError } from "./codecmap.js";
+import { u32le, sha256, startsWith, crc32, hex, equal, filled } from "./bytes.js";
+import { byCodeSha, moveCode, moveBranches, branchesIn, moveWindow, unmoveWindow, tableWindow, relocate, holes, tableHoles, blank, MapError } from "./codecmap.js";
+import * as twinfw from "./twinfw.js";
+
+// A profile's "container" (stockfw.py): absent means OUTSECURITY
+export const OUTSECURITY = "outsecurity", TWIN = "twin";
 
 // code: what kind of problem it is, for the page's explanation (explain.js) and the error report: "not-vendor" (not a
 // vendor firmware file), "damaged", "other-radio" (a file for another radio; params.board names it), "wrong-key" (it
@@ -53,6 +61,28 @@ export function decrypt(data, off, length, key, fb) {
 // Why a file known to hold no codec (an entry of fb.no_codec_files) can't be used: stockfw.no_codec's words
 export const noCodec = (f) => `this file is ${f.name}: ${f.why}. The codec comes from the manufacturer's firmware file or a readout of a radio that holds it`;
 
+// Why a maker's file whose codec has not been mapped (an entry of fb.unmapped_files) can't be a codec source, naming
+// the files of its radio that can: stockfw.unmapped's words
+export function unmapped(f, fb) {
+	const use = [...new Set(Object.values(fb.profiles).filter((p) => p.board === f.board).map((p) => p.name))];
+	return `this file is ${f.name} (${f.version}): the codec in this version is laid out differently and has not been mapped, so it can't be taken from it. Use ${use.join(" or ")}`;
+}
+
+// Why a bootloader file in the TWIN container can't be used, or null for any other file (stockfw.boot_file). No hash
+// is known for such files: the header says what it is (twinfw.headerKind)
+export function bootFile(data, fb) {
+	if (startsWith(data, fb.magic) || twinfw.headerKind(data) !== "boot") return null;
+	return `this is a bootloader file in the maker's container (its header gives the payload offset at 0x${twinfw.BOOT_OFF_AT.toString(16).toUpperCase()}): it holds no firmware and no codec`;
+}
+
+// The kind of stock container a file is in (stockfw.container_kind): OUTSECURITY by its magic, TWIN by its header's
+// words (twinfw.headerKind: a file of that kind that was cut short or padded still counts, and so does its bootloader
+// file), or null for anything else (a flash readout, an application image)
+export function containerKind(data, fb) {
+	if (startsWith(data, fb.magic)) return OUTSECURITY;
+	return twinfw.headerKind(data) !== null ? TWIN : null;
+}
+
 // A file's profile: the one it has on the radio being flashed (a file placed differently on a board is keyed
 // "<sha>@<board>", stockfw.profile_key), else its bare one
 export const profileFor = (profiles, sha, boardId = null) => (boardId && profiles[`${sha}@${boardId}`]) || profiles[sha] || null;
@@ -75,21 +105,24 @@ export function forms(prof) {
 const formOf = (prof, form) => (form === undefined ? forms(prof)[0] ?? null : form);
 
 // Where the merge puts a profile's codec (stockfw.placed_windows): [[addr, length, sha256]], code first, then the
-// table windows (the extra ones at their stock address, unchanged, unless the placement moves them too). form: one of
-// forms() (default the current placement; null: the stock windows). A SHA-256 is null where the profile has none for
-// the placed bytes (checkForm checks those through the stock windows)
+// table windows (the extra ones at their stock address, unchanged, unless the placement moves them too; one block for
+// a placement that joins them). form: one of forms() (default the current placement; null: the stock windows). A
+// SHA-256 is null where the profile has none for the placed bytes (checkForm checks those through the stock windows)
 export function placedWindows(prof, form) {
 	form = formOf(prof, form);
 	if (!form) return prof.windows;
 	const pl = form.placement, pd = form.placed, [code, tab, ...rest] = prof.windows;
+	if (pl.join) return [[pl.code, code[1], pd.code[1]], [pl.tables, pl.tables_len, pd.tables[1]]];	// the code, then every other window as one block
 	const extra = pl.extra ? pl.extra.map((a, i) => [a, rest[i][1], null]) : rest;
 	return [[pl.code, code[1], pd.code[1]], [pl.tables ?? tab[0], pl.tables_len ?? tab[1], pd.tables[1]], ...extra];
 }
 
 // The stock windows [[addr, length]] as a placement carves them (stockfw.carve), in placedWindows order: the tables cut
-// to tables_len where the placement keeps only the codec's data
+// to tables_len where the placement keeps only the codec's data. A placement that joins its windows carves every
+// stock window whole (prof.windows order: the block is made of them)
 export function carve(prof, form) {
 	const pl = formOf(prof, form).placement, [code, tab, ...rest] = prof.windows;
+	if (pl.join) return prof.windows.map(([a, n]) => [a, n]);
 	return [[code[0], code[1]], [tab[0], pl.tables_len ?? tab[1]], ...rest.map(([a, n]) => [a, n])];
 }
 
@@ -104,8 +137,8 @@ export function layoutWindows(prof, fb, form) {
 	return form ? [...wins, [fb.descriptor.addr, fb.descriptor.len]] : wins;
 }
 
-// The 128-byte descriptor at the end of sector 11 (platform/stm32/codec_desc.h, stockfw.descriptor), for a form
-// (default the current placement)
+// The 128-byte descriptor at the end of the last flash sector (platform/stm32/codec_desc.h, stockfw.descriptor), for a
+// form (default the current placement)
 export function descriptor(prof, fb, form) {
 	form = formOf(prof, form);
 	const wins = placedWindows(prof, form);
@@ -128,6 +161,8 @@ const mapOf = (prof, fb) => prof.map || byCodeSha(fb.codec_maps, prof.windows[0]
 // stock SHA-256, or null when the copy isn't this profile's codec in that form. Nothing is trusted from the copy: every
 // rewritten site must hold what the form says (relocate) and every window must come out as stock has it
 export async function unplace(prof, form, parts, fb) {
+	// a joined, blanked copy has lost its holes: it is checked by its placed SHA-256s (checkForm)
+	if (formOf(prof, form).placement.join) return null;
 	const m = mapOf(prof, fb);
 	const wins = carve(prof, form);
 	if (!m || parts.map(([a]) => a).join() !== placedWindows(prof, form).map(([a]) => a).join()) return null;
@@ -173,20 +208,66 @@ export async function fromForm(prof, form, parts, fb) {
 	return stock && place(prof, stock, fb);
 }
 
-// The decrypted stock windows as the merge writes them (stockfw.place): the code moved (its self references
-// rewritten by the codec map), the table window cut to the codec's data with the islands' calls into the code
-// re-encoded, the extra windows unchanged (or, where the placement says, every window moved as its own block:
-// relocate), then the descriptor; every part checked against the profile's "placed": its SHA-256, and its CRC-32
-// where the profile has no SHA-256
-export async function place(prof, segs, fb) {
-	if (!prof.placement) return segs;
+// The windows of a placement that joins them, moved (stockfw._join_layout): [bytes of each window at its placed
+// address, the stock addresses, the placed addresses], prof.windows order. Every site is checked for its stock value
+// before it is rewritten (relocate), the result is taken back to stock once and compared, and the layout is checked:
+// the code below the block, each piece inside the block and after the one before, the last one ending where the block
+// ends, everything below the descriptor
+function joinLayout(prof, m, parts, fb) {
+	const pl = prof.placement;
+	const wins = carve(prof, { placement: pl });
+	const src = wins.map(([a]) => a), dst = [pl.code, pl.tables, ...pl.extra];
+	const out = relocate(m, wins, parts, src, dst);
+	if (relocate(m, wins, out, dst, src).some((d, i) => !equal(d, parts[i]))) throw new StockError("the moved codec doesn't come back to the stock windows");
+	const lo = pl.tables, end = pl.tables + pl.tables_len;
+	if (dst[0] + out[0].length > lo) throw new StockError(`the placed code (to ${hex(dst[0] + out[0].length)}) overlaps the block of tables at ${hex(lo)}`);
+	let at = lo;
+	for (let i = 1; i < out.length; i++) {
+		if (dst[i] < at) throw new StockError(`the window placed at ${hex(dst[i])} starts below the block or inside the window before it`);
+		at = dst[i] + out[i].length;
+	}
+	if (at !== end) throw new StockError(`the last window ends at ${hex(at)}, the block at ${hex(end)}`);
+	if (end > fb.descriptor.addr) throw new StockError(`the placed codec (to ${hex(end)}) reaches the descriptor`);
+	return [out, src, dst];
+}
+
+// The joined block: each piece at its placed address, 0xFF between them
+function joinBlock(pl, dst, pieces) {
+	const out = filled(pl.tables_len);
+	pieces.forEach((d, i) => out.set(d, dst[i + 1] - pl.tables));
+	return out;
+}
+
+// The decrypted stock windows [[stock address, bytes]] of a profile with "placement" as the merge writes them
+// (stockfw.placed_parts), [[address, bytes]] in placedWindows order, without the descriptor and before the check
+// against "placed" (place makes it): the code moved (its self references rewritten by the codec map), the table
+// window cut to the codec's data with the islands' calls into the code re-encoded, the extra windows unchanged; or,
+// where the placement says, every window moved as its own block (relocate); or these joined into one block ("join"),
+// with the map's holes filled with 0xFF where it says "blank". rfoundry also compares a joined placement's bytes with
+// its "gates" (three CRC-32s that follow from the map alone); here the result is held to the profile's "placed"
+// SHA-256s, which the gates guard the making of
+export async function placedParts(prof, segs, fb) {
 	const pl = prof.placement;
 	const m = mapOf(prof, fb);
 	if (!m) throw new StockError(`no codec map for ${prof.name}: its code can't be moved`, "unmapped");
 	const [[, code], [stockTab, tables], ...rest] = segs;
 	let moved, tab, tabAddr = stockTab, extra = rest;
 	try {
-		if (pl.extra) {
+		if (pl.join) {
+			const [out, src, dst] = joinLayout(prof, m, segs.map(([, d]) => d), fb);
+			moved = out[0];
+			tab = joinBlock(pl, dst, out.slice(1));
+			tabAddr = pl.tables;
+			extra = [];
+			if (pl.blank) {
+				const codeHoles = holes(m), tabHoles = tableHoles(m);
+				if (!codeHoles.length && !tabHoles.size) throw new StockError("the placement blanks the codec map's holes, and the map lists none");
+				// a hole nobody would blank: the map and the profile disagree
+				if ([...tabHoles.keys()].some((a) => !src.slice(1).includes(a))) throw new StockError("the codec map lists a hole in a table window the profile doesn't carve");
+				moved = blank(moved, codeHoles);
+				tab = joinBlock(pl, dst, out.slice(1).map((d, i) => blank(d, tabHoles.get(src[i + 1]) || [])));
+			}
+		} else if (pl.extra) {
 			const wins = carve(prof);
 			const out = relocate(m, wins, [code, tables.slice(0, wins[1][1]), ...rest.map(([, d]) => d)], wins.map(([a]) => a), placedWindows(prof).map(([a]) => a));
 			[moved, tab] = out;
@@ -203,26 +284,41 @@ export async function place(prof, segs, fb) {
 		if (e instanceof MapError) throw new StockError(`can't move the codec: ${e.message}`);
 		throw e;
 	}
-	if (!pl.extra && pl.tables === undefined && branchesIn(m, tabAddr, tab.length) !== (m.branches || []).length) throw new StockError("a branch into the code lies outside the tables the merge keeps");
+	if (!pl.join && !pl.extra && pl.tables === undefined && branchesIn(m, tabAddr, tab.length) !== (m.branches || []).length) throw new StockError("a branch into the code lies outside the tables the merge keeps");
+	return [[pl.code, moved], [tabAddr, tab], ...extra];
+}
+
+// The decrypted stock windows as the merge writes them (stockfw.place): the windows as placedParts() gives them, then
+// the descriptor; every part checked against the profile's "placed": its SHA-256, and its CRC-32 where the profile has
+// no SHA-256
+export async function place(prof, segs, fb) {
+	if (!prof.placement) return segs;
+	const parts = await placedParts(prof, segs, fb);
 	const want = placedWindows(prof);
 	const crcs = crcsOf(forms(prof)[0]);
-	const got = [moved, tab, ...extra.map(([, d]) => d)];
-	for (const [i, d] of got.entries()) {
+	for (const [i, [, d]] of parts.entries()) {
 		if (want[i][2] ? (await sha256(d)) !== want[i][2] : crc32(d) !== crcs[i] >>> 0) throw new StockError("the moved codec doesn't match the profile");
 	}
-	return [[pl.code, moved], [tabAddr, tab], ...extra, [fb.descriptor.addr, descriptor(prof, fb)]];
+	return [...parts, [fb.descriptor.addr, descriptor(prof, fb)]];
 }
 
 // The codec windows decrypted, checked and placed as the merge writes them: [[addr, bytes], ...] (code first).
 // boardId: the radio being flashed. A file for another radio is refused by name before it is decrypted with this
 // radio's key, which could only fail as a window mismatch that blames the key (OPENDIGITALRADIO-J). Past the SHA-256
-// match a failure is the flasher's, not the file's: the file is exactly the one the profile describes
+// match a failure is the flasher's, not the file's: the file is exactly the one the profile describes. A file in a
+// container that carries its own key (TWIN) is decrypted with that key, derived from the file: key is not used for it
+// (null will do). A file with a profile is never judged by its header; one without gets its own reason where it has
+// one (no codec at all, a version nobody has mapped, a bootloader file), in stockfw.find_profile's order
 export async function extract(data, key, fb, profiles = fb.profiles, boardId = null) {
 	const sha = await sha256(data);
 	const prof = profileFor(profiles, sha, boardId);
 	if (!prof) {
 		const bare = fb.no_codec_files?.[sha];
 		if (bare) throw new StockError(noCodec(bare), "not-vendor", { known: bare.name });
+		const other = fb.unmapped_files?.[sha];
+		if (other) throw new StockError(unmapped(other, fb), "unmapped", { known: other.name });
+		const boot = bootFile(data, fb);
+		if (boot) throw new StockError(boot, "not-vendor");
 		const known = fb.known_files[sha];
 		const names = Object.values(profiles).filter((p) => !boardId || p.board === boardId).map((p) => p.name).join(", ");
 		throw new StockError(`${known ? "this file is " + known : "unknown stock file"}, not a supported codec source. Supported: ${names}`, "unmapped", { known: known || null });
@@ -230,6 +326,10 @@ export async function extract(data, key, fb, profiles = fb.profiles, boardId = n
 	if (boardId && prof.board !== boardId) {
 		throw new StockError(`${prof.name} is a firmware file for the ${fb.boards[prof.board]?.name || prof.board}, not the ${fb.boards[boardId]?.name || boardId}`,
 			"other-radio", { board: prof.board, file: prof.name });
+	}
+	if (prof.container === TWIN) {
+		const stock = await twinfw.carve(data, prof, prof.windows, await twinfw.deriveKey(data, prof.key_sha256), fb.codec_sig, mapOf(prof, fb));
+		return { profile: prof, segments: await place(prof, stock, fb) };
 	}
 	if (data.length !== prof.size) throw new StockError(`size ${data.length}, expected ${prof.size}`);
 	// a file for another radio that gives this one's codec (file_radio) is encrypted with that radio's key: derived here

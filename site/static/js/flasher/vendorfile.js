@@ -3,12 +3,14 @@
 // Whatever vendor file a user picks, opened the same way for every radio: a firmware .bin, a program flash readout, or
 // a vendor's zip (nested zips too) with updaters, manuals and several builds inside. Every file is identified against
 // every radio the flasher knows, the most certain way first:
-//   1. its SHA-256 in a codec profile or the known files (stockfw PROFILES / KNOWN_FILES / NO_CODEC_FILES, the C-SKY
-//      profiles);
+//   1. its SHA-256 in a codec profile or the known files (stockfw PROFILES / KNOWN_FILES / NO_CODEC_FILES /
+//      UNMAPPED_FILES, the C-SKY profiles);
 //   2. an unknown TYT/Baofeng container (the "OutSecurityBin" header): every known bootloader key is tried on it, which
 //      tells which radio it is for, and the decrypted application is searched for the codec's signature word;
 //   3. a C-SKY radio's stock file or readout, by the codec's own hashes wherever the file holds it (c7000.js);
-//   4. an STM32 program flash readout, by the codec windows' hashes (stockfw.fromFlash): named, not used.
+//   4. an STM32 program flash readout, by the codec windows' hashes (stockfw.fromFlash): named, not used;
+//   5. a bootloader file in the container that holds its image twice, by its header (stockfw.bootFile): named, and
+//      no source of anything.
 // The signature alone never makes a codec usable: moving the codec needs that build's map (docs/spec/codec-placement.md),
 // so a build without one is reported as "has the codec, no recipe for this build", not taken.
 
@@ -80,6 +82,10 @@ export async function identifyFile(data, fb, boardId = null) {
 	// a file known to hold no codec (stockfw NO_CODEC_FILES): named, and like any other non-vendor file, never a source
 	const bare = fb.no_codec_files?.[sha];
 	if (bare) return { sha, board: null, known: bare.name, how: "sha256", problem: "not-vendor", why: stockfw.noCodec(bare) };
+	// a maker's file known by name whose codec nobody has mapped (stockfw UNMAPPED_FILES): its radio's file, with the
+	// codec and no recipe for it. The codec step names the version and lists the files to use instead (explain.js)
+	const other = fb.unmapped_files?.[sha];
+	if (other) return { sha, board: other.board, kind: "codec-unmapped", how: "sha256", known: other.name };
 	const c = fb.c7000;
 	const cprof = c?.profiles.find((p) => p.stock_file?.sha256 === sha);
 	if (cprof) {
@@ -143,6 +149,9 @@ export async function identifyFile(data, fb, boardId = null) {
 	// named by its codec's layout, not by the first file that has it: several files can put the same codec in flash
 	if (flash) return { sha, board: flash.profile.board, kind: "readout", how: "readout", profile: flash.profile,
 		known: `${fb.boards[flash.profile.board]?.name || flash.profile.board} ${stockfw.layoutName(flash.profile, fb.profiles)}` };
+	// a maker's bootloader file: no hash is known for it, its header says what it is
+	const boot = stockfw.bootFile(data, fb);
+	if (boot) return { sha, board: null, known, problem: "not-vendor", why: boot };
 	return { sha, board: null, known, problem: "not-vendor", why: known ? `${known}, which gives no codec` : "not a firmware file RadioFoundry knows" };
 }
 
@@ -196,7 +205,9 @@ export function logId(st) {
 
 // The file to offer for analysis when the page can't take the codec from what was picked: a vendor firmware container
 // (the headers the backend accepts) or a program memory dump of this radio, of at most maxBytes, with what the page found
-// as its reason. Never a readout, and never a file identified as another radio's: the page already knows what it is
+// as its reason. Never a readout, and never a file identified as another radio's: the page already knows what it is.
+// Nor a file in a container the backend takes no header of (the one that holds its image twice): its versions are
+// known by name and published by their maker, so sending one would tell nobody anything
 export function analysisCandidate(opened, fb, boardId = null, maxBytes = 4 << 20) {
 	const magics = [fb.magic, fb.c7000?.stock_magic].filter(Boolean);
 	// a program memory dump has no updater header: the backend takes it by the bootloader ID the page matched

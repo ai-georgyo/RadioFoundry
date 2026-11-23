@@ -16,7 +16,7 @@ Dfu.read_unprotect removes the protection, which erases the whole program flash.
 Option bytes are never written. A ROM bootloader shows them as a second alternate setting of its DFU interface, and
 its address pointer reaches them too; a wrong write there can lock the chip for good or take away the way into the
 bootloader. Nothing here selects an alternate setting (open_device), and the plain route sends no address outside the
-board's program flash and erases no sector past its application region (check_plain).
+board's program flash and erases no sector past its application region but the board's codec sectors (check_plain).
 """
 import hashlib
 import os
@@ -85,10 +85,15 @@ def check_plain(plan):
 
     The program flash only. Its address pointer also reaches RAM, system memory and the option bytes (AN3156 5.2).
 
-    The application region only (the board's linker script, Board.app_region). Flash past it is flash the build
-    keeps unused, and it can be unused because the bootloader must not be asked to erase it: one version of the
-    STM32H74x ROM bootloader leaves an erase in the second bank early, and a flash command after it can hang (AN2606
-    Table 146, V9.1). A build never reaches there; a file that is not this board's image can.
+    The application region (the board's linker script, Board.app_region) and the board's codec sectors
+    (Board.codec_sectors) only. Any other flash past the region is flash the build keeps unused, and it can be unused
+    because the bootloader must not be asked to erase it: one version of the STM32H74x ROM bootloader leaves an erase
+    in the second bank early, and a flash command after it can hang (AN2606 Table 146, V9.1). A build never reaches
+    there; a file that is not this board's image can. A codec sector is one that holds a window of a stock profile's
+    layout, and every layout ends at the codec descriptor (stockfw.DESC_ADDR), the end of the first megabyte of
+    program flash: the codec sectors follow the region and stay below the second bank (a test holds every board of
+    this route to that). Such a sector is written with the codec and nothing else, or erased and left blank
+    (plan.BLANK); no sector of the region is ever erased without being written.
 
     And every block inside its own sector, as the web flasher's checkPlain has it: a block past the sector's end
     would go to the next one, which was not erased, or past the region.
@@ -100,11 +105,19 @@ def check_plain(plan):
     half-written image, to start."""
     board = plan.board
     lo, hi = board.app_region
-    for st in plan.writes:
+    codec = {s.addr for s in board.codec_sectors()}
+    for st in plan.steps:
+        if st.action not in ("write", "erase"):
+            continue
         s = st.sector
         if not (board.rom_base <= s.addr and s.end <= board.flash_end):
             raise DfuError("sector 0x%08X is outside the program flash" % s.addr)
-        if not s.overlaps(lo, hi):
+        if s.overlaps(lo, hi):
+            if st.action == "erase":
+                raise DfuError("the plan erases sector %d (0x%08X) of the %s's application flash and writes nothing "
+                               "there. Refusing" % (s.index, s.addr, board.name))
+        elif s.addr not in codec or (st.action == "write" and st.content != "codec"):
+            # past the region only a codec sector is touched, and only to hold the codec or nothing
             raise DfuError("the image reaches sector %d (0x%08X), outside the %s's application flash 0x%08X..0x%08X: "
                            "it is not an image of this radio. Refusing" % (s.index, s.addr, board.name, lo, hi - 1))
         for num, _ in st.blocks:
@@ -126,6 +139,7 @@ class Dfu:
         self.intf = intf
         self.log = log
         self.sleep = sleep
+        self.start = None		# the 4 bytes at the application base, once probe_protected has read them
 
     def _out(self, req, value, data):
         return self.dev.ctrl_transfer(0x21, req, value, self.intf, data, 5000)
@@ -189,7 +203,8 @@ class Dfu:
         self.wait_dnload_done(what)
 
     def run(self, plan, key=None, progress=None):
-        """Erase the plan's sectors (in the bootloader's order), write each, exit (the radio resets). A codec move erases
+        """Erase the plan's sectors (in the bootloader's order; a codec sector the plan leaves blank is erased with them
+        and gets no block), write each, exit (the radio resets). A codec move erases
         the application's first sector first and writes it last (plan.Plan.write_order): a move cut short leaves no
         application to start.
 
@@ -293,6 +308,14 @@ class Dfu:
             self.log("the bootloader did not start the image (%s): switch the radio off and on"
                      % STATE_NAMES.get(state, state))
 
+    @property
+    def start_blank(self):
+        """True when the flash at the application base is erased (probe_protected read it): the radio holds no vector
+        table, whose first word, the initial stack pointer, is never 0xFFFFFFFF. An install through this route erases
+        the sector at the application base first and writes the vector table last, so this is a radio whose last
+        install did not finish (or one that was never written, or was erased whole)."""
+        return self.start == b"\xFF" * 4
+
     def read_back(self, parts, vectors=False):
         """The plain route's check of what it wrote, before the image is started: every block of parts ([(step,
         blocks)]) read back and compared with the block sent. A ROM bootloader reports no error for a write it did not
@@ -345,11 +368,15 @@ class Dfu:
 
     def probe_protected(self, board):
         """Whether a ROM bootloader's chip is read protected (RDP level 1), where it refuses to read, erase or write.
-        A read of 4 bytes at the start of the program flash: the address pointer is set (allowed either way, AN3156
-        5.2), then UPLOAD block 2. A protected chip answers dfuERROR with errVENDOR and reads nothing (AN3156 4.1).
-        Nothing on the radio changes. True: protected. False: the 4 bytes came. Anything else is an error: "protected"
-        leads to an erase of everything, so it is never concluded from an answer the documents don't describe."""
-        addr = board.rom_base
+        A read of 4 bytes at the application base, where the image's vector table is (the start of the program flash
+        on a board whose image starts there; a protected chip refuses a read anywhere in it): the address pointer is
+        set (allowed either way, AN3156 5.2), then UPLOAD block 2. A protected chip answers dfuERROR with errVENDOR
+        and reads nothing (AN3156 4.1).
+        Nothing on the radio changes. True: protected. False: the 4 bytes came, and are kept (self.start, start_blank).
+        Anything else is an error: "protected" leads to an erase of everything, so it is never concluded from an answer
+        the documents don't describe."""
+        addr = board.app_base
+        self.start = None
         self.to_idle()
         self.command(CMD_SET_ADDRESS, addr, "set address 0x%08X" % addr)
         self._out(DFU_ABORT, 0, None)		# UPLOAD is taken in dfuIDLE; the pointer is also the loader's default
@@ -366,6 +393,7 @@ class Dfu:
         if state != ST_ERROR and status == 0 and got is not None and len(got) == 4:
             self._out(DFU_ABORT, 0, None)	# leave dfuUPLOAD-IDLE
             self.wait_idle()
+            self.start = got
             return False
         raise DfuError("the bootloader's answer to a read of 4 bytes at 0x%08X is neither the data nor \"read "
                        "protected\" (status %d, state %s, %s bytes): nothing was changed"

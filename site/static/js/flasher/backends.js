@@ -8,7 +8,8 @@
 //
 //   id                      radios.json flash.backend
 //   available(radio, fb, task)  the page can run task ("install" | "backup") on this radio
-//   steps(task, ctx)        the step ids of a task, or null for the shared ones (STEPS in app.js). ctx: {recovering}
+//   steps(task, ctx)        the step ids of a task, or null for the shared ones (STEPS in app.js). ctx: {recovering,
+//                           radio}: the radio the steps are for (its radios.json entry), where they depend on it
 //   views                   {step id: () => element} for the steps the backend owns
 //   stepLabel(step, task)   optional: the i18n key suffix of a step's name (flash.step.<suffix>)
 //   recovery                the help task: {first: "updatemode" | "fix", stock: "file" | "restore" | "maker", reach: i18n
@@ -32,6 +33,9 @@
 //   stockChannels           optional: false where the original firmware's codeplug is in no layout the page converts:
 //                           the install then has no channel step (app.js bringChannels), so the memory chip is neither
 //                           read for one nor claimed for one
+//   installNow              optional: the install has no "current firmware" step, and a radio not known to run
+//                           RadioFoundry is taken to run this (explain.js nowFor: "stock", its original firmware). The
+//                           shared codec step (app.js codecView) decides with it
 //
 // Bulk memory reads for backups go through readers (readers.js), so a backend that shares a radio family's backup
 // steps can still bring its own way of reading.

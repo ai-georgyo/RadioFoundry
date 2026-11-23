@@ -165,8 +165,14 @@ class StockPlacement(unittest.TestCase):
                 self.assertEqual(prof["codec_profile"], b.codec.id, "%s: every stock file holds the board's codec" % b.id)
                 if stockfw.codec_only(prof):
                     self.assertNotEqual(prof["key_sha256"], b.key_sha256, "%s: a codec-only file" % b.id)
-                else:
+                elif b.key_sha256:
                     self.assertEqual(prof["key_sha256"], b.key_sha256, "%s: the DFU key is the stock file's" % b.id)
+                else:
+                    # a bootloader without a key: the file must be in a container that carries its own, and that
+                    # key is the file's, never a bootloader's
+                    self.assertEqual(prof.get("container"), stockfw.TWIN, "%s: no bootloader key to decrypt %s with"
+                                     % (b.id, prof["name"]))
+                    self.assertNotIn(prof["key_sha256"], [x.key_sha256 for x in boards.BOARDS.values()])
             for a, n in b.codec.windows:
                 self.assertTrue(b.app_region[1] <= a and a + n <= b.flash_end,
                                 "%s: codec window 0x%08X+0x%X outside the flash the linker keeps free" % (b.id, a, n))
@@ -292,12 +298,20 @@ class SectorMap(unittest.TestCase):
 
     def test_h743_layout(self):
         """The CS7000 M17 PLUS: two banks of eight 128 KB sectors from the flash base, written through the ROM
-        bootloader (no first stage, no stub, no key); the linker keeps the image in the first bank"""
+        bootloader (no first stage, no stub, no key); the linker keeps the image in the first seven sectors of the
+        first bank, and its last sector holds the codec with its descriptor"""
         b = boards.get("cs7000p")
         self.assertEqual([(x.index, x.addr, x.size) for x in b.sectors],
                          [(i, 0x08000000 + i * 0x20000, 0x20000) for i in range(16)])
         self.assertEqual((b.family, b.rom_base, b.app_base, b.flash_end), ("dfuse", 0x08000000, 0x08000000, 0x08200000))
-        self.assertEqual(b.app_region, (0x08000000, 0x08100000))
+        self.assertEqual(b.app_region, (0x08000000, 0x080E0000))
+        self.assertEqual([(x.index, x.addr) for x in b.codec_sectors()], [(7, 0x080E0000)])
+        self.assertEqual(b.codec.windows, [(0x080E0004, 0x15C98), (0x080F5CA0, 0x3E83),
+                                           (stockfw.DESC_ADDR, stockfw.DESC_LEN)])
+        self.assertEqual((b.has_codec, b.keep_codec_supported, b.codec_tool, b.codec.installed),
+                         (True, True, "codec_extract", []))
+        ld = open(os.path.join(HERE, "..", "..", "..", "boards", "cs7000p", "memory.ld")).read()
+        self.assertIn("0x080E0000", ld)
         self.assertEqual((b.protected, b.first_stage, b.stub, b.key_sha256, b.key_prefix), ([], None, None, None, None))
         self.assertEqual(b.dfu_ids, (0x0483, 0xDF11))
         self.assertEqual(fakedfu.rom_layout(b), "@Internal Flash  /0x08000000/16*128Kg")
@@ -1212,7 +1226,10 @@ class FirmwareProfiles(unittest.TestCase):
         return {structs[n] for n in listed}
 
     def test_every_profile_in_the_firmware(self):
-        for board in ("mduv380", "md380", "dm1701"):
+        # and every board installed through a ROM bootloader that has a codec route: the firmware accepts what the
+        # tool writes there
+        rom = tuple(b.id for b in boards.by(family="dfuse") if b.codec_stock)
+        for board in ("mduv380", "md380", "dm1701") + rom:
             want = set()
             for prof in stockfw.PROFILES.values():
                 if prof["board"] != board:
@@ -1955,8 +1972,31 @@ class FakeBootloaderEndToEnd(unittest.TestCase):
 
 
 def rom_board():
-    """A board installed through its MCU's ROM bootloader by plain DfuSe"""
+    """A board installed through its MCU's ROM bootloader by plain DfuSe, as the registry has it"""
     return next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "dfuse")
+
+
+def rom_board_without_codec():
+    """rom_board() as a board without a codec route ([codec] none, its value the reason): no codec tool, no stock
+    file, nothing to keep, and the application region reaching to the end of the flash a codec route keeps free.
+    Built from the board's registry entry, so the tests of the route itself, and of a board without a codec, don't
+    depend on which radios have a codec route."""
+    real = rom_board()
+    with open(boards.REGISTRY, encoding="utf-8") as f:
+        e = json.load(f)["boards"][real.id]
+    end = max([real.app_region[1]] + [s.end for s in real.codec_sectors()])
+    return boards.Board(dict(e, codec_none="No codec route in this test: DMR voice is off.", codec_tool=None,
+                             codec_stock=[], keep_codec_supported=False, stock_download=None,
+                             app_region=[e["app_region"][0], end],
+                             codec={"id": None, "windows": None, "installed": [], "sources": None}))
+
+
+def registered(test, board):
+    """board in the registry under its id for the length of a test: what --board, a manifest and a probe then find"""
+    patch = mock.patch.dict(boards.BOARDS, {board.id: board})
+    patch.start()
+    test.addCleanup(patch.stop)
+    return board
 
 
 def rom_image(n, seed=1):
@@ -1968,9 +2008,7 @@ class NoCodecBoard(unittest.TestCase):
     keep or merge."""
 
     def setUp(self):
-        self.b = next((b for _, b in sorted(boards.BOARDS.items()) if b.codec_none), None)
-        if self.b is None:
-            self.skipTest("every board has a codec route")
+        self.b = registered(self, rom_board_without_codec())
 
     def test_loads_without_a_codec(self):
         b = self.b
@@ -2048,7 +2086,9 @@ class RomBootloader(unittest.TestCase):
     bytes' alternate setting."""
 
     def setUp(self):
-        self.b = rom_board()
+        # the route itself: a board without a codec route, where an install has no codec step (the codec step of a
+        # board that has one: test_plain_codec.py)
+        self.b = registered(self, rom_board_without_codec())
         self.keyed = next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "usb-dfu")
 
     def dfu(self, dev):
@@ -2159,9 +2199,9 @@ class RomBootloader(unittest.TestCase):
             self.assertTrue(self.dfu(dev).probe_protected(self.b))
             self.assertEqual(dev.state, dfumod.ST_IDLE)
             self.assertEqual((bytes(dev.flash), dev.erased, dev.blocks, dev.unprotected), (before, [], 0, False))
-            # the only commands: set address, to the start of the program flash
+            # the only commands: set address, to the application base (on this board the start of the program flash)
             cmds = [r[3] for r in dev.requests if r[1] == dfumod.DFU_DNLOAD]
-            self.assertEqual(cmds, [bytes([dfumod.CMD_SET_ADDRESS]) + struct.pack("<I", self.b.rom_base)])
+            self.assertEqual(cmds, [bytes([dfumod.CMD_SET_ADDRESS]) + struct.pack("<I", self.b.app_base)])
 
     def test_a_bootloader_left_in_another_state(self):
         """A run that was interrupted leaves the bootloader where it was: in the middle of a download or an upload,
@@ -2415,7 +2455,8 @@ class RomBootloader(unittest.TestCase):
             self.assertIn("dry run: nothing was erased or written", out)
             self.assertIsNone(dev)
             # what belongs to the keyed bootloaders and the codec doesn't apply
-            for extra in (["--stock", "synthetic"], ["--codec", "keep"], ["--key", bp], ["--stock-installed", "V1"]):
+            for extra in (["--stock", "synthetic"], ["--codec", "keep"], ["--codec", "none"], ["--key", bp],
+                          ["--stock-installed", "V1"]):
                 rc, out, err, dev = self.cli_run(bp, "--simulate", "blank", *extra)
                 self.assertEqual(rc, 2, out + err)
                 self.assertIn("don't apply", err)
@@ -3118,7 +3159,9 @@ class RestartIntoBootloader(unittest.TestCase):
     HINT = "Turn the knob one step and try again."
 
     def setUp(self):
-        self.b = rom_board()
+        # the restart itself, on a board without a codec route, where an install has no codec step (the restart
+        # beside the codec step: test_plain_codec.py)
+        self.b = registered(self, rom_board_without_codec())
         # whatever the first board of the family says for itself: these tests are about a board that can
         for k, v in (("bootloader_restart", True), ("bootloader_restart_hint", self.HINT)):
             patch = mock.patch.object(self.b, k, v, create=True)

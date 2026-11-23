@@ -4,6 +4,11 @@
 // the simulated loader (fake.js FakeRomRadio): the device check, the read protection probe, the confirmed Read
 // Unprotect, the plain write and the leave; the backend's contract; and the write step drawn against a small stand-in
 // for the DOM. The board is the registry fixture's first one of the family, found by what it is, not by name.
+//
+// The route itself is tested on that board without a codec route (site/tests/fixtures.py rom_board_without_codec, as
+// rfoundry's own tests build it), so these tests don't depend on which radios have one. The codec step of the route
+// (the plan's three modes, the keep settled by what the loader says, an install without the codec) is tested on the
+// board as the registry has it, and skipped where it has no codec route.
 // Run with site/tests/run.sh.
 
 import { test } from "node:test";
@@ -49,27 +54,42 @@ const en = JSON.parse(strings);
 const all = (el) => [el, ...el.children.filter((c) => c instanceof El).flatMap(all)];
 
 const { Dfu, DfuError, WrongDeviceError, WebUsbTransport, romDevice, checkPlain, interfaceStringIndexes, PLAIN_FAMILY, FLASH_WORD, KEY_LEN } = await import("../static/js/flasher/dfu.js");
-const { makePlan, KEEP, BLOCK, FIRST_BLOCK } = await import("../static/js/flasher/plan.js");
+const { makePlan, codecSectors, KEEP, MERGE, BLANK, BLOCK, FIRST_BLOCK } = await import("../static/js/flasher/plan.js");
+const { decideCodec } = await import("../static/js/flasher/decide.js");
+const stockfw = await import("../static/js/flasher/stockfw.js");
+const vendorfile = await import("../static/js/flasher/vendorfile.js");
+const { pickProblem, supportedFiles } = await import("../static/js/flasher/explain.js");
 const { forDevBuild, segments, verify } = await import("../static/js/flasher/manifest.js");
 const { FakeRadio, FakeRomRadio, romSimulation, romLayout, simulation, randomBytes, rng } = await import("../static/js/flasher/fake.js");
 const { Link, LinkError, probe, CMD, frame, parseFrames, restartOutcome, restartRequest, RESTART_WHY } = await import("../static/js/flasher/link.js");
 const { ProtectedError } = await import("../static/js/flasher/protect.js");
 const { backendOf } = await import("../static/js/flasher/backends.js");
-const { hex, fromHex, toHex } = await import("../static/js/flasher/bytes.js");
+const { hex, fromHex, toHex, sha256, u32le } = await import("../static/js/flasher/bytes.js");
 const { supportReport } = await import("../static/js/support.js");
 const dfuse = await import("../static/js/flasher/dfuse.js");
 const { stopBars } = await import("../static/js/flasher/dom.js");
 
 const DIR = process.env.RFOUNDRY_SITE_FIXTURES || "build/site-tests";
 const json = (n) => JSON.parse(readFileSync(join(DIR, n), "utf8"));
-const fb = json("flash-boards.json");
+const bin = (n) => new Uint8Array(readFileSync(join(DIR, n)));
+const fbReal = json("flash-boards.json");
+const fx = json("fixtures.json");
 const radios = json("radios.json").radios;
-// the first radio of the family, and a keyed one to tell it from
-const radio = radios.find((r) => fb.boards[r.flash.board]?.family === PLAIN_FAMILY);
-const keyed = radios.find((r) => fb.boards[r.flash.board]?.family === "usb-dfu");
-assert.ok(radio, "a radio of the plain DfuSe family in the fixtures");
+// the first radio of the family as the registry has it, and a keyed one to tell it from
+const realRadio = radios.find((r) => fbReal.boards[r.flash.board]?.family === PLAIN_FAMILY);
+const keyed = radios.find((r) => fbReal.boards[r.flash.board]?.family === "usb-dfu");
+assert.ok(realRadio, "a radio of the plain DfuSe family in the fixtures");
 assert.ok(keyed, "a keyed USB DFU radio in the fixtures");
-const board = fb.boards[radio.flash.board];
+const realBoard = fbReal.boards[realRadio.flash.board];
+const ROM = fx.rom[realBoard.id];
+assert.ok(ROM, "the board's plans from rfoundry in the fixtures");
+// the same radio without a codec route: its board as data/flash-boards.json would carry it, its radio entry with the
+// reason it has none. The tests of the route itself run on these
+const board = ROM.plain.board;
+const radio = { ...realRadio, flash: { ...realRadio.flash, codec_none: ROM.plain.codec_none, stock_download: null } };
+const fb = { ...fbReal, boards: { ...fbReal.boards, [board.id]: board } };
+// the codec step's tests: on the board as the registry has it, where it has a codec route
+const withRoute = { skip: ROM.codec && !realRadio.flash.codec_none ? false : "the fixture's radio of this family has no codec route" };
 const noWait = { wait: async () => {} };
 
 // An image with a vector table: a RAM stack pointer and a reset vector, then firmware-like bytes. 150 KB: two sectors
@@ -78,36 +98,66 @@ function testImage(len = 150 * 1024 + 20) {
 	img.set([0xFC, 0xFF, 0x01, 0x20, 0x01, 0x02, 0x00, 0x08], 0);
 	return img;
 }
-async function installable(state = "stock", opts = {}) {
-	const sim = romSimulation(fb, board.id);
+// A simulated radio of the board without a codec route (real: as the registry has it), an image and its plan
+async function installable(state = "stock", opts = {}, { real = false } = {}) {
+	const sim = await romSimulation(real ? fbReal : fb, board.id);
 	const fake = new FakeRomRadio(sim, { state, spiSize: 0x200000, ...opts });
 	const image = testImage();
 	const manifest = await forDevBuild(sim.board, image);
 	return { sim, fake, image, manifest, plan: dfuse.installPlan(sim.board, { manifest, image }) };
 }
 
-test("the family's board: a ROM loader at the flash base, no key, no codec, nothing protected", () => {
-	assert.equal(board.app_base, board.rom_base, "the application starts at the flash base");
-	assert.equal(board.key_sha256, null);
-	assert.deepEqual(board.protected, []);
-	assert.deepEqual(board.codec.windows, []);
-	assert.equal(board.sectors[0].addr, board.rom_base);
-	assert.equal(board.sectors.reduce((n, s) => n + s.size, 0), board.flash_end - board.rom_base);
-	assert.equal(radio.flash.backend, "dfuse");
+test("the family's board: a ROM loader at the flash base, no key, nothing protected; without a codec route no codec window", () => {
+	for (const b of [realBoard, board]) {
+		assert.equal(b.app_base, b.rom_base, "the application starts at the flash base");
+		assert.equal(b.key_sha256, null);
+		assert.deepEqual(b.protected, []);
+		assert.equal(b.sectors[0].addr, b.rom_base);
+		assert.equal(b.sectors.reduce((n, s) => n + s.size, 0), b.flash_end - b.rom_base);
+	}
+	assert.equal(realRadio.flash.backend, "dfuse");
+	assert.ok(realRadio.flash.bootloader.length && realRadio.flash.notice);
+	// every radio says whether it has a codec route: the key is there, null or the reason it has none
+	for (const r of radios) assert.ok(r.flash.codec_none === null || (typeof r.flash.codec_none === "string" && r.flash.codec_none), r.id);
+	// the board without one: no window, no source, nothing to keep, and its region reaches where a codec route ends
+	assert.deepEqual([board.codec.id, board.codec.windows, board.codec.sources, board.keep_codec_supported], [null, [], [], false]);
 	assert.equal(typeof radio.flash.codec_none, "string");
-	assert.ok(radio.flash.bootloader.length && radio.flash.notice);
-	// every other radio has a codec route: the key is there, null
-	for (const r of radios) if (r !== radio) assert.equal(r.flash.codec_none, null, r.id);
+	assert.ok(board.app_region[1] >= realBoard.app_region[1]);
+	// with one, as the registry has it: its codec sectors are one run that starts where the application region ends
+	// and ends with the descriptor, below any second bank; the image never shares a sector with the codec
+	if (!withRoute.skip) {
+		const secs = codecSectors(realBoard), [lo, hi] = realBoard.app_region;
+		assert.ok(secs.length > 0 && realBoard.keep_codec_supported);
+		assert.equal(secs[0].addr, hi, "the codec's flash follows the application's");
+		secs.forEach((s, i) => assert.equal(s.addr, hi + secs.slice(0, i).reduce((n, x) => n + x.size, 0), "one run"));
+		assert.equal(secs.at(-1).addr + secs.at(-1).size, fbReal.descriptor.addr + fbReal.descriptor.len);
+		for (const [a, n] of realBoard.codec.windows) assert.ok(a >= hi && a + n <= fbReal.descriptor.addr + fbReal.descriptor.len && a >= lo);
+		assert.ok(realBoard.codec.sources.length > 0 && realBoard.codec.id);
+	}
 });
 
 test("backend: install is radio, build, write, done; an update and a reinstall skip what they know", () => {
 	const b = backendOf(radio);
 	assert.equal(b.id, "dfuse");
-	assert.deepEqual(b.steps("install", { recovering: false }), ["radio", "build", "write", "done"]);
-	assert.deepEqual(b.steps("install", { recovering: true }), ["build", "write", "done"]);
-	assert.deepEqual(b.steps("update", {}), ["update", "write", "done"]);
+	// a radio without a codec route, and a caller that names no radio
+	for (const ctx of [{ radio }, {}]) {
+		assert.deepEqual(b.steps("install", { ...ctx, recovering: false }), ["radio", "build", "write", "done"]);
+		assert.deepEqual(b.steps("install", { ...ctx, recovering: true }), ["build", "write", "done"]);
+		assert.deepEqual(b.steps("update", ctx), ["update", "write", "done"]);
+	}
+	// with a codec route the shared codec step comes before the write in each
+	const routed = { ...radio, flash: { ...radio.flash, codec_none: null } };
+	assert.deepEqual(b.steps("install", { recovering: false, radio: routed }), ["radio", "build", "codec", "write", "done"]);
+	assert.deepEqual(b.steps("install", { recovering: true, radio: routed }), ["build", "codec", "write", "done"]);
+	assert.deepEqual(b.steps("update", { radio: routed }), ["update", "codec", "write", "done"]);
+	assert.equal(dfuse.codecRoute(routed), true);
+	assert.equal(dfuse.codecRoute(radio), false);
+	assert.equal(dfuse.codecRoute(null), false);
+	// no "current firmware" step: a radio not known to run RadioFoundry is on its original firmware
+	assert.equal(b.installNow, "stock");
+	assert.ok(!b.steps("install", { recovering: false, radio: routed }).includes("now"));
 	for (const task of ["backup", "restore", "restart", "help"]) assert.equal(b.steps(task, {}), null, task);
-	for (const s of ["write", "done", "backup", "restore"]) assert.equal(typeof b.views[s], "function", s);
+	for (const s of ["codec", "write", "done", "backup", "restore"]) assert.equal(typeof b.views[s], "function", s);
 	assert.ok(b.available(radio, fb, "install"));
 	assert.equal(b.available(radio, fb, "backup"), radio.backup.rfoundry === "full");
 	// a board without the loader's USB IDs can't be reached; a keyed radio is another backend's
@@ -283,8 +333,54 @@ test("protected is concluded only from dfuERROR with errVENDOR, whether the load
 			},
 		};
 		await assert.rejects(new Dfu(tr, noWait).probeProtected(board), new RegExp(`no clear answer \\(0 bytes, status ${status}, `), `status ${status}, state ${state}`);
-		assert.deepEqual(sent, [[1, 0, [0x21, ...[0, 8, 16, 24].map((sh) => (board.rom_base >>> sh) & 0xFF)]]], "only the address pointer was set");
+		assert.deepEqual(sent, [[1, 0, [0x21, ...[0, 8, 16, 24].map((sh) => (board.app_base >>> sh) & 0xFF)]]], "only the address pointer was set");
 	}
+});
+
+// The 4 bytes the probe reads are the image's first: the vector table's stack pointer, or 0xFF where there is none.
+// rfoundry's Dfu.probe_protected and start_blank
+test("the probe reads at the application base and keeps what it read: a vector table, or a blank start", async () => {
+	for (const [state, blank] of [["rfoundry", false], ["blank", true]]) {
+		const { sim, fake } = await installable(state);
+		fake.enterBootloader();
+		const dfu = new Dfu(fake.dfuTransport(), noWait);
+		assert.equal(dfu.start, null);
+		assert.equal(dfu.startBlank, false, "nothing read yet is not a blank start");
+		assert.equal(await dfu.probeProtected(sim.board), false);
+		assert.deepEqual([...dfu.start], [...fake.flash.subarray(0, 4)]);
+		assert.equal(dfu.startBlank, blank, state);
+		const found = await dfuse.checkLoader(fake.dfuTransport(), sim.board, noWait);
+		assert.deepEqual([found.stage, found.blank], ["ready", blank], state);
+	}
+	// a protected radio gives no bytes: nothing is kept, and it is not taken for blank
+	const locked = await installable("stock");
+	locked.fake.enterBootloader();
+	const dfu = new Dfu(locked.fake.dfuTransport(), noWait);
+	assert.equal(await dfu.probeProtected(locked.sim.board), true);
+	assert.deepEqual([dfu.start, dfu.startBlank], [null, false]);
+	assert.deepEqual(await dfuse.checkLoader(locked.fake.dfuTransport(), locked.sim.board, noWait).then((f) => [f.stage, f.blank]), ["protected", false]);
+	// a probe that follows one that read forgets what that one read
+	const again = await installable("blank");
+	again.fake.enterBootloader();
+	const d2 = new Dfu(again.fake.dfuTransport(), noWait);
+	await d2.probeProtected(again.sim.board);
+	assert.equal(d2.startBlank, true);
+	again.fake.rdp = 1;
+	assert.equal(await d2.probeProtected(again.sim.board), true);
+	assert.equal(d2.startBlank, false);
+	// a board whose image starts above the start of its program flash: the read is at the image's start, where the
+	// vector table is, not at another program's bytes below it
+	const up = await installable("blank");
+	const second = up.sim.board.sectors[1];
+	up.sim.board.app_base = second.addr;
+	up.fake.flash.set([0x00, 0x00, 0x02, 0x20], 0);	// something at the flash base
+	up.fake.enterBootloader();
+	const sent = [], tr = up.fake.dfuTransport(), out = tr.out;
+	tr.out = (req, value, data) => { if (req === 1 && data?.[0] === 0x21) sent.push(u32le(data, 1)); return out(req, value, data); };
+	const d3 = new Dfu(tr, noWait);
+	assert.equal(await d3.probeProtected(up.sim.board), false);
+	assert.deepEqual(sent, [second.addr]);
+	assert.equal(d3.startBlank, true, "blank where the image starts, whatever lies below");
 });
 
 test("the application region: a plan that reaches flash past it is refused before any request, and before any unprotect is offered", async () => {
@@ -336,6 +432,7 @@ test("the exported board's application region: an image past it is refused befor
 	assert.ok(board.sectors.some((s) => s.addr === hi) || hi === board.flash_end, "the region ends on a sector boundary");
 	const { sim, fake } = await installable("stock");
 	assert.deepEqual(sim.board.app_region, board.app_region, "the simulation's board is the exported one");
+	assert.ok(Array.isArray(realBoard.app_region) && realBoard.app_region[0] === realBoard.app_base, "and the registry's own board carries one too");
 	const fits = testImage(hi - lo), over = testImage(hi - lo + BLOCK);
 	const fitsPlan = dfuse.installPlan(sim.board, { manifest: await forDevBuild(sim.board, fits), image: fits });
 	assert.equal(fitsPlan.erase.at(-1).addr + fitsPlan.erase.at(-1).size, hi);
@@ -614,7 +711,9 @@ test("the two routes never cross: a keyed board needs its key, a plain one takes
 test("the plain route sends whole blocks only, stays inside the program flash, and checks the board's protected regions again", async () => {
 	const { sim, fake, plan } = await installable("blank");
 	fake.enterBootloader();
-	const short = { board: sim.board, erase: plan.erase, eraseOrder: plan.eraseOrder, writes: [{ sector: plan.writes[0].sector, blocks: [[FIRST_BLOCK, new Uint8Array(1000)]] }],
+	// (a plan of one sector: one that erased a second sector of the application and wrote nothing there is refused for that)
+	const one = [plan.writes[0].sector];
+	const short = { board: sim.board, erase: one, eraseOrder: one, writes: [{ sector: one[0], blocks: [[FIRST_BLOCK, new Uint8Array(1000)]] }],
 		writeOrder: [], totalBlocks: 1 };
 	await assert.rejects(new Dfu(fake.dfuTransport(), noWait).run(short, null), /is 1000 bytes, not 1024/);
 	// a block numbered past its sector's end, or below the first, would set the pointer outside the sector
@@ -721,18 +820,27 @@ test("WebUSB: the interface is claimed and no alternate setting is ever selected
 // ---- the write step, drawn
 
 const text = (el) => el.textContent;
-function page(fake, sim, image, manifest, extra = {}) {
-	const got = { next: 0, started: [], finished: [], marks: [], forward: undefined };
-	const state = { radio, board: sim.board, task: "install", firmware: { manifest, image, origin: "custom" }, fakeRadio: fake,
-		forward: (b) => { got.forward = b; } };
-	dfuse.init({ S: state, fb: () => sim.fb, next: () => { got.next++; }, render() {}, reset() {}, helpLink: () => null, manualKitLine: () => null,
+// extra.state: more of the page's state (the radio as the registry has it, the codec step's decision, a picked stock
+// file, a saved copy of the codec); the rest of extra goes into the backend's context
+function page(fake, sim, image, manifest, { state: more = {}, ...extra } = {}) {
+	const got = { next: 0, started: [], finished: [], marks: [], forward: undefined, renders: 0, asked: 0, decisions: 0, plans: [] };
+	const state = { radio, board: sim.board, task: "install", step: 3, firmware: { manifest, image, origin: "custom" }, fakeRadio: fake,
+		forward: (b) => { got.forward = b; }, ...more };
+	dfuse.init({ S: state, fb: () => sim.fb, next: () => { got.next++; }, render() { got.renders++; }, reset() {}, helpLink: () => null, manualKitLine: () => null,
+		// the codec step's side of the page (app.js): its view, the question before an install without the codec (answer:
+		// "go", "stay" or "back", which goes back as the dialog's button does), what the page has to write a codec from
+		noteDecision() { got.decisions++; }, codecView: () => "codec",
+		confirmNoCodec: async (back) => { got.asked++; if (got.answer === "back") await back(); return (got.answer ?? "go") === "go"; },
+		stockGivesCodec: () => !!state.stock && stockfw.profileFor(sim.fb.profiles, state.stock.info?.sha, sim.board.id)?.board === sim.board.id,
+		savedKept: () => !!state.savedCodec,
 		flashStarted: (what) => { got.started.push(what); return { id: 1 }; }, flashFinished: (s, e = null) => { got.finished.push(e); },
 		flashMark: (s, ev) => { got.marks.push(ev); }, errorText: (e) => e.message,
 		connectBootloader: async () => {
 			if (fake.mode !== "bootloader") throw new Error("the radio is not in update mode");
 			return fake.dfuTransport();
 		},
-		dropSerial: async () => {}, withPicture: (x) => x, driverHelp: () => null, driverWorked() {}, ensureFirmware: async () => state.firmware, notePlan() {},
+		dropSerial: async () => {}, withPicture: (x) => x, driverHelp: () => null, driverWorked() {}, ensureFirmware: async () => state.firmware,
+		notePlan(p) { got.plans.push(p); },
 		doneView: () => "done", backupView: () => "backup", restoreView: () => "restore", eraseWait: { seconds: 2, tickMs: 5 }, ...extra });
 	return { state, got };
 }
@@ -1277,8 +1385,676 @@ test("the write step refuses a device that is not this radio's loader, in the pa
 	assert.deepEqual([fake.erased, fake.writes, fake.unprotects], [[], [], 0]);
 });
 
-test("the maker's recovery is said in words", () => {
-	const { state } = page(null, romSimulation(fb, board.id), new Uint8Array(4), {});
+// ---- the codec step of the route: on the board as the registry has it (skipped where it has no codec route)
+
+// A simulated radio of that board: the synthetic stock file and its codec as the merge places it (fake.js
+// romSimulation), an image and its manifest, the file as the codec step holds a picked one, the copy of the codec as a
+// browser saves it, the board's codec sectors and a decision to keep by what a running RadioFoundry reported
+async function routed(state = "stock", opts = {}) {
+	const r = await installable(state, opts, { real: true });
+	const b = r.sim.board;
+	return { ...r, board: b, secs: codecSectors(b), stock: { name: "stock.bin", data: r.sim.stock, info: { sha: await sha256(r.sim.stock) } },
+		saved: { profile: r.sim.profile, segments: r.sim.codecSegments.slice(0, -1), from: "browser", stored: true },
+		kept: decideCodec(b, r.manifest, { probe: { board: b.debuglink_names[0], codec: b.codec.id } }) };
+}
+const routedPage = (r, state = {}, extra = {}) => page(r.fake, r.sim, r.image, r.manifest, { state: { radio: realRadio, ...state }, ...extra });
+// the page's own work between two clicks (a file decrypted, a codec placed) is over when the step shows it: waited
+// for in real time (setTimeout is never the test's own clock), at most 20 s
+const until = async (cond) => {
+	for (let i = 0; i < 4000 && !cond(); i++) await new Promise((done) => setTimeout(done, 5));
+	assert.ok(cond(), "the step did not get there");
+};
+const buttons = (box) => all(box).filter((e) => e.tagName === "BUTTON");
+const byText = (box, key) => buttons(box).find((e) => text(e) === en[key]);
+const agreeTo = async (box) => {
+	const agree = all(box).find((e) => e.tagName === "INPUT" && e.attrs.type === "checkbox");
+	agree.checked = true;
+	await agree.fire("change");
+};
+// in sector s of a radio's flash
+const within = (r, s) => r.fake.flash.subarray(s.addr - r.board.rom_base, s.addr - r.board.rom_base + s.size);
+const holdsCodec = (r) => r.sim.codecSegments.every(([a, d]) => Buffer.compare(r.fake.flash.subarray(a - r.board.rom_base, a - r.board.rom_base + d.length), d) === 0);
+const noVectors = (r) => r.fake.flash.subarray(0, BLOCK).every((x) => x === 0xFF);
+// the whole way from a protected radio to Install: the confirmed Read Unprotect, the wait, the loader again
+async function unprotectAndReenter(r, got, box, clock) {
+	assert.equal(text(got.forward), en["flash.dfuse.unprotect_go"]);
+	await agreeTo(box);
+	await got.forward.click();
+	assert.equal(r.fake.unprotects, 1);
+	clock.tick(10);
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	r.fake.enterBootloader();
+	await got.forward.click();
+	assert.equal(text(got.forward), en["flash.write.go"]);
+}
+
+test("the practice radio of a board with a codec route: a synthetic stock file in its container, and RadioFoundry that reports its codec", withRoute, async () => {
+	const r = await routed("rfoundry");
+	const { sim } = r;
+	assert.ok(sim.stock && sim.profile && sim.codecSegments.length === 3);
+	assert.equal(sim.key.length, 0, "no bootloader key on this route");
+	assert.equal(stockfw.containerKind(sim.stock, sim.fb), sim.profile.container);
+	// the page opens it as it opens a real one: by its SHA-256, with its own key, placed as the simulation has it
+	assert.equal(sim.fb.profiles[r.stock.info.sha], sim.profile);
+	assert.ok(!Object.keys(fbReal.profiles).some((h) => sim.fb.profiles[h]?.board === sim.board.id), "the real file's profile is not the simulation's");
+	const got = await stockfw.extract(sim.stock, null, sim.fb, sim.fb.profiles, sim.board.id);
+	assert.deepEqual(got.segments, sim.codecSegments);
+	assert.deepEqual(sim.codecSegments.map(([a, d]) => [a, d.length]), stockfw.layoutWindows(sim.profile, sim.fb));
+	assert.deepEqual(stockfw.layoutWindows(sim.profile, sim.fb), sim.board.codec.windows, "where the board's build expects it");
+	// what the radio says of its codec, and reads back for a saved copy
+	assert.equal(r.fake.codecReport(), sim.board.codec.id);
+	assert.equal((await probe(new Link(r.fake.serialStream()))).codec, sim.board.codec.id);
+	assert.equal(new FakeRomRadio(sim, { state: "rfoundry-nocodec", spiSize: 0x200000 }).codecReport(), "absent");
+	assert.equal(await stockfw.checkForm(sim.profile, stockfw.forms(sim.profile)[0], r.saved.segments, sim.fb), true);
+	// a board without a codec route has no file and reports no vocoder
+	const plain = await installable("rfoundry");
+	assert.deepEqual([plain.sim.stock, plain.sim.codecSegments, plain.fake.codecReport()], [null, [], "none"]);
+});
+
+test("the three plans of a board with a codec route, as rfoundry plans them: keep, merge and blank", withRoute, async () => {
+	const image = bin("image.bin");
+	const lay = fx.layouts.files.find((f) => f.file === ROM.layout);
+	const fw = { manifest: await forDevBuild(realBoard, image), image };
+	page(null, { fb: fbReal, board: realBoard }, image, fw.manifest);
+	const { profile, segments: codec } = await stockfw.extract(bin(ROM.layout), null, fbReal, { [lay.stock_sha256]: lay.profile }, realBoard.id);
+	const keep = dfuse.installPlan(realBoard, fw), merge = dfuse.installPlan(realBoard, fw, { mode: MERGE }, codec, profile),
+		blank = dfuse.installPlan(realBoard, fw, { mode: BLANK });
+	assert.deepEqual(keep.describe(), ROM.keep);
+	assert.deepEqual(merge.describe(), ROM.merge);
+	assert.deepEqual(blank.describe(), ROM.blank);
+	assert.deepEqual(dfuse.installPlan(realBoard, fw, { mode: KEEP }).describe(), ROM.keep);
+	const secs = codecSectors(realBoard), idx = secs.map((s) => s.index), base = realBoard.app_base;
+	const of = (plan) => plan.steps.filter((st) => idx.includes(st.sector.index));
+	// merge: the codec's sectors written whole with the codec and nothing else, after the image's other sectors and
+	// before the sector with the vector table; the descriptor in the last block, after every codec byte
+	assert.ok(of(merge).every((st) => st.action === "write" && st.content === "codec" && st.blocks.length === st.sector.size / BLOCK));
+	assert.equal(merge.eraseOrder[0].addr, base);
+	assert.equal(merge.writeOrder.at(-1).sector.addr, base);
+	assert.ok(merge.writeOrder.findIndex((st) => idx.includes(st.sector.index)) < merge.writeOrder.length - 1);
+	const last = of(merge).at(-1), d = fbReal.descriptor;
+	assert.equal(last.sector.addr + last.blocks.length * BLOCK, d.addr + d.len);
+	assert.ok(last.blocks.at(-1)[1].subarray(0, BLOCK - d.len).every((x) => x === 0xFF), "the descriptor's block holds no codec byte");
+	assert.ok(merge.erase.length === keep.erase.length + secs.length && merge.kept.length === 0);
+	// keep: the codec's sectors are not in the plan
+	assert.ok(of(keep).every((st) => st.action === "keep" && !st.blocks.length));
+	assert.deepEqual(keep.kept.map((s) => s.index), idx);
+	assert.ok(!keep.erase.some((s) => idx.includes(s.index)));
+	// blank: erased and left blank, nothing written there
+	assert.ok(of(blank).every((st) => st.action === "erase" && !st.blocks.length));
+	assert.ok(idx.every((i) => blank.erase.some((s) => s.index === i)) && !blank.writes.some((st) => idx.includes(st.sector.index)));
+	assert.equal(blank.totalBlocks, keep.totalBlocks);
+	assert.equal(blank.eraseOrder[0].addr, base);
+	// codec data belongs to a merge alone, and no image reaches the codec's flash in any mode
+	const segs = segments(fw.manifest, image);
+	for (const mode of [KEEP, BLANK]) assert.throws(() => makePlan(realBoard, segs, mode, codec), new RegExp(`codec data given in ${mode} mode`));
+	assert.throws(() => makePlan(realBoard, segs, "wipe"), /unknown codec mode/);
+	const [lo, hi] = realBoard.app_region, over = testImage(hi - lo + 1);
+	for (const [mode, c] of [[KEEP, []], [MERGE, codec], [BLANK, []]])
+		assert.throws(() => makePlan(realBoard, [[lo, over]], mode, c, stockfw.layoutWindows(profile, fbReal), { vectorLast: true }), /codec (window|sector)/, mode);
+	// a board without a codec route: the image alone, and no codec sector to erase by itself
+	assert.deepEqual(dfuse.installPlan(board, fw).describe(), ROM.plain.keep);
+	assert.throws(() => makePlan(board, segs, BLANK, [], board.codec.windows, { vectorLast: true }), (e) => e.message === ROM.plain.blank_refusal);
+	// nor has a keyed radio whose image shares no sector with its codec any use for it here: the mode is this route's
+	// by what the page offers, and a board that can't keep its codec apart is refused it by the planner
+	assert.throws(() => makePlan({ ...realBoard, keep_codec_supported: false }, segs, BLANK), /no codec sector that can be erased and left blank/);
+});
+
+test("the route's limits with a codec: past the application only a codec sector, to hold the codec or nothing", withRoute, async () => {
+	const r = await routed("blank");
+	routedPage(r);
+	const fw = { manifest: r.manifest, image: r.image }, b = r.board;
+	const merge = dfuse.installPlan(b, fw, { mode: MERGE }, r.sim.codecSegments, r.sim.profile), blank = dfuse.installPlan(b, fw, { mode: BLANK });
+	for (const plan of [r.plan, merge, blank]) checkPlain(plan);
+	const like = (plan, change) => ({ board: b, erase: plan.erase, eraseOrder: plan.eraseOrder, writes: plan.writes, writeOrder: plan.writeOrder, totalBlocks: plan.totalBlocks, ...change });
+	const past = b.sectors.find((s) => s.addr === r.secs.at(-1).addr + r.secs.at(-1).size);
+	const free = b.sectors.find((s) => s.addr > b.app_base && s.addr < b.app_region[1] && !merge.erase.includes(s));
+	const outside = /outside .* application flash/;
+	const cases = [
+		// a codec sector that would get anything but the codec
+		["the image in a codec sector", like(merge, { writes: merge.writes.map((st) => (r.secs.includes(st.sector) ? { ...st, content: "app" } : st)) }), outside],
+		["the image and the codec in one sector", like(merge, { writes: merge.writes.map((st) => (r.secs.includes(st.sector) ? { ...st, content: "app+codec" } : st)) }), outside],
+		// a sector of the application erased and left blank: only a codec sector ever is
+		["an application sector erased and not written", like(blank, { erase: [...blank.erase, free], eraseOrder: [...blank.eraseOrder, free] }), /erases sector \d+ .* application flash and writes nothing there/],
+		// the vector table's sector written last and not erased first
+		["an erase order that does not start at the application base", like(merge, { eraseOrder: [...merge.eraseOrder].reverse() }), /first and write it last/],
+	];
+	// flash past the codec's sectors (a second bank): never erased, never written, codec or not
+	if (past) cases.push(["a sector past the codec's erased", like(blank, { erase: [...blank.erase, past], eraseOrder: [...blank.eraseOrder, past] }), outside],
+		["a sector past the codec's written as codec", like(merge, { writes: [...merge.writes, { sector: past, blocks: [[FIRST_BLOCK, new Uint8Array(BLOCK)]], content: "codec" }] }), outside]);
+	assert.ok(free, "a sector of the application region that the image leaves free");
+	r.fake.enterBootloader();
+	const before = r.fake.flash.slice();
+	for (const [what, plan, refusal] of cases) {
+		assert.throws(() => checkPlain(plan), refusal, what);
+		await assert.rejects(new Dfu(r.fake.dfuTransport(), noWait).run(plan, null), refusal, what);
+	}
+	assert.deepEqual([r.fake.erased, r.fake.writes], [[], []], "refused before any request");
+	assert.deepEqual(r.fake.flash, before);
+	// an own image that reaches the codec's flash: refused when the step is drawn, before any Connect
+	const [lo, hi] = b.app_region, over = testImage(hi - lo + BLOCK);
+	const { got } = page(r.fake, r.sim, over, await forDevBuild(b, over), { state: { radio: realRadio, decision: r.kept } });
+	const box = dfuse.writeView();
+	assert.match(text(box), /codec (window|sector)/);
+	assert.equal(got.forward, null);
+	assert.ok(!text(box).includes(en["flash.write.then_connect"]));
+});
+
+test("a first install with the stock file: the codec step's merge, and the write sends the codec's sectors whole, the vector table last", withRoute, async (tc) => {
+	const clock = ownClock(tc);
+	const r = await routed("stock");
+	// the picked file is this radio's codec source, opened without a key
+	const m = await vendorfile.identifyFile(r.sim.stock, r.sim.fb, r.board.id);
+	assert.deepEqual([m.kind, m.board, m.how], ["codec", r.board.id, "sha256"]);
+	const opened = await vendorfile.openVendorFile("stock.bin", r.sim.stock, r.sim.fb, r.board.id);
+	assert.equal(pickProblem(opened, r.board.id), null);
+	assert.ok(vendorfile.describe(opened, r.sim.fb, r.board.id)[0].endsWith(": the codec (used)"), "no bootloader key is promised");
+	// a radio not known to run RadioFoundry is on its original firmware: without the file there is no decision, with it a merge
+	assert.throws(() => decideCodec(r.board, r.manifest, { runsStock: true }), /cannot determine whether the radio has its codec/);
+	const decision = decideCodec(r.board, r.manifest, { haveStock: true, runsStock: true });
+	assert.equal(decision.mode, MERGE);
+	const { got, state } = routedPage(r, { decision, stock: r.stock, now: { kind: "stock", version: null } });
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	assert.equal(got.forward, null, "the codec is taken from the file before the loader's steps are shown");
+	await until(() => got.forward);
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	assert.ok(text(box).includes(`board ${r.board.name}, codec mode: merge\n`));
+	assert.equal(got.plans.at(-1).mode, MERGE);
+	r.fake.enterBootloader();
+	await got.forward.click();
+	assert.ok(text(box).includes(en["flash.dfuse.protected_title"]), "a merge stands whatever the loader says");
+	await unprotectAndReenter(r, got, box, clock);
+	await got.forward.click();
+	assert.equal(got.next, 1);
+	assert.equal(got.asked, 0);
+	// the image, the codec where the merge puts it with its descriptor, 0xFF around it in its sectors
+	const base = r.board.rom_base;
+	assert.deepEqual(r.fake.flash.subarray(0, r.image.length), r.image);
+	assert.ok(holdsCodec(r));
+	const used = new Uint8Array(r.fake.flash.length);
+	for (const [a, d] of r.sim.codecSegments) used.fill(1, a - base, a - base + d.length);
+	for (const s of r.secs) for (let i = s.addr - base; i < s.addr - base + s.size; i++) if (!used[i]) assert.equal(r.fake.flash[i], 0xFF, `+${i}`);
+	// the order at the loader: the vector table's sector erased first, then the image's other sectors and the codec's;
+	// every block of a codec sector sent, the descriptor's last of them; the vector table's block after all of it
+	assert.equal(r.fake.erased[0], r.board.app_base);
+	assert.ok(r.secs.every((s) => r.fake.erased.includes(s.addr)));
+	const sent = r.fake.writes.map(([a]) => a);
+	assert.equal(sent.at(-1), r.board.app_base);
+	for (const s of r.secs) assert.equal(sent.filter((a) => a >= s.addr && a < s.addr + s.size).length, s.size / BLOCK);
+	const d = r.sim.fb.descriptor, inCodec = sent.filter((a) => r.secs.some((s) => a >= s.addr && a < s.addr + s.size));
+	assert.equal(inCodec.at(-1), d.addr + d.len - BLOCK);
+	assert.ok(sent.indexOf(inCodec.at(-1)) < sent.length - 1);
+	assert.ok(sent.every((a) => a < r.board.app_region[1] || r.secs.some((s) => a >= s.addr && a < s.addr + s.size)), "nothing past the application but the codec's sectors");
+	assert.deepEqual([r.fake.violations, r.fake.vendor], [[], []]);
+	// RadioFoundry starts and reports the codec, which the done step expects
+	assert.equal((await probe(new Link(r.fake.serialStream()))).codec, r.board.codec.id);
+	assert.equal(state.decision.expectCodec, true);
+});
+
+const namedFiles = { skip: withRoute.skip || (fx.twin?.unmapped ? false : "no file in the fixtures that is known and not mapped") };
+test("a version nobody has mapped is named with the files to use and never offered for sending; a bootloader file is no firmware file", namedFiles, async () => {
+	const T = fx.twin, u = T.unmapped, id = u.entry.board;
+	const data = bin(T.file).slice();
+	for (const [at, mask] of u.change.flips) data[at] ^= mask;
+	const fbU = { ...fbReal, unmapped_files: { [u.sha256]: u.entry } };
+	// the file of its radio, with the codec and no recipe: the existing kind, by its SHA-256
+	assert.deepEqual(await vendorfile.identifyFile(data, fbU, id), { sha: u.sha256, board: id, kind: "codec-unmapped", how: "sha256", known: u.entry.name });
+	const opened = await vendorfile.openVendorFile(u.entry.name, data, fbU, id);
+	assert.equal(opened.best.match.kind, "codec-unmapped");
+	// the codec step's notice: "unmapped", by name, with the files that do give the codec and no word of a key
+	assert.deepEqual(pickProblem(opened, id), { problem: "unmapped", file: u.entry.name, known: u.entry.name });
+	assert.deepEqual(supportedFiles(fbU, id).files, fbU.boards[id].codec.sources);
+	assert.ok(supportedFiles(fbU, id).files.length > 0);
+	assert.match(vendorfile.describe(opened, fbU, id)[0], /with the codec, but RadioFoundry has no recipe for this build yet \(used\)$/);
+	// no offer to send it: its maker publishes it, and the receiving service takes no file of this container
+	assert.equal(vendorfile.analysisCandidate(opened, fbU, id), null);
+	assert.equal(vendorfile.offerFile({ path: u.entry.name, data }, fbU, "unmapped"), null);
+	// picked on another radio's page it is that radio's file
+	assert.deepEqual(pickProblem(await vendorfile.openVendorFile("x.bin", data, fbU, keyed.flash.board), keyed.flash.board),
+		{ problem: "other-radio", file: "x.bin", board: id, known: u.entry.name });
+	// the extract a merge would run refuses it with rfoundry's sentence
+	await assert.rejects(stockfw.extract(data, null, fbU, fbU.profiles, id), (e) => e.code === "unmapped" && e.message === u.message);
+	// the maker's bootloader file: no radio's firmware, with its own sentence
+	const boot = bin(T.boot.file);
+	const b = await vendorfile.identifyFile(boot, fbReal, id);
+	assert.deepEqual([b.board, b.problem, b.why], [null, "not-vendor", T.boot.message]);
+	const bootOpened = await vendorfile.openVendorFile("boot.bin", boot, fbReal, id);
+	assert.equal(pickProblem(bootOpened, id).problem, "not-vendor");
+	assert.equal(vendorfile.analysisCandidate(bootOpened, fbReal, id), null);
+	assert.ok(vendorfile.describe(bootOpened, fbReal, id)[0].includes(T.boot.message));
+});
+
+test("a keep on a read protected radio is void: no Read Unprotect and no Install until the codec has a source or the user leaves it out", withRoute, async (tc) => {
+	const clock = ownClock(tc);
+	// the void state: the reason, the way back to the codec step and "Install without the codec", nothing else
+	const toVoid = async (state = {}, radioState = "stock") => {
+		const r = await routed(radioState);
+		const p = routedPage(r, { decision: r.kept, ...state });
+		const box = dfuse.writeView();
+		box.isConnected = true;
+		assert.ok(text(box).includes(`board ${r.board.name}, codec mode: keep\n`));
+		r.fake.enterBootloader();
+		await p.got.forward.click();
+		return { r, box, ...p };
+	};
+	const isVoid = ({ r, box, got }, key) => {
+		assert.ok(text(box).includes(en[key]), key);
+		assert.equal(got.forward, null, "nothing to go on with");
+		for (const k of ["protected_title", "unprotect_go", "confirm", "not_protected"]) assert.ok(!text(box).includes(en[`flash.dfuse.${k}`]), k);
+		assert.ok(!byText(box, "flash.write.go") && !byText(box, "flash.dfuse.unprotect_go"));
+		assert.ok(byText(box, "flash.nocodec.back") && byText(box, "flash.dfuse.install_no_codec"));
+		assert.ok(!text(box).includes("codec mode:"), "the plan that will not run is not shown");
+		assert.deepEqual([r.fake.unprotects, r.fake.erased, r.fake.writes], [0, [], []]);
+	};
+	// whatever made the keep: a radio that reported its codec (a remembered probe, an update), or Keep forced
+	for (const state of [{}, { requested: KEEP }, { decision: "forced" }]) {
+		const probeLess = state.decision === "forced";
+		const v = await toVoid(probeLess ? {} : state);
+		if (probeLess) {
+			// rebuilt with a forced Keep on a radio taken to run its original firmware
+			const forced = decideCodec(v.r.board, v.r.manifest, { requested: KEEP, runsStock: true });
+			assert.deepEqual([forced.mode, forced.expectCodec], [KEEP, false]);
+			const p = routedPage(v.r, { decision: forced, requested: KEEP });
+			const box = dfuse.writeView();
+			await p.got.forward.click();
+			Object.assign(v, { box, ...p });
+		}
+		isVoid(v, "flash.dfuse.codec_erased");
+		// back to the codec step: the loader is let go, a forced Keep is dropped, the step before this one is drawn
+		const step = v.state.step;
+		await byText(v.box, "flash.nocodec.back").click();
+		assert.deepEqual([v.got.renders, v.state.step, v.state.requested], [1, step - 1, null]);
+		assert.equal(v.r.fake.unprotects, 0);
+	}
+	// with the stock file picked, or a copy of the codec saved from the radio, the keep becomes a merge, said beside
+	// the new plan, and the Read Unprotect is offered. The saved copy comes first. The page still holds the report that
+	// made the keep (S.now): the decision is made again without the radio's word, as rfoundry's settle_keep makes it
+	for (const [what, state, mode] of [["the stock file", (r) => ({ stock: r.stock }), "merge"], ["a saved copy", (r) => ({ savedCodec: r.saved }), "merge_saved"],
+		["both", (r) => ({ stock: r.stock, savedCodec: r.saved }), "merge_saved"]]) {
+		const r = await routed("stock");
+		const now = { kind: "rfoundry", probe: { board: r.board.debuglink_names[0], codec: r.board.codec.id } };
+		const { got, state: st } = routedPage(r, { decision: r.kept, now, ...state(r) });
+		const box = dfuse.writeView();
+		box.isConnected = true;
+		r.fake.enterBootloader();
+		await got.forward.click();
+		assert.equal(st.decision.mode, MERGE, what);
+		assert.equal(st.decision.source === "saved", mode === "merge_saved", what);
+		assert.ok(text(box).includes(en[`flash.codec.mode.${mode}`]) && text(box).includes(en[st.decision.whyKey]), what);
+		assert.ok(text(box).includes(`board ${r.board.name}, codec mode: merge\n`), what);
+		assert.ok(text(box).includes(en["flash.dfuse.protected_title"]) && !text(box).includes(en["flash.dfuse.codec_erased"]), what);
+		assert.equal(got.decisions, 1, what);
+		await unprotectAndReenter(r, got, box, clock);
+		await got.forward.click();
+		assert.equal(got.next, 1, what);
+		assert.ok(holdsCodec(r), what);
+		assert.equal((await probe(new Link(r.fake.serialStream()))).codec, r.board.codec.id, what);
+	}
+	// Keep forced with a file at hand stays a keep, and void: the user asked for it, and decides again
+	const forced = await toVoid({ requested: KEEP });
+	forced.state.stock = forced.r.stock;
+	isVoid(forced, "flash.dfuse.codec_erased");
+	const again = await routed("stock");
+	const pg = routedPage(again, { decision: again.kept, requested: KEEP, stock: again.stock });
+	const bx = dfuse.writeView();
+	again.fake.enterBootloader();
+	await pg.got.forward.click();
+	isVoid({ r: again, box: bx, got: pg.got }, "flash.dfuse.codec_erased");
+	// a stock file that fails its check when the merge takes the codec from it: refused with nothing erased
+	const bad = await routed("stock");
+	const damaged = bad.sim.stock.slice();
+	damaged[damaged.length - 1] ^= 1;
+	const bp = routedPage(bad, { decision: bad.kept, stock: { ...bad.stock, data: damaged } });
+	const bbox = dfuse.writeView();
+	bad.fake.enterBootloader();
+	await bp.got.forward.click();
+	assert.match(text(bbox), /unknown stock file/);
+	assert.equal(text(bp.got.forward), en["flash.write.connect"]);
+	assert.equal(bp.state.decision, bad.kept, "the decision is not changed by a file that gives nothing");
+	assert.deepEqual([bad.fake.unprotects, bad.fake.erased], [0, []]);
+});
+
+test("Install without the codec: asked once more, then the codec's sectors are erased and left blank and nothing is written there", withRoute, async (tc) => {
+	const clock = ownClock(tc);
+	const r = await routed("stock");
+	const { got, state } = routedPage(r, { decision: r.kept });
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	r.fake.enterBootloader();
+	await got.forward.click();
+	const without = () => byText(box, "flash.dfuse.install_no_codec");
+	assert.ok(without().className.includes("btn-danger"));
+	// "stay": nothing changes
+	got.answer = "stay";
+	await without().click();
+	assert.deepEqual([got.asked, got.forward, state.decision], [1, null, r.kept]);
+	assert.ok(text(box).includes(en["flash.dfuse.codec_erased"]));
+	// "back": the dialog's own way to the codec step
+	got.answer = "back";
+	await without().click();
+	assert.deepEqual([got.asked, got.renders], [2, 1]);
+	assert.equal(state.decision, r.kept);
+	// "go": the plan erases the codec's sectors, and the loader's answer stands: this radio is still read protected
+	state.step++;
+	r.fake.enterBootloader();
+	const box2 = dfuse.writeView();
+	box2.isConnected = true;
+	await got.forward.click();
+	got.answer = "go";
+	await byText(box2, "flash.dfuse.install_no_codec").click();
+	assert.deepEqual([state.decision.mode, state.decision.expectCodec], [BLANK, false]);
+	assert.equal(got.plans.at(-1).mode, BLANK);
+	assert.ok(text(box2).includes(`board ${r.board.name}, codec mode: blank\n`) && text(box2).includes("ERASE, left blank"));
+	assert.ok(text(box2).includes(en["flash.dfuse.protected_title"]) && !text(box2).includes(en["flash.dfuse.codec_erased"]));
+	assert.deepEqual([r.fake.unprotects, r.fake.erased], [0, []], "nothing was erased by the answer");
+	await unprotectAndReenter(r, got, box2, clock);
+	const asked = got.asked;
+	await got.forward.click();
+	assert.equal(got.asked, asked, "confirmed once, not again at Install");
+	assert.equal(got.next, 1);
+	assert.deepEqual(r.fake.flash.subarray(0, r.image.length), r.image);
+	for (const s of r.secs) {
+		assert.ok(r.fake.erased.includes(s.addr));
+		assert.ok(within(r, s).every((x) => x === 0xFF), "blank");
+		assert.ok(!r.fake.writes.some(([a]) => a >= s.addr && a < s.addr + s.size), "no block sent there");
+	}
+	assert.deepEqual(r.fake.violations, []);
+	// RadioFoundry runs without its codec, and the done step was told not to expect one
+	assert.equal((await probe(new Link(r.fake.serialStream()))).codec, "absent");
+	assert.equal(state.decision.expectCodec, false);
+});
+
+test("a keep on a radio with a vector table stands: the codec's sectors are not sent and are byte for byte as before", withRoute, async () => {
+	const r = await routed("rfoundry");
+	const { got, state } = routedPage(r, { decision: r.kept, now: { kind: "rfoundry", probe: { board: r.board.debuglink_names[0], codec: r.board.codec.id } } });
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	assert.ok(text(box).includes(`never erased or written: codec sector(s) ${r.secs.map((s) => s.index).join(", ")}`));
+	r.fake.enterBootloader();
+	const before = r.secs.map((s) => within(r, s).slice());
+	await got.forward.click();
+	assert.ok(text(box).includes(en["flash.dfuse.not_protected"]));
+	assert.equal(text(got.forward), en["flash.write.go"]);
+	await got.forward.click();
+	assert.deepEqual([got.next, got.asked], [1, 0]);
+	assert.equal(state.decision, r.kept);
+	for (const [i, s] of r.secs.entries()) {
+		assert.ok(!r.fake.erased.includes(s.addr) && !r.fake.writes.some(([a]) => a >= s.addr && a < s.addr + s.size));
+		assert.deepEqual(within(r, s), before[i]);
+	}
+	assert.deepEqual(r.fake.flash.subarray(0, r.image.length), r.image);
+	assert.equal((await probe(new Link(r.fake.serialStream()))).codec, r.board.codec.id);
+	// a codec known to be missing, kept as selected: Install asks once more, and writes on "go" only
+	const none = await routed("rfoundry-nocodec");
+	const probed = { board: none.board.debuglink_names[0], codec: "absent" };
+	const missing = decideCodec(none.board, none.manifest, { probe: probed, requested: KEEP });
+	assert.deepEqual([missing.mode, missing.expectCodec], [KEEP, false]);
+	const np = routedPage(none, { decision: missing, requested: KEEP });
+	const nbox = dfuse.writeView();
+	none.fake.enterBootloader();
+	await np.got.forward.click();
+	assert.equal(text(np.got.forward), en["flash.write.go"], "a vector table: the keep stands");
+	np.got.answer = "stay";
+	await np.got.forward.click();
+	assert.deepEqual([np.got.asked, np.got.next, none.fake.erased], [1, 0, []]);
+	np.got.answer = "go";
+	await np.got.forward.click();
+	assert.deepEqual([np.got.asked, np.got.next], [2, 1]);
+	assert.ok(none.secs.every((s) => !none.fake.erased.includes(s.addr)));
+	assert.ok(text(nbox).length > 0);
+});
+
+test("the restart into the loader after the codec step: the keep is settled by the loader it reached, as after the keys", withRoute, async () => {
+	const r = await routed("rfoundry");
+	const flash = { ...realRadio.flash, bootloader_restart: true, bootloader_restart_hint: HINT };
+	const { got, state } = routedPage(r, { radio: { ...realRadio, flash }, decision: r.kept }, { restartWait: quick,
+		dropSerial: async () => { got.dropped = (got.dropped || 0) + 1; state.link = null; } });
+	state.link = new Link(r.fake.serialStream(), { timeout: 50 });
+	state.now = { kind: "rfoundry", probe: await probe(state.link), uid: toHex(r.fake.uid) };
+	assert.equal(state.now.probe.codec, r.board.codec.id, "the decision rests on what the running radio reported");
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	assert.ok(text(box).includes(en["flash.dfuse.restart_offer"]));
+	const before = r.secs.map((s) => within(r, s).slice());
+	await restartButton(box).click();
+	assert.deepEqual([r.fake.mode, r.fake.reboots.length, got.dropped], ["bootloader", 1, 1]);
+	await got.forward.click();
+	assert.ok(text(box).includes(en["flash.dfuse.not_protected"]));
+	assert.equal(text(got.forward), en["flash.write.go"]);
+	await got.forward.click();
+	assert.deepEqual([got.next, got.asked], [1, 0]);
+	assert.equal(state.decision, r.kept);
+	for (const [i, s] of r.secs.entries()) assert.deepEqual(within(r, s), before[i]);
+	assert.deepEqual(r.fake.flash.subarray(0, r.image.length), r.image);
+});
+
+test("a radio without a vector table did not finish its last install: a keep is void there too, and a merge runs again whole", withRoute, async () => {
+	// erased and not protected: the reason is the unfinished install, and the way on is offered at once
+	const r = await routed("blank");
+	const { got, state } = routedPage(r, { decision: r.kept });
+	const box = dfuse.writeView();
+	box.isConnected = true;
+	r.fake.enterBootloader();
+	await got.forward.click();
+	assert.ok(text(box).includes(en["flash.dfuse.codec_unknown"]) && !text(box).includes(en["flash.dfuse.codec_erased"]));
+	assert.equal(got.forward, null);
+	assert.ok(!byText(box, "flash.write.go"));
+	await byText(box, "flash.dfuse.install_no_codec").click();
+	assert.equal(state.decision.mode, BLANK);
+	assert.equal(text(got.forward), en["flash.write.go"], "not protected: Install, no Read Unprotect");
+	await got.forward.click();
+	assert.deepEqual([got.next, r.fake.unprotects], [1, 0]);
+	assert.ok(r.secs.every((s) => r.fake.erased.includes(s.addr) && within(r, s).every((x) => x === 0xFF)));
+
+	// an update that keeps the codec, cut after its erases: the vector table is gone, the codec's sectors untouched. The
+	// next Connect can't tell that from a cut merge, so the keep is void; with the copy saved from the radio the codec
+	// is written again
+	const u = await routed("rfoundry");
+	const up = routedPage(u, { decision: u.kept, savedCodec: u.saved });
+	const ubox = dfuse.writeView();
+	ubox.isConnected = true;
+	u.fake.enterBootloader();
+	await up.got.forward.click();
+	assert.equal(text(up.got.forward), en["flash.write.go"]);
+	const whole = u.secs.map((s) => within(u, s).slice());
+	const execute = u.fake.execute.bind(u.fake);
+	u.fake.execute = (c) => {
+		if (c.kind !== "write") return execute(c);
+		u.fake.mode = "off";	// the cable goes at the first block
+	};
+	await up.got.forward.click();
+	u.fake.execute = execute;
+	assert.equal(up.got.next, 0);
+	assert.ok(noVectors(u), "no vector table");
+	u.secs.forEach((s, i) => assert.deepEqual(within(u, s), whole[i], "the codec's sector was not touched"));
+	assert.equal(text(up.got.forward), en["flash.write.connect"]);
+	u.fake.enterBootloader();
+	await up.got.forward.click();
+	assert.equal(up.state.decision.mode, MERGE);
+	assert.equal(up.state.decision.source, "saved");
+	assert.ok(text(ubox).includes(en["flash.codec.mode.merge_saved"]) && text(ubox).includes(`board ${u.board.name}, codec mode: merge\n`));
+	await up.got.forward.click();
+	assert.equal(up.got.next, 1);
+	assert.ok(holdsCodec(u) && u.secs.every((s) => u.fake.erased.includes(s.addr)));
+	// a cut during the erases. Before the first one ran nothing changed: the vector table is there and the keep stands.
+	// After it the vector table is gone, and the keep is void
+	for (const [at, stands] of [[0, true], [1, false]]) {
+		const c = await routed("rfoundry");
+		const cp = routedPage(c, { decision: c.kept });
+		const cbox = dfuse.writeView();
+		c.fake.enterBootloader();
+		await cp.got.forward.click();
+		const before = c.fake.flash.slice(), go = c.fake.execute.bind(c.fake);
+		let erases = 0;
+		c.fake.execute = (cmd) => {
+			if (cmd.kind !== "erase" || erases++ !== at) return go(cmd);
+			c.fake.mode = "off";	// the cable goes before this erase runs
+		};
+		await cp.got.forward.click();
+		c.fake.execute = go;
+		assert.equal(cp.got.next, 0, `cut at erase ${at}`);
+		assert.equal(c.fake.erased.length, at);
+		if (stands) assert.deepEqual(c.fake.flash, before, "nothing changed");
+		c.secs.forEach((sec) => assert.deepEqual(within(c, sec), before.subarray(sec.addr - c.board.rom_base, sec.addr - c.board.rom_base + sec.size)));
+		c.fake.enterBootloader();
+		await cp.got.forward.click();
+		assert.equal(noVectors(c), !stands);
+		assert.equal(text(cbox).includes(en["flash.dfuse.codec_unknown"]), !stands, `cut at erase ${at}`);
+		assert.equal(cp.got.forward === null, !stands);
+		if (stands) assert.equal(text(cp.got.forward), en["flash.write.go"]);
+	}
+	// without a copy or a file the same cut leaves the void state, with nothing more erased
+	const n = await routed("rfoundry");
+	const np = routedPage(n, { decision: n.kept });
+	const nbox = dfuse.writeView();
+	n.fake.enterBootloader();
+	await np.got.forward.click();
+	const run = n.fake.execute.bind(n.fake);
+	n.fake.execute = (c) => {
+		if (c.kind !== "write") return run(c);
+		n.fake.mode = "off";
+	};
+	await np.got.forward.click();
+	n.fake.execute = run;
+	n.fake.enterBootloader();
+	const erased = n.fake.erased.length;
+	await np.got.forward.click();
+	assert.ok(text(nbox).includes(en["flash.dfuse.codec_unknown"]));
+	assert.deepEqual([np.got.forward, n.fake.erased.length], [null, erased]);
+});
+
+test("a merge cut anywhere in the codec's sectors leaves no vector table, and the same install again writes them whole", withRoute, async () => {
+	const probeOf = async (r) => (await probe(new Link(r.fake.serialStream()))).codec;
+	const first = await routed("blank");
+	const merge = { mode: MERGE, source: "stock", why: "test", whyKey: "flash.codec.why.merge_selected", expectCodec: true };
+	routedPage(first, { decision: merge, stock: first.stock });
+	const plan = dfuse.installPlan(first.board, { manifest: first.manifest, image: first.image }, merge, first.sim.codecSegments, first.sim.profile);
+	// the block numbers, in the order sent, of the codec sectors' first block, one in the middle, the descriptor's
+	// block (the last of them) and the one before it
+	const order = [...plan.writeOrder.slice(0, -1).flatMap((st) => st.blocks.map(([n]) => st.sector.addr + (n - FIRST_BLOCK) * BLOCK)),
+		...plan.writeOrder.at(-1).blocks.slice(1).map(([n]) => first.board.app_base + (n - FIRST_BLOCK) * BLOCK), first.board.app_base];
+	const codecAt = order.map((a, i) => [a, i]).filter(([a]) => first.secs.some((s) => a >= s.addr && a < s.addr + s.size)).map(([, i]) => i);
+	const d = first.sim.fb.descriptor, desc = order.indexOf(d.addr + d.len - BLOCK);
+	assert.equal(desc, codecAt.at(-1), "the descriptor's block is the last one sent to the codec's sectors");
+	for (const k of [codecAt[0], codecAt[Math.floor(codecAt.length / 2)], desc - 1, desc]) {
+		const r = await routed("blank");
+		const { got } = routedPage(r, { decision: merge, stock: r.stock });
+		const box = dfuse.writeView();
+		box.isConnected = true;
+		await until(() => got.forward);
+		r.fake.enterBootloader();
+		await got.forward.click();
+		const execute = r.fake.execute.bind(r.fake);
+		let blocks = 0;
+		r.fake.execute = (c) => {
+			if (c.kind !== "write" || blocks++ !== k) return execute(c);
+			r.fake.mode = "off";	// the cable goes before block k is programmed
+		};
+		await got.forward.click();
+		r.fake.execute = execute;
+		assert.equal(got.next, 0, `cut at block ${k}`);
+		assert.ok(noVectors(r), `cut at block ${k}: no vector table`);
+		assert.ok(!holdsCodec(r));
+		// the descriptor's place is blank until the last block of its sector: no descriptor over a half-written codec
+		assert.ok(r.fake.flash.subarray(d.addr - r.board.rom_base, d.addr - r.board.rom_base + d.len).every((x) => x === 0xFF), `cut at block ${k}: no descriptor`);
+		assert.ok(text(box).includes(en["flash.write.failed"].split("{error}")[0].trim()));
+		// again: the loader shows a blank start, the merge stands and runs whole
+		r.fake.enterBootloader();
+		await got.forward.click();
+		assert.equal(text(got.forward), en["flash.write.go"]);
+		await got.forward.click();
+		assert.equal(got.next, 1, `after a cut at block ${k}`);
+		assert.ok(holdsCodec(r));
+		assert.deepEqual(r.fake.violations, []);
+		assert.equal(await probeOf(r), r.board.codec.id);
+	}
+	// a codec block the loader takes with no error and does not program: the read-back finds it, and the vector table
+	// is not written
+	const s = await routed("blank");
+	const sp = routedPage(s, { decision: merge, stock: s.stock });
+	dfuse.writeView();
+	await until(() => sp.got.forward);
+	s.fake.enterBootloader();
+	await sp.got.forward.click();
+	const at = s.sim.codecSegments[0][0] - (s.sim.codecSegments[0][0] % BLOCK);	// the block the code starts in
+	const run = s.fake.execute.bind(s.fake);
+	s.fake.execute = (c) => {
+		if (c.kind === "write" && s.fake.addr === at) { s.fake.state = 5; return; }	// dfuDNLOAD-IDLE, nothing programmed
+		return run(c);
+	};
+	await sp.got.forward.click();
+	assert.equal(sp.got.next, 0);
+	const said = String(sp.got.finished[0]?.message).match(/^the flash at (0x[0-9A-F]{8}) does not read back.*The vector table is not written yet/);
+	assert.ok(said && Number(said[1]) >= at && Number(said[1]) < at + BLOCK, `${sp.got.finished[0]?.message} (the block at ${hex(at)})`);
+	assert.ok(noVectors(s));
+	assert.equal(s.fake.exited, false);
+});
+
+test("the write step reached without the codec step's decision decides from what the radio reported, or refuses with nothing asked", withRoute, async () => {
+	// a radio that reported its codec: kept
+	const r = await routed("rfoundry");
+	const { got, state } = routedPage(r, { now: { kind: "rfoundry", probe: { board: r.board.debuglink_names[0], codec: r.board.codec.id } } });
+	const box = dfuse.writeView();
+	assert.equal(state.decision.mode, KEEP);
+	assert.equal(got.decisions, 1);
+	assert.equal(text(got.forward), en["flash.write.connect"]);
+	assert.ok(text(box).includes("codec mode: keep"));
+	// nothing known and no file: no plan, no Connect
+	const n = await routed("stock");
+	const np = routedPage(n);
+	const nbox = dfuse.writeView();
+	assert.match(text(nbox), /cannot determine whether the radio has its codec/);
+	assert.equal(np.got.forward, null);
+	assert.ok(!text(nbox).includes(en["flash.write.then_connect"]));
+	// a board without a codec route has no decision and needs none
+	const p = await installable("rfoundry");
+	const pp = page(p.fake, p.sim, p.image, p.manifest);
+	dfuse.writeView();
+	assert.deepEqual([pp.state.decision, pp.got.decisions], [undefined, 0]);
+	assert.equal(dfuse.voidKeep(null, { stage: "protected", blank: false }), null);
+});
+
+// rfoundry's settle_keep, row for row
+test("the keep is settled by what the loader says: void when protected or without a vector table, and only a keep", () => {
+	const loaders = [["protected", false], ["ready", true], ["ready", false]];
+	const want = { [KEEP]: ["flash.dfuse.codec_erased", "flash.dfuse.codec_unknown", null], [MERGE]: [null, null, null], [BLANK]: [null, null, null] };
+	for (const [mode, keys] of Object.entries(want))
+		loaders.forEach(([stage, blank], i) => assert.equal(dfuse.voidKeep({ mode }, { stage, blank }), keys[i], `${mode}, ${stage}, blank ${blank}`));
+	for (const k of ["flash.dfuse.codec_erased", "flash.dfuse.codec_unknown", "flash.dfuse.install_no_codec", "flash.nocodec.back"]) assert.ok(en[k], k);
+});
+
+// A maker's file picked where the RadioFoundry image goes is never written as one: a file of either container, whole
+// or cut, and a maker's bootloader file
+test("a maker's firmware file is not an image: both containers, a cut file and a bootloader file are refused", async () => {
+	const refusal = /this is a stock firmware file, not a RadioFoundry image/;
+	const files = [["a file of the first container", bin("stock.bin"), stockfw.OUTSECURITY]];
+	const T = fx.twin;
+	if (T) {
+		files.push(["a file of the second container", bin(T.file), stockfw.TWIN], ["the same, cut short", bin(T.file).subarray(0, 0x4000), stockfw.TWIN],
+			["the same, padded", new Uint8Array([...bin(T.file).subarray(0, 0x8000), ...new Uint8Array(4096)]), stockfw.TWIN],
+			["a bootloader file of that container", bin(T.boot.file), stockfw.TWIN]);
+	}
+	for (const b of [board, realBoard, fbReal.boards[keyed.flash.board]]) {
+		for (const [what, data, kind] of files) {
+			assert.equal(stockfw.containerKind(data, fbReal), kind, what);
+			const fbB = { ...fbReal, boards: { ...fbReal.boards, [b.id]: b } };
+			await assert.rejects(async () => verify(await forDevBuild(b, data), data, fbB, b.id), refusal, `${what} for ${b.id}`);
+			// and where the page has not been told which radio the image is for
+			await assert.rejects(async () => verify(await forDevBuild(b, data), data, fbB), refusal, `${what}, no radio named`);
+		}
+	}
+	// an image is none of them: its words at those offsets are vector table entries
+	const image = testImage(8192);
+	assert.equal(stockfw.containerKind(image, fbReal), null);
+	assert.equal((await verify(await forDevBuild(board, image), image, fb, board.id)).id, board.id);
+	// the page's own-image picker makes the same test before it takes a file for an image (app.js needs the DOM)
+	const src = readFileSync(fileURLToPath(new URL("../static/js/flasher/app.js", import.meta.url)), "utf8");
+	const own = src.slice(src.indexOf("async function loadOwnImage("));
+	assert.match(own.slice(0, own.indexOf("\n}\n")), /if \(stockfw\.containerKind\(f\.data, fb\(\)\)\) \{\n\t\tconst st = await pickedStock\(f\);\n\t\tconst kept = stockForRadio\(st\) && !st\.problem;/);
+});
+
+test("the maker's recovery is said in words", async () => {
+	const { state } = page(null, await romSimulation(fb, board.id), new Uint8Array(4), {});
 	state.fakeRadio = null;
 	const el = backendOf(radio).recovery.maker();
 	assert.ok(text(el).includes(en["flash.dfuse.maker_text"]) && text(el).includes(en["flash.dfuse.maker_loader"]));
@@ -1300,6 +2076,18 @@ test("the page registers the backend, practices against the ROM loader, and expe
 	assert.match(src, /new FakeRomRadio\(S\.sim, \{ state: simStock \? "stock" : "rfoundry"/);
 	// practice mode shows a refused restart into the loader, then the restart itself
 	assert.match(src, /new FakeRomRadio\(S\.sim, \{[^}]*restartRefusals: 1 \}\);/);
+	assert.match(src, /S\.sim = \{ \.\.\.\(await romSimulation\(S\.data\.fb, simRadio\.flash\.board\)\), radio: simRadio\.id \};/);
+	// the codec step on this route: its view and what it has go to the backend, the steps are asked for the radio, a
+	// radio without a bootloader key needs none, and an install without a "current firmware" step takes the backend's word
+	assert.match(src, /dfuse\.init\(\{[^}]*notePlan, noteDecision, codecView, confirmNoCodec, stockGivesCodec, savedKept, failureNotice,/);
+	assert.match(src, /backendOf\(S\.radio\)\.steps\(S\.task, \{ recovering: !!S\.recovering, radio: S\.radio \}\)/);
+	const codec = src.slice(src.indexOf("function codecView("));
+	const view = codec.slice(0, codec.indexOf("\n}\n"));
+	assert.match(view, /const noKey = !S\.board\.key_sha256;/);
+	assert.match(view, /const keyStored = !noKey && \(S\.sim \|\| !!S\.key \|\| !!savedKey\(S\.board\)\);\n\t\tconst keyKnown = noKey \|\| keyStored \|\| /);
+	assert.match(view, /const now = S\.now \|\| \(S\.task === "install" && backend\(\)\.installNow \? nowFor\(backend\(\)\.installNow\) : null\);/);
+	assert.match(view, /probe: now\?\.kind === "rfoundry" \? now\.probe : null,\n\t\t\t\tstockInstalled: now\?\.kind === "stock" \? now\.version : null,\n\t\t\t\trunsStock: now\?\.kind === "stock",/);
+	assert.match(view, /!openfwRecognizedNow\(\) && !backend\(\)\.installNow\) parts\.push\(h\("p", \{ class: "small muted" \}, t\("flash\.codec\.or_connect"\)\)\);/);
 	assert.match(src, /const hasCodec = \(\) => !S\.radio\?\.flash\.codec_none;/);
 	const done = src.slice(src.indexOf("function doneView("));
 	assert.match(done.slice(0, done.indexOf("\n}\n")), /const good = !hasCodec\(\) \|\| /);

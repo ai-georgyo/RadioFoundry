@@ -269,6 +269,8 @@ def flash_boards():
 		sys.path.pop(0)
 	out = {"format": "rfoundry-flash-boards/1", "manifest_format": manifest.FORMAT, "boards": {}, "profiles": {},
 	       "known_files": dict(stockfw.KNOWN_FILES), "no_codec_files": dict(stockfw.NO_CODEC_FILES),
+	       # a maker's files that are known by name and hold a codec nobody has mapped (stockfw.js unmapped)
+	       "unmapped_files": dict(stockfw.UNMAPPED_FILES),
 	       "magic": stockfw.MAGIC.decode(), "header_len": stockfw.HEADER_LEN,
 	       "key_len": stockfw.KEY_LEN, "codec_sig": stockfw.CODEC_SIG, "single_segment": stockfw.SINGLE_SEGMENT,
 	       "descriptor": {"addr": stockfw.DESC_ADDR, "len": stockfw.DESC_LEN, "magic": stockfw.DESC_MAGIC,

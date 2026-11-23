@@ -15,7 +15,7 @@ import uuid
 from . import __version__, boards, bootkey, codecsave, debuglink, manifest as mf, plan as planmod, state, stockfw
 from . import dfu as dfumod
 from . import release as relmod
-from . import origversion, protect, serialflash, stubroute
+from . import origversion, protect, serialflash, stubroute, twinfw
 
 EPILOG = """\
 examples:
@@ -30,9 +30,11 @@ examples:
   rfoundry flash rfoundry-dm1801pro-v26.11.bin --port /dev/ttyUSB0
                                                         a DM-1801 Pro over its programming cable (the stub when it
                                                         runs RadioFoundry with stub entry, else Baofeng's update mode)
-  rfoundry flash IMAGE --unprotect                      a radio installed through its processor's own bootloader,
+  rfoundry flash IMAGE --unprotect --stock FILE         a radio installed through its processor's own bootloader,
                                                         the first time: remove its read protection, which erases
-                                                        the original firmware and its bootloader for good
+                                                        the original firmware, its bootloader and its codec for
+                                                        good, and write the codec from the maker's firmware file
+                                                        (--codec none instead of --stock: install without a codec)
 
 entering the bootloader: rfoundry says how for the radio (the steps are each radio's own, as on the web flasher).
 A radio that runs RadioFoundry and is installed through its processor's own bootloader is restarted into it by
@@ -213,6 +215,9 @@ def check_options(board, man, opts):
 def stock_board(stock, board_id):
     """The board a stock file or flash readout is for (its codec profile), checked against --board when both are
     given."""
+    why = stockfw.unmapped(stock) or stockfw.boot_file(stock)
+    if why:		# a maker's file that is no codec source says why, instead of the question which radio it is for
+        raise UsageError(why)
     try:
         prof = stock_codec(stock, None)[0] if not stockfw.is_container(stock) else stockfw.find_profile(
             stock, board=boards.get(board_id).id if board_id else None)
@@ -257,6 +262,14 @@ def load_image(args, board_hint):
     if image.startswith(stockfw.MAGIC):
         raise UsageError("%s is an official Baofeng/TYT firmware file, not a RadioFoundry image. Use it with "
                          "--stock to provide the codec" % img_path)
+    # a maker's file in the container that holds the image twice (twinfw.py), whole, cut or padded: without this a
+    # local build's --board would have it written to the radio as it is
+    kind = twinfw.header_kind(image)
+    if kind == "boot":
+        raise UsageError("%s is a maker's bootloader file, not a RadioFoundry image" % img_path)
+    if kind:
+        raise UsageError("%s is a maker's firmware file, not a RadioFoundry image. Use it with --stock to provide "
+                         "the codec" % img_path)
     if os.path.exists(man_path):
         m = mf.load(man_path)
         board = mf.verify(m, image, board_hint)
@@ -275,7 +288,7 @@ def load_image(args, board_hint):
             if slot else ""))
         return hint, m, app, slot
     try:
-        merged = stockfw.split_merged(image)
+        merged = merged_codec(image, hint)
     except stockfw.StockError as e:
         raise UsageError("%s: %s" % (img_path, e))
     if merged:
@@ -297,6 +310,30 @@ def load_image(args, board_hint):
     mf.verify(m, image, board.id)
     warn("no manifest: treating %s as a local %s build (nothing to verify it against)" % (img_path, board.name))
     return board, m, image, None
+
+
+def merged_codec(image, board=None):
+    """stockfw.split_merged for an image without a manifest. board: the radio --board names, or None. With it the image
+    is tried against that radio's stock profiles first, and only they can call it damaged: the word a codec starts
+    with is an ordinary function prologue, and a plain image that holds it where another radio's layout puts its code
+    is not a merged image of that radio. Another radio's merged image still matches window by window (SHA-256), also
+    where the two radios' layouts start at one address, and is refused by name in load_image."""
+    if board is None:
+        return stockfw.split_merged(image)
+    own = {h: p for h, p in stockfw.PROFILES.items() if p["board"] == board.id}
+    damaged = None
+    try:
+        got = stockfw.split_merged(image, own) if own else None
+    except stockfw.StockError as e:
+        got, damaged = None, e		# the signature word where this radio's layout has it, and none of its codecs
+    if got is None:
+        try:
+            got = stockfw.split_merged(image)	# every window of another radio's codec: that radio's merged image
+        except stockfw.StockError:
+            got = None		# only the signature word, at another radio's address: a plain image of this board
+    if got is None and damaged is not None:
+        raise damaged
+    return got
 
 
 # The image a simulation makes up when it is given none: over one sector on every board, and not a whole number of
@@ -351,11 +388,17 @@ def get_key(args, board, stock, sim_key=None):
         if prof is not None and prof["board"] != board.id:
             raise UsageError("%s is a firmware file for the %s, not the %s"
                              % (prof["name"], boards.get(prof["board"]).name, board.name))
-        say("key      deriving the %s bootloader key from the stock file" % board.name)
-        try:
-            return dfumod.check_key(stockfw.derive_key(stock, board.key_sha256), board)
-        except stockfw.StockError as e:
-            raise UsageError(str(e))
+        why = stockfw.unmapped(stock) or stockfw.boot_file(stock)
+        if why:
+            raise UsageError(why)
+        # only the keyed bootloaders' own container is encrypted with the bootloader key; a file in another one
+        # (stockfw.TWIN) gives none, and the key comes from where it comes without a stock file
+        if stockfw.container_kind(stock) == stockfw.OUTSECURITY:
+            say("key      deriving the %s bootloader key from the stock file" % board.name)
+            try:
+                return dfumod.check_key(stockfw.derive_key(stock, board.key_sha256), board)
+            except stockfw.StockError as e:
+                raise UsageError(str(e))
     saved = state.key_path(board.id)
     if os.path.exists(saved):
         say("key      %s" % saved)
@@ -436,6 +479,15 @@ def get_saved_codec(args, board, probe, move=False):
     return Saved(saved.prof, saved.parts, "saved", saved.path, saved.uid)
 
 
+def sim_codec(board, sim_key):
+    """A simulation's codec for the board, from the synthetic stock file of its first stock profile: (profile,
+    segments as the merge writes them). The same every time."""
+    stock_bytes, profiles, _, _ = stockfw.build_synthetic_stock(sim_key, random.Random(7),
+                                                                stockfw.profile_for_board(board.id))
+    prof, csegs = stockfw.extract(stock_bytes, sim_key, profiles)
+    return prof, stockfw.codec_segments(prof, csegs)
+
+
 def codec_from_source(args, board, d, saved, stock, merged=None, sim_key=None):
     """(profile, segments as the merge writes them) for a merge decision d: from the codec read back or saved (d.source
     "saved"), else from the stock file (--stock), else from the codec merged into the image. A stock file is checked
@@ -447,11 +499,10 @@ def codec_from_source(args, board, d, saved, stock, merged=None, sim_key=None):
         return merged[0], merged[1], None
     key = None
     if stock == "synthetic":
-        stock_bytes, profiles, _, _ = stockfw.build_synthetic_stock(sim_key, random.Random(7),
-                                                                    stockfw.profile_for_board(board.id))
-        prof, csegs = stockfw.extract(stock_bytes, sim_key, profiles)
-        return prof, stockfw.codec_segments(prof, csegs), None
-    if stockfw.is_container(stock):
+        return sim_codec(board, sim_key) + (None,)
+    # a bootloader key only for a board whose bootloader has one, from a file in the container that is encrypted
+    # with it: any other file is checked (and refused by its own sentence) without a key
+    if board.key_sha256 and stockfw.container_kind(stock) == stockfw.OUTSECURITY:
         key = get_key(args, board, stock, sim_key)
     prof, csegs = stock_codec(stock, key, board.id)
     if prof["board"] != board.id or prof["codec_profile"] != board.codec.id:
@@ -954,6 +1005,71 @@ def restart_into_bootloader(usb, board, probe, ask=None, log=say, wait_s=RESTART
 # ---------------------------------------------------------------------------------------------------------------
 # commands
 
+# A codec mode only --codec has, for a radio installed through its processor's own bootloader: install without a codec
+NO_CODEC = "none"
+
+
+def sim_running_codec(board, sim):
+    """What a simulated radio that runs RadioFoundry reports for its codec (debuglink.md 3.1), or None for a
+    simulated radio that doesn't run it. rfoundry-refuses, a radio that refuses the restart into its bootloader, runs
+    RadioFoundry with its codec."""
+    if sim == "rfoundry-nocodec":
+        return "absent" if board.has_codec else "none"
+    if sim in ("rfoundry-codec", "rfoundry-refuses"):
+        return board.codec.id if board.has_codec else "none"
+    return None
+
+
+def codec_step(args, board, man, merged, stock, sim, sim_key, hint=""):
+    """The codec step of an install, the same on both USB DFU routes: what the radio says (a probe now, or the one
+    remembered), the codec read back or saved earlier, the decision, and for a merge the codec from its source.
+    Returns (probe, decision, the stock profile whose layout a merge writes, the codec's segments, the bootloader key
+    when a stock file had to be decrypted with it, the saved copy). hint: what a refusal of the decision or of the
+    codec's source ends with (the plain route's way to install without a codec)."""
+    probe = None
+    # the codec: what the radio says, what the user says
+    if sim:
+        name = board.debuglink_names[0]
+        codec = sim_running_codec(board, sim)
+        probe = {"board": name, "git": "00000000", "codec": codec, "port": "sim"} if codec else None
+        if probe:
+            say("radio    (simulated) RadioFoundry running: codec %s" % probe["codec"])
+    else:
+        probe = get_probe(args)
+    if probe and not args.board:
+        pb = boards.from_debuglink_name(probe.get("board") or "")
+        if pb and pb.id != board.id:
+            raise UsageError("the radio is a %s, the image is for the %s: refusing" % (pb.name, board.name))
+    check_options(board, man, resolve_options(args, board, probe))
+    interactive = None if (args.yes or args.dry_run) else ask_yes
+    try:
+        saved = None
+        if not merged and not sim:
+            saved = get_saved_codec(args, board, probe)
+        if merged and args.codec != planmod.KEEP:
+            d = Decision(planmod.MERGE, "the image carries the codec (%s), so it is written from the image"
+                         % merged[0]["codec_profile"],
+                         moves=bool(probe) and probe.get("codec") in board.codec_former)
+        else:
+            d = decide_codec(board, man, args.codec, stock is not None, probe, args.stock_installed, interactive,
+                             have_saved=saved is not None)
+        say("codec    %s: %s" % (d.mode.upper(), d.why))
+        if d.risk:
+            warn(d.risk)
+
+        codec_segs = []
+        codec_prof = None	# the stock profile whose layout the merge writes
+        key = None
+        if d.mode == planmod.MERGE:
+            codec_prof, codec_segs, key = codec_from_source(args, board, d, saved, None if merged else stock, merged,
+                                                            sim_key)
+    except UsageError as e:
+        if not hint:
+            raise
+        raise UsageError("%s. %s" % (e, hint))
+    return probe, d, codec_prof, codec_segs, key, saved
+
+
 def cmd_flash(args):
     sim = args.simulate
     probe = None
@@ -965,6 +1081,10 @@ def cmd_flash(args):
     board, man, image, merged = load_image(args, args.board)
     if args.unprotect and board.family != "dfuse":
         raise UsageError("--unprotect is for a radio installed through its processor's own bootloader; the %s isn't"
+                         % board.name)
+    if args.codec == NO_CODEC and board.family != "dfuse":
+        # on every other route the codec's sectors are left alone (keep) or written (merge), never erased for nothing
+        raise UsageError("--codec none is for a radio installed through its processor's own bootloader; the %s isn't"
                          % board.name)
     if sim == "rfoundry-refuses" and not getattr(board, "bootloader_restart", False):
         raise UsageError("--simulate rfoundry-refuses is for a radio whose firmware restarts into its processor's "
@@ -978,47 +1098,14 @@ def cmd_flash(args):
     if args.route != serialflash.AUTO:
         raise UsageError("--route is for the radios flashed over a programming cable (DM-1801 Pro, DM-32UV) and "
                          "--route stub (radios running RadioFoundry with stub entry)")
-    if board.family == "dfuse":		# a ROM bootloader: no key and no codec step
-        return cmd_flash_dfuse(args, board, man, image)
+    if board.family == "dfuse":		# a ROM bootloader: no key
+        return cmd_flash_dfuse(args, board, man, image, merged)
     stock = load_stock(args)
     if merged and stock is not None:
         say("stock    the image carries the codec, so the stock file only gives the bootloader key")
 
-    # the codec: what the radio says, what the user says
-    if sim:
-        name = board.debuglink_names[0]
-        probe = {"rfoundry-codec": {"board": name, "git": "00000000", "codec": board.codec.id, "port": "sim"},
-                 "rfoundry-nocodec": {"board": name, "git": "00000000", "codec": "absent", "port": "sim"}}.get(sim)
-        if probe:
-            say("radio    (simulated) RadioFoundry running: codec %s" % probe["codec"])
-    else:
-        probe = get_probe(args)
-    if probe and not args.board:
-        pb = boards.from_debuglink_name(probe.get("board") or "")
-        if pb and pb.id != board.id:
-            raise UsageError("the radio is a %s, the image is for the %s: refusing" % (pb.name, board.name))
-    check_options(board, man, resolve_options(args, board, probe))
+    probe, d, codec_prof, codec_segs, key, _ = codec_step(args, board, man, merged, stock, sim, sim_key)
     interactive = None if (args.yes or args.dry_run) else ask_yes
-    saved = None
-    if not merged and not sim:
-        saved = get_saved_codec(args, board, probe)
-    if merged and args.codec != planmod.KEEP:
-        d = Decision(planmod.MERGE, "the image carries the codec (%s), so it is written from the image"
-                     % merged[0]["codec_profile"],
-                     moves=bool(probe) and probe.get("codec") in board.codec_former)
-    else:
-        d = decide_codec(board, man, args.codec, stock is not None, probe, args.stock_installed, interactive,
-                         have_saved=saved is not None)
-    say("codec    %s: %s" % (d.mode.upper(), d.why))
-    if d.risk:
-        warn(d.risk)
-
-    codec_segs = []
-    codec_prof = None	# the stock profile whose layout the merge writes
-    key = None
-    if d.mode == planmod.MERGE:
-        codec_prof, codec_segs, key = codec_from_source(args, board, d, saved, None if merged else stock, merged,
-                                                        sim_key)
 
     p = planmod.make_plan(board, mf.segments(man, image), d.mode, codec_segs,
                           board.merge_windows(codec_prof) if codec_segs else None, vector_last=d.moves)
@@ -1057,6 +1144,8 @@ def cmd_flash(args):
         say("nothing done")
         return 1
     intf = dfumod.open_device(usb, dev, board)
+    if not sim and erases_codec(board, p):
+        state.forget_probe()		# before the first erase: what it says about the codec is no longer true
     started = None if sim else flash_started(args, board, man)
 
     tty = sys.stdout.isatty()
@@ -1097,6 +1186,14 @@ def cmd_flash(args):
             say("note     " + learned_hint(board, learned))
         return 0
     return verify_after(args, board, man, d, learned=learned)
+
+
+def erases_codec(board, p):
+    """True when the plan p erases a codec sector of the board. The remembered probe (state.py) is forgotten before
+    such an install erases anything, not only once it has finished: a probe from before a merge that was cut would
+    have the next run keep a codec that was erased since."""
+    codec = {s.index for s in board.codec_sectors()}
+    return any(s.index in codec for s in p.erase)
 
 
 # After a Read Unprotect the chip erases its whole program flash, then leaves USB (AN3156 5.4, figure 10). How long
@@ -1171,49 +1268,124 @@ def wait_unprotect(usb, board, was, sent):
     return left, back[0] if len(back) == 1 else None
 
 
-def cmd_flash_dfuse(args, board, man, image):
-    """A radio installed through the bootloader in its processor's ROM by plain DfuSe (family dfuse): no key, no
-    codec step. A read-protected chip takes nothing until the protection is removed, and removing it erases the whole
-    program memory: only with --unprotect, confirmed, and the radio is then put in its bootloader a second time.
-    Every request goes to the program flash (alternate setting 0); the option bytes are never selected or written.
+NO_CODEC_HINT = "To install without a codec (FM works, no DMR voice): --codec none"
+
+
+def settle_keep(args, board, d, protected, blank, saved, have_stock):
+    """A keep decision d of a radio installed through its processor's ROM bootloader, once the loader has answered
+    (docs/dev/release.md, the ROM bootloader route). The program flash of these processors has error correction: a
+    flash word that a cut install left half erased or half written can fault when it is read, and RadioFoundry reads
+    the whole codec at every start. So no image is started over a codec sector that an unfinished install may have
+    touched: the sector is left as it is only when the loader shows a radio that is not read protected (protected
+    False) and holds a vector table (blank False), which every install through this route writes last, after all
+    the rest is written and read back. In any other case a keep is void, whatever it rested on (a remembered
+    probe, --codec keep), and is decided again: a merge from the saved copy, else from the stock file, unless
+    --codec keep asked for the keep; else refused, with nothing on the radio changed. Returns d itself when it
+    stands (a merge and an install without a codec write or erase the sector whole: always), else the new decision."""
+    if d.mode != planmod.KEEP or not (protected or blank):
+        return d
+    why = ("the radio's program memory is read protected, and removing the protection erases the codec with "
+           "everything else" if protected else
+           "the radio holds no vector table: its last install did not finish, so its codec sector may be half written")
+    asked = args.codec == planmod.KEEP
+    if saved is not None and not asked:		# before the stock file, as in decide_codec
+        return Decision(planmod.MERGE, "%s; the copy saved from the radio earlier is written" % why, source="saved")
+    if have_stock and not asked:
+        return Decision(planmod.MERGE, "%s; the codec is written from your stock file" % why)
+    raise UsageError("%s. Flash with --stock FILE to write the codec (%s), or with --codec none to install without one "
+                     "(FM works, no DMR voice)" % (why, stock_hint(board)))
+
+
+def cmd_flash_dfuse(args, board, man, image, merged=None):
+    """A radio installed through the bootloader in its processor's ROM by plain DfuSe (family dfuse): no key. A
+    read-protected chip takes nothing until the protection is removed, and removing it erases the whole program
+    memory: only with --unprotect, confirmed, and the radio is then put in its bootloader a second time. Every request
+    goes to the program flash (alternate setting 0); the option bytes are never selected or written.
+
+    A board with a codec route has the codec step of the keyed route (codec_step), --codec none for an install
+    without a codec (the codec's sector erased and left blank), and one step more: a keep is settled once the loader
+    has answered (settle_keep), before anything is asked or erased. A board without one has no codec step.
+
     A radio that runs RadioFoundry is restarted into the bootloader over its debug link where the board's firmware
-    can do that (restart_into_bootloader); everything after the bootloader is found is the same either way."""
+    can do that (restart_into_bootloader), after the codec step and before the loader is asked anything; everything
+    after the bootloader is found is the same either way."""
     sim = args.simulate
-    if args.key or args.stock or args.stock_installed or args.codec != "auto":
-        raise UsageError("the %s has no bootloader key and no codec to keep or write: --key, --stock, "
-                         "--stock-installed and --codec don't apply" % board.name)
-    probe = None if sim else get_probe(args)
-    if probe and not args.board:
-        pb = boards.from_debuglink_name(probe.get("board") or "")
-        if pb and pb.id != board.id:
-            raise UsageError("the radio is a %s, the image is for the %s: refusing" % (pb.name, board.name))
-    check_options(board, man, resolve_options(args, board, probe))
-    # the vector table last (dfu.check_plain): a cut install leaves nothing to start at the next normal power-on
-    p = planmod.make_plan(board, mf.segments(man, image), planmod.KEEP, vector_last=True)
-    # here, not only in Dfu.run: a plan the route refuses must be refused before the read protection is removed
-    dfumod.check_plain(p)
-    say("")
-    say("plan:")
-    for line in p.describe():
-        say("  " + line)
-    say("")
+    sim_key = None
+    if sim:
+        from . import fakedfu
+        sim_key = fakedfu.synthetic_key()
+    d = None			# the codec decision; None: no codec route
+    codec_prof, codec_segs, saved, stock = None, [], None, None
+    if not board.has_codec:
+        if args.key or args.stock or args.stock_installed or args.codec != "auto":
+            raise UsageError("the %s has no bootloader key and no codec to keep or write: --key, --stock, "
+                             "--stock-installed and --codec don't apply" % board.name)
+    elif args.key:
+        raise UsageError("the %s's bootloader has no key: it takes the image as it is" % board.name)
+    else:
+        stock = load_stock(args)
+    if not board.has_codec or args.codec == NO_CODEC:
+        probe = None if sim else get_probe(args)
+        if probe and not args.board:
+            pb = boards.from_debuglink_name(probe.get("board") or "")
+            if pb and pb.id != board.id:
+                raise UsageError("the radio is a %s, the image is for the %s: refusing" % (pb.name, board.name))
+        check_options(board, man, resolve_options(args, board, probe))
+        if board.has_codec:
+            if merged or stock is not None:
+                say("stock    --codec none: the codec in the %s is not written" % ("image" if merged else "stock file"))
+            d = Decision(planmod.BLANK, "asked for: the radio is installed without a codec, and the codec's sector "
+                         "is erased and left blank",
+                         risk="DMR voice will stay off (FM works) until you flash with --stock", expect_codec=False)
+            say("codec    %s: %s" % (d.mode.upper(), d.why))
+            warn(d.risk)
+    else:
+        if merged and stock is not None:
+            say("stock    the image carries the codec, so the stock file is not used")
+        probe, d, codec_prof, codec_segs, _, saved = codec_step(args, board, man, merged, stock, sim, sim_key,
+                                                                hint=NO_CODEC_HINT)
+
+    def planned():
+        # the vector table last (dfu.check_plain): a cut install leaves nothing to start at the next normal power-on
+        p = planmod.make_plan(board, mf.segments(man, image), d.mode if d else planmod.KEEP, codec_segs,
+                              board.merge_windows(codec_prof) if codec_segs else None, vector_last=True)
+        # here, not only in Dfu.run: a plan the route refuses must be refused before the read protection is removed
+        dfumod.check_plain(p)
+        say("")
+        say("plan:")
+        for line in p.describe():
+            say("  " + line)
+        say("")
+        return p
+
+    p = planned()
     if args.dry_run:
         say("dry run: nothing was erased or written")
+        if d is not None:
+            say("note     an install asks the radio's bootloader first, before anything is erased: the codec's sector "
+                "is left as it is only on a radio that is not read protected and holds a vector table. On any other "
+                "radio it is written whole or erased whole, and a keep is refused or becomes a merge")
         return 0
 
     before = None
     restarted = False
     if sim:
-        from . import fakedfu
-        # stock: every byte in use and read protected, as the maker's firmware leaves the chip; blank: erased
-        dev = fakedfu.FakeRomUsbDevice(board, None if sim == "blank" else fakedfu.rom_flash(board, random.Random(3)),
-                                       protected=sim == "stock")
+        # stock: every byte in use and read protected, as the maker's firmware leaves the chip; blank: erased. A board
+        # with a codec route running RadioFoundry: an image with its vector table, and its codec sector holding the
+        # synthetic codec as a merge places it (rfoundry-codec, rfoundry-refuses) or nothing (rfoundry-nocodec)
+        if board.has_codec and sim_running_codec(board, sim):
+            flash = fakedfu.rom_installed(board, random.Random(3),
+                                          sim_codec(board, sim_key)[1] if sim != "rfoundry-nocodec" else ())
+        else:
+            flash = None if sim == "blank" else fakedfu.rom_flash(board, random.Random(3))
+        dev = fakedfu.FakeRomUsbDevice(board, flash, protected=sim == "stock")
         usb = fakedfu.FakeUsb([dev])
         before = bytes(dev.flash)
         if sim.startswith("rfoundry") and getattr(board, "bootloader_restart", False):
             # RadioFoundry runs and answers on its debug link; the bootloader is on USB only once the radio restarts
             # into it. rfoundry-refuses: the board's rule says not now, so the keys are used after all
-            running = fakedfu.FakeRunning(board, dev, refuse=5 if sim == "rfoundry-refuses" else None)
+            running = fakedfu.FakeRunning(board, dev, refuse=5 if sim == "rfoundry-refuses" else None,
+                                          codec=sim_running_codec(board, sim))
             say("radio    (simulated) RadioFoundry running on its debug link")
             if restart_into_bootloader(usb, board, running.probe(), sleep=lambda s: None) is None:
                 running.enter_by_hand()
@@ -1230,9 +1402,9 @@ def cmd_flash_dfuse(args, board, man, image):
 
     def connect(dev):
         check_rom_loader(usb, dev, board)
-        d = dfumod.Dfu(dev, dfumod.open_device(usb, dev, board), log=lambda m: say("         " + m),
-                       sleep=(lambda s: None) if sim else time.sleep)
-        return d, d.probe_protected(board)
+        loader = dfumod.Dfu(dev, dfumod.open_device(usb, dev, board), log=lambda m: say("         " + m),
+                            sleep=(lambda s: None) if sim else time.sleep)
+        return loader, loader.probe_protected(board)
 
     started = None
     unprotected = writing = False
@@ -1240,9 +1412,19 @@ def cmd_flash_dfuse(args, board, man, image):
     # a radio rfoundry restarted into its bootloader stays there when nothing is written
     left_there = " (the radio is in its bootloader: switch it off and on to start it normally)" if restarted else ""
     try:
-        d, protected = connect(dev)
+        loader, protected = connect(dev)
         if protected:
             say("radio    the program memory is read protected")
+        if d is not None:
+            # the keep, settled by what the loader says, before any question and before anything is erased
+            settled = settle_keep(args, board, d, protected, loader.start_blank, saved, stock is not None)
+            if settled is not d:
+                d = settled
+                say("codec    %s: %s" % (d.mode.upper(), d.why))
+                # a file that is refused is refused here, with nothing erased
+                codec_prof, codec_segs, _ = codec_from_source(args, board, d, saved, stock, None, sim_key)
+                p = planned()
+        if protected:
             if not args.unprotect:
                 raise UsageError(unprotect_text(board))
             try:		# checked before the question is asked; Dfu.read_unprotect checks it again
@@ -1255,11 +1437,13 @@ def cmd_flash_dfuse(args, board, man, image):
                     "firmware and its bootloader included, and can't be undone"):
                 say("nothing done (not confirmed: answer the question on a terminal, or pass --yes)")
                 return 1
+            if not sim and board.has_codec:
+                state.forget_probe()		# the codec it may report is erased with everything else
             started = None if sim else flash_started(args, board, man)
             # where the bootloader is on the bus now: after the erase the radio comes back as another device
             was = argparse.Namespace(bus=getattr(dev, "bus", None), address=getattr(dev, "address", None))
             sent = time.monotonic()
-            d.read_unprotect(board)
+            loader.read_unprotect(board)
             unprotected = True
             say("erasing  the radio removes its read protection and erases its program memory, and its screen shows "
                 "nothing: leave it on and connected until rfoundry says to switch it off (at least %d s)" % least)
@@ -1290,10 +1474,13 @@ def cmd_flash_dfuse(args, board, man, image):
                         raise UsageError("%s\n%s: %s" % (e, how, again))
                     # the last word on the screen before the write: not "switch off"
                     say("radio    in its bootloader again: leave it on and connected while it is written")
-            d, protected = connect(dev)
+            loader, protected = connect(dev)
             if protected:
                 raise dfumod.DfuError("the program memory is still read protected after the Read Unprotect: nothing "
                                       "was written. Switch the radio off, %s" % again)
+            if d is not None and d.mode == planmod.KEEP:
+                # never reached: a keep on a protected radio was settled above, before the protection was removed
+                raise dfumod.DfuError("internal: a codec sector would be kept after a Read Unprotect")
         else:
             if args.unprotect:
                 say("radio    the program memory is not read protected: nothing to remove")
@@ -1301,10 +1488,12 @@ def cmd_flash_dfuse(args, board, man, image):
                                                         default=True):
                 say("nothing done" + left_there)
                 return 1
+        if not sim and erases_codec(board, p):
+            state.forget_probe()		# before the first erase, as on the keyed route
         if started is None and not sim:
             started = flash_started(args, board, man)
         writing = True
-        d.run(p, None, _progress("blocks"))
+        loader.run(p, None, _progress("blocks"))
     except BaseException as e:
         flash_finished(started, e)
         if isinstance(e, (dfumod.DfuError, UsageError)) or not isinstance(e, Exception):
@@ -1325,13 +1514,13 @@ def cmd_flash_dfuse(args, board, man, image):
         return report_rom_simulation(board, p, dev, before, unprotected)
     if args.no_verify:
         return 0
-    return verify_after(args, board, man, None)
+    return verify_after(args, board, man, d)
 
 
 def report_rom_simulation(board, p, dev, before, unprotected):
-    """The simulated ROM bootloader after a plain run: the written sectors hold the plan's blocks and 0xFF, every other
-    sector is as it was (erased after a Read Unprotect), the image was started, and nothing was sent that a ROM
-    bootloader must never get."""
+    """The simulated ROM bootloader after a plain run: the written sectors hold the plan's blocks and 0xFF, a codec
+    sector the plan leaves blank reads 0xFF everywhere, every other sector is as it was (erased after a Read
+    Unprotect), the image was started, and nothing was sent that a ROM bootloader must never get."""
     say("sim      erased %s; %d blocks written; read unprotect %s; leave %s"
         % (", ".join(hex(a) for a in dev.erased), dev.blocks, "yes" if dev.unprotected else "no",
            "yes" if dev.exited else "NO"))
@@ -1341,13 +1530,16 @@ def report_rom_simulation(board, p, dev, before, unprotected):
         if st.action == "write":
             want = b"".join(b for _, b in st.blocks)
             want += b"\xFF" * (s.size - len(want))
-        elif unprotected:
+        elif st.action == "erase" or unprotected:
             want = b"\xFF" * s.size
         else:
             want = before[s.addr - board.rom_base:s.end - board.rom_base]
         if dev.read(s.addr, s.size) != want:
             say("sim      sector %d content MISMATCH" % s.index)
             ok = False
+        elif st.action in ("keep", "erase"):
+            say("sim      codec sector %d %s" % (s.index, "unchanged" if st.action == "keep" and not unprotected
+                                                 else "blank"))
     for n, what in ((len(dev.violations), "bytes programmed over non-erased flash"),
                     (len(dev.partial), "blocks that were not whole flash words"),
                     (len(dev.refused), "commands the bootloader doesn't have"),
@@ -1775,9 +1967,14 @@ def cmd_key(args):
         if not stockfw.is_container(stock):
             raise UsageError("%s is not a stock firmware file: the key comes from the stock file or the radio, never "
                              "from a flash readout" % args.stock)
+        why = stockfw.unmapped(stock) or stockfw.boot_file(stock)
+        if why:
+            raise UsageError(why)
         what = stockfw.identify(stock)
         say("stock    %s" % (what or "unknown file (trying anyway)"))
         board = stock_board(stock, args.board)
+        if not board.key_sha256:	# its stock file is encrypted with a key of the file's own, which is no bootloader's
+            raise UsageError("the %s's bootloader has no key: it takes the image as it is" % board.name)
         prof = stockfw.PROFILES.get(stockfw.sha256(stock))
         if prof is not None and stockfw.codec_only(prof):
             raise UsageError(stockfw.codec_only(prof))
@@ -1805,7 +2002,12 @@ def cmd_merge(args):
     board = stock_board(stock, args.board)
     key = None
     prof = stockfw.PROFILES.get(stockfw.sha256(stock))
-    if stockfw.is_container(stock) and not (prof and stockfw.codec_only(prof)):	# a codec-only file: its own key
+    if args.key and not board.key_sha256:
+        raise UsageError("the %s's bootloader has no key: it takes the image as it is" % board.name)
+    # the bootloader key decrypts a file in the keyed bootloaders' own container, for a board that has such a key. A
+    # codec-only file and a file in a container with a key of its own (stockfw.TWIN) are decrypted with their own
+    if (board.key_sha256 and stockfw.container_kind(stock) == stockfw.OUTSECURITY
+            and not (prof and stockfw.codec_only(prof))):
         key = (dfumod.load_key(args.key, board) if args.key
                else dfumod.check_key(stockfw.derive_key(stock, board.key_sha256), board))
     # a release image comes with its manifest: check the two belong together
@@ -1854,9 +2056,11 @@ def build_parser():
     f.add_argument("--release", metavar="VERSION", help="download this release (v26.11, or latest) from GitHub")
     f.add_argument("--manifest", help="the manifest, when it isn't next to the image")
     f.add_argument("--repo", default=relmod.DEFAULT_REPO, help="GitHub repository (default %(default)s)")
-    f.add_argument("--codec", choices=("auto", "keep", "merge"), default="auto",
+    f.add_argument("--codec", choices=("auto", "keep", "merge", NO_CODEC), default="auto",
                    help="auto (default): keep the radio's codec when that is known to be safe, else write it from "
-                        "--stock; keep: never touch the codec sectors; merge: write the codec from --stock")
+                        "--stock; keep: never touch the codec sectors; merge: write the codec from --stock; none (a "
+                        "radio installed through its processor's own bootloader): install without a codec, the "
+                        "codec's sector erased and left blank (FM works, no DMR voice)")
     f.add_argument("--stock", metavar="FILE", help="the radio's stock firmware file (codec source; also gives the key), "
                    "or a read of the radio's program flash while it ran its stock firmware (stub/stubtool.py PORT "
                    "--progmem FILE; the codec only)")
@@ -1883,9 +2087,10 @@ def build_parser():
     f.add_argument("--simulate", nargs="?", const="stock",
                    choices=("stock", "rfoundry-codec", "rfoundry-nocodec", "rfoundry-refuses", "blank"),
                    help="run against a fake radio in this state (testing: no USB; default stock, read protected where "
-                        "a maker ships it so); --stock synthetic gives a synthetic stock file, and with --board and no "
-                        "image a made-up image is flashed. rfoundry-refuses: a radio whose firmware restarts into its "
-                        "processor's bootloader when asked, and refuses just now")
+                        "a maker ships it so; blank: erased, no vector table); --stock synthetic gives a synthetic "
+                        "stock file, and with --board and no image a made-up image is flashed. rfoundry-refuses: a "
+                        "radio whose firmware restarts into its processor's bootloader when asked, and refuses just "
+                        "now (with a codec route: one that runs RadioFoundry with its codec)")
     common(f)
     f.set_defaults(fn=cmd_flash)
 
