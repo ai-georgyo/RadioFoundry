@@ -44,12 +44,19 @@ What the radio refuses until it is calibrated or checked:
 | FCC filing Y4GDR7810S-2 (2022, the OEM's model): grant, Part 90 report | transmit ranges, power levels |
 | ST: RM0433 (reference manual), DS12110 (datasheet), ES0392 (errata), AN2606 (ROM bootloader), AN3156 (USB DFU protocol) | the MCU |
 | Skyworks SKY72310 datasheet, AKM AK2365A datasheet, Winbond W25Q256JV datasheet, TI SN74HC595 datasheet, the HR_C6000 notes in [hrc6000-registers.md](hrc6000-registers.md) | the chips |
+| [calibration-cs7000p.md](calibration-cs7000p.md), the maker's factory calibration, written up from a separate analysis under [CLEANROOM.md](../CLEANROOM.md) | where the factory table and the maker's other records are on the data flash, the table's layout and coding, what each field drives, and what a reader must refuse |
 
-Not known from any of them, and so not in the code: the first LO's side, the HR_C6000 registers that set the
-reference oscillator's control voltage, every calibration value, the display controller, the channel selector's
-code, and where the maker's firmware keeps anything on the data flash (the order of the six function keys was in
-none of them either; it has since been read on a radio, 9.4). Section
-16 lists all of it.
+Not known from the schematic, the manuals, the filing or the datasheets, and so not in the code: the first LO's
+side, the HR_C6000 registers that set the reference oscillator's control voltage, every calibration value, the display
+controller, the channel selector's code, and where the maker's firmware keeps anything on the data flash (the order
+of the six function keys was in none of them either; it has since been read on a radio, 9.4). Section 16 lists all
+of it.
+
+The calibration and the maker's data on the flash are now known in part, from
+[calibration-cs7000p.md](calibration-cs7000p.md): the maker's factory table is at 0x001000-0x0011FF, one per unit;
+the maker's device information is at 0x000080-0x00021F, and its records at 0x01E000, 0x01E400 and 0x01F000 (that
+page's 2.1 and 2.4). The rest of the maker's data (its codeplug, fonts, voice prompts) is not mapped. The firmware
+does not read the table yet (section 13.1).
 
 The OEM model is Shenzhen Covalue's DR7810S-2. The service manual and the FCC filing describe that model and its
 STM32F405 predecessor; where they disagree with the schematic, the schematic wins.
@@ -1106,19 +1113,32 @@ codeplug tool's addresses hold.
 | Open-firmware "EEPROM" image | 0x000000 | 64 KB | |
 | Settings ring | 0x011000 | 8 sectors | foreign-guarded |
 | Journal | 0x019000 | 2 sectors | foreign-guarded |
-| **Board sector** | 0x01E000 | 1 sector | reserved for a per-unit calibration record (section 13.3). In the hole no CPS address maps to. Written by nothing yet |
+| **Board sector** | 0x01E000 | 1 sector | reserved for a per-unit calibration record (section 13.3), in the hole no CPS address maps to. **Not free**: it holds two of the maker's records, and the maker's program writes and erases it (10.3). Nothing of ours has written it; the record moves to a blank sector before anything does |
 | Open-firmware "flash" image | 0x020000 to 0xE00000 | | |
 | Native codeplug | 0xE00000 | 1 MB | |
 | Staging | 0xF00000 | 256 KB | |
 | 0x1000000 to 0x1FFFFFF | not in the map | 16 MB | read for the backup only |
-| CPS calibration window | none | | no CPS calibration format is known for this radio |
+| CPS calibration window | none | | `calibration_size` 0. That window is a copy an open-firmware CPS may write ([cps-protocol.md](cps-protocol.md) 2.3), so the maker's factory table, inside the EEPROM image (10.3), is not one |
 
 ### 10.3 The maker's data, and the claim
 
-The maker's firmware has used this chip. **No region of the data flash is known to hold factory data**: nothing in
-any allowed source says where the maker's firmware keeps its codeplug, its calibration, its fonts or its voice
-data. So the registry lists no protected region (`[[flash.protect]]` has no entry), and the port protects the chip
-another way:
+The maker's firmware has used this chip. What it keeps there is known in part
+([calibration-cs7000p.md](calibration-cs7000p.md) 2):
+
+| Range | The maker's | Against the map |
+|---|---|---|
+| 0x000080-0x00021F | device information | sector 0 of the open-firmware EEPROM image, with that image's device info, callsign and DMR ID |
+| 0x001000-0x0011FF | the **factory calibration table**, 512 bytes, one copy, no checksum (section 13.1) | sector 1 of the EEPROM image, with its DTMF settings (0x1400) and APRS configurations (0x1588); inside CPS EEPROM part 1 |
+| 0x01E000, 0x01E400 | two 0x33-byte records; the maker's program reads, writes and erases the sector | the board sector (10.2) |
+| 0x01F000 | a 0x80-byte record | the same hole as the board sector |
+
+Where it keeps its codeplug (that page's 5.12 names one record of it), fonts and voice data is not mapped. The
+registry lists no protected region yet (`[[flash.protect]]` has no entry), and nothing in the firmware keeps these
+ranges from being written after the claim: a CPS write of EEPROM part 1 from an image made on another radio, or built
+fresh, replaces the table (that page's 2.4). A DTMF or APRS edit keeps the table's bytes but erases and programs the
+whole sector again; the journal ([settings-store.md](settings-store.md) 4) finishes a rewrite cut by a power loss at
+the next start, so a cut loses the table only if the journal's copy is lost too. The port protects the chip another
+way:
 
 - The board builds with `-DSTORAGE_CLAIM_FIRST=1` ([settings-store.md](settings-store.md) 5). The settings region is
   **foreign on every unit, at every start, whether or not it is blank**, until the owner claims it over the debug
@@ -1144,8 +1164,10 @@ another way:
   and the backup is the only copy.
 - A valid record of RadioFoundry's proves one claim. A radio that went back to the maker's firmware and returns is
   "ours" at the first start if a record survived: the backup is then the owner's job again.
-- The board sector is written only when it is blank or carries the tree's own magic. The maker's calibration,
-  wherever it is, is never read, interpreted or written.
+- Nothing writes the board sector yet. A writer may touch it only when it is blank or carries the tree's own magic,
+  a rule the maker's records there fail. The firmware does not interpret the maker's table yet (a backup reads it as
+  bytes), and no code of ours aims a write at its range; the risks above come from writes into the same sector: a
+  CPS write of EEPROM part 1 and the storage layer's whole-sector rewrites.
 
 One thing the maker's documents do show: its programming software loads a repeater database to 0x780000 through
 0xFB3FFF of this chip ("Loading the GPS Database"). 0x780000 to 0xF3FFFF of that range is inside the map's
@@ -1190,18 +1212,26 @@ overwritten: tuning data, fonts, voice prompts, pictures, the model and serial n
 
 ### 13.1 What exists
 
-None is known and none is guessed. The maker's alignment data is somewhere on the data flash in a format no
-allowed source describes. The port has model tables in source (`rfcal_cs7000p.c`), all unset:
+Each unit carries the maker's factory table, 512 bytes at 0x001000-0x0011FF of the data flash (10.3). Its layout,
+coding, interpolation and the checks a reader must make are in [calibration-cs7000p.md](calibration-cs7000p.md). The
+maker's program checks none of its values (that page's 2.2), and no transmission has been made with any of them.
 
-| Value | Now | Supplied by |
-|---|---|---|
-| PA drive per power level and frequency | 9 points, 400 to 520 MHz in 15 MHz steps, all `CS7000P_CAL_UNSET` | [power-calibration.md](../testing/power-calibration.md) with `tools/power_cal.py --allow-rf`, a wattmeter and a current-limited supply |
-| PA floor (the largest drive with no output) | 0 | the same procedure's zero point |
-| FM and DMR modulation pairs (4:0x45 / 0x46) | unset | deviation on a service monitor or the SDR bench ([dmr-bench.md](../testing/dmr-bench.md)) |
-| Reference offset and bias | 0, unverified | a frequency counter on the carrier, then the reference trim for the unit |
-| Front-end tuning DAC per frequency | mid scale | a sensitivity sweep with `chip_reg` 3:0 |
-| Squelch thresholds, RSSI offset | the plain mappings | a signal generator |
-| DMR key-up constants | a fixed lead | `tools/bench/pa_cal.py`, after the PA rows, the DMR modulation pair and the reference offset are built in (it stops while the view's `tx_drive` is 0), with `CS7000P_BENCH_DMR_TX=1` |
+**The firmware does not read the table yet.** The port has model tables in source (`rfcal_cs7000p.c`), all unset,
+and every value below is still the model's. The last column is the maker's field for the same value:
+
+| Value | Now | Supplied by | In the maker's table ([calibration-cs7000p.md](calibration-cs7000p.md)) |
+|---|---|---|---|
+| PA drive per power level and frequency | 9 points, 400 to 520 MHz in 15 MHz steps, all `CS7000P_CAL_UNSET` | [power-calibration.md](../testing/power-calibration.md) with `tools/power_cal.py --allow-rf`, a wattmeter and a current-limited supply | 0x074 (low) and 0x06C (high) at f_tx, 8-bit codes (16 c in the 12-bit DAC): 5.1 |
+| PA floor (the largest drive with no output) | 0 | the same procedure's zero point | none: the maker ramps from 0 |
+| FM and DMR modulation pairs (4:0x45 / 0x46) | unset | deviation on a service monitor or the SDR bench ([dmr-bench.md](../testing/dmr-bench.md)) | FM 0x0C4 / 0x0CC, DMR 0x0B4 / 0x0BC, at f_tx, one pair for both bandwidths: 5.3 |
+| Reference offset and bias | 0, unverified | a frequency counter on the carrier, then the reference trim for the unit | trim A 0x0DC (receive, FM transmit) and trim B 0x174 (DMR transmit, and the bias in two DMR receive paths), offset binary. Under the port's 4:0x25 hold the bias equivalent is inferred, and the coding under the maker's 0x0E is open: 5.2 |
+| Front-end tuning DAC per frequency | mid scale | a sensitivity sweep with `chip_reg` 3:0 | 0x044 at f_rx: 5.1 |
+| Squelch thresholds, RSSI offset | the plain mappings | a signal generator | squelch 0x04C-0x064 (levels 1 and 9, open and close), RSSI 0x040 / 0x041: 5.7, 5.8 |
+| Sub-audio depth | `CS7000P_CTCSS_DEPTH`, one value | deviation on a service monitor | CTCSS 0x084 / 0x08C, DCS 0x094: 5.5 |
+| DMR key-up constants | a fixed lead | `tools/bench/pa_cal.py`, after the PA rows, the DMR modulation pair and the reference offset are built in (it stops while the view's `tx_drive` is 0), with `CS7000P_BENCH_DMR_TX=1` | burst timing 0x0EC-0x14C, from the RF TX interrupt; the time base and the place of the interrupt are not established: 5.4 |
+
+The maker's sequences around these values are not copied, only the values
+([calibration-cs7000p.md](calibration-cs7000p.md) 6.5): the port's order of section 7.5 stands.
 
 ### 13.2 What is refused, and the bench override
 
@@ -1247,10 +1277,11 @@ Everything in section 7.5 about the first transmission applies.
 
 ### 13.3 The planned unit record
 
-Per-unit values will go in a record of the tree's own, not in a vendor format: the magic `RFC1`, a version, a
-length, a CRC-16, then byte rows read with `drivers/cal/calblock`, in the board sector at 0x01E000
-(`CS7000P_STORE_CAL_ADDR`). A unit record will win over the model table. This change reserves the sector and
-states the form. The reader and the writer (a bench tool over a debug link board-record command) come with the
+Per-unit values the tree measures itself (a power meter's corrections, for one) will go in a record of the tree's own,
+not in a vendor format: the magic `RFC1`, a version, a length, a CRC-16, then byte rows read with
+`drivers/cal/calblock`, in the board sector (`CS7000P_STORE_CAL_ADDR`). A unit record will win over the model table.
+The sector reserved today, 0x01E000, is the maker's (10.3): the record moves to a blank sector in the hole before
+anything writes it. The reader and the writer (a bench tool over a debug link board-record command) come with the
 first measured radio; the field widths are fixed then.
 
 ---
@@ -1332,8 +1363,8 @@ the source comments use.
 | 17 | The 96 MHz bus clock's fifth harmonic at 480 MHz; 48 MHz harmonics | receiver desense on some channels | A sensitivity or noise floor scan across the band with the CPU running |
 | 18 | Software entry to the ROM loader from a running image: the supply is already configured; the loader's USART pins are PA2 (an op-amp output here) and PB10 (a selector contact to ground) on every loader but 0x91 (0x92: not stated), PA9 and PB14 (the chip's data output) on 0x91. Whether the HR_C6000 releases its data output while deselected. Whether the backup register keeps the request with the RTC's kernel clock off. (A plain software reset with SK1 held would reach the same loader on the same pins: every one waits for SK1's release first, 2.5) | updates without the key | On by default under the rule (`board_rom_entry_ok()`, `romentry_cs7000p.h`): loader 0x91, or PB10 high. To check on a radio: that the entry reaches the loader at all, PB10 and PB12 as section 4.2 step 5. SK1 at power-on stays available |
 | 19 | The ROM's Leave into the image (the stack pointer rule, peripherals as the loader left them); a normal power-on with the first sector erased starts nothing (2.5) | the radio needs a power cycle after flashing; an install cut short needs the loader and the same install | Observe. The tools already say to switch the radio off and on, and write the vector table last |
-| 20 | **Read Unprotect erases the maker's bootloader and programs.** Whether anything unit-specific is in the MCU's flash is not stated (the maker's recovery reloads a bootloader, programs, a default codeplug and a language file, which suggests not) | a radio that cannot go back to stock, or lost calibration, before RadioFoundry is of use | All before the first RadioFoundry install: the owner saves the codeplug with the maker's CPS and notes Radio Info while the stock firmware runs (and saves the tuning data, if the maker's tuner software can export it: no document says), runs the maker's documented recovery once (it loads the maker's default codeplug), confirms the radio works on the maker's firmware, and writes the saved codeplug back |
-| 21 | The maker's data in the 32 MB flash (codeplug, calibration, fonts): places unknown | a claim of the settings region can overwrite it | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
+| 20 | **Read Unprotect erases the maker's bootloader and programs.** Whether anything unit-specific is in the MCU's flash is not stated (the maker's recovery reloads a bootloader, programs, a default codeplug and a language file, which suggests not). The factory calibration is not: the maker's program reads it from the data flash only ([calibration-cs7000p.md](calibration-cs7000p.md) 2.1) | a radio that cannot go back to stock, or lost calibration, before RadioFoundry is of use | All before the first RadioFoundry install: the owner saves the codeplug with the maker's CPS and notes Radio Info while the stock firmware runs (and saves the tuning data, if the maker's tuner software can export it: no document says), runs the maker's documented recovery once (it loads the maker's default codeplug), confirms the radio works on the maker's firmware, and writes the saved codeplug back |
+| 21 | The maker's data in the 32 MB flash: the calibration table, the device information and three records are located (10.3); the codeplug, fonts and voice data are not | a claim of the settings region can overwrite it | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
 | 22 | The state the maker's firmware leaves the flash chip in (`ADP`, block protection, a suspended operation); whether the write enable latch stays set after `C5h` | `ADP` set: the part starts in 4-byte mode (handled). Block protection: writes fail. A suspended operation: the part is not used until a power cycle | `board.flash`; the status registers through the debug link's flash info |
 | 23 | The GPS module's rate and sentences; the antenna shared with the radio | no position | `board.gps_baud` |
 | 24 | PHONE_DET, BAT_DET, IC611, the unlabeled expander output, Bluetooth, the accelerometer, the motor | none: not used | recorded for later work |
