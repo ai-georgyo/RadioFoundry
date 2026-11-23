@@ -42,13 +42,18 @@ static void ref_offset(hrc6000_if_t *h, uint32_t hz)
 {
 	const hrc6000_if_cfg_t *c = h->cfg;
 	int8_t off = c->ref_offset != NULL ? c->ref_offset(c->ctx, hz) : 0;
-	count(h, hrc6000_set_ref_offset(h->dev, off, false));
-	if (c->ref_dac_hold) {
-		// The held DAC's level, in place of the bias the driver's call wrote (the offset alone, near 0 V)
-		uint16_t level = (uint16_t)(REF_DAC_MID + off);
-		count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
-		count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
+	if (!c->ref_dac_hold) {
+		count(h, hrc6000_set_ref_offset(h->dev, off, false));
+		return;
 	}
+	// The held DAC's level, written here and not through the driver's call: that one puts the offset alone in the
+	// bias first, which is the DAC near 0 V and a kick of several kHz to the reference at every receive entry (a
+	// retune, each wake of the receiver's battery saving) until the level follows. The low byte and the high bits
+	// change in two writes; the high bits last, so the level passes through values at most one byte's range away
+	uint16_t level = (uint16_t)(REF_DAC_MID + off);
+	count(h, hrc_write(h->dev, 4, 0x04, (uint8_t)off));
+	count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
+	count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
 }
 
 // The receive I/Q order for hz. write: also on the chip, if the order changes (4:0x01 holds the same value in every

@@ -295,8 +295,11 @@ static void test_fm(void)
 	// a retune in FM: the offset, the hold again, nothing of DMR
 	regs[4][0x25] = 0x0E;	// as a set-up elsewhere would leave it
 	uint32_t w45 = n_w[0x45];
+	uint32_t w47 = n_w[0x47], w48 = n_w[0x48];
 	hrc6000_if_retune(&h, HZ_B);
 	CHECK(ref_held(9) && h.tuned_hz == HZ_B && held(regs[4][0x25]));
+	// written once each, straight to the level: never the offset alone on the way (the DAC near 0 V)
+	CHECK(n_w[0x47] == w47 + 1 && n_w[0x48] == w48 + 1);
 	CHECK(n_w[0x45] == w45 && n_restart == 0);
 	CHECK(regs[4][0x01] == 0xB0);
 
@@ -623,13 +626,13 @@ static void test_failures(void)
 	hrc6000_if_fm_tx_end(&h);
 	fail_w = 0x47;
 	hrc6000_if_retune(&h, HZ_B);
-	CHECK(h.errors == 4);	// the driver's write and the held level's
+	CHECK(h.errors == 3);
 	fail_w = -1;
 #if CONFIG_DMR
 	hrc6000_if_mode(&h, true, HZ_B);
 	fail_w = 0x46;
 	hrc6000_if_retune(&h, HZ_A);
-	CHECK(h.errors == 5 && n_restart == 1);	// the receiver still searches again on the new channel
+	CHECK(h.errors == 4 && n_restart == 1);	// the receiver still searches again on the new channel
 	fail_w = -1;
 #endif
 }
