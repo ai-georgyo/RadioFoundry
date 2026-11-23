@@ -1169,9 +1169,10 @@ def base_problem(app_base, flash_base, family):
 
 def region_end_problem(sectors, region_end, flash_end, family):
     """Why the application region (the linker script's FLASH) can't end at region_end on a board written through the
-    MCU's ROM loader, or None. That route erases whole sectors and refuses one past the region (rfoundry dfu.check_plain,
-    the web flasher's checkPlain), so a sector across the region's end would be erased past it, into the flash the
-    build keeps unused because the loader must not be asked to erase it. sectors: [(index, address, size)]."""
+    MCU's ROM loader, or None. That route erases whole sectors and refuses one past the region unless it is one of the
+    board's codec sectors, written with the codec or erased (rfoundry dfu.check_plain, the web flasher's checkPlain), so
+    a sector across the region's end would be erased past it, into the flash the build keeps for the codec or unused.
+    sectors: [(index, address, size)]."""
     if FAMILIES[family].get("loader") != "rom" or region_end == flash_end or any(a == region_end for _, a, _ in sectors):
         return None
     return ("the linker script's FLASH ends at 0x%08X, inside a sector: the plain DfuSe route would erase that sector "
@@ -2551,41 +2552,63 @@ def self_test():
                "check finds a ROM loader's board given a key_sha256 (%s)" % got[:2])
             with open(rp, "w", encoding="utf-8") as f:
                 f.write(r_good)
-        # a radio with no codec route: the views say so, and nothing of a codec stands beside the reason
-        nb = next((b for b, x in reg.items() if x.codec_none is not None), None)
-        views = rfoundry_view(reg)["boards"]
+        # a radio with no codec route: the views say so, and nothing of a codec stands beside the reason. The registry
+        # need not hold such a radio, so the fixture makes one: a board whose codec comes from a stock file, with
+        # nothing of a codec in its linker scripts, gets the reason in place of its route and no codec to keep
+        nb = next((b for b, x in sorted(reg.items()) if x.data["codec"].get("stock") and not x.symbols
+                   and not x.platform.data["codec_symbols"]), None)
+        nreg, why = reg, "the fixture's radio: no codec route is known"
+        if nb is None:
+            print("note no board with a stock-file codec to make a radio with no codec route from: its cases don't run")
+        else:
+            np_, n_good = os.path.join(tmp, "boards", nb, "board.toml"), toml_of(nb)
+            rj = os.path.join(tmp, RFOUNDRY_JSON)
+            n_none = re.sub(r"(?ms)^\[codec\]\n.*?(?=^\[|\Z)", '[codec]\nnone = "%s"\n\n' % why,
+                            re.sub(r"(?m)^keep_codec = true$", "keep_codec = false", n_good))
+            with open(np_, "w", encoding="utf-8") as f:
+                f.write(n_none)
+            with open(rj, encoding="utf-8") as f:
+                rj_good = f.read()
+            nreg = load(tmp)
+            with open(rj, "w", encoding="utf-8") as f:
+                f.write(dumps(rfoundry_view(nreg)))
+            ok(nreg[nb].codec_none == why and check(tmp) == [],
+               "a board made a radio with no codec route is consistent (%s: %s)" % (nb, check(tmp)[:2]))
+        views = rfoundry_view(nreg)["boards"]
         # the site's view also lists the survey's radios without a board: a survey without rows, for this call only
         sv = os.path.join(tmp, registry_docs.SURVEY)
         os.makedirs(os.path.dirname(sv), exist_ok=True)
         with open(sv, "w", encoding="utf-8") as f:
             f.write("## Summary table\n\n| Radio | MCU | Port |\n|---|---|---|\n")
-        site = site_view(reg, tmp)["boards"]
+        site = site_view(nreg, tmp)["boards"]
         os.remove(sv)
-        ok(all(v["codec_none"] == reg[b].codec_none for b, v in views.items())
-           and len(site) == len(reg) and all(r["flash"]["codec_none"] == reg[r["id"]].codec_none for r in site),
+        ok(all(v["codec_none"] == nreg[b].codec_none for b, v in views.items())
+           and len(site) == len(nreg) and all(r["flash"]["codec_none"] == nreg[r["id"]].codec_none for r in site),
            "the views carry codec_none for every board: the reason, or None with a codec route")
         # the restart into the bootloader: both views say the same, a hint only beside the restart, and only a board
         # installed through its MCU's ROM bootloader has it
-        boot = {b: reg[b].data["flash"]["bootloader"] for b in reg}
+        boot = {b: nreg[b].data["flash"]["bootloader"] for b in nreg}
         ok(all(v["bootloader_restart"] is bool(boot[b].get("restart")) and v["bootloader_restart_hint"]
                == boot[b].get("restart_hint") for b, v in views.items())
            and all((r["flash"]["bootloader_restart"], r["flash"]["bootloader_restart_hint"])
                    == (views[r["id"]]["bootloader_restart"], views[r["id"]]["bootloader_restart_hint"]) for r in site)
-           and all(reg[b].rom_loader and (v["bootloader_restart"] or v["bootloader_restart_hint"] is None)
+           and all(nreg[b].rom_loader and (v["bootloader_restart"] or v["bootloader_restart_hint"] is None)
                    for b, v in views.items() if v["bootloader_restart"] or v["bootloader_restart_hint"]),
            "the views carry the restart into the bootloader and its hint the same, on ROM loader boards only")
-        if nb:
+        if nb is not None:
             v = views[nb]
-            ok(v["codec_none"] and v["codec_tool"] is None and v["codec_stock"] == [] and v["codec"]["id"] is None
-               and v["codec"]["windows"] is None and v["codec_slot"] is None and not v["keep_codec_supported"],
+            ok(v["codec_none"] == why and v["codec_tool"] is None and v["codec_stock"] == []
+               and v["codec"]["id"] is None and v["codec"]["windows"] is None and v["codec_slot"] is None
+               and not v["keep_codec_supported"],
                "a radio with no codec route: no tool, no stock files, no windows in the view")
-            np_, n_good = os.path.join(tmp, "boards", nb, "board.toml"), toml_of(nb)
             with open(np_, "w", encoding="utf-8") as f:
-                f.write(re.sub(r"(?m)^keep_codec = false$", "keep_codec = true", n_good))
+                f.write(re.sub(r"(?m)^keep_codec = false$", "keep_codec = true", n_none))
             got = check(tmp)
             ok(any("no codec to keep" in p for p in got), "check finds keep_codec beside codec.none (%s)" % got[:2])
-            with open(np_, "w", encoding="utf-8") as f:
-                f.write(n_good)
+            for fp, text in ((np_, n_good), (rj, rj_good)):
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(text)
+            ok(check(tmp) == [], "the fixture is as it was after the no-route cases (%s)" % check(tmp)[:2])
         # a data flash past 16 MB on a board built with three address bytes
         sb = next((b for b, x in reg.items() if 0 < x.data["flash"]["backup"]["spi_size"] <= SPI_NOR_ADDR3_MAX
                    and SPI_NOR_ADDR4_DEF not in x.mk.get("MCU_DEFS", "").split()), None)

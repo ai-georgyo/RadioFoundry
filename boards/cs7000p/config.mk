@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 The RadioFoundry Authors
-# CS7000 M17 PLUS feature defaults (config/features.mk lists them all). 1 MB for code and read-only data: flash bank 1
-# (boards/cs7000p/memory.ld). 160x128 display, insets 0 until they are measured on a radio. The fault trace, the stub
-# entry and LTO follow the platform (platform/stm32h7/config.mk). What is on by default is in neither list below: its
-# test state is in the bring-up records (docs/testing/cs7000p-bringup.md), never here.
+# CS7000 M17 PLUS feature defaults (config/features.mk lists them all). 896 KB for code and read-only data: sectors 0
+# to 6 of flash bank 1; sector 7 is the codec's (boards/cs7000p/memory.ld). 160x128 display, insets 0 until they are
+# measured on a radio. The fault trace, the stub entry and LTO follow the platform (platform/stm32h7/config.mk). What
+# is on by default is in neither list below: its test state is in the bring-up records
+# (docs/testing/cs7000p-bringup.md), never here.
 # No line for the vibration alert: a motor driver and socket are on the board, and whether a motor is fitted is in no
 # document (board.toml [hardware] unconfirmed). CONFIG_VIBRATE stays at its default, off
 #
@@ -43,6 +44,6 @@ BOARD_NOT_WRITTEN += VOX	# the level detector's amplifier and microphone switch 
 ifeq ($(origin CONFIG_APRS),undefined)
 CONFIG_APRS := $(if $(filter n,$(CONFIG_DMR) $(CONFIG_APRS_DMR)),n,y)
 endif
-# Without a codec route FM is this radio's only voice mode and the path its receiver is brought up on: the matrix has
-# no FM-less configuration
+# DMR needs the codec merged for voice, so FM stays the one mode every configuration needs, and it is the path this
+# radio's receiver is brought up on: the matrix has no FM-less configuration
 BOARD_REQUIRED := FM
