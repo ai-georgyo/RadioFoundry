@@ -27,10 +27,10 @@
 #define CS7000P_BAT_OFFSET_MV	245
 #endif
 // The VOL-DET reading with the knob at full volume. No source has it: the pot's top is fed DC through 10k from the
-// 5 V rail and the pot's own resistance is not on the drawing. The ADC's full scale until it is measured, so the
-// position reads low rather than wrong at the top
+// 5 V rail and the pot's own resistance is not on the drawing. Read on one radio (2026-11-22): 3178 at full volume,
+// 7 just above the power click
 #ifndef CS7000P_VOL_FULL_RAW
-#define CS7000P_VOL_FULL_RAW	4095
+#define CS7000P_VOL_FULL_RAW	3178
 #endif
 
 #define CS7000P_ADC_FULL_SCALE	4095u

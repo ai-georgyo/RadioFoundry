@@ -15,7 +15,8 @@
 // or hold a plug that keeps the line low.
 //
 // The channel selector is a 16-code switch on four lines whose code is in no document. Its lines are read and shown
-// (board.chsw_raw); it makes steps only in a build with the measured table and CS7000P_CHSW_VERIFIED=1.
+// (board.chsw_raw); it makes steps from the table read on a radio (keys_cs7000p.h; CS7000P_CHSW_VERIFIED=0 turns it
+// off).
 #include <string.h>
 #include "cs7000p.h"
 #include "pins.h"

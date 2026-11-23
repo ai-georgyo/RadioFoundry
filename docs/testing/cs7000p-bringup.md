@@ -49,10 +49,13 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | FM receive, a carrier on 433.500 MHz | **With the first image the receiver was 10.5 kHz high** (centered at 433.490 MHz tuned, `rssi_raw` about 2990 and `noise_raw` about 380 there against 1250 and 1300 on channel; idle 770 and 1100): the reference DAC was off. With the DAC on at mid-scale the carrier is centered on channel. The hold is now 4:0x25 = 0x0C (hardware page 6, [hrc6000-registers.md](../spec/hrc6000-registers.md) 3.22) | question 1 except the fine offset; the squelch reading's direction and scale |
 | PC8's duty 0, 512, 1023 at the passband's edge | `rssi_raw` 2019, 2380, 2711: about 2 kHz end to end | question 4's size |
 | `rfoundry_debug.py reboot --rom-dfu` | refused by the first image (the entry was off); taken by the image that allows it. What the radio did after the request was not reported | question 18 in part |
+| The channel selector, 16 detents | `chsw_raw` `F D C 8 9 1 0 4 5 7 6 2 3 B A E`: a Gray code, now the table | question 11 except the direction |
+| The volume knob | `vol_raw` 7 just above the power click, 3178 at full volume | `CS7000P_VOL_FULL_RAW` |
+| `board.hrc` with the second image | `1 r10=0x80 r25=0x0c`: the receive hold is written and reads back | stage 8's hold row |
+| `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 (the audio itself not confirmed) |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
 
-Not checked on it yet: audio at the speaker, a beep, `board.i2s` (it read `dir=unknown`, no clock seen, in FM
-receive with no beep), the channel selector's sixteen codes (`chsw_raw=0x9` at one position), the battery against a
+Not checked on it yet: audio at the speaker, a beep, which way round the selector counts, the battery against a
 meter, the claim and the full backup, DMR, and everything of stage 11.
 
 The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), each on the board's own source:
@@ -83,7 +86,7 @@ and the table at the end has one row per open question.
 | Polarities read from documents only: `DMR_SLEEP`, `A-PDN`, the AK2365A's select, `VCOVCC_SW`, the hold, `EXP_LAMP` | 4, 5, 8, 9 | 32, 12 |
 | The expander's bit order on the hardware: the chain has no read-back, so only the outputs show it | 4 | 34 |
 | The LCD board is the OEM's 2018 board, with an ST7735-class controller | 5 | 10 |
-| The channel selector's code table: none, so the selector makes no steps | 5 | 11 |
+| The channel selector's direction: its code table was read on a radio, the way it was turned taken as clockwise | 5 | 11 |
 | The I2S data direction: probed, never assumed; anything but `ok` or `swapped` stops the stage | 8 | 8 |
 | The HR_C6000 keeps its reference hold (4:0x25 = 0x0C) through a DMR transmission; what the DAC does in a DMR TX slot is not measured | 8, 11 | 1 |
 | The reference oscillator's bias: which register, the coding, the on-frequency level | 9, 11 | 1, 35 |
@@ -160,9 +163,9 @@ one rebuild can carry several.
 | `CS7000P_PANEL_TYPE` | not set | Forces a panel type of `drivers/display/st7735` (0 to 3, else the build fails) instead of the ID read's choice. Reported as `source=build`; `panel=` still names the controller the ID gives (`panel_cs7000p.h`) |
 | `CS7000P_PANEL_MADCTL_XOR` | 0 | Flips the controller's orientation bits (0x40 columns, 0x80 rows, 0xC0 both) |
 | `CS7000P_LCD_FORCE` | 0 | 1: skips the LCD board check and drives the connector. **Only after the board has been traced** |
-| `CS7000P_CHSW_VERIFIED` | 0 | 1: the channel selector's code table is measured and filled in; the selector then makes steps (`keys_cs7000p.h`) |
+| `CS7000P_CHSW_VERIFIED` | 1 | 1: the selector makes steps from the table read on a radio (`keys_cs7000p.h`). 0 turns it off |
 | `CS7000P_BL_MIN`, `CS7000P_BL_MAX` | 20, 70 | The PWM duty in percent that 1 % and 100 % backlight map to |
-| `CS7000P_VOL_FULL_RAW` | 4095 | The `VOL-DET` reading at full volume (`battery_cs7000p.h`). The default is the ADC's full scale: no source has the pot's resistance, so the position reads low at the top until it is measured |
+| `CS7000P_VOL_FULL_RAW` | 3178 | The `VOL-DET` reading at full volume (`battery_cs7000p.h`), read on one radio; 7 just above the power click |
 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV` | 4006, 245 | The battery model: mV = (gain x `POW_DET` mV) / 1000 - offset (`battery_cs7000p.h`) |
 | `CS7000P_BENCH_DMR_TX` | 0 | 1: the bench drive override may also key DMR bursts |
 | `CS7000P_SOFT_ROM_ENTRY` | 1 | 1: allows the software entry to the ROM bootloader, and then only with loader version 0x91 or with PB10 reading high (`board.c`; the rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h`). Refused, or with 0, `rfoundry_debug.py reboot --rom-dfu` gets a refusal (reason 5) and the radio runs on |
@@ -309,7 +312,7 @@ instead of answering. Install again; a whole image leaves no such word in the ra
 | The key lights follow the backlight | `EXP_LAMP`'s polarity | Inverted: the bit in `exp_cs7000p.h` |
 | `board.keys_raw`, one key at a time, all 18 front keys: each digit, \* and # at its crossing; OK, BACK, F1, F2 as `01`, `02`, `04`, `08` in the first byte, Up and Down as `01`, `02` in the last (read on one radio, 2026-11-22: [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 9.4) | the matrix, and the six function switches' order | A digit elsewhere: the matrix table in `keys_cs7000p.h`. A function key elsewhere: another LCD board revision; put its order in `CS7000P_FN_KEYS` and report it |
 | SK1 = Monitor, SK2, SK3, the top key, PTT each show in the diagnostics page; the accessory PTT only after its line has read high. PTT and the top key only after `board.cal=none` has been seen, with the dummy load fitted: a refusal (`board.tx_refused` why=2) is expected | PD15, PE12, PE13, PE10, PA8, PE11 | The pulls and the mapping in `input_cs7000p.c` |
-| `board.chsw_raw` over 16 detents, both directions. **Record the 16 codes** | the selector's code (question 11) | Fill the table in `keys_cs7000p.h` and build with `CS7000P_CHSW_VERIFIED=1` |
+| `board.chsw_raw` over 16 detents: `F D C 8 9 1 0 4 5 7 6 2 3 B A E` (read on one radio); `board.chsw` counts 0 to 15 with it. **Turning clockwise takes the channel up** | the selector's code and its direction (question 11) | Other codes: another switch; fill the table in `keys_cs7000p.h`. The channel goes down: mirror the table |
 | `board.phone_det`, `board.bt_strap` with and without an accessory plugged | what PHONE_DET does (question 24) | recorded only |
 
 ## 6. Data flash, the backup, the claim
@@ -437,8 +440,8 @@ What the shared sequencer (`drivers/rf/chainseq`) assumes about this chain, each
 
 | Check | Question | Knob |
 |---|---|---|
-| The software entry to the ROM bootloader: the loader's version from `board.rom_loader`; whether the HR_C6000 releases its data output while deselected (PB14 against the loader's pin); PB10 with the selector in each position; whether the request survives in the backup register | 18 | On by default (`CS7000P_SOFT_ROM_ENTRY`). On a loader other than 0x91 with PB10 low (`board.chsw_raw` bit 2 clear), `reboot --rom-dfu` is refused (reason 5) before anything happens: turn the selector a step. If the request is lost, the tool's after-OK hint says the request could not be stored and nothing is armed. SK1 at power-on stays available |
-| The same entry through the tools, once the row above passed (untested: neither has restarted a radio yet). With RadioFoundry running and the cable in: `rfoundry flash IMAGE --board cs7000p` prints "restarting it into its bootloader over the debug link", finds 0483:DF11 within 20 s ("in its bootloader: leave it on and connected") and installs as from SK1. The web flasher: **Update**, connect, **Restart into Update Mode**, then **Connect** and the browser's device list. On a selector position that grounds PB10 both say the radio can't right now and show the hint (turn the channel selector one step and try again); rfoundry on a terminal asks "Try the restart again?", the page keeps its button, and SK1's steps follow. Record: the seconds until the loader is on USB, both outcomes on both tools, and that the install's lines after "found bootloader" are those of an SK1 entry. Without a radio: `rfoundry flash --board cs7000p --simulate rfoundry-nocodec` (taken), `--simulate rfoundry-refuses` (refused), and the flasher at `#sim=cs7000p&update` (refused once, then taken) | 18 | `restart` and `restart_hint` in `boards/cs7000p/board.toml` `[flash.bootloader]`. If the entry does not hold on a radio, take `restart` out: the tools then ask for SK1 as before |
+| The software entry to the ROM bootloader: the loader's version from `board.rom_loader`; whether the HR_C6000 releases its data output while deselected (PB14 against the loader's pin); PB10 with the selector in each position; whether the request survives in the backup register | 18 | On by default (`CS7000P_SOFT_ROM_ENTRY`). On a loader other than 0x91 with PB10 low (`board.chsw_raw` bit 2 clear), `reboot --rom-dfu` is refused (reason 5) before anything happens: turn the selector four detents either way. If the request is lost, the tool's after-OK hint says the request could not be stored and nothing is armed. SK1 at power-on stays available |
+| The same entry through the tools, once the row above passed (untested: neither has restarted a radio yet). With RadioFoundry running and the cable in: `rfoundry flash IMAGE --board cs7000p` prints "restarting it into its bootloader over the debug link", finds 0483:DF11 within 20 s ("in its bootloader: leave it on and connected") and installs as from SK1. The web flasher: **Update**, connect, **Restart into Update Mode**, then **Connect** and the browser's device list. On a selector position that grounds PB10 both say the radio can't right now and show the hint (turn the channel selector four clicks either way and try again); rfoundry on a terminal asks "Try the restart again?", the page keeps its button, and SK1's steps follow. Record: the seconds until the loader is on USB, both outcomes on both tools, and that the install's lines after "found bootloader" are those of an SK1 entry. Without a radio: `rfoundry flash --board cs7000p --simulate rfoundry-nocodec` (taken), `--simulate rfoundry-refuses` (refused), and the flasher at `#sim=cs7000p&update` (refused once, then taken) | 18 | `restart` and `restart_hint` in `boards/cs7000p/board.toml` `[flash.bootloader]`. If the entry does not hold on a radio, take `restart` out: the tools then ask for SK1 as before |
 | The VCAP capacitors' real value | 15 | none: the port stays at VOS3 |
 | What the pack puts on BAT_DET; IC611; the unlabeled expander output | 24 | recorded only |
 | A watchdog reset with SK1 held and the knob off; a power-on with SK1 held and the knob turned off in the loader, over several cold starts (does IC621 come up with the hold set?) | 29 | none: the pack comes off |
@@ -505,7 +508,7 @@ checked above, and what to change.
 | 8 | Nothing: the I2S direction is probed. Clock polarity low; the chip is the master | 8 | `ckpol` in `audio_cs7000p.c` |
 | 9 | The chip demodulates FM from the IF; IF buffer gain 6 dB | 9, 10 | the AK2365A words in `rfplan_cs7000p.c` |
 | 10 | The LCD board is the 2018 OEM board; an ST7735-class controller; 160 x 128, offsets 0 | 5 | `CS7000P_LCD_FORCE`, `CS7000P_PANEL_TYPE`, `CS7000P_PANEL_MADCTL_XOR` |
-| 11 | The selector off (the six function keys' order was read on a radio, 2026-11-22) | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
+| 11 | The selector's direction (its codes and the six function keys' order were read on a radio, 2026-11-22) | 5 | `keys_cs7000p.h`, `CS7000P_CHSW_VERIFIED` |
 | 12 | Backlight window 20 to 70 % duty; key lights on with the bit high | 5 | `CS7000P_BL_MIN`, `CS7000P_BL_MAX` |
 | 13 | The battery model; the knob reads off below `POW_DET` 0.7 V (`CS7000P_KNOB_OPEN_POW_DET_MV`); the hold works at low battery | 4, 7, 11 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV`, `CS7000P_KNOB_OPEN_POW_DET_MV` |
 | 14 | Either silicon revision; any ROM loader version (0x90 may need a second reset); read protected as shipped | 1, 3 | recorded. Unprotected as found: stage 1's readout before stage 2 |

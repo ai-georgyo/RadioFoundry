@@ -136,7 +136,7 @@
    "stock_download": null,
    "notice": "The first install needs a Read Unprotect, which erases the processor's whole program memory: the maker's bootloader and both of its programs. This tool can't undo it; going back is the maker's own recovery procedure with the maker's files. The install leaves the data flash as it is: back it up right after, before you let RadioFoundry write to it.",
    "bootloader_restart": true,
-   "bootloader_restart_hint": "The radio refuses this restart on some channel selector positions. Turn the channel selector one step and try again.",
+   "bootloader_restart_hint": "The radio refuses this restart on half of the channel selector's positions. Turn the channel selector four clicks either way and try again.",
    "key_sha256": null,
    "key_prefix": null,
    "dfu_ids": [
