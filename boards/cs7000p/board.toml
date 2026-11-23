@@ -38,9 +38,11 @@ summary = "Runs on a radio: the display, keys, channel selector, USB, the debug 
 release = "testing"
 
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
-# maker's in program flash (docs/dev/board-registry.md). No [[flash.protect]] entry: no region of the data flash is
-# known to hold factory data (docs/spec/hardware-cs7000p.md says so in those words), which is why the backup is the
-# whole 32 MB chip and the firmware writes nothing there until the owner claims it (board.mk STORAGE_CLAIM_FIRST)
+# maker's in program flash (docs/dev/board-registry.md). The maker's factory calibration table (data flash
+# 0x001000-0x0011FF) and its other records (0x000080-0x00021F, 0x01E000, 0x01E400, 0x01F000) are located in
+# docs/spec/calibration-cs7000p.md 2.1 and 2.4, but no [[flash.protect]] entry covers them yet; the rest of the maker's
+# data is not mapped. So the backup is the whole 32 MB chip and the firmware writes nothing there until the owner
+# claims it (board.mk STORAGE_CLAIM_FIRST)
 [flash]
 family = "dfuse"
 keep_codec = false
@@ -81,8 +83,8 @@ body = "#2b2b2e"
 accent = "#e07a1f"
 lens = [40, 32]
 
-# tests/hil: what the health checks expect (test_health.py). calibration: no factory calibration is read on this
-# radio, so there is none to check
+# tests/hil: what the health checks expect (test_health.py). calibration: the firmware does not read the maker's
+# factory table yet (docs/spec/calibration-cs7000p.md), so the view shows none to check
 [hil]
 display = "160x128x4"
 calibration = false

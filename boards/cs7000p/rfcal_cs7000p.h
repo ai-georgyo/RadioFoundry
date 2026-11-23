@@ -4,10 +4,10 @@
 // verdict "this radio may transmit here". Pure: tests/cs7000pCalTest.c runs it on the tables as shipped and on a
 // made-up one.
 //
-// No calibration of this radio is known and none is guessed: every table in the source is unset, so the verdict is
-// "no" at every frequency and level, in FM and in DMR. The values come from the bench (docs/testing/
-// power-calibration.md for the PA drives, a deviation meter for the modulation pairs, a counter for the reference).
-// The maker's own calibration, wherever it is in the data flash, is never read.
+// No value is guessed: every table in the source is unset, so the verdict is "no" at every frequency and level, in FM
+// and in DMR. The values come from the bench (docs/testing/power-calibration.md for the PA drives, a deviation meter
+// for the modulation pairs, a counter for the reference). The maker's own factory table (data flash
+// 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md) is not read yet.
 //
 // A row is nine points, 400 to 520 MHz in steps of 15 MHz, read with linear interpolation between two points and
 // held flat past the ends. A row with one point unset is unset as a whole: half a row is never used.

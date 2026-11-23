@@ -163,7 +163,7 @@ static void claim_and_use(uint8_t *snap)
 	}
 	// Nothing above 16 MB was programmed or erased, and the top half is byte for byte what it was
 	CHECK(chip.high_ops == 0 && memcmp(snap + LOW_HALF, chip.mem + LOW_HALF, FULL - LOW_HALF) == 0);
-	// The hole, the board sector in it: written by nothing
+	// The hole, the board sector and the maker's records in it: written by nothing of ours
 	CHECK(memcmp(snap + HOLE, chip.mem + HOLE, m->openfw_flash - HOLE) == 0);
 	// Only the commands that always take four address bytes; the address mode and the status registers untouched
 	CHECK(chip.seen[0x02] == 0 && chip.seen[0x20] == 0 && chip.seen[0x03] == 0 && chip.seen[0x12] != 0 &&

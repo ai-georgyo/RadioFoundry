@@ -9,7 +9,8 @@
 // tool's addresses hold: the open-firmware codeplug where the CPS tools expect it, settings and journal at
 // 0x011000-0x01AFFF, the native codeplug and the staging area above the 14 MB mark. 0x01B000-0x01FFFF is the hole
 // no CPS address maps to; the board sector is in it (CS7000P_STORE_CAL_ADDR). Nothing is mapped above 16 MB.
-// No calibration window: no CPS calibration format is known for this radio
+// No calibration window: that window is a copy an open-firmware CPS may write (docs/spec/cps-protocol.md 2.3), so the
+// maker's factory table at 0x001000 (docs/spec/calibration-cs7000p.md) is not one
 const hal_flash_map_t cs7000p_flash_map = {
 	.settings_addr = 0x011000u,
 	.settings_size = 0x008000u,	// 8 sectors
