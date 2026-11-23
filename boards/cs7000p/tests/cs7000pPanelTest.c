@@ -998,18 +998,23 @@ static void test_assumed_board(void)
 	w.level[4] |= GPIO_PIN_11;
 	CHECK(scans(2) == 0);
 
-	// The channel selector: its four lines shown as read (PE14, PE15, PB10, PB11), no position, no steps
-	w.level[4] &= (uint16_t)~GPIO_PIN_14;	// ECN0 closed
-	w.level[1] &= (uint16_t)~GPIO_PIN_11;	// ECN3 closed
+	// The channel selector: its four lines shown as read (PE14, PE15, PB10, PB11), the position by the measured
+	// table (keys_cs7000p.h), and the steps between settled positions as the encoder's count. All open is position 0
+	CHECK(cs7000p_input.encoder != NULL && cs7000p_input.position == NULL && !cs7000p_input.encoder_limited);
+	cs7000p_input_state(&k);
+	CHECK(k.chsw_raw == 0x0F && k.chsw_pos == 0 && cs7000p_input.encoder() == 0);
+	w.level[4] &= (uint16_t)~GPIO_PIN_15;	// ECN1 closed: 0xD, the next detent
 	scans(10);
 	cs7000p_input_state(&k);
-	CHECK(k.chsw_raw == 0x06 && k.chsw_pos == -1);
-	w.level[4] |= GPIO_PIN_14;
-	w.level[4] &= (uint16_t)~GPIO_PIN_15;	// ECN1 closed
+	CHECK(k.chsw_raw == 0x0D && k.chsw_pos == 1 && cs7000p_input.encoder() == 1);
+	w.level[4] &= (uint16_t)~GPIO_PIN_14;	// ECN0 closed too: 0xC
 	scans(10);
 	cs7000p_input_state(&k);
-	CHECK(k.chsw_raw == 0x05 && k.chsw_pos == -1);
-	CHECK(cs7000p_input.encoder == NULL && cs7000p_input.position == NULL && !cs7000p_input.encoder_limited);
+	CHECK(k.chsw_raw == 0x0C && k.chsw_pos == 2 && cs7000p_input.encoder() == 1 && cs7000p_input.encoder() == 0);
+	w.level[4] |= GPIO_PIN_14;		// and back: one step the other way
+	scans(10);
+	cs7000p_input_state(&k);
+	CHECK(k.chsw_raw == 0x0D && k.chsw_pos == 1 && cs7000p_input.encoder() == -1);
 	CHECK(w.drive_calls == 0 && w.in_other == 0);
 }
 

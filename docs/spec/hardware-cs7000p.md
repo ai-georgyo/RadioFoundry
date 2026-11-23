@@ -30,7 +30,7 @@ What the radio refuses until it is calibrated or checked:
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |
 | Beeps and PCM audio | the I2S direction probe (section 6) | the transmit pad is seen driven in one of the two senses |
 | Software entry to the ROM bootloader | `board_rom_entry_ok()`, the rule in `romentry_cs7000p.h` (section 2.5): the debug link answers such a `REBOOT` as refused | allowed under that rule by default (`CS7000P_SOFT_ROM_ENTRY`); 0 refuses it always |
-| Channel selector | `CS7000P_CHSW_VERIFIED` (section 9.4) | its code table is measured |
+| Channel selector | `CS7000P_CHSW_VERIFIED` (section 9.4): on, with the table read on one radio | which way round it counts up is confirmed on a radio |
 
 ---
 
@@ -152,7 +152,7 @@ the side key above PTT, and also `KEY_SK1` on PD15: held at power-on it never re
 |---|---|---|
 | Normal | no key | the image at 0x08000000 |
 | ROM bootloader | SK1 held while the radio is switched on. The maker: "the screen will appear gray" | ST's system memory: USB DfuSe on 0483:DF11. Unverified on a radio with RadioFoundry installed |
-| ROM bootloader from the running image | the debug link's `REBOOT` to the ROM (`rfoundry_debug.py reboot --rom-dfu`) | allowed (`CS7000P_SOFT_ROM_ENTRY`, 1 by default) only with ROM loader version 0x91 (V9.1) or with the selector's PB10 contact open (below); the one radio read so far has loader 0x92 (V9.2), so there a selector position that grounds PB10 is refused and the user turns the selector a step. The entry itself has not been tried on a radio. The rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h` (`cs7000pPinsTest`). The platform asks it before the debug link answers, so a refusal is the refused status with reason 5 ([debuglink.md](debuglink.md) 3.11), not an OK followed by nothing. `rfoundry flash` and the web flasher send the same request to a radio that runs RadioFoundry, so an update needs no key (`[flash.bootloader] restart` in `board.toml`; [release.md](../dev/release.md#the-restart-into-the-bootloader)). On a refusal they show the board's hint (`restart_hint`: turn the channel selector one step and try again) and go on with SK1 at power-on. Untested on a radio, through the tools as well |
+| ROM bootloader from the running image | the debug link's `REBOOT` to the ROM (`rfoundry_debug.py reboot --rom-dfu`) | allowed (`CS7000P_SOFT_ROM_ENTRY`, 1 by default) only with ROM loader version 0x91 (V9.1) or with the selector's PB10 contact open (below); the one radio read so far has loader 0x92 (V9.2), so there a selector position that grounds PB10 is refused and the user turns the selector four detents either way. The entry itself has not been tried on a radio. The rule is `cs7000p_rom_entry_ok()` in `romentry_cs7000p.h` (`cs7000pPinsTest`). The platform asks it before the debug link answers, so a refusal is the refused status with reason 5 ([debuglink.md](debuglink.md) 3.11), not an OK followed by nothing. `rfoundry flash` and the web flasher send the same request to a radio that runs RadioFoundry, so an update needs no key (`[flash.bootloader] restart` in `board.toml`; [release.md](../dev/release.md#the-restart-into-the-bootloader)). On a refusal they show the board's hint (`restart_hint`: turn the channel selector four clicks either way and try again) and go on with SK1 at power-on. Untested on a radio, through the tools as well |
 
 The maker's firmware has its own bootloader with its own modes (PTT and the top key for its update mode; SK2 or SK3
 to pick one of its two programs). A RadioFoundry install erases that bootloader with the rest of the program flash,
@@ -598,7 +598,7 @@ ADC1 scans six ranks at 2,400 scans a second (TIM6), 16 scans deep: `POW_DET`, `
 
 | Function | How |
 |---|---|
-| Volume | The pot is in the analog audio path: the firmware cannot set the volume. `VOL-DET` gives the knob's position as a percent of `CS7000P_VOL_FULL_RAW`. Its default is 4095, the ADC's full scale: no source has the pot's resistance, so the position reads low at the top until it is measured. `volume()` is -1 while the scan does not run. The core draws the volume bar only for a radio whose `hal_radio_t.volume` is set, and this one's is NULL (section 8) |
+| Volume | The pot is in the analog audio path: the firmware cannot set the volume. `VOL-DET` gives the knob's position as a percent of `CS7000P_VOL_FULL_RAW`. It is 3178, read on one radio at full volume (7 just above the power click); no source has the pot's resistance. `volume()` is -1 while the scan does not run. The core draws the volume bar only for a radio whose `hal_radio_t.volume` is set, and this one's is NULL (section 8) |
 | LEDs | red: bit 13; green: bit 12; both: orange. On or off only: the green LEDs' resistor is drawn 22 R, so no PWM |
 | Microphone level | the `VOX` rank, read for the view (`board.vox_raw`) only. VOX is not written for this radio (`BOARD_NOT_WRITTEN`): the level detector's amplifier (`EXP_MIC_POWER`) and the microphone switch (`EXP_MIC_INT`) are on only during a transmission, so it has no supply while receiving |
 | Vibration | none (`vibrate` is NULL) |
@@ -1057,13 +1057,21 @@ key 1, F2 user key 4. Settable keys: SK1, SK2, SK3, F1, F2, TK. What the core do
 1 and 4 step the zone on Home, 3 is the next power level, 2 held turns dual watch on or off.
 
 **Channel selector.** A 16-position coded switch on four lines (endless, by the OEM's part name), not a quadrature
-encoder. **Its code is in no document.** `board.chsw_raw` shows the four lines. `keys_cs7000p.h` has
-`CS7000P_CHSW_VERIFIED 0` and a table of sixteen -1: the switch produces no events and `CAP_ENCODER` is not set.
-With the measured table and the define 1, `drivers/input/chswitch` gives the position and the difference modulo 16
-becomes steps: the shorter way round, clockwise forward, half a turn in one reading counted as 8 forward. A code
-settles after 30 ms. `board.chsw_raw` has bit n = ECNn's level (PE14, PE15, PB10, PB11), an open contact 1. A build
-with the define 1 over a table that is not a full set of 16 positions makes no steps (and `cs7000pKeysTest` fails).
-Open question 11.
+encoder. **Its code is in no document.** `board.chsw_raw` shows the four lines: bit n = ECNn's level (PE14, PE15,
+PB10, PB11), an open contact 1. Read on one radio, one detent at a time over a whole turn (2026-11-22):
+
+`F D C 8 9 1 0 4 5 7 6 2 3 B A E`
+
+a Gray code: one line changes per detent, the last back to the first too. `keys_cs7000p.h` holds it as position by
+code, `CS7000P_CHSW_VERIFIED` is 1 and `CAP_ENCODER` is set: `drivers/input/chswitch` gives the position, and the
+difference modulo 16 becomes steps, the shorter way round, half a turn in one reading counted as 8 forward. A code
+settles after 30 ms. The direction the list was read in is taken as clockwise, the core's forward: if the selector
+counts the wrong way round, the table is mirrored (open question 11). `CS7000P_CHSW_VERIFIED=0` turns the selector
+off; a table that is not a full set of 16 positions makes no steps (and `cs7000pKeysTest` fails).
+
+PB10 (ECN2) is low on eight of the sixteen detents, in two runs of four (`8 9 1 0` and `2 3 B A`): there the software
+entry to the ROM bootloader is refused on a loader other than 9.1 (section 2.5). Four detents either way from a
+refused position always reach an allowed one, which is what the tools' hint says.
 
 ---
 
@@ -1313,7 +1321,7 @@ the source comments use.
 | 8 | **The I2S data direction of a slave.** RM0433 Table 426 against 50.9.2. Also the clock polarity, and whether the chip is the master | no beeps; with the wrong sense assumed, two outputs on one line | Not assumed: probed (section 6.3). `board.i2s` shows the verdict and both counts; a scope on PC11 / PC12 confirms it once |
 | 9 | FM receive audio through the chip from a 450 kHz IF; the IF level (AK2365A `IFOG`); the 0.16 V bias at the chip's input | no FM audio, poor DMR sensitivity | Audio at the speaker against generator level; DMR BER ([dmr-bench.md](../testing/dmr-bench.md)) |
 | 10 | **The LCD board**: on one radio the board check passes, the panel answers ID 7C 89 F0 (ST7735) and the display and keys work. Still open: offsets and insets by eye, other board revisions | a blank or garbled display; the keys | `board.lcd_board` (only PE0 low), the `board.panel` ID bytes, `board.keys_raw` |
-| 11 | The selector's code (the function keys' positions are read: 9.4) | no knob | Turn the selector 16 steps both ways; fill `keys_cs7000p.h` |
+| 11 | Which way round the selector counts up (its code and the function keys' positions are read: 9.4) | channels step the wrong way | Turn the selector clockwise on a radio: the channel goes up. If not, mirror the table in `keys_cs7000p.h` |
 | 12 | The backlight curve; the key lights' polarity | too dark, no dimming | [backlight-curve.md](../testing/backlight-curve.md) |
 | 13 | The battery scale (a model, +/-4 %), the knob's switch-open threshold (`POW_DET` 0.7 V), the hold's margin at low battery | a wrong battery display; the radio switches off when the knob's contact bounces at low battery | A bench supply sweep against `board.vbat_mv`; `POW_DET` with the knob on at the lowest battery and as the knob goes off; knob off at 6.0 V from normal running (the hold set) |
 | 14 | Silicon revision, the ROM loader's version, the RDP level and option bytes as shipped. One radio: revision V, loader 0x92; RDP read 0xAA only after the install (as shipped: not read) | USB PHY errata, loader quirks (on 0x90: whether a cold SK1 entry connects without a second reset, AN2606 Table 146; PCROP left by the Read Unprotect), whether the first install always needs the unprotect | `board.mcu_rev`, `board.rom_loader`, `board.rdp`; `rfoundry detect` in loader mode, before and after the maker's recovery |

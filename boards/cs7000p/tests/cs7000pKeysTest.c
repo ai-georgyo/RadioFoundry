@@ -3,8 +3,8 @@
 // The CS7000 M17 PLUS's key tables (keys_cs7000p.h) under the shared decoders (drivers/input/keymatrix, chswitch):
 // every crossing of the matrix gives the key the LCD board's drawing has there, written out below by line name; no
 // key is in the matrix twice; the six function switches follow exactly the documented, measured order; the
-// channel selector's table refuses every code while it is unverified, and the rules that will turn a measured table
-// into steps are right on a synthetic one; the accessory PTT's stuck-line rule.
+// channel selector's table is the one read on a radio, a Gray code that steps once per detent both ways, and the
+// rules that turn a table into steps are right on a synthetic one too; the accessory PTT's stuck-line rule.
 #include <stdio.h>
 #include <string.h>
 #include "cs7000p.h"
@@ -138,31 +138,63 @@ static void test_settle(void)
 
 // ---- The channel selector ----
 
-static void test_selector_unverified(void)
+static void test_selector_table(void)
 {
-	// As shipped: not verified, sixteen entries, every one "no position"
-	CHECK(CS7000P_CHSW_VERIFIED == 0);
+	// The measured table: verified, sixteen entries, every position once
+	CHECK(CS7000P_CHSW_VERIFIED == 1);
 	CHECK(CS7000P_CHSW_CODES == 16 && sizeof(cs7000p_chsw_position) == 16);
-	for (unsigned c = 0; c < 16; c++) {
-		CHECK(cs7000p_chsw_position[c] == -1);
-	}
 	// The knob and the table go together: a build that says "verified" over an unfilled table fails here
 	CHECK(cs7000p_chsw_table_ok(cs7000p_chsw_position) == (CS7000P_CHSW_VERIFIED != 0));
 
-	// The decoder on that table: whatever code the lines give, for however long, no position ever settles
+	// The codes as read on a radio, one detent at a time over a whole turn (hardware-cs7000p.md 9.4)
+	static const uint8_t read[16] = { 0xF, 0xD, 0xC, 0x8, 0x9, 0x1, 0x0, 0x4, 0x5, 0x7, 0x6, 0x2, 0x3, 0xB, 0xA, 0xE };
+	for (unsigned n = 0; n < 16; n++) {
+		CHECK(cs7000p_chsw_position[read[n]] == (int8_t)n);
+		// a Gray code: one line changes per detent, round the whole turn
+		uint8_t x = (uint8_t)(read[n] ^ read[(n + 1) & 15]);
+		CHECK(x != 0 && (x & (x - 1)) == 0);
+	}
+
+	// The decoder on that table: each code settles on its position, one step per detent both ways round
 	chswitch_t s;
 	uint32_t now = 1000;
-	chswitch_init(&s, cs7000p_chsw_position, CS7000P_CHSW_CODES, 30, 0x0F, now);
-	for (unsigned c = 0; c < 16; c++) {
-		for (unsigned i = 0; i < 20; i++) {
+	chswitch_init(&s, cs7000p_chsw_position, CS7000P_CHSW_CODES, 30, read[0], now);
+	int8_t last = -1;
+	int steps = 0;
+	for (unsigned n = 0; n <= 32; n++) {
+		int8_t pos = -1;
+		for (unsigned i = 0; i < 6; i++) {
 			now += 10;
-			CHECK(chswitch_poll(&s, (uint8_t)c, now) == -1);
+			pos = chswitch_poll(&s, read[n & 15], now);
 		}
+		CHECK(pos == (int8_t)(n & 15));
+		if (last >= 0) {
+			CHECK(cs7000p_chsw_steps(last, pos) == 1);
+			steps += cs7000p_chsw_steps(last, pos);
+		}
+		last = pos;
 	}
-	// A code no four lines can give is no position either
+	CHECK(steps == 32);
+	for (unsigned n = 32; n-- > 16;) {
+		int8_t pos = -1;
+		for (unsigned i = 0; i < 6; i++) {
+			now += 10;
+			pos = chswitch_poll(&s, read[n & 15], now);
+		}
+		CHECK(cs7000p_chsw_steps(last, pos) == -1);
+		last = pos;
+	}
+	// A code no four lines can give is no position: the last settled one stands
 	for (unsigned i = 0; i < 20; i++) {
 		now += 10;
-		CHECK(chswitch_poll(&s, 0x1F, now) == -1);
+		CHECK(chswitch_poll(&s, 0x1F, now) == last);
+	}
+	// The software entry to the ROM bootloader needs the PB10 line (bit 2) high on a loader other than 9.1
+	// (romentry_cs7000p.h): low on two runs of four detents, so four detents either way always reach a high one
+	for (unsigned n = 0; n < 16; n++) {
+		if ((read[n] & 4u) == 0) {
+			CHECK((read[(n + 4) & 15] & 4u) != 0 && (read[(n + 12) & 15] & 4u) != 0);
+		}
 	}
 }
 
@@ -260,7 +292,7 @@ int main(void)
 	test_matrix();
 	test_function_order();
 	test_settle();
-	test_selector_unverified();
+	test_selector_table();
 	test_selector_rules();
 	test_ext_ptt_stuck();
 	printf("# cs7000pKeysTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);

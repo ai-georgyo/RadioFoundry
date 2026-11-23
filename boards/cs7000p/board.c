@@ -143,8 +143,8 @@ static bool hw_line(uint8_t i, uint8_t *role, char *buf, uint8_t len)
 
 const board_t board = {
 	.name = "CS7000 M17 PLUS",
-	// CAP_VOLUME_POT: the knob sets the volume in the analog path, the MCU only sees its position. CAP_ENCODER only
-	// once the channel selector's code table has been measured: until then the selector makes no steps
+	// CAP_VOLUME_POT: the knob sets the volume in the analog path, the MCU only sees its position. CAP_ENCODER with
+	// the channel selector's code table, which was read on a radio (keys_cs7000p.h)
 	.caps = CAP_KEYPAD | CAP_VOLUME_POT | (CS7000P_CHSW_VERIFIED ? CAP_ENCODER : 0) | (CONFIG_GPS ? CAP_GPS : 0) |
 		(CONFIG_DMR ? CAP_DMR : 0),
 	.bands = bands,

@@ -6,8 +6,8 @@
 //
 // The matrix is on the LCD board, which is not in the maker's schematic: the OEM's 2018 LCD board is the working
 // assumption. Which function switch is which key is in no document: CS7000P_FN_KEYS is the order read on a radio
-// (board.keys_raw, one key at a time). One thing still waits for a measurement (docs/testing/cs7000p-bringup.md):
-//   - the channel selector's code: its table is empty and the selector makes no steps (CS7000P_CHSW_VERIFIED).
+// (board.keys_raw, one key at a time), and so is the channel selector's code table (board.chsw_raw, one detent at a
+// time). Which way round the selector counts up is not confirmed yet (docs/testing/cs7000p-bringup.md).
 #ifndef CS7000P_KEYS_H
 #define CS7000P_KEYS_H
 
@@ -16,10 +16,10 @@
 #include "cs7000p.h"
 #include "input/keymatrix/keymatrix.h"
 
-// Bench knob (CS7000P_DEFS in board.mk): 1 once cs7000p_chsw_position below holds the measured table. board.c reads
-// it too, for CAP_ENCODER
+// 1: cs7000p_chsw_position below holds a measured table and the selector makes steps. 0 (CS7000P_DEFS in board.mk)
+// turns the selector off again. board.c reads it too, for CAP_ENCODER
 #ifndef CS7000P_CHSW_VERIFIED
-#define CS7000P_CHSW_VERIFIED	0
+#define CS7000P_CHSW_VERIFIED	1
 #endif
 
 // ---- The key matrix ----
@@ -80,12 +80,15 @@ static inline uint32_t cs7000p_keys_settle(uint32_t raw, uint32_t *last, uint32_
 // (PE14, PE15, PB10, PB11), so an open contact is a 1 and a closed one a 0
 #define CS7000P_CHSW_CODES	16u
 
-// Position by code, 0 to 15, numbered clockwise from any detent (the switch turns endlessly); -1: no position. NOT
-// MEASURED: which code each detent gives is in no document, so every entry is -1 and the selector makes no steps.
-// To fill it: turn one detent at a time, clockwise, 16 times, note board.chsw_raw each time, and give the n-th code
-// read the position n; then build with CS7000P_CHSW_VERIFIED=1
+// Position by code, 0 to 15, numbered from any detent (the switch turns endlessly); -1: no position. Which code each
+// detent gives is in no document. Read on a radio, one detent at a time over a whole turn (board.chsw_raw,
+// 2026-11-22): F D C 8 9 1 0 4 5 7 6 2 3 B A E, a Gray code (one line changes per detent, the last back to the
+// first too). Position n is the n-th code of that list, from 0. The direction the list was read in is taken as
+// clockwise; if the selector counts the wrong way round on a radio, the list was read anticlockwise and the table is
+// its mirror (position 16 - n)
 static const int8_t cs7000p_chsw_position[CS7000P_CHSW_CODES] = {
-	-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+	// code 0  1   2   3  4  5   6  7  8  9   A   B  C  D   E  F
+	6, 5, 11, 12, 7, 8, 10, 9, 3, 4, 14, 13, 2, 1, 15, 0,
 };
 
 // A usable table: every position 0 to 15 exactly once
