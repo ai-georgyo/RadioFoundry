@@ -4,7 +4,8 @@
 
 Status: format description of one stock file, against the reference build ([codec-placement.md](codec-placement.md),
 "STM32 radios"). **Untested on a radio**: every result below is from static analysis of that file or from a host
-instruction set emulator (2026-11-22). The hosting is written and untested on a radio: [Hosting](#hosting).
+instruction set emulator (2026-11-22; the merged image through RadioFoundry's own host, 2026-11-23). The hosting
+is written, emulated and untested on a radio: [Hosting](#hosting).
 
 How a fact here is known:
 
@@ -540,14 +541,18 @@ of 16.
   | in T20 | 0x080F59A4..0x080F59AC | 8 | 0x080F9B14..0x080F9B1C |
 
   No site, no entry, no branch target and no address a site holds lies in a span (the codec map's loader checks it).
-  The emulator runs had the two large spans undefined and every other span as stock: no run has had the eight small
-  spans blanked.
+  The layout runs had the two large spans undefined and every other span as stock. The run of the merged image
+  ([The merged image through the host](#the-merged-image-through-the-host)) had all ten blanked: the codec read and
+  executed none of them.
 * Rewritten: 74 words, 10 pairs, the 12 BL of island 1. The two T17 words keep their distance to T17.
 * CRC-32s that follow from the CRC-32s above, the site list and the layout, before the spans inside the ranges
   and the tables are blanked: the code window 0xE24A92CF; the same with only A, B and C (0xFF outside them)
   0xB4A36974; the block 0x7BC061E9. The tools check their bytes against them.
-* CRC-32, as placed and pinned: code 0xA6BAF942, block 0x1DD4537C. They need the bytes of the blanked spans and are
-  the tool's: its run on the stock file printed them after the three values above matched.
+* CRC-32, as placed and pinned: code 0xA6BAF942, block 0x1DD4537C. They need the bytes of the blanked spans. The
+  tool's run on the stock file printed them after the three values above matched, and a sector 7 built separately
+  from this page's rule (its own decryption, the rewrites, the ten spans set to 0xFF) gives the same: code window
+  SHA-256 59d7e923aa32594eb064e6b887e718c3d13e9be92eb5845af95b5dfc1b41d411, block SHA-256
+  f729ac367feb3945852682a229ca045448af2433daacb1752b51ea697b8bd637 (emulated, measured).
 * The firmware reports `cs7000p-v90096-s7` when the descriptor, both CRC-32s and the first word of A match.
 * `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP`: the STM32 start-up clears both (`platform/stm32/main.c`, every family:
   the image can be entered by the ROM bootloader's jump, without a reset), and the host clears them once more before
@@ -661,20 +666,78 @@ Layouts, each compared by one SHA-256 over every bit, air bit, FEC result, statu
   A to C as one block without the 12 island calls re-encoded; windows moved by 2 modulo 4.
 * RAM: output and final state are the same at three RAM bases and with four fill values.
 
+### The merged image through the host
+
+Emulated (Unicorn 2.1.4, Cortex-M7 model, memory as `boards/cs7000p/memory.ld` lays it out), 2026-11-23. The merged
+image (1048576 bytes): the pinned plain image, rebuilt from the branch to the same bytes, and sector 7 merged from
+the stock file. RadioFoundry's own host (`stm32_vocoder` in `platform/stm32/hrc/vocoder.c`: present, reset,
+set_options, encode, decode, through `stm32_codec_call`) ran from that image's ELF.
+
+* Sector 7 matches, byte for byte, a sector 7 built separately from this page's rule: all three gates and both pins
+  (above), the descriptor (0x080E0004+0x15C98, 0x080F5CA0+0x3E83, version 1, tag 0x00090096, its CRC). Of the
+  105115 window bytes, 71309 are the stock bytes, 424 are rewritten sites (each of the 376 undoes to its stock value)
+  and 33382 are blanked to 0xFF.
+* Output: 708 encoded and 1107 decoded frames over 3 seeds, all 8 option words, transmit, receive and transmit again
+  on the one shared state block, with and without a reset between sessions. Every 49-bit frame and every 160-sample
+  frame equals the stock image's, bit for bit, with every memory access checked and again with no memory hooks. The
+  stock FEC entries, called directly on the merged windows alone (blanked spans and fill unmapped, strict bounds),
+  gave the same hashes as the earlier FEC runs on six seeds, with no access out of bounds.
+* Placement: the windows at the layout table's addresses ran in the order island 1, island 2, T1 to T20. The codec
+  read or executed none of the ten blanked spans, the 0xFF between windows, the 4 bytes between code and block, or
+  the free tail. Every word it loaded from its code or islands that holds a flash address (59 distinct) is a listed
+  site pointing into a placed window.
+* Memory: the codec touched state bytes 0 to 0x16E0, fec_state 0 to 0x44, bitbuf 0 to 98 (49 halfwords), pcmbuf 0
+  to 320 (all in `.ccmram`, state 8-byte aligned), and the stack, nothing else. The host stayed in its statics, the
+  caller's buffers, sector 7 for the CRC, and `SCB->CCR`. One block for both directions works as the host uses it:
+  the encoder's half of the init and the decoder's half give stock's output.
+* Alignment: the codec's unaligned accesses are single-word loads, from T3, the state block and the stack, at the
+  three code places of [Processor state](#processor-state) moved with the code; every doubleword,
+  multi-word, push and pop access was 4-aligned. So `CCR.UNALIGN_TRP` = 0 is the one alignment need.
+* `CCR` was 0x40200 at every codec entry. A start with both trap bits set (0x40218) was cleared by `present()`
+  before the first codec instruction, with the same output. No floating-point, coprocessor, MSR/MRS, CPS, SVC,
+  barrier or exclusive instruction ran on the whole path, host included: no FPU setting is needed.
+* Stack: 4272 bytes below the host's encode entry (224 to the codec's entry, then 4048) and 2352 below its decode
+  entry (2192 below the codec's). With the audio task's static frames (audio_task 16, block 24, ambeVoiceAudioBlock
+  128) the audio task reaches 4440 of its 5120 bytes; the port's 208 bytes of exception and context overhead leave
+  472, 344 beyond the 128-byte margin. The static stack check says 4456 (its veneer entry assumes 8 stack
+  arguments). `AUDIO_TASK_STACK` stays as it is.
+* Instructions per frame, the codec alone: the same as on the stock image after a session's first frame (encode
+  0.471 to 0.634 million, median 0.58; decode 81 to 230 thousand, median about 175). A session's first frame adds the
+  init: about 5.9 thousand (encode) or 53.5 thousand (decode). The host adds about 1.9 thousand per frame. Per
+  encoded frame the codec makes about 28.5 thousand data reads from flash (at most 30.2 thousand), uncached since
+  the port turns on only the instruction cache. At 192 MHz a 20 ms frame is 3.84 million cycles, so encode fits if
+  it averages under about 6 cycles per instruction, stalls included: arithmetic, not a measurement.
+* `present()` reads the descriptor, the signature and both windows (105243 bytes) once, about 1.37 million
+  instructions when it accepts. A refusal costs 28 instructions with no descriptor, about 37 on a wrong tag, about
+  1.7 thousand on a pin or CRC mismatch in the descriptor, and about 1.16 million when only a window byte differs.
+* Every one of 14 changed sectors was refused before any instruction ran in sector 7, `profile()` null and encode
+  and decode giving zeros: a descriptor CRC one bit off; a reserved word changed; sector 7 erased or all zero; the
+  codec erased with the descriptor kept, and the reverse; tag 0x00090095; one code byte changed, with an honest or an
+  as-merged descriptor; three spans left unblanked, one site left at its stock value, or the code moved by 16 bytes,
+  each with an honest descriptor; V9.00.95's code bytes under either tag. The pins refuse a self-consistent sector
+  from another build or another blanking list.
+
+That run predates the boot check's flash guard (`flash_reads()`: sector 7 read once more, under a guard, before the
+CRC; by estimate about 0.12 million instructions more at the start) and the start-up's `CCR` clear on every family:
+neither changes a codec call.
+
 Limits:
 
 * 49358 bytes of code ran, of the 55610 that the twelve entries and three code pointers reach. The other 6252 bytes
-  never ran: the sites in them rest on static analysis.
-* The emulator has no alignment faults, no `CCR` and no timing.
-* RadioFoundry's own host code (`platform/stm32/hrc/vocoder.c`, the call veneer) has not been run against this
-  codec.
+  never ran: the sites in them rest on static analysis (the merged image's run executed 2682 to 2728 distinct
+  blocks).
+* The emulator has no alignment faults, no divide-by-zero fault, no `CCR` trap, no flash ECC and no timing.
+* Not run: FreeRTOS, the exception frame and context switch on the task stack while the codec runs, `present()` in
+  the radio task racing the first encode or decode in the audio task, the code above `hal_vocoder_t`
+  (`core/dmr/ambe`, the audio block callback, I2S and DMA), and the HR_C6000's frames.
 
 ## Only a radio can check
 
 * Audio: transmit and receive voice quality and levels through this radio's audio path.
 * Timing: encode and decode within 20 ms at the port's clock. The emulator gives instruction counts only, and they
   differ by counting method: about 0.35 to 0.7 million per encoded frame, up to 0.2 million per decoded frame.
-* The audio task's stack under 4048 bytes of codec plus the veneer and the caller.
+* The audio task's stack under the codec's 4048 bytes plus the veneer and the caller (4440 of 5120 emulated, with the
+  exception and context overhead not measured).
 * Alignment on the real core: that no access faults with the blocks, buffers and tables where the host puts them.
 * That `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP` are still 0 at the first codec call, and that no SDIV sees a zero
   divisor in real use.
@@ -686,8 +749,8 @@ Limits:
 
 ## Open items
 
-* The hosting is written ([Hosting](#hosting)) and has not run on a radio: the merged image itself has run in no
-  emulator yet.
+* The hosting is written ([Hosting](#hosting)) and emulated through RadioFoundry's own host
+  ([The merged image through the host](#the-merged-image-through-the-host)), and has not run on a radio.
 * Read by no run: the first object of T10, T1 beyond 36 bytes, T4's second object beyond 640 bytes; 6252 bytes of
   reached code.
 * Whether an SDIV divisor can be zero.
