@@ -54,13 +54,20 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | `board.hrc` with the second image | `1 r10=0x80 r25=0x0c`: the receive hold is written and reads back | stage 8's hold row |
 | `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 |
 | The full backup and the claim | the web installer's Back Up, Everything read the data flash and claimed the settings region; settings then survive a power cycle and a codeplug can be written | stage 6: the claim-first order, storage on this flash (question 21 stays: what the maker keeps where is still unknown, the backup holds it) |
+| The passband against another radio's carrier on 433.500 MHz, 500 Hz steps, wide filter | `noise_raw` under 800 from -6.0 to +6.5 kHz: the center 250 Hz high, inside the sweep's resolution and the other radio's own error. The reference offset stays 0 | question 1's level: mid-scale is on frequency to a few hundred Hz on this unit |
 | A key press | beeps | PCM to the chip's line out, the amplifier and the speaker switch (stage 8's beep row) |
 | The six function keys with the corrected order | each does what its label says | question 11's key half |
 | FM receive with the level fix (the bias at mid-scale, written in one step) | the squelch opens on a signal on channel, also after minutes of idling; the audio is clear and at a sensible level. An image that wrote the level through zero at every receive entry opened the squelch after a start and later stopped | question 1 except the fine offset; question 9's audio |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
 
-Not checked on it yet: the fine reference offset, sensitivity, CTCSS and DCS, the battery against a meter, DMR, and
-everything of stage 11.
+Not checked on it yet: the reference against a counter (only against another radio), sensitivity, CTCSS and DCS, the
+battery against a meter, DMR, and everything of stage 11.
+
+**One unexplained restart.** Once, while a script waited with the radio switched to the VFO, the radio left USB and
+came back with `reset.cause=power`, `reset.flags=0x00fe0000` (power-on and brown-out, no software or watchdog
+reset) and no crash record; its owner did not see it go off. The same steps run one at a time, with the other radio
+keyed 5 feet away, did not repeat it (`vbat_mv` and `pow_det_mv` steady to 6 mV). Watch `reset.cause` and the uptime
+in `view` during bench work: a second one with a cause is worth more than this one.
 
 The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), each on the board's own source:
 
