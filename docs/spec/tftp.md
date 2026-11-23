@@ -78,6 +78,14 @@ while the flash region is foreign (`settings-store.md` 5), or without a staging 
 | Commit | The commit record (magic 0x5452444F, version 1, length, the staged CRC, its own CRC) goes in the staging area's first sector. Then each 4 KB sector of the codeplug that a region touches is rebuilt (the stored sector, the staged bytes over it) and written through the sector journal (`settings-store.md` 4), one sector per tick so the host link keeps running; unchanged sectors are skipped. The quick-key slots (EEPROM 0x7524-0x7537, the side key assignment, `ui.md` 3.1) are written like the rest, as with the CPS. The settings area's sector follows its transfer rule: the stored one stays when it is valid and the staged one isn't, or when it is of a newer version (`codeplug-settings.md` 6), so a file from before the area, 0xFF there, leaves the radio's keys. Then the record is erased, the codeplug re-read (`codeplug_reload`), and the last ACK sent |
 | Failure | Any check failing: error 0 with the reason, the stored codeplug untouched. A transfer that stops, an error from the client, a timeout: the staged bytes are left and never used (no record) |
 
+The maker's bytes (`hal_flash_map_t.factory`, on a board that builds with `STORAGE_FACTORY_KEEP`;
+`settings-store.md` 4.1; which boards: [feature-matrix.md](../feature-matrix.md)): a codeplug sector holding some is
+rebuilt and written as any other, and the sector write keeps the stored bytes of each range, at the commit and at the
+resume alike. The file's bytes for a range are dropped and the write succeeds, so an image from another radio is
+taken whole but for them; a sector the ranges cover whole is never erased. A read shows the radio's bytes there.
+Each copy of a sector whose bytes for a range differ from the flash counts one drop in `storage.factory`, a resume
+after a cut included.
+
 Power cuts: before the commit record exists the old codeplug is intact. After it, `tftp_codeplug_resume()`, called
 at boot right after `storage_init()` and before the codeplug is read, checks the record and the staged CRC and copies
 every sector again (each one journaled, so a cut inside a sector write is finished by the journal first), then erases
@@ -104,6 +112,12 @@ A transfer that stops, an error from the client or a timeout leaves the header e
 one. No journal, no commit record and no staging area are involved, so `iddb.bin` works on radios without one. Writes follow the same rules as codeplug.bin: refused while TFTP codeplug writes are off or the flash region
 is foreign. They are not refused while transmitting, as codeplug.bin's aren't: the flash calls take the storage lock
 like every other writer. A put isn't power-cut safe beyond that rule: a cut mid-transfer leaves no database.
+
+The database is written in place, without the journal, so nothing could carry the maker's bytes over (section 4): a
+database whose header, area 1 or area 2 would reach an erase unit holding factory bytes is refused (error 0, "the ID
+database would reach the maker's data on this flash", one log line, counted in `tftp.errors`) before anything is
+erased, and the stored database stays. Each erase checks its unit again. A combined codeplug.bin (5.2) carrying such a
+database fails as a whole.
 
 Accepted headers: `Id`, a record size the radio reads (more than the ID, at most `DMR_IDDB_RECORD_MAX`), at most
 0x400000 records, any format but `n` (whose area 2 sits in the voice prompts). Format `C` ([iddb-compact.md](iddb-compact.md))
@@ -161,7 +175,12 @@ A read of codeplug.bin stays 716,384 bytes without the database: read `iddb.bin`
   before any erase (no header, format `n`, too big, `tsize` against the header, writes off), a transfer that stops,
   one too long and one too short leaving no database, a combined codeplug.bin past 1,179,648 bytes, the old-size
   image, a combined one without `tsize` and one cut short inside its database each keeping the radio's, and a
-  refused codeplug that keeps its database. The short transfers go to `tftpTest.pcap`, checked by tshark.
+  refused codeplug that keeps its database. The short transfers go to `tftpTest.pcap`, checked by tshark. Built with
+  `STORAGE_FACTORY_KEEP=1` (`tftpKeepTest`) it also writes codeplug.bin over factory ranges in codeplug sectors (one
+  inside a sector, one whole), with a power cut at every erase and program from the last DATA on and at every one of
+  `tftp_codeplug_resume`: the ranges always the stored bytes, the rest old or new, the record erased; and a database
+  that would reach a range in area 2 refused before any erase, as iddb.bin and inside a combined codeplug.bin, one
+  that stops short of it taken.
 - HIL: `tests/hil/test_net_services.py` (`--allow-usb-switch`): `info.txt`, two reads of `codeplug.bin` identical and
   equal to the stored image; with `--allow-codeplug-write` also: back up, write a channel rename, read it back, write
   the backup again and verify it byte for byte, as `test_cps.py` does over the CPS.

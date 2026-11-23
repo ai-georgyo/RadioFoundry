@@ -65,6 +65,15 @@ staging area and the calibration window. Any other block is refused (reason 1, s
 between the two images (0x10000 to 0x1FFFF on the STM32 radios: calibration, settings, journal) is never served,
 unlike the CPS's area 1, which reads it raw (`cps-protocol.md` 2.7, decision 2).
 
+A block holding the maker's bytes (`hal_flash_map_t.factory`, on a board that builds with `STORAGE_FACTORY_KEEP`;
+`settings-store.md` 4.1; which boards: [feature-matrix.md](../feature-matrix.md)) is read and written as any other.
+SUMS and READ give the radio's bytes there. A written block keeps the stored bytes of each range and takes the rest
+from the host: END (direct), the staged copy and the boot's resume (section 7) all go through the same sector write.
+The host's bytes for a range are dropped, END answers OK, and the next SUMS gives the CRC of the block as stored, not
+of the one sent: a host that reads the block first (its delta write) sends the radio's own bytes, and the block is
+then a skip where nothing else changed. A block the ranges cover whole is never erased; END answers OK and changes
+nothing.
+
 The image is the one the CPS shows. The VFO A record (EEPROM 0x7590) shows the live VFO when one is set, in sums and
 reads alike (`open-firmware-cps.md` 2.2), while the region is ours; on a foreign or unclaimed region READ and SUMS
 give the stored bytes. A block written with a VFO A record that differs from the live VFO gives the
@@ -295,9 +304,11 @@ The record:
 
 At boot (`cps_fast_resume`, after `storage_init` and before the codeplug is read) a record whose magic, version,
 count, header CRC and data CRC all check, and whose blocks are all writable (section 2), is finished: every slot is
-copied in again (the journal skips those already in) and the record erased. A record that doesn't check is erased:
-it was torn while being written, so the copy never started. The VFO settings are not touched at boot (the settings
-aren't up yet); the VFO A record is in the codeplug and takes effect as stored.
+copied in again (the journal skips those already in) and the record erased. A slot for a block holding factory bytes
+is copied as any other and keeps the stored bytes (section 2); where its bytes for a range differ from the flash they
+are dropped again at each copy, so `storage.factory` counts one drop per copy, a resume after a cut included. A record
+that doesn't check is erased: it was torn while being written, so the copy never started. The VFO settings are not
+touched at boot (the settings aren't up yet); the VFO A record is in the codeplug and takes effect as stored.
 
 | Power cut | After the next boot |
 |---|---|
@@ -307,7 +318,9 @@ aren't up yet); the VFO A record is in the codeplug and takes effect as stored.
 | during one block's copy | the journal finishes that block, then the boot copies every slot |
 
 `tests/host/cpsFastTest.c` cuts the power at points all through a staged write of four blocks and checks the four are
-all old or all new after the boot, never a mix.
+all old or all new after the boot, never a mix. Built with `STORAGE_FACTORY_KEEP=1` (`cpsFastKeepTest`) it also
+writes blocks holding factory ranges direct and staged, with a power cut at every erase and program of a staged commit
+and of `cps_fast_resume`: the ranges always the stored bytes, the rest all old or all new, the record erased.
 
 Staged writes do twice the flash work of direct ones (each block is programmed into its slot and then copied), so they
 take about 1.5 times as long (section 10). `tools/cps_fast.py` uses staged mode when the radio offers it and the
