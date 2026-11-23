@@ -34,6 +34,14 @@ uint32_t sim_flash_reads(void);
 void sim_flash_bad_range(uint32_t addr, uint32_t len);
 // An unreadable range: reads that touch it fail. len 0 clears it
 void sim_flash_bad_read(uint32_t addr, uint32_t len);
+// A marginal read: the nth read from now (1 = the next) that covers addr returns the byte there with bit 0 flipped,
+// once. nth 0 clears it
+void sim_flash_misread(uint32_t addr, uint32_t nth);
+// The backstop of a driver that keeps factory bytes (hal_flash_t.factory_grant, built with STORAGE_FACTORY_KEEP): an
+// erase or a program in an erase unit holding factory bytes of the map, outside the unit granted, fails with nothing
+// changed and is counted here. The grant in force (UINT32_MAX: none); a power cut closes it
+uint32_t sim_flash_granted(void);
+uint32_t sim_flash_ungranted(void);
 // An operation log, for a test that pins the exact flash operations of a run: fn (NULL: none) is called after every
 // read, program and erase with its kind ('r', 'w', 'e'), address, length (0 for an erase), the bytes read or asked to
 // be programmed (NULL for an erase and a failed read) and its result. Kept across sim_flash_create()

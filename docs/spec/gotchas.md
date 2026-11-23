@@ -672,6 +672,17 @@ failed erase and a refused park included. With interrupts masked or the schedule
 `stm32_spi_flash_quiesce()` parks only when no transaction holds the bus and never calls the RTOS lock, so the
 caller's interrupt mask is left as it was. Built.
 
+**10.9 A sector holding the maker's bytes is still the codeplug's.** A maker may keep a factory calibration inside a
+sector the open-firmware layout also uses for settings. Refusing writes to the whole sector takes those settings
+away; a writer that rewrites the sector from its own image loses the calibration (a codeplug write through an earlier
+build of ours did). Rule: the board lists the bytes (`hal_flash_map_t.factory`) and every rewrite of such a sector
+carries them over from the flash, the writer's bytes there dropped with success ([settings-store.md](settings-store.md)
+4.1). Two traps on the way: a record write that patches the sector holds the maker's bytes in one place only, so it
+takes the journaled sector path; and one read of the bytes can be wrong, so they are read again and compared before
+the commit point. A failure past the commit point holds the journal until a replay finishes it: the journal then
+holds the only copies. Which radios keep bytes: [feature-matrix.md](../feature-matrix.md). Built and host-tested
+(`storageFactoryTest`); no board lists bytes yet.
+
 ## 11. Calibration
 
 **11.1 Reference oscillator sign (HR_C5000 board).** regs 0x47 / 0x48 / 0x04 = 0x7F minus the calibration value, DAC2 =

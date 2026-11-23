@@ -76,16 +76,21 @@ typedef enum {
 storage_slot_t storage_slot_check(const uint8_t slot[STORAGE_SLOT_SIZE]);
 
 // --- Factory ranges (STORAGE_FACTORY_KEEP, docs/spec/settings-store.md 4.1) ---
-// A kept sector holds bytes of a factory range (hal_flash_map_t.factory). Nothing below erases or programs one: a
-// write that would change it is refused (the stats' factory_refused), one that leaves it as it is succeeds
+// A kept sector holds bytes of a factory range (hal_flash_map_t.factory). Every rewrite of one carries those bytes
+// over from the flash and takes the rest from the writer (the kept rewrite, as power safe as any journaled write);
+// the writer's bytes for a range are dropped (the stats' factory_dropped) and the write still succeeds. A sector the
+// ranges cover whole is never erased or programmed: a write to it succeeds and changes nothing. A failure past a kept
+// rewrite's commit point holds the journal: every journaled write after it finishes that entry first, or is refused
 
 // Rewrite the erase unit at addr (aligned) with data (STORAGE_SECTOR bytes), through the journal. Skipped when the
-// flash already holds exactly that; refused in a kept sector otherwise
+// flash already holds exactly that (in a kept sector: outside its factory bytes)
 bool storage_sector_write(uint32_t addr, const uint8_t *data);
 
 // Write any range: each sector it touches is read into the shared buffer, merged and rewritten as above. False if
-// the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF). A
-// range that touches a kept sector: true when the flash already holds it, else refused whole, nothing erased
+// the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF). Up
+// to 4072 bytes are one transaction over the one or two sectors they touch (settings-store.md 4); a range touching a
+// kept sector goes sector by sector through storage_sector_write instead, so a record crossing into or out of a kept
+// sector is not one transaction
 bool storage_write(uint32_t addr, const void *buf, uint32_t len);
 
 // The shared sector buffer (STORAGE_SECTOR bytes): NULL while someone else has it
@@ -138,8 +143,12 @@ typedef struct {
 					// (0 in a foreign region: a blank one that must be claimed first)
 	bool claim_pending;
 #if STORAGE_FACTORY_KEEP
-	uint32_t factory_refused;	// writes refused because they would change a kept sector, and erases and programs
-					// that reached one (also in errors)
+	uint32_t factory_rewrites;	// kept rewrites done
+	uint32_t factory_dropped;	// writes whose bytes for a factory range differed from the flash: dropped
+	uint32_t factory_replays;	// journal entries for a kept sector finished at a start or by a held journal
+	uint32_t factory_refused;	// entries left pending, kept rewrites stopped by a read that differed or failed,
+					// writes refused by a held journal, erases and programs of a kept sector outside
+					// the grant (the last two also in errors)
 #endif
 } storage_stats_t;
 

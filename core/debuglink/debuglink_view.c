@@ -517,6 +517,12 @@ static void storage_section(dl_text_t *t)
 	uint8_t zone_last;
 	zone_edit_stats(&zone_edits, &zone_last);
 	dl_text(t, "zone.edits=%u\nzone.edit_last=%u\n", (unsigned)zone_edits, zone_last);
+#if STORAGE_FACTORY_KEEP
+	// The maker's bytes kept (settings-store.md 4.1): kept rewrites, writes whose bytes there were dropped, journal
+	// entries finished with them, refusals. Only on a board that keeps some; last, so a full reply drops only this
+	dl_text(t, "storage.factory=%u,%u,%u,%u\n", (unsigned)st.factory_rewrites, (unsigned)st.factory_dropped,
+		(unsigned)st.factory_replays, (unsigned)st.factory_refused);
+#endif
 }
 
 // The CPS shims' counters (were in the storage section until view version 5: with the codeplug keys it outgrew a

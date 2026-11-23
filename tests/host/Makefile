@@ -1555,9 +1555,10 @@ storageJournalLogKeepTest: storageJournalLogTest.c $(CORE)/storage/storage.c sim
 		$(CORE)/storage/storage.c sim/sim_flash.c
 
 # core/storage and the STM32 data flash glue as a board that keeps factory bytes builds them (STORAGE_FACTORY_KEEP,
-# docs/spec/settings-store.md 4.1): the list's checks, no erase or program of a sector holding factory bytes, the
-# debug read, the staging and satellite areas, the glue's backstop and its grant (on a fake SPI NOR driver). Again
-# with SPI_NOR_ADDR4: also the address 16 MB up
+# docs/spec/settings-store.md 4.1): the list's checks, the kept rewrite of every writer (a power cut at every flash
+# operation, a misread, the held journal), the replay of every journal shape, the debug read, the staging and
+# satellite areas, the glue's backstop and its grant (on a fake SPI NOR driver). Again with SPI_NOR_ADDR4: also the
+# address 16 MB up
 FACTORY_SRC := storageFactoryTest.c $(CORE)/storage/storage.c sim/sim_flash.c $(ROOT)/platform/stm32/spi_flash/spi_flash.c \
 	$(CORE)/satellite/store.c $(CORE)/satellite/orbit.c $(CORE)/satellite/frequency.c
 FACTORY_DEPS := $(FACTORY_SRC) $(wildcard $(CORE)/storage/*.h $(CORE)/satellite/*.h sim/sim_flash.h stubs/stm32flash/*.h) \
