@@ -3,9 +3,10 @@
 # CS7000 M17 PLUS: hosting the AMBE+2 codec
 
 Status: format description of one stock file, against the reference build ([codec-placement.md](codec-placement.md),
-"STM32 radios"). **Untested on a radio**: every result below is from static analysis of that file or from a host
-instruction set emulator (2026-11-22; the merged image through RadioFoundry's own host, 2026-11-23). The hosting
-is written, emulated and untested on a radio: [Hosting](#hosting).
+"STM32 radios"). Every result below is from static analysis of that file or from a host instruction set emulator
+(2026-11-22; the merged image through RadioFoundry's own host, 2026-11-23), and "untested on a radio" in a section
+means that section's own result. **One radio runs the hosting** ([On a radio](#on-a-radio), 2026-11-23): the boot
+check accepts the merged sector and received voice decodes. Encode has not run on a radio.
 
 How a fact here is known:
 
@@ -441,7 +442,8 @@ What a move must respect:
 
 ## Hosting
 
-Implemented as the second layout below, untested on a radio: the merge tools place the codec in sector 7, the
+Implemented as the second layout below; on one radio the boot check passes and decode runs
+([On a radio](#on-a-radio)), encode is untested: the merge tools place the codec in sector 7, the
 shared STM32 host (`platform/stm32/hrc/vocoder.c`) runs it, `boards/cs7000p/vocoder_cs7000p.c` pins it.
 
 The SoC's program flash is two banks of eight 128 KB sectors ([hardware-cs7000p.md](hardware-cs7000p.md) 2.1). The
@@ -622,7 +624,8 @@ and its CRC-32s are in [Hosting](#hosting) ([codec-placement.md](codec-placement
 
 ## Verification on a host
 
-Everything here is an emulator result (Unicorn 2.1.4, Cortex-M7 model). **None of it has run on a radio.**
+Everything here is an emulator result (Unicorn 2.1.4, Cortex-M7 model). What one radio has shown since is in
+[On a radio](#on-a-radio).
 
 Setup: flash holds only the listed windows. Every other byte of the pages they touch is an undefined instruction, and
 every other page is unmapped. One RAM block, filled with junk before init. Nothing else of the maker's image.
@@ -731,7 +734,25 @@ Limits:
   the radio task racing the first encode or decode in the audio task, the code above `hal_vocoder_t`
   (`core/dmr/ambe`, the audio block callback, I2S and DMA), and the HR_C6000's frames.
 
+## On a radio
+
+One radio, 2026-11-23, by its owner: the image of this hosting installed through the ROM bootloader with the maker's
+file V9.00.96, readings through the debug link.
+
+| What | Seen | Settles |
+|---|---|---|
+| The boot check | `codec=cs7000p-v90096-s7`, `dmr.codec=1`; the installer's probe says the codec can be kept | sector 7 as the merge wrote it: the descriptor, the pinned placement, both CRC-32s, the first word |
+| `CCR` (0xE000ED14) before any voice | 0x00060200: `UNALIGN_TRP` and `DIV_0_TRP` clear | the start-up's clear; which kind of start it followed was not recorded |
+| Received voice: three group calls, 1650 voice bursts, 4950 frames in about a minute | played from the speaker, good quality throughout; `voice.rx_lost`, `rx_concealed`, `rx_bad`, `rx_underruns` and `dmr.underruns` all 0; no crash record, no restart | decode from the placed address with the tables where the merge put them; alignment on the real core for decode; decode within its 20 ms; the bit order and the FEC results from the HR_C6000 on receive |
+| The audio task's stack | `tasks.free.audio` 4936 after a key beep, 2560 after those calls, of 5120 bytes | decode's depth with the exception frame and context switch: 2560 bytes used, against 2352 emulated below the host's decode |
+
+Not seen yet: encode and everything on transmit, the silence frame, `CCR` after both kinds of start, the codec kept
+across an update, a bad channel.
+
 ## Only a radio can check
+
+Of these, the first radio has settled the receive side ([On a radio](#on-a-radio)). The transmit side and the rest
+stay open.
 
 * Audio: transmit and receive voice quality and levels through this radio's audio path.
 * Timing: encode and decode within 20 ms at the port's clock. The emulator gives instruction counts only, and they
@@ -750,7 +771,8 @@ Limits:
 ## Open items
 
 * The hosting is written ([Hosting](#hosting)) and emulated through RadioFoundry's own host
-  ([The merged image through the host](#the-merged-image-through-the-host)), and has not run on a radio.
+  ([The merged image through the host](#the-merged-image-through-the-host)). On one radio the boot check passes
+  and decode runs ([On a radio](#on-a-radio)); encode has not run on a radio.
 * Read by no run: the first object of T10, T1 beyond 36 bytes, T4's second object beyond 640 bytes; 6252 bytes of
   reached code.
 * Whether an SDIV divisor can be zero.

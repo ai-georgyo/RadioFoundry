@@ -4,8 +4,8 @@
 # CS7000 M17 PLUS bring-up checklist
 
 The CS7000 M17 PLUS port (`make BOARD=cs7000p`) builds and passes its host tests. **One radio has run it** (2026-11-22):
-it starts, and what was read on it is in [First radio](#first-radio) below. The codec route (stage 10.1), DMR voice
-audio and every transmission are untested. Everything else is from the maker's
+it starts, and what was read on it is in [First radio](#first-radio) below. The codec is installed on it and
+received DMR voice plays (2026-11-23); every transmission is untested. Everything else is from the maker's
 schematic and the chip makers' documents ([hardware-cs7000p.md](../spec/hardware-cs7000p.md)). This page is the
 order to try it in, every assumption the port makes with the check that settles it, and the knob to change when a
 check fails. A row is untested unless First radio lists it: each says what a radio should show, not what one did.
@@ -26,9 +26,9 @@ view keys below on a radio and never transmits.
 | Item | State |
 |---|---|
 | Build, host tests, stack check | pass |
-| On a radio | one unit: starts; display, keys, the channel selector, beeps, USB, the debug link and settings storage work; FM receive with clear audio; DMR calls are received and decoded, without audio ([First radio](#first-radio)). The codec route (stage 10.1), DMR voice audio and every transmission: not checked |
+| On a radio | one unit: starts; display, keys, the channel selector, beeps, USB, the debug link and settings storage work; FM receive with clear audio; DMR calls are received, decoded and played with the merged codec ([First radio](#first-radio)). Every transmission, the codec kept across an update: not checked |
 | Transmit | refused until the PA and the modulation are calibrated (stage 11) |
-| DMR voice | needs the codec merged (stage 10.1); untested |
+| DMR voice | needs the codec merged (stage 10.1). Receive works on the first radio; transmit is untested |
 | VOX | not written (`BOARD_NOT_WRITTEN`): the level detector has no supply while receiving |
 | Records | `docs/testing/results/cs7000p/seed.json`, with no feature row |
 
@@ -61,10 +61,12 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | The six function keys with the corrected order | each does what its label says | question 11's key half |
 | FM receive with the level fix (the bias at mid-scale, written in one step) | the squelch opens on a signal on channel, also after minutes of idling; the audio is clear and at a sensible level. An image that wrote the level through zero at every receive entry opened the squelch after a start and later stopped | question 1 except the fine offset; question 9's audio |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
+| The codec, installed with the maker's file V9.00.96 (2026-11-23, image e54fc89a) | `rfoundry probe`: `codec cs7000p-v90096-s7` and "the codec can be kept"; `dmr.codec=1`, `voice.enc_supported=0x7`. `peek 0xE000ED14` gave 0x00060200 (both trap bits clear; which kind of start it followed was not recorded). No `tasks.free.audio` line 137 s after the start, before any sound; 4936 after a key beep | stage 10.1: the merge, sector 7 written through the ROM bootloader, the boot check. Which installer wrote it was not recorded |
+| DMR voice receive with the codec: three group calls from a handheld on 433.500 MHz, about a minute | **Good audio the whole time.** 1650 voice bursts, `voice.rx_frames=4950`, `rx_lost`, `rx_concealed`, `rx_bad` and `rx_underruns` 0, `dmr.underruns=0`, `voice.rx_queue_max=3`, `voice.rx_bit_errors=960`, `voice.rx_repeats=73`, `voice.rx_peak=651`. `tasks.free.audio=2560` afterwards, `tasks.free.dmr=1564`, `tasks.free.ui=604`; `crash.valid=0` | stage 10.2 except the silence frame: decode from the placed address, no fault, the stack, decode in time |
 
 Not checked on it yet: the reference against a counter (only against another radio), sensitivity in FM and DMR, the
-DMR error rate at a normal signal level, DMR data and text, CTCSS and DCS, the battery against a meter, and
-everything of stage 11.
+DMR error rate at a normal signal level, DMR data and text, CTCSS and DCS, the battery against a meter, the codec
+kept across an update, `CCR` after both kinds of start, and everything of stage 11.
 
 **One unexplained restart.** Once, while a script waited with the radio switched to the VFO, the radio left USB and
 came back with `reset.cause=power`, `reset.flags=0x00fe0000` (power-on and brown-out, no software or watchdog
@@ -464,7 +466,7 @@ install rows below are already done: go on at the `probe` row.
 | The install's "verify: read back" passes | the ROM loader wrote sector 7 | The radio starts nothing until the same command has run again |
 | `rfoundry probe`: `codec    cs7000p-v90096-s7`; `rfoundry_debug.py view --section dmr`: `dmr.codec=1` | the descriptor (tag 0x00090096), both CRC-32s over 105243 bytes (code 0xA6BAF942, block 0x1DD4537C), the first word, as flashed | `absent` after a merge: rfoundry says the radio has no usable codec and to flash again with `--stock`. Do that once. `absent` again: **record** the install's read-back lines, and run the host check below on the merged image: it tells a wrong image from a wrong write |
 | `rfoundry_debug.py peek 0xE000ED14` (the SCB's `CCR`, 4 bytes): bits 3 and 4 clear. Once after the install's own start (the ROM loader's jump) and once after a power cycle. **Record both values** | the start-up's restore of `CCR` and that nothing set a trap bit since | A set bit is a finding, not a harmless state: the start-up clears both, so something set it later. Record the value and which start it was, and run no DMR voice until it is found |
-| `rfoundry_debug.py view --section tasks`: `tasks.free.audio`, before any DMR voice. **Record it** | the baseline of the audio task's stack | |
+| Press a key so the radio beeps, then `rfoundry_debug.py view --section tasks`: `tasks.free.audio`, before any DMR voice. **Record it** | the baseline of the audio task's stack | No `tasks.free.audio` line: the radio has made no sound since it started. The audio task is created at the first one |
 | An update without `--stock`: the plan shows sector 7 as "keep (codec in the radio stays: ...)", and afterwards `codec=` is as before | keep: the update erased only the image's sectors (0 to 4 for today's default image) | The update says the keep is void: the radio was in its loader without a vector table, or the probe was not remembered. Give `--stock`. `codec=absent` after a keep: the loader erased more than asked; report it |
 | `tests/hil/test_codec_info.py` and `tests/hil/test_codec_cpu.py` | the same checks as tests (`codec_check`) | |
 
@@ -588,7 +590,7 @@ Open points found while the board was written, beside the hardware page's 36 que
 | The burst runner's key-up under a bench drive uses the drive as its own top | no difference with the fixed key-up constant; matters once the constants are measured |
 | After an underrun or overrun the two I2S streams may be a few samples out of step until the next audio stop and start (RM0433 50.9.12, 50.9.13; an overrun with an early frame in one frame, 50.9.14) | `board.i2s` `und=` / `ovr=` over a few minutes of audio: 0 expected |
 | STM32H743 revision Y only: ADC and DAC conversions at the same time may cost ADC accuracy (ES0392 2.9.7), and 12 bits are not guaranteed with VDDA above 3.3 V (2.9.10) | `board.mcu_rev` |
-| The codec from its placed address: nothing but an emulator has run this codec, and no run had the eight small blanked spans or the merged image itself ([codec-cs7000p.md](../spec/codec-cs7000p.md) "Hosting") | stages 10.1, 10.2 and 11 |
+| The codec from its placed address: decode runs on the first radio; encode has run only in an emulator ([codec-cs7000p.md](../spec/codec-cs7000p.md) "On a radio") | stage 11 |
 | `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP` at run time: the start-up clears both and the host checks once before its first codec call; nothing checks later | stage 10.1's `peek`, after the loader's jump and after a power cycle |
 | The audio task's stack with the codec: `make stack-check` gives `deepest 4456 free 328` of 5120 bytes and does not see into the codec; the codec page's 4048 bytes for encode are an emulator's figure | `tasks.free.audio` before voice, after received voice and after transmitted voice (stages 10.1, 10.2, 11) |
 | Encode and decode within 20 ms at this clock: the emulator gives instruction counts only | the underrun counts of stages 10.2 and 11 |

@@ -9,9 +9,10 @@ carries every rail enable. The port is `boards/cs7000p` on `platform/stm32h7`.
 
 Status: **in bring-up on one radio (2026-11-22).** The image starts; the display, the keys (their order and the
 channel selector's code read, 9.4), USB, the debug link and settings storage work; FM receive works with clear audio
-(the reference hold, 6.5) and DMR calls are received and decoded, without audio. Everything else in this file is
-untested unless a section says it was seen on that radio: in particular the codec route (2.3,
-[codec-cs7000p.md](codec-cs7000p.md)), DMR voice audio and every transmission. The image builds, its host tests pass
+(the reference hold, 6.5); DMR calls are received, decoded and played by the radio's own codec, merged into sector 7
+(2.3, [codec-cs7000p.md](codec-cs7000p.md), 2026-11-23). Everything else in this file is untested unless a section
+says it was seen on that radio: in particular every transmission, DMR voice transmit with it. The image builds, its
+host tests pass
 and its static stack check passes. The order to check things on a radio, and the knob to change when a check fails, is
 [cs7000p-bringup.md](../testing/cs7000p-bringup.md).
 
@@ -28,7 +29,7 @@ What the radio refuses until it is calibrated or checked:
 | Refused | By | Lifted when |
 |---|---|---|
 | Any transmission: FM, DMR data, the hotspot, Tier III registration | the calibration verdict in `tx()` and in the burst key-up (section 13) | the model tables are filled from bench measurements |
-| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); untested |
+| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); received voice plays on one radio, transmit is untested |
 | Settings and codeplug writes, on every unit, blank flash or not | the foreign-region guard with `STORAGE_CLAIM_FIRST` (section 10) | the owner claims the region after a backup of the whole chip |
 | The power hold | `power_cs7000p.c` (section 5) | the knob has been read on, some tens of milliseconds after reset |
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |

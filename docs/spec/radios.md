@@ -159,14 +159,15 @@ A forum thread reports a 2023+ HD1 v2 on the HR_C7000, but posters contradict ea
   Read Unprotect, which erases the whole program flash: the maker's bootloader and both programs. The maker
   documents this as its recovery procedure and publishes the files to go back.
 - Codec: the AMBE+2 codec of the maker's DMR program V9.00.96, merged from the maker's file on the user's machine
-  into the last sector of flash bank 1 ([codec-cs7000p.md](codec-cs7000p.md)); untested on a radio.
+  into the last sector of flash bank 1 ([codec-cs7000p.md](codec-cs7000p.md)); it decodes received voice on one
+  radio, encode is untested.
 - No calibration source: the maker's tuning data is somewhere in the data flash, in a format nobody has documented.
 - **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7` builds and passes its host tests. On one radio
   the image starts, the display, keys, channel selector, USB, debug link and settings storage work, FM receive works
-  with clear audio, and DMR calls are received and decoded; no HIL run is recorded yet
+  with clear audio, and DMR calls are received and played with the merged codec; no HIL run is recorded yet
   ([hardware-cs7000p.md](hardware-cs7000p.md), [cs7000p-bringup.md](../testing/cs7000p-bringup.md)).
-  Transmit is refused until the PA and the modulation are calibrated on a bench. DMR voice needs the codec merged;
-  that route has not run on a radio. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`,
+  Transmit is refused until the PA and the modulation are calibrated on a bench, so DMR voice transmit is
+  untested. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`,
   `drivers/display/st7735` and `drivers/flash/spi_nor`, and the STM32 code the two families share (`platform/stm32`). New shared code:
   `drivers/io/hc595`, `drivers/bus/wire3_gpio`, `drivers/rf/chainseq`, `drivers/modem/hrc6000/if_host`,
   `platform/stm32/dmr_keyup`, `lcd8080_gpio` and `gpio_keypad`, 4-byte addresses in `drivers/flash/spi_nor`, and
