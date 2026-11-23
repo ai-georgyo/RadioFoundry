@@ -12,7 +12,7 @@ radio flashes over USB, the others over their programming cable (below). A radio
 | `[flash] family` | Route |
 |---|---|
 | `usb-dfu` | USB, the radio maker's DFU bootloader: every block encrypted with the bootloader key |
-| `dfuse` | USB, the bootloader in the radio's processor (ROM), plain DfuSe: no key, no codec step, and a read protection to remove on the first install ([below](#the-processors-own-bootloader)) |
+| `dfuse` | USB, the bootloader in the radio's processor (ROM), plain DfuSe: no key, and a read protection to remove on the first install, which erases the codec with everything else. A board with a codec route has a codec step with a rule of its own; a board with `[codec] none` has none ([below](#the-processors-own-bootloader)) |
 | `serial-loader` | the programming cable ([below](#the-dm-1801-pro)) |
 
 ## Install
@@ -42,10 +42,13 @@ rfoundry download --release v26.11 -o DIR               just fetch and verify th
 rfoundry merge rfoundry-dm1701.bin --stock FILE -o merged.bin  a merged image for other flashing tools
 rfoundry flash build/dm1801pro/rfoundry_dm1801pro.bin --board dm1801pro --port /dev/ttyUSB0
                                                         a DM-1801 Pro over its programming cable (below)
-rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --unprotect
+rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --unprotect --stock M17_PLUS_HOST_V9.00.96_20260303_1.bin
                                                         a first install through the processor's own bootloader:
                                                         removes the read protection, which erases the original
-                                                        firmware and its bootloader for good (below)
+                                                        firmware, its bootloader and its codec for good, and
+                                                        writes the codec from the maker's firmware file (below)
+rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --unprotect --codec none
+                                                        the same without a codec: FM works, DMR voice is off
 ```
 
 `rfoundry flash` does, in order: load the image and check it against its manifest (SHA-256, the radio model, the
@@ -62,6 +65,7 @@ the hardware option the version settled over the debug link (HWOPT) unless the r
 |---|---|---|
 | keep | the firmware's sectors only (DM-1701: within 3-9; MD-380: within 3-10); the codec sectors (DM-1701: 10, 11; MD-380: 11) are never touched | the radio runs RadioFoundry and reports a matching codec (`rfoundry probe`, or the start of `flash`); or `--codec keep` |
 | merge | the firmware's sectors and the codec sectors, with the codec from the copy saved from the radio or from `--stock` | keeping isn't known to be safe and rfoundry has a saved copy or `--stock FILE`; or `--codec merge` |
+| blank | the firmware's sectors, and the codec's sector erased and left blank | `--codec none`, only on a radio installed through [its processor's own bootloader](#the-processors-own-bootloader) |
 
 A radio on a RadioFoundry build from before the codec moved reports `dm1701-v0206-csv` (the new layout's profile is
 `dm1701-v0206-csv-s11`). Its codec code sits in sectors the update overwrites, so rfoundry writes the codec: from a
@@ -108,6 +112,10 @@ itself: rfoundry reads the stock bootloader over the debug link and takes the bl
 (`rfoundry/bootkey.py`), so an update needs none of these (`rfoundry key --save` keeps it from the radio). The key is
 never part of RadioFoundry.
 
+A radio installed through its processor's own bootloader has no bootloader key: `--key` and `rfoundry key` are
+refused for it. Where its stock file is encrypted, the key is the file's own. rfoundry derives it from the file each
+time, checks it against its published SHA-256 and never stores it.
+
 ### The saved codec
 
 The codec stays in place across an update. rfoundry still reads a copy, the first time it sees the radio running RadioFoundry
@@ -125,34 +133,96 @@ layouts it needs isn't known in advance.
 
 A radio with `[flash] family = "dfuse"` (the CS7000 M17 PLUS) has no bootloader of its maker's that RadioFoundry
 keeps: the image starts at the first byte of the program flash and is written through the bootloader in the
-processor's ROM, by plain DfuSe. There is no bootloader key and no codec step (`--key`, `--stock`, `--stock-installed`
-and `--codec` are refused), and `rfoundry flash` does, in order:
+processor's ROM, by plain DfuSe. There is no bootloader key (`--key` is refused). `rfoundry flash` does, in order:
 
-1. Load and check the image, print the plan (`--dry-run` stops here). An image that reaches past the application's
-   part of the program flash is refused: it is not this radio's, and the bootloader must not erase flash the build
-   keeps unused.
+1. Load and check the image. On a board with a codec route, decide the codec ([below](#its-codec-step)). Print the
+   plan (`--dry-run` stops here). An image that reaches past the application's part of the program flash is refused:
+   it is not this radio's, and the bootloader must not erase flash the build keeps unused. Past that part the plan
+   touches only the codec's sector, to write the codec there or to erase it.
 2. Get the radio into its bootloader. A radio that runs RadioFoundry and answers on its debug link is restarted
    into it by rfoundry, where the board's firmware can do that (`[flash.bootloader] restart` in its `board.toml`):
-   no key to hold. Otherwise, and when the radio refuses, rfoundry waits for the bootloader (the board's key at
-   power-on; rfoundry says which).
+   no key to hold. The codec step comes before it, while the radio still runs RadioFoundry and can say what codec it
+   holds. Otherwise, and when the radio refuses, rfoundry waits for the bootloader (the board's key at power-on;
+   rfoundry says which).
 3. Check the device before it sends anything: not a radio maker's keyed bootloader (they share the USB IDs), and a
    flash layout that is this radio's chip. Anything else is refused.
-4. Probe the read protection: a read of 4 bytes, which changes nothing.
-5. Protected, without `--unprotect`: stop and explain. Nothing was changed.
-6. Protected, with `--unprotect`: ask (`--yes` answers), then send Read Unprotect. **The processor erases its whole
-   program memory: the original firmware and its bootloader are gone for good**, and going back is the maker's own
-   recovery procedure with the maker's files. Nothing shows on the screen. Leave the radio on and connected until
-   rfoundry says to switch it off: it waits at least 60 s and until the radio has left USB (at most 120 s), then
-   asks you to switch it off and put it in its bootloader again. Both waits come from the processor's longest mass
-   erase in the registry (`mass_erase_max_s`): at least twice that time, and at most twice the first wait; 60 s
-   and 120 s are the least they can be. A radio that is back in its bootloader by itself is written at once, and
-   rfoundry says to leave it on.
-7. Erase the image's sectors, the one with the vector table first. Write everything but the vector table's block
+4. Probe the read protection: a read of 4 bytes at the application base (on these radios the start of the program
+   flash), which changes nothing. The bytes also say whether the radio holds a vector table.
+5. On a board with a codec route, settle a keep by what the bootloader said, before any question and before anything
+   is erased ([below](#its-codec-step)).
+6. Protected, without `--unprotect`: stop and explain. Nothing was changed.
+7. Protected, with `--unprotect`: ask (`--yes` answers), then send Read Unprotect. **The processor erases its whole
+   program memory: the original firmware, its bootloader and its codec are gone for good**, and going back is the
+   maker's own recovery procedure with the maker's files. Nothing shows on the screen. Leave the radio on and
+   connected until rfoundry says to switch it off: it waits at least 60 s and until the radio has left USB (at most
+   120 s), then asks you to switch it off and put it in its bootloader again. Both waits come from the processor's
+   longest mass erase in the registry (`mass_erase_max_s`): at least twice that time, and at most twice the first
+   wait; 60 s and 120 s are the least they can be. A radio that is back in its bootloader by itself is written at
+   once, and rfoundry says to leave it on.
+8. Erase the plan's sectors, the one with the vector table first. Write everything but the vector table's block
    and read it back, then write the vector table and read it back, then start the image. An install cut short
    leaves no vector table, so the radio starts nothing at a normal power-on until the same command has run again; a
    vector table whose write fails or that does not read back has its sector erased again. A block that reads back
    different stops the install with the image not started (the bootloader reports no error for a write it didn't
    carry out): run the same command again. If the radio shows nothing afterwards, switch it off and on.
+
+#### Its codec step
+
+A board with a codec route (`[codec] stock`) keeps its codec in the flash sector after the application's, with the
+codec descriptor in that sector's last bytes. A board with `[codec] none` has no codec step, and `--stock`,
+`--stock-installed` and `--codec` are refused for it.
+
+The codec is decided as on the other radios: kept when the radio runs RadioFoundry and reports it, else written from
+the saved copy or from `--stock FILE`, else refused. The stock file is the maker's firmware file the board lists;
+rfoundry names it, and where to download it, when it needs it. Other versions of the maker's file and the maker's
+bootloader file are refused with their own reason. A stock radio is read protected and can't be read, so the first
+codec always comes from the file.
+
+| Command | Radio | The codec's sector |
+|---|---|---|
+| `flash IMAGE --unprotect --stock FILE` | on the maker's firmware, read protected | written: the codec from the file |
+| the same without `--stock` | the same | nothing is sent: refused, and the refusal names `--stock` and `--codec none` |
+| `flash IMAGE --unprotect --codec none` | the same | erased and left blank: FM works, DMR voice is off until an install with `--stock` |
+| `flash IMAGE` | runs RadioFoundry and reports its codec | not in the plan: the codec stays. Once per radio rfoundry reads it back and saves a copy |
+| `flash IMAGE --stock FILE`, or with a saved copy | runs RadioFoundry and reports no codec | written |
+| `flash MERGED_IMAGE` (`rfoundry merge`, or a build with the stock file in `codecs/`) | any | written: the codec from the image |
+
+`--codec none` is this route's only: on every other route a codec sector is kept or written, never erased for
+nothing. `--codec keep` never erases a codec sector on any route.
+
+**A keep holds only on a radio that is not read protected and holds a vector table.** The program flash of these
+processors has error correction on every flash word. A word that a power cut left half erased or half written can
+fault when it is read, and RadioFoundry reads the whole codec at every start. So no image is started over a codec
+sector that an unfinished install may have touched: the sector is written whole, erased whole, or left alone only
+where the bootloader shows that the last install finished. The vector table shows it, because every install writes
+it last, after everything else, the codec's sector included, is written and read back.
+
+| The bootloader says | A keep (from a probe, remembered or not, or `--codec keep`) |
+|---|---|
+| read protected | void: removing the protection erases the codec with everything else |
+| not protected, no vector table | void: the last install did not finish, so the codec's sector may be half written |
+| not protected, a vector table | stands: the sector is not in the plan |
+
+A void keep is decided again before anything is asked or erased: a merge from the saved copy, else from `--stock`.
+With neither, or with `--codec keep`, the install is refused and nothing on the radio changes; the refusal names
+`--stock` and `--codec none`. A merge and `--codec none` are never changed by what the bootloader says. The cost: an
+update that was cut writes the codec again although it never touched it, because rfoundry can't tell that cut from
+a cut merge.
+
+The order of a merge: erase the sector with the vector table, the image's other sectors and the codec's sector;
+write the image's sectors but the first, the codec's sector from its start to its end (the descriptor is in its
+last block, after every codec block), then the rest of the first sector; read all of it back; write the vector
+table and read it back; start the image. A descriptor is never whole over a half-written codec, and the firmware
+checks the codec's bytes against it before it runs the codec.
+
+The remembered probe is forgotten before the first erase of an install that erases a codec sector (on the keyed
+route too), and before a Read Unprotect, so an install that erased the codec and was cut is never followed by a keep
+on the word of a probe from before it.
+
+What rfoundry can't rule out: another DfuSe tool that leaves the codec's sector half written and then writes a
+vector table. RadioFoundry would then fault at every start until an install through the bootloader with `--stock`
+or `--codec none`, which stays possible. The codec step has not run on a radio. The design is in
+[docs/dev/release.md](../../docs/dev/release.md#the-codec-on-this-route).
 
 `rfoundry detect` with the radio in its bootloader names the radios the device can be and says whether it is read
 protected. An update of a radio that already runs RadioFoundry is the same command without `--unprotect` (the
@@ -205,22 +275,35 @@ has flashed a radio yet; the tools it wraps have.
 | Module | Does |
 |---|---|
 | `rfoundry/boards.py` | per radio, read from `registry.json` (generated by `tools/boards.py` from `boards/*/board.toml`): flash sectors, application base, codec windows and profile, bootloader IDs, key hash |
-| `rfoundry/plan.py` | which sectors to erase and write for an image and a codec mode |
+| `rfoundry/plan.py` | which sectors to erase and write for an image and a codec mode: keep, merge, or blank (the codec's sector erased and left blank) |
 | `rfoundry/manifest.py` | release manifests: generate (used by `tools/release.py`) and verify |
 | `rfoundry/stockfw.py` | the STM32 radios' stock files: container, decryption, codec extraction and merge (also from a flash readout), key derivation (also used by `tools/codec_extract.py`) |
-| `rfoundry/dfu.py` | the USB DFU bootloaders: find, open, run a plan. With a key the AnyRoad bootloader; without one (`Dfu.run(plan)`) plain DfuSe to a processor's ROM bootloader, with `probe_protected` and `read_unprotect` |
+| `rfoundry/twinfw.py` | the stock container that holds its image twice: parse, the file's own key from the two copies, the codec windows |
+| `rfoundry/dfu.py` | the USB DFU bootloaders: find, open, run a plan. With a key the AnyRoad bootloader; without one (`Dfu.run(plan)`) plain DfuSe to a processor's ROM bootloader, with `probe_protected` (which also keeps the first 4 bytes: `start_blank`), `read_unprotect` and `check_plain`, the route's limits on a plan |
 | `rfoundry/debuglink.py` | VERSION / INFO_CHIP / READ_MEM over the debug link (read only) |
 | `rfoundry/codecsave.py` | the codec read back from a radio that runs RadioFoundry (where stock keeps it, or where the merge placed it), checked by hash, saved in the config directory and written back where the radio's codec can't be kept or checked |
 | `rfoundry/bootkey.py` | the bootloader key from a radio that runs RadioFoundry, found in its bootloader by the key's hash |
-| `rfoundry/fakedfu.py` | fake bootloaders with a flash model, for the tests and `--simulate`: `FakeAnyRoad`, and `FakeRom` with its read protection and its option bytes alternate setting |
+| `rfoundry/fakedfu.py` | fake bootloaders with a flash model, for the tests and `--simulate`: `FakeAnyRoad`, and `FakeRom` with its read protection, its option bytes alternate setting and an install cut at a block of the test's choice (`fail_at`) |
 | `rfoundry/serialflash.py` | the HR_C7000 radios over the programming cable: the route choice, the codec slot, and the calls into `stub/stubtool.py` and `tools/serial_loader.py` |
 | `rfoundry/release.py`, `state.py`, `cli.py` | GitHub downloads, the remembered probe, the commands |
 
 Tests: `python3 -m unittest discover -s tools/rfoundry/tests -v` (no USB, no serial port; `tools/ci.sh` runs them).
 `test_serialflash.py` runs both serial routes against the wrapped tools' own simulated radios. A whole flash
 against the fake bootloader: `rfoundry flash IMAGE --simulate rfoundry-codec` (or `stock` with `--stock-installed "V02.06
-CSV"`, or `rfoundry-nocodec --stock synthetic`). The processor's own bootloader: `rfoundry flash --board cs7000p
---simulate` stops at the read protection, `--simulate --unprotect` runs the whole install, `--simulate blank` a radio
-that isn't protected, `--simulate rfoundry-nocodec` one that runs RadioFoundry and takes the restart into its
-bootloader, `--simulate rfoundry-refuses` one that refuses it; without an image file a simulation makes one up. A local build without a manifest: `rfoundry flash
-build/dm1701/rfoundry_dm1701.bin --board dm1701`. Design and the sector map: [docs/dev/release.md](../../docs/dev/release.md).
+CSV"`, or `rfoundry-nocodec --stock synthetic`). The processor's own bootloader, without an image file (a simulation
+makes one up):
+
+| `rfoundry flash --board cs7000p ...` | The simulated radio | Result |
+|---|---|---|
+| `--simulate --unprotect --stock synthetic` | on the maker's firmware, read protected | the whole first install: Read Unprotect, the image, the codec in its sector |
+| `--simulate --unprotect --codec none` | the same | the same without a codec: its sector erased and left blank |
+| `--simulate --unprotect` | the same | refused before anything is sent: no codec source |
+| `--simulate --stock synthetic` | the same | stops at the read protection |
+| `--simulate rfoundry-codec` | runs RadioFoundry with its codec, takes the restart into its bootloader | an update: the restart, and the codec's sector is not in the plan |
+| `--simulate rfoundry-nocodec --stock synthetic` | runs RadioFoundry without one, takes the restart | the restart, and the codec is written |
+| `--simulate rfoundry-refuses` | runs RadioFoundry with its codec, refuses the restart (reason 5) | the board's hint, then the keys, then the update |
+| `--simulate blank --stock synthetic` | erased: no vector table | a merge; with `--codec keep` instead, refused |
+
+`test_plain_codec.py` runs these, an install cut at every block and each case of the keep. A local build without a
+manifest: `rfoundry flash build/dm1701/rfoundry_dm1701.bin --board dm1701`. Design and the sector map:
+[docs/dev/release.md](../../docs/dev/release.md).

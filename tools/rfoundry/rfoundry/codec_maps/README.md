@@ -20,5 +20,10 @@ takes its codec from the 21 of them it has profiles for, since an open-firmware 
 [docs/spec/codec-dm1701.md](../../../../docs/spec/codec-dm1701.md)). Each was checked by running the codec, moved as
 the merge moves it, in a host emulator with only the moved windows mapped: bit-identical to the stock build.
 
+`cs7000p/` has one map, for V9.00.96. Its code window is three ranges with the maker's code between them, and every
+span in it and in three table windows that is not the codec's is listed as a hole (`code.holes`, a table window's
+`holes`), which the merge fills with 0xFF. The layouts the spec side ran in an emulator are on the radio's codec page
+([docs/spec/codec-cs7000p.md](../../../../docs/spec/codec-cs7000p.md)); the merged layout has not run on a radio.
+
 The maps hold addresses, lengths, offsets and hashes only, never codec bytes. They come from static analysis of the
 stock builds, which is kept outside this repository.

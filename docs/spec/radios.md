@@ -158,15 +158,16 @@ A forum thread reports a 2023+ HD1 v2 on the HR_C7000, but posters contradict ea
   Radios are read protected (RDP level 1 in the maker's own procedure), so nothing can be read or written until a
   Read Unprotect, which erases the whole program flash: the maker's bootloader and both programs. The maker
   documents this as its recovery procedure and publishes the files to go back.
-- No codec route: where the stock DMR program keeps its vocoder is not known from any allowed source.
+- Codec: the AMBE+2 codec of the maker's DMR program V9.00.96, merged from the maker's file on the user's machine
+  into the last sector of flash bank 1 ([codec-cs7000p.md](codec-cs7000p.md)); untested on a radio.
 - Calibration: the maker's factory table is 512 bytes in the data flash, at 0x001000 inside the open-firmware
   EEPROM image ([calibration-cs7000p.md](calibration-cs7000p.md)). The port keeps those bytes, reads and checks the
   table, keeps its own verified copy and can restore it from a backup; it transmits on none of it yet.
 - **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7`. One radio runs it: display, keys, the channel
   selector, USB, the debug link, settings storage, FM receive and DMR receive ([hardware-cs7000p.md](hardware-cs7000p.md),
   [cs7000p-bringup.md](../testing/cs7000p-bringup.md)).
-  Transmit is refused until the PA and the modulation are calibrated, and DMR voice is off without a
-  codec. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`, `drivers/display/st7735`
+  Transmit is refused until the PA and the modulation are calibrated. DMR voice needs the codec merged; that route
+  has not run on a radio. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`, `drivers/display/st7735`
   and `drivers/flash/spi_nor`, and the STM32 code the two families share (`platform/stm32`). New shared code:
   `drivers/io/hc595`, `drivers/bus/wire3_gpio`, `drivers/rf/chainseq`, `drivers/modem/hrc6000/if_host`,
   `platform/stm32/dmr_keyup`, `lcd8080_gpio` and `gpio_keypad`, 4-byte addresses in `drivers/flash/spi_nor`, and
@@ -397,7 +398,7 @@ different architecture from anything in RadioFoundry. The Retevis C62 and Quansh
 |---|---|---|
 | `platform/stm32f4` | yes | DM-1701, MD-UV380, MD-9600, MD-380, MD-2017, CS7000-M17 (the STM32F405 model) |
 | `platform/stm32` (what the STM32 families share: start-up, GPIO, time base, watchdog, crash store, DMR glue, PCM stream, SPI flash, GPS UART) | yes | every STM32 radio |
-| `platform/stm32h7` | yes (built, never run) | CS7000 M17 PLUS |
+| `platform/stm32h7` | yes (in bring-up on one radio) | CS7000 M17 PLUS |
 | `platform/hrc7000` | yes | DM-32UV, GD-88, DB25-D family, DB40-D, DM-1801 Pro / DM-1801 (2026) |
 | `drivers/modem/hrc6000` | yes | every HR_C6000 radio above |
 | `drivers/modem/hrc7000` | yes | the HR_C7000 radios |
@@ -408,7 +409,7 @@ different architecture from anything in RadioFoundry. The Retevis C62 and Quansh
 | `platform/mk22` | **new** | GD-77 family, HD1 |
 | `drivers/modem/hrc5000` (with `hrc_common`) | yes (`hrc5000_attach`) | MD-380 |
 | `drivers/rf/sky72310` (+ receive chain) | yes (MD-380 board glue) | MD-380, MD-9600 (older boards), CS7000-M17, CS7000 M17 PLUS |
-| Discrete RF chain: `drivers/rf/chainseq` (receive / transmit order), `drivers/rf/ak2365a`, `drivers/bus/wire3_gpio`, `drivers/modem/hrc6000/if_host` (the HR_C6000 fed a 450 kHz IF), `platform/stm32/dmr_keyup` | yes (built, never run) | CS7000 M17 PLUS; the MD-380 and MD-9600 keep their own sequencers until it has run on a radio |
+| Discrete RF chain: `drivers/rf/chainseq` (receive / transmit order), `drivers/rf/ak2365a`, `drivers/bus/wire3_gpio`, `drivers/modem/hrc6000/if_host` (the HR_C6000 fed a 450 kHz IF), `platform/stm32/dmr_keyup` | yes (FM and DMR receive on one radio; no transmission yet) | CS7000 M17 PLUS; the MD-380 and MD-9600 keep their own sequencers until it has transmitted on a radio |
 | `drivers/io/hc595` (74HC595 chain as an output expander) | yes | CS7000 M17 PLUS |
 | SPI NOR over 16 MB (`SPI_NOR_ADDR4`) | yes | CS7000 M17 PLUS |
 | A settings store that must be claimed first (`STORAGE_CLAIM_FIRST`) | yes | any radio whose data flash layout under the vendor firmware is unknown |
