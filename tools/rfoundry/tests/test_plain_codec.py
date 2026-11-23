@@ -455,14 +455,28 @@ class Decision(PlainCodec):
             d = sk(args(), b, keep, protected, blank, None, True)
             self.assertEqual((d.mode, d.source), (plan.MERGE, "stock"))
             self.assertIn(why, d.why)
-            # no source, or a keep that was asked for: refused, with both ways on
-            for a, saved, stock in ((args(), None, False), (args("keep"), "copy", True)):
+            # no source: refused, with both ways on
+            with self.assertRaises(cli.UsageError) as cm:
+                sk(args(), b, keep, protected, blank, None, False)
+            msg = str(cm.exception)
+            self.assertIn(why, msg)
+            self.assertIn("Flash with --stock FILE to write the codec (%s)" % cli.stock_hint(b), msg)
+            self.assertIn("--codec none to install without one (FM works, no DMR voice)", msg)
+            # a keep that was asked for: refused, and the option named as what stops the merge, with the source
+            # that would be used without it (adding --stock to the same command would only repeat the refusal)
+            for saved, stock, how in (
+                    ("copy", True, "run the same command without it, and the codec is written from the copy saved "
+                                   "from the radio earlier"),
+                    (None, True, "run the same command without it, and the codec is written from your stock file"),
+                    (None, False, "leave it out and flash with --stock FILE to write the codec (%s)"
+                                  % cli.stock_hint(b))):
                 with self.assertRaises(cli.UsageError) as cm:
-                    sk(a, b, keep, protected, blank, saved, stock)
+                    sk(args("keep"), b, keep, protected, blank, saved, stock)
                 msg = str(cm.exception)
                 self.assertIn(why, msg)
-                self.assertIn("Flash with --stock FILE to write the codec (%s)" % cli.stock_hint(b), msg)
-                self.assertIn("--codec none to install without one (FM works, no DMR voice)", msg)
+                self.assertIn(". --codec keep can't be honored here: " + how + "; ", msg)
+                self.assertIn("; or flash with --codec none to install without one (FM works, no DMR voice)", msg)
+                self.assertNotIn("Flash with --stock FILE", msg)
 
 
 class SimulatedInstalls(PlainCodec):

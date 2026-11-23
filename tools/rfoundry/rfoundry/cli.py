@@ -1280,7 +1280,8 @@ def settle_keep(args, board, d, protected, blank, saved, have_stock):
     False) and holds a vector table (blank False), which every install through this route writes last, after all
     the rest is written and read back. In any other case a keep is void, whatever it rested on (a remembered
     probe, --codec keep), and is decided again: a merge from the saved copy, else from the stock file, unless
-    --codec keep asked for the keep; else refused, with nothing on the radio changed. Returns d itself when it
+    --codec keep asked for the keep; else refused, with nothing on the radio changed (a refused --codec keep names
+    the option as what stops the merge, and the source it would use). Returns d itself when it
     stands (a merge and an install without a codec write or erase the sector whole: always), else the new decision."""
     if d.mode != planmod.KEEP or not (protected or blank):
         return d
@@ -1292,6 +1293,13 @@ def settle_keep(args, board, d, protected, blank, saved, have_stock):
         return Decision(planmod.MERGE, "%s; the copy saved from the radio earlier is written" % why, source="saved")
     if have_stock and not asked:
         return Decision(planmod.MERGE, "%s; the codec is written from your stock file" % why)
+    if asked:		# the option is what stops the merge: adding a source with it changes nothing
+        src = ("the copy saved from the radio earlier" if saved is not None else
+               "your stock file" if have_stock else None)
+        how = ("run the same command without it, and the codec is written from %s" % src if src else
+               "leave it out and flash with --stock FILE to write the codec (%s)" % stock_hint(board))
+        raise UsageError("%s. --codec keep can't be honored here: %s; or flash with --codec none to install without one "
+                         "(FM works, no DMR voice)" % (why, how))
     raise UsageError("%s. Flash with --stock FILE to write the codec (%s), or with --codec none to install without one "
                      "(FM works, no DMR voice)" % (why, stock_hint(board)))
 
