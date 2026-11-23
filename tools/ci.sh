@@ -632,6 +632,9 @@ tp_dir=$PWD/third_party
 tb=$(for x in ${SELECTED_PLATFORMS:-}; do reg list --platform "$x" | head -1; done | head -1)
 if [ -z "$tb" ] || [ -z "$tp_dir" ]; then
 	skip "shared third_party: no board built, or no checked-out third_party/ to share"
+elif [ -z "$(git ls-tree HEAD third_party/ 2>/dev/null)" ]; then
+	# a copy of the tree (a tarball, the Nix sandbox): no commit with submodule links to make a worktree of
+	skip "shared third_party: no submodule links in this tree"
 else
 	tp_wt=$PWD/$OUT/tp-worktree
 	tp_log=$PWD/$OUT/tp-worktree.log

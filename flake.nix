@@ -390,12 +390,13 @@
         fileset = fs.difference ./. (fs.unions notBuilt);
       };
       # CI's firmware job of one compiler. A directory under boards/ that boards share has no board.mk and is no
-      # board: tools/ci.sh says so with a skip
+      # board: tools/ci.sh says so with a skip. The shared third_party/ test makes a worktree of a commit with the
+      # submodule links, which the copy has not: skipped too
       firmwareStep = id: {
         src = firmwareSrc;
         args = "--quick --steps firmware --toolchain ${id}";
         inherit linkThirdParty;
-        skipOk = "[^ ]+: no boards/[^ ]+/board\\.mk yet .*";
+        skipOk = "[^ ]+: no boards/[^ ]+/board\\.mk yet .*|shared third_party: no submodule links .*";
       };
       ciChecks =
         pkgs:

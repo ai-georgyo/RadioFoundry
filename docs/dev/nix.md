@@ -137,7 +137,7 @@ whole run takes about 13 minutes, the time of its longest check.
 | `ci-registry` | `tools/ci.sh --steps registry,licenses` | Those steps: part of CI's `checks` job | The radio floor, the flake pins, `reuse lint` | 1.5 to 2 min |
 | `ci-python` | `tools/ci.sh --steps python`, then requires the line that says Python files were parsed | That step: the rest of CI's `checks` job | No step | 13 min |
 | `ci-host` | `RFOUNDRY_CI_SANITIZE=1 tools/ci.sh --steps host,bench` with CI's `ASAN_OPTIONS`, then requires the pcap checks' lines, then renders the screen gallery (`uiSim --gallery`) | Those steps: CI's `unit tests` job without the coverage counters | No step | 6 min |
-| `ci-firmware-<toolchain id>` | `tools/ci.sh --quick --steps firmware --toolchain <toolchain id>` | CI's firmware job of that toolchain: default and maximal builds, option values, the stack check, the flash stubs | A directory under `boards/` without a `board.mk` | 4.5 to 5.5 min each |
+| `ci-firmware-<toolchain id>` | `tools/ci.sh --quick --steps firmware --toolchain <toolchain id>` | CI's firmware job of that toolchain: default and maximal builds, option values, the stack check, the flash stubs | A directory under `boards/` without a `board.mk`; the shared `third_party/` worktree test | 4.5 to 5.5 min each |
 | `ci-skip-guard` | The first toolchain's firmware run with its compiler missing; passes only when ci.sh exits 1 with a `ci: FAIL  skipped:` line | Proof that a skipped step fails a check | | seconds |
 | `flake-registry` | The images the flake reads from `boards/` against the registry's (`tools/boards.py list --toolchain`, `builds`) | Proof that the flake builds what ci.sh builds | | seconds |
 | `nix-fmt` | `nixfmt --check` on `flake.nix` and `nix/*.nix` | | | seconds |
@@ -164,7 +164,7 @@ skips ci.sh reports (`ci: skip`). A test that skips inside a step is the test's 
 | `tools/i18n_changes.py` (`python` step, advisory) | The same |
 | The staleness test of the bring-up run (`tests/hil/test_bringup.py`, `python` step) | It needs a commit older than `HEAD` whose files differ, and the sandbox repository has one commit: pytest skips it (`9 passed,1 skipped`). It runs in a checkout with history: `nix develop -c tools/ci.sh --steps python` |
 | `reuse lint` | The tree doesn't pass it yet ([CI](ci.md)), so the checks don't install it |
-| The submodule link checks (`licenses` step) | The sandbox copy has no links: `third_party: submodule links` has nothing to read and the flake pins are skipped. Run `python3 tools/check_flake_pins.py` or `tools/ci.sh --steps licenses` in the checkout |
+| The submodule link checks (`licenses` and `firmware` steps) | The sandbox copy has no links: `third_party: submodule links` has nothing to read, and the flake pins and the shared `third_party/` worktree test are skipped. Run `python3 tools/check_flake_pins.py`, `tools/ci.sh --steps licenses` or `--steps firmware` in the checkout |
 | Coverage (`tools/coverage.sh`) | CI's `unit tests` job runs the tests through it; `ci-host` runs them plain and under the sanitizers |
 | The SNMP tools' part of the host tests' peer check | The tools are not in the checks; the Makefile skips that part, as on CI |
 | The `similarity` step | Its reference trees are never in the repository |
