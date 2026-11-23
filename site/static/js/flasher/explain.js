@@ -9,8 +9,9 @@
 // other-radio  a file for another radio RadioFoundry knows (board names it)
 // wrong-key    a vendor container this radio's bootloader key doesn't open: another model, or a modified build
 // not-vendor   not a vendor firmware file at all: a plain image, another firmware project's build, a zip without one
-// unmapped     this radio's build (or, on a C-SKY radio, a codec no profile describes), but the codec can't be taken
-//              from it yet (no codec map); a C-SKY file of this kind is never written back as original firmware
+// unmapped     this radio's build (or, on a C-SKY radio, a codec no profile describes; or a whole firmware file in the
+//              container that holds its image twice with no profile), but the codec can't be taken from it yet (no
+//              codec map); a C-SKY file of this kind is never written back as original firmware
 // damaged      a cut-short or damaged file or zip
 // internal     a check failing after the file was identified: a fault in the flasher or its data, not in the file
 export const PROBLEMS = ["other-radio", "wrong-key", "not-vendor", "unmapped", "damaged", "internal"];

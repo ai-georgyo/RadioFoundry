@@ -89,6 +89,7 @@ under 64 KB. Each remaining file is identified against every radio the flasher k
 | 4 | An STM32 readout, by the codec windows' hashes (`stockfw.fromFlash`) | named, not used: the page asks for the manufacturer's file instead |
 | 5 | A C-SKY radio's whole program flash dump whose bootloader ID string names the chosen radio and whose application area holds code (`c7000.js` `isProgmemDump`), with no codec step 3 knows | kind `progmem`: a restore source, never a codec source. The restore puts it back as a backup's program memory is (application and codec slot, never the bootloader) |
 | 6 | Asked last by `identifyFile()`: a maker's bootloader file in the second container (`stockfw.bootFile`: the header gives the payload offset where a bootloader file has it). `unpack()` sets a file under 64 KB aside as too small for a firmware image before any header is read, so a bootloader file that small is reported as that | `not-vendor`, with its own sentence: it holds no firmware and no codec |
+| 7 | After it: a firmware file in the second container that no profile names (`twinfw.headerKind` "firmware": two header words, so a file cut short or padded still counts as the maker's). `twinfw.parse` refuses one whose header's payload length doesn't fit the file | `damaged` when refused (an interrupted download: download it again); otherwise `unmapped` for the boards whose profiles name this container (a version without a map). Never "not the manufacturer's file" |
 
 The best file for the chosen radio is used:
 

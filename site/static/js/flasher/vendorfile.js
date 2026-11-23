@@ -10,13 +10,16 @@
 //   3. a C-SKY radio's stock file or readout, by the codec's own hashes wherever the file holds it (c7000.js);
 //   4. an STM32 program flash readout, by the codec windows' hashes (stockfw.fromFlash): named, not used;
 //   5. a bootloader file in the container that holds its image twice, by its header (stockfw.bootFile): named, and
-//      no source of anything.
+//      no source of anything;
+//   6. a firmware file in that container with no profile, by its header: cut short or padded (its header's payload
+//      length doesn't fit the file: "damaged", download it again), else a version RadioFoundry has no map for.
 // The signature alone never makes a codec usable: moving the codec needs that build's map (docs/spec/codec-placement.md),
 // so a build without one is reported as "has the codec, no recipe for this build", not taken.
 
 import { sha256, u32le, startsWith } from "./bytes.js";
 import { unzip } from "./zip.js";
 import * as stockfw from "./stockfw.js";
+import * as twinfw from "./twinfw.js";
 import * as c7 from "./c7000.js";
 
 const MAX_DEPTH = 3;	// zips inside zips
@@ -73,8 +76,9 @@ const keyedBoards = (fb, first) => Object.values(fb.boards).filter((b) => b.key_
 // RadioFoundry can place; "codec-unmapped": it holds the codec of a build without a map; "progmem": a C-SKY radio's whole
 // program flash read with no codec known (a restore source, never a codec source); "readout": an STM32 radio's
 // flash read, which the page doesn't take. problem (no radio): "damaged", "wrong-key" (a vendor container no known
-// radio's key opens: another model, or a modified build), "unmapped" (a C-SKY codec no profile describes, for one of
-// boards), "internal" (a known file failing its own check) or "not-vendor"
+// radio's key opens: another model, or a modified build), "unmapped" (a C-SKY codec no profile describes, or a
+// firmware file in the container that holds its image twice with no profile, for one of boards), "internal" (a known
+// file failing its own check) or "not-vendor"
 export async function identifyFile(data, fb, boardId = null) {
 	const sha = await sha256(data);
 	const prof = stockfw.profileFor(fb.profiles, sha, boardId);
@@ -152,6 +156,20 @@ export async function identifyFile(data, fb, boardId = null) {
 	// a maker's bootloader file: no hash is known for it, its header says what it is
 	const boot = stockfw.bootFile(data, fb);
 	if (boot) return { sha, board: null, known, problem: "not-vendor", why: boot };
+	// a maker's firmware file in the container that holds its image twice, with no profile: still the maker's
+	// (twinfw.headerKind). One whose payload length doesn't fit its size was cut short or padded on its way (download
+	// it again); a whole one is a version without a map, for the radios whose profiles name this container
+	if (stockfw.containerKind(data, fb) === stockfw.TWIN && twinfw.headerKind(data) === "firmware") {
+		const boards = [...new Set(Object.values(fb.profiles).filter((p) => p.container === stockfw.TWIN).map((p) => p.board))];
+		try {
+			twinfw.parse(data);
+		} catch (e) {
+			return { sha, board: null, boards, known, problem: "damaged", how: "header",
+				why: "the maker's firmware file, cut short or padded: its header's payload length doesn't fit the file" };
+		}
+		return { sha, board: null, boards, known, problem: "unmapped", how: "header",
+			why: "a firmware file in the maker's container that RadioFoundry has no recipe for (a version without a codec map)" };
+	}
 	return { sha, board: null, known, problem: "not-vendor", why: known ? `${known}, which gives no codec` : "not a firmware file RadioFoundry knows" };
 }
 
