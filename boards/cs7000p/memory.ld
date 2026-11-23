@@ -5,10 +5,13 @@
  * installed through the SoC's ROM bootloader and no loader is kept below it. The vector table, stack rule and
  * start-up are the shared ones (platform/stm32/common.ld).
  *
- * FLASH: bank 1 only, 1 MB. Bank 2 (0x08100000 up) stays unused, so no tool ever asks the ROM bootloader to erase
- * it: version 9.1 of that loader leaves a bank 2 erase early, and a flash command after it can hang (AN2606 Table
- * 146). Which version a radio has is not known. The flashing tools read the application region from this script
- * (tools/boards.py). No codec is placed by the linker.
+ * FLASH: 896 KB, sectors 0 to 6 of bank 1. Sector 7, the bank's last, is left to the radio's codec, which the merge
+ * on the user's machine places there with its descriptor at the sector's end (vocoder_cs7000p.c,
+ * docs/spec/codec-placement.md, "STM32 radios"): no byte of the image shares a sector with it, so an update that
+ * writes the image keeps the codec. Bank 2 (0x08100000 up) stays unused, so no tool ever asks the ROM bootloader to
+ * erase it: version 9.1 of that loader leaves a bank 2 erase early, and a flash command after it can hang (AN2606
+ * Table 146). Which version a radio has is not known. The flashing tools read the application region from this
+ * script (tools/boards.py).
  *
  * RAM: the AXI SRAM, where the DMA controllers can reach a buffer (.data, .bss, the main stack at its top). It ends
  * 32 bytes short: the ROM bootloader's jump to an image needs the image's stack pointer more than 16 bytes below
@@ -22,7 +25,7 @@
 
 MEMORY
 {
-	FLASH   (rx)  : ORIGIN = __app_start, LENGTH = 0x08100000 - __app_start	/* bank 1 */
+	FLASH   (rx)  : ORIGIN = __app_start, LENGTH = 0x080E0000 - __app_start	/* sectors 0-6 of bank 1 */
 	RAM     (xrw) : ORIGIN = 0x24000000, LENGTH = 512K - 32	/* AXI SRAM; SP more than 16 bytes below its end */
 	CCMRAM  (rw)  : ORIGIN = 0x20000000, LENGTH = 128K	/* DTCM */
 }
