@@ -736,17 +736,17 @@ Limits:
 
 ## On a radio
 
-One radio, 2026-11-23, by its owner: the image of this hosting installed through the ROM bootloader with the maker's
-file V9.00.96, readings through the debug link.
+One radio, 2026-11-23, by its owner: the image of this hosting installed through the ROM bootloader by the web
+installer, with the maker's file V9.00.96; readings through the debug link.
 
 | What | Seen | Settles |
 |---|---|---|
 | The boot check | `codec=cs7000p-v90096-s7`, `dmr.codec=1`; the installer's probe says the codec can be kept | sector 7 as the merge wrote it: the descriptor, the pinned placement, both CRC-32s, the first word |
-| `CCR` (0xE000ED14) before any voice | 0x00060200: `UNALIGN_TRP` and `DIV_0_TRP` clear | the start-up's clear; which kind of start it followed was not recorded |
+| `CCR` (0xE000ED14) before any voice | 0x00060200: `UNALIGN_TRP` and `DIV_0_TRP` clear | the start-up's clear after the ROM loader's jump into the image (no power cycle since the install) |
 | Received voice: three group calls, 1650 voice bursts, 4950 frames in about a minute | played from the speaker, good quality throughout; `voice.rx_lost`, `rx_concealed`, `rx_bad`, `rx_underruns` and `dmr.underruns` all 0; no crash record, no restart | decode from the placed address with the tables where the merge put them; alignment on the real core for decode; decode within its 20 ms; the bit order and the FEC results from the HR_C6000 on receive |
 | The audio task's stack | `tasks.free.audio` 4936 after a key beep, 2560 after those calls, of 5120 bytes | decode's depth with the exception frame and context switch: 2560 bytes used, against 2352 emulated below the host's decode |
 
-Not seen yet: encode and everything on transmit, the silence frame, `CCR` after both kinds of start, the codec kept
+Not seen yet: encode and everything on transmit, the silence frame, `CCR` after a power cycle, the codec kept
 across an update, a bad channel.
 
 ## Only a radio can check
