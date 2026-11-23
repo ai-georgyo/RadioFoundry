@@ -4,6 +4,6 @@
  "board": "cs7000p",
  "source": "docs/spec/hardware-cs7000p.md",
  "date": "2026-11-21",
- "note": "Nothing has run on a radio: the port is written from the maker's schematic and the chip makers' documents (docs/spec/hardware-cs7000p.md 1). No feature has a row until a check on a radio gives one",
+ "note": "One radio has started the image (2026-11-22; docs/testing/cs7000p-bringup.md, First radio), read by hand through the debug link. No HIL run is recorded: no feature has a row until one gives it",
  "features": {}
 }
