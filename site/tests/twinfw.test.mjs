@@ -15,6 +15,8 @@ import { fromHex, toHex, sha256, u32le } from "../static/js/flasher/bytes.js";
 import * as twinfw from "../static/js/flasher/twinfw.js";
 import * as stockfw from "../static/js/flasher/stockfw.js";
 import * as cm from "../static/js/flasher/codecmap.js";
+import { identifyFile, openVendorFile } from "../static/js/flasher/vendorfile.js";
+import { pickProblem } from "../static/js/flasher/explain.js";
 
 const DIR = process.env.RFOUNDRY_SITE_FIXTURES || "build/site-tests";
 const json = (n) => JSON.parse(readFileSync(join(DIR, n), "utf8"));
@@ -254,4 +256,32 @@ test("the named files that give no codec: a version nobody has mapped, and a boo
 	}
 	// a file with a profile is never judged by its header
 	assert.equal((await stockfw.extract(stock, null, fb, profiles)).profile, prof);
+});
+
+// A firmware file of this container that no profile names is still the maker's (twinfw.headerKind): one cut short or
+// padded on its way is "damaged" (download it again), a whole one a version without a map for the container's radios.
+// Never "not the manufacturer's file", which tells the user to look for another project's build
+test("a cut, padded or unknown firmware file of this container: damaged or unmapped, never not-vendor", opts, async () => {
+	const twins = [...new Set(Object.values(fb.profiles).filter((p) => p.container === stockfw.TWIN).map((p) => p.board))];
+	assert.ok(twins.includes(prof.board));
+	const cases = [
+		["cut to 1 MB (an interrupted download)", changed(stock, { cut: 1 << 20 }), "damaged"],
+		["4 KB appended", changed(stock, { append: 4096 }), "damaged"],
+		["its last payload byte changed (another version)", changed(stock, { flips: [[stock.length - 3, 0x5A]] }), "unmapped"],
+	];
+	for (const [what, data, problem] of cases) {
+		assert.equal(twinfw.headerKind(data), "firmware", what);
+		const m = await identifyFile(data, fb, prof.board);
+		assert.deepEqual([m.board, m.problem], [null, problem], `${what}: ${JSON.stringify(m.why)}`);
+		assert.deepEqual(m.boards, twins, what);
+		assert.ok(!/RadioFoundry knows/.test(m.why), what);
+		const opened = await openVendorFile("M.bin", data, fb, prof.board);
+		assert.equal(opened.best, null, what);
+		assert.equal(pickProblem(opened, prof.board).problem, problem, what);
+		assert.equal(pickProblem(opened, prof.board, { need: "key" }).problem, problem, what);
+	}
+	// the file as it is, with its profile: the codec, as always
+	assert.equal((await identifyFile(stock, { ...fb, profiles: { ...fb.profiles, ...profiles } }, prof.board)).kind, "codec");
+	// a bootloader file of the container keeps its own sentence
+	assert.equal((await identifyFile(bin(T.boot.file), fb, prof.board)).problem, "not-vendor");
 });
