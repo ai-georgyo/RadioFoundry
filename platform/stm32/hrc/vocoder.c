@@ -157,7 +157,7 @@ static void enc_start(void)
 {
 	const stm32_codec_entries_t *at = &prof->at;
 	const uint32_t E = (uint32_t)state;
-	memset(state, 0, sizeof state);		// the codec expects a zeroed block
+	memset(state, 0, sizeof state);		// a known start: the inits need no cleared block, so this costs nothing
 	memset(fec_state, 0, sizeof fec_state);
 	memset(bitbuf, 0, sizeof bitbuf);
 	call(at->enc_init, 3, E, 1, 1, 0, 0, 0, 0, 0);
