@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: MIT -->
+<!-- Copyright (c) 2026 The RadioFoundry Authors -->
 # CS7000 M17 PLUS: hosting the AMBE+2 codec
 
 Status: format description of one stock file, against the reference build ([codec-placement.md](codec-placement.md),
