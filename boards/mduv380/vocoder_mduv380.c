@@ -5,10 +5,10 @@
 // they hold the same codec at their own addresses. The merge on the user's machine (rfoundry, tools/codec_extract.py,
 // the web flasher) writes the codec's tables at their address in that build (cut to the codec's own data), its code
 // right after them, word aligned, or at the start of sector 10 when it doesn't fit there, and the descriptor at the end
-// of sector 11 (platform/stm32f4/codec_desc.h). The code reaches its tables
+// of sector 11 (platform/stm32/codec_desc.h). The code reaches its tables
 // through absolute addresses, which don't change; the merge rewrites one pointer into the code and the 12 calls from
 // the code kept in the table window back into the code (the codec map). The calls and the checks are the shared ones
-// (platform/stm32f4/hrc/vocoder.c); this file says which builds and where. Without a valid descriptor and codec,
+// (platform/stm32/hrc/vocoder.c); this file says which builds and where. Without a valid descriptor and codec,
 // present() is false and the radio is FM only.
 #include "../uv380_family/uvf.h"
 #include "config.h"

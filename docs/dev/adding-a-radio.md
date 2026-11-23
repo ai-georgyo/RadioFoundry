@@ -23,8 +23,7 @@ chips leave to it.
 
 | Subdirectory | For |
 |---|---|
-| `platform/stm32/hrc` | an HR_C6000 or HR_C5000: DMR glue, I2S audio, the chip's ports. The modem's three interrupt pins are pins 0, 1, 2 of one port unless the board says otherwise (`STM32_HRC_LINE_*`, [build-config.md](../build-config.md#board-defines)) |
-| `platform/stm32f4/hrc` | the stock codec host of the STM32F4 radios. Listed right after `platform/stm32/hrc` |
+| `platform/stm32/hrc` | an HR_C6000 or HR_C5000: DMR glue, I2S audio, the chip's ports. The modem's three interrupt pins are pins 0, 1, 2 of one port unless the board says otherwise (`STM32_HRC_LINE_*`, [build-config.md](../build-config.md#board-defines)). It also holds the stock codec host (`vocoder.c`), which a board with a codec route gives its profiles (`stm32_codec_profiles` in `boards/<b>/vocoder_<b>.c`, [codec.md](codec.md)) |
 | `platform/stm32/spi_flash` | the data flash on SPI NOR, with its security registers. A flash that shares its bus with another device takes the board's bus lock (`bus_take`, `bus_give`) instead of the driver's own mutex. A part over 16 MB needs `SPI_NOR_ADDR4` |
 | `platform/stm32/gps_uart` | a GPS module on a USART |
 | `platform/stm32/lcd8080_gpio` | an 8080 display bus on GPIO lines, which may also be a key matrix's lines |

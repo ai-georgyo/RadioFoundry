@@ -104,7 +104,7 @@ export function layoutWindows(prof, fb, form) {
 	return form ? [...wins, [fb.descriptor.addr, fb.descriptor.len]] : wins;
 }
 
-// The 128-byte descriptor at the end of sector 11 (platform/stm32f4/codec_desc.h, stockfw.descriptor), for a form
+// The 128-byte descriptor at the end of sector 11 (platform/stm32/codec_desc.h, stockfw.descriptor), for a form
 // (default the current placement)
 export function descriptor(prof, fb, form) {
 	form = formOf(prof, form);

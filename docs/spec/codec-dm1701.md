@@ -209,7 +209,7 @@ keeps the table window at its stock address, so this changes nothing in the plac
    `dm1701-v0203-nocsv.json`). Rewrite the one literal in the code that points into the code
    and the 12 calls (BL) from the islands in the table window back into the code (the codec map
    `tools/rfoundry/rfoundry/codec_maps/dm1701/dm1701-v0206-csv.json`, `self_refs` and `branches`).
-5. Write the descriptor at 0x080FFF80 (`platform/stm32f4/codec_desc.h`): code and table window with their CRC-32s.
+5. Write the descriptor at 0x080FFF80 (`platform/stm32/codec_desc.h`): code and table window with their CRC-32s.
    The merge happens on the user's machine (rfoundry, `tools/codec_extract.py`, the web flasher, or `make` with the
    firmware file in `codecs/`), never in a release.
 
@@ -267,7 +267,7 @@ address, so the code's 63 table literals stay as they are.
 
 ## Codec state init and calls
 
-The sequence below is what `boards/dm1701/vocoder_dm1701.c` and `platform/stm32f4/codec_call.c` run. It is checked on a
+The sequence below is what `boards/dm1701/vocoder_dm1701.c` and `platform/stm32/codec_call.c` run. It is checked on a
 host against the codec windows, and has run on a radio ("Open items").
 
 ### Init
@@ -346,7 +346,7 @@ no FPU instructions.
 
 ### Hosting in RadioFoundry
 
-* `platform/stm32f4/hrc/vocoder.c` with this build's profile in `boards/dm1701/vocoder_dm1701.c`:
+* `platform/stm32/hrc/vocoder.c` with this build's profile in `boards/dm1701/vocoder_dm1701.c`:
 
   | function | does |
   |---|---|
@@ -357,7 +357,7 @@ no FPU instructions.
   Without the codec it reports not present (FM only).
 * State: one 0x16E0-byte CCM block holds E or D, never both ([codec-placement.md](codec-placement.md), "STM32
   radios").
-* `platform/stm32f4/codec_call.c` holds a file-scope assembly veneer `stm32_codec_call(fn, args, n)` with its own
+* `platform/stm32/codec_call.c` holds a file-scope assembly veneer `stm32_codec_call(fn, args, n)` with its own
   frame. It loads r0-r3 from the array and puts the rest on an 8-byte aligned stack. It restores SP from a saved
   frame register. The call therefore does not depend on how the caller was compiled (gotcha 4.1). To the compiler it
   is an ordinary external call, which orders memory around it (gotcha 4.4). It was verified on a host with a

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The STM32 codec descriptor (platform/stm32f4/codec_desc.h): a sound one passes, every malformed one is refused, the
+// The STM32 codec descriptor (platform/stm32/codec_desc.h): a sound one passes, every malformed one is refused, the
 // window CRCs are checked against the bytes. Synthetic flash, no codec. With file arguments, also checks the codec
 // sectors as tools/codec_extract.py merges them for its synthetic codecs (--test-desc: the DM-1701's sectors 10 and
 // 11, then the MD-380's sector 11 with five table windows, then the DM-1701's from an MD-9600 file, then the MD-9600's
@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../platform/stm32f4/codec_desc.h"
+#include "../../platform/stm32/codec_desc.h"
 
 static int failures;
 
