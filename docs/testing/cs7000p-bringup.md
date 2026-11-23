@@ -3,11 +3,12 @@
 
 # CS7000 M17 PLUS bring-up checklist
 
-The CS7000 M17 PLUS port (`make BOARD=cs7000p`) builds and passes its host tests. **Nothing has run on a radio.**
-Every value in it is from the maker's schematic and the chip makers' documents
-([hardware-cs7000p.md](../spec/hardware-cs7000p.md)). This page is the order to try it in, every assumption the
-port makes with the check that settles it, and the knob to change when a check fails. Every row is untested: each
-says what a radio should show, not what one did. The question numbers are those of the hardware page's section 16.
+The CS7000 M17 PLUS port (`make BOARD=cs7000p`) builds and passes its host tests. **One radio has run it** (2026-11-22):
+it starts, and what was read on it is in [First radio](#first-radio) below. Everything else is from the maker's
+schematic and the chip makers' documents ([hardware-cs7000p.md](../spec/hardware-cs7000p.md)). This page is the
+order to try it in, every assumption the port makes with the check that settles it, and the knob to change when a
+check fails. A row is untested unless First radio lists it: each says what a radio should show, not what one did.
+The question numbers are those of the hardware page's section 16.
 
 The stages are in order, and nothing that cannot be undone comes before the checks that gate it: the codeplug saved
 and the build (0), the loader identified with a USB capture (1), the maker's recovery proven on this unit (2; it
@@ -23,12 +24,36 @@ view keys below on a radio and never transmits.
 
 | Item | State |
 |---|---|
-| Build, host tests, stack check | pass (all built and run on a computer only) |
-| On a radio | nothing |
+| Build, host tests, stack check | pass |
+| On a radio | one unit: starts; display, keys, USB and the debug link work; FM receive measured to the squelch ([First radio](#first-radio)). Audio, DMR and every transmission: not checked |
 | Transmit | refused until the PA and the modulation are calibrated (stage 11) |
 | DMR voice | off: no codec route is known for this radio |
 | VOX | not written (`BOARD_NOT_WRITTEN`): the level detector has no supply while receiving |
 | Records | `docs/testing/results/cs7000p/seed.json`, with no feature row |
+
+## First radio
+
+One unit, 2026-11-22, by its owner; readings through `rfoundry_debug.py view --section board` unless said otherwise.
+This radio went straight to the install: stages 0 to 2 were not run on it as written.
+
+| What | Seen | Settles |
+|---|---|---|
+| The first install | Through the ROM bootloader with the web installer; the image starts. `board.rdp=0xaa` afterwards | the route as a whole; the reset path, the power hold, the clock |
+| `board.clock=hse`, `board.mcu_rev=V`, `board.rom_loader=0x92` | the crystal's tree; silicon revision V; ROM loader 9.2 | questions 14 and 16 (in part: not measured before the install) |
+| `board.lcd_board=assumed levels=0x1e`, `board.panel=st7735 source=id id=7c89f0` | the board check passes; the panel answers its ID; the display works | question 10 |
+| Keys | the twelve digit keys, \*, # and the side keys as drawn; the six function keys read one at a time (`keys_raw`, hardware page 9.4) and their order corrected | question 11's key half |
+| `board.flash=EF4019 size=0x2000000 addr4=1`, `board.store=foreign` | the data flash answers; nothing was claimed | stage 6's first rows |
+| `board.vbat_mv=8089`, `board.vdda_mv=3275`, `board.knob=on`, `board.hold=1`, `board.pow_det_mv=2080` | plausible on a charged pack; not compared with a meter | question 13 in part |
+| `board.hrc=1 r10=0x80`, `board.gps_baud=9600` | the HR_C6000 answers on its port in FM receive; the GPS module is heard at 9600 | questions 23 and 32 (the sleep line) |
+| `board.pll=locked r=2 vco_hz=383550000` on 433.500 MHz; unlocked with the LO side high (483.45 MHz) | the synthesizer programs and locks on the low side; the high side is out of the VCO's range there | question 2 |
+| FM receive, a carrier on 433.500 MHz | **With the first image the receiver was 10.5 kHz high** (centered at 433.490 MHz tuned, `rssi_raw` about 2990 and `noise_raw` about 380 there against 1250 and 1300 on channel; idle 770 and 1100): the reference DAC was off. With the DAC on at mid-scale the carrier is centered on channel. The hold is now 4:0x25 = 0x0C (hardware page 6, [hrc6000-registers.md](../spec/hrc6000-registers.md) 3.22) | question 1 except the fine offset; the squelch reading's direction and scale |
+| PC8's duty 0, 512, 1023 at the passband's edge | `rssi_raw` 2019, 2380, 2711: about 2 kHz end to end | question 4's size |
+| `rfoundry_debug.py reboot --rom-dfu` | refused by the first image (the entry was off); taken by the image that allows it. What the radio did after the request was not reported | question 18 in part |
+| An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
+
+Not checked on it yet: audio at the speaker, a beep, `board.i2s` (it read `dir=unknown`, no clock seen, in FM
+receive with no beep), the channel selector's sixteen codes (`chsw_raw=0x9` at one position), the battery against a
+meter, the claim and the full backup, DMR, and everything of stage 11.
 
 The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), each on the board's own source:
 

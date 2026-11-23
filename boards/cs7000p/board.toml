@@ -34,7 +34,7 @@ clock = { rtc = "none", note = "no 32.768 kHz crystal and no backup supply (VBAT
 
 [status]
 level = "bring-up"
-summary = "Builds; nothing has run on a radio. Transmit is refused until the power amplifier is calibrated. No DMR voice: there is no codec route for this radio yet."
+summary = "Starts on a radio: the display, keys, USB and the debug link work, and FM receive is measured to the squelch. Audio and DMR are not checked yet. Transmit is refused until the power amplifier is calibrated. No DMR voice: there is no codec route for this radio yet."
 release = "testing"
 
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
