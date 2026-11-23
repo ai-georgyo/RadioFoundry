@@ -303,7 +303,7 @@ link, or from the file again.
 |---|---|---|
 | keep | Not in the plan: `--dry-run` shows them as "keep" | The radio runs RadioFoundry and reports the board's codec id, and the loader then confirms it (below) |
 | merge | Erased and written whole: the codec, 0xFF, the descriptor in the sector's last block | A stock file, a saved copy, or an image with the codec merged in |
-| blank (`plan.BLANK`) | Erased and left blank; nothing is written there | `--codec none` (the web flasher: Install without the codec). The radio runs without DMR voice until an install with `--stock` |
+| blank (`plan.BLANK`) | Erased and left blank; nothing is written there | `--codec none` (the web flasher: Install without the codec). The radio runs without DMR voice until an install with `--stock`, or with the saved copy. A radio that reports its codec hands over a copy first, as before every update that erases it, and the warning and a question (unless `--yes`) name the codec that is erased |
 
 `--codec none` is for this route only; another family refuses it. `--codec keep` never erases a codec sector, on any
 route. `make_plan` refuses codec data in keep and blank mode, an image that reaches a codec sector, and blank mode
