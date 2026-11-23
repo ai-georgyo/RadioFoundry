@@ -4,7 +4,8 @@
 # CS7000 M17 PLUS bring-up checklist
 
 The CS7000 M17 PLUS port (`make BOARD=cs7000p`) builds and passes its host tests. **One radio has run it** (2026-11-22):
-it starts, and what was read on it is in [First radio](#first-radio) below. Everything else is from the maker's
+it starts, and what was read on it is in [First radio](#first-radio) below. The codec route (stage 10.1), DMR voice
+audio and every transmission are untested. Everything else is from the maker's
 schematic and the chip makers' documents ([hardware-cs7000p.md](../spec/hardware-cs7000p.md)). This page is the
 order to try it in, every assumption the port makes with the check that settles it, and the knob to change when a
 check fails. A row is untested unless First radio lists it: each says what a radio should show, not what one did.
@@ -25,9 +26,9 @@ view keys below on a radio and never transmits.
 | Item | State |
 |---|---|
 | Build, host tests, stack check | pass |
-| On a radio | one unit: starts; display, keys, the channel selector, beeps, USB, the debug link and settings storage work; FM receive with clear audio; DMR calls are received and decoded, without audio ([First radio](#first-radio)). Every transmission: not checked |
+| On a radio | one unit: starts; display, keys, the channel selector, beeps, USB, the debug link and settings storage work; FM receive with clear audio; DMR calls are received and decoded, without audio ([First radio](#first-radio)). The codec route (stage 10.1), DMR voice audio and every transmission: not checked |
 | Transmit | refused until the PA and the modulation are calibrated (stage 11) |
-| DMR voice | off: no codec route is known for this radio |
+| DMR voice | needs the codec merged (stage 10.1); untested |
 | VOX | not written (`BOARD_NOT_WRITTEN`): the level detector has no supply while receiving |
 | Records | `docs/testing/results/cs7000p/seed.json`, with no feature row |
 
@@ -82,6 +83,7 @@ The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), ea
 | `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`) |
 | `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict |
 | `cs7000pPinsTest`, `cs7000pPanelTest`, `cs7000pKeysTest`, `cs7000pSpeakerTest`, `cs7000pSubPwmTest`, `cs7000pStoreTest` | the pin set-up and its never-driven list, the LCD board check and the panel ID, the keys and the selector, the speaker lines, PC8's duty, the flash map |
+| `cs7000pCodecTest` | the codec's boot check with the board's own profile (`vocoder_cs7000p.c`) on a sector 7 that holds a synthetic codec in the real layout: the descriptor, both CRC-32s, the first word, the entry offsets; a byte changed in the code, in a blanked span, in the block or in a gap fails it. With `pinned` as its second argument it takes sector 7 of an image merged from the maker's file, outside the repository, and also asks for the two pinned CRC-32s |
 
 ## At a glance: what is assumed
 
@@ -107,6 +109,8 @@ and the table at the end has one row per open question.
 | The lock line reads unlocked at once after new synthesizer words; the DAC carries the tuning value about 100 us after a burst | 11 | 3, 25, 33 |
 | No calibration: every transmission is refused until the PA and modulation tables are measured | 11 | 5 |
 | The whole-chip backup is complete (no claim before it) | 6 | 21 |
+| The radio's own codec, merged into sector 7 from the maker's file V9.00.96, passes the boot check and runs from its placed address; the audio task's stack holds it | 3, 10.1, 10.2, 11 | [codec-cs7000p.md](../spec/codec-cs7000p.md), "Only a radio can check" |
+| A flash word that a power cut left half written reads as a bus fault. Never tried, and not to be tried: the installers' rule stands in for the test | 3 | hardware page 2.3 |
 
 ## 0. Before anything
 
@@ -149,6 +153,18 @@ make BOARD=cs7000p
 ```
 
 Nothing touches the radio here. The install is stage 3, after stages 1 and 2.
+
+For DMR voice the install needs the maker's DMR program file, `M17_PLUS_HOST_V9.00.96_20260303_1.bin` (V9.00.96, SHA-256
+`1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59`; the maker's software page for this radio). Two
+ways, with the same bytes on the radio:
+
+| Way | How |
+|---|---|
+| The build merges | With the file in `codecs/`, `make BOARD=cs7000p` also writes `build/cs7000p/rfoundry_cs7000p_codec.bin`, 1048576 bytes: the image, 0xFF, the codec in sector 7 and its descriptor ([codecs/README.md](../../codecs/README.md)). Flash that file |
+| rfoundry merges | `rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --stock M17_PLUS_HOST_V9.00.96_20260303_1.bin`: merged in memory and written |
+
+The file and the merged image hold the maker's codec: keep them out of the repository and to yourself. V9.00.95,
+V9.00.09 and V9.00.05 are recognized and refused.
 
 No debugger is needed. SWD is on two test points (TP304, TP301) with TP305 for reset; the firmware never
 reconfigures those pins.
@@ -240,9 +256,16 @@ recovery's versions, so stage 0's notes are the only record of what the unit shi
 **Only after** every stage 1 row passed, the capture showed no SET_INTERFACE, and stage 2 is done on this unit.
 
 ```
-rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --dry-run  # the plan, nothing sent
-rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --unprotect
+rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --stock FILE --dry-run  # the plan, nothing sent
+rfoundry flash build/cs7000p/rfoundry_cs7000p.bin --board cs7000p --stock FILE --unprotect
 ```
+
+FILE is the maker's `M17_PLUS_HOST_V9.00.96_20260303_1.bin` (Build, above). The Read Unprotect erases the codec with
+everything else and a protected radio cannot be read, so the first codec can only come from the file. Without
+`--stock`, rfoundry refuses a radio on the maker's firmware before it asks the loader anything, and names the two ways
+on: `--stock FILE`, or `--codec none`, which installs without the codec (sector 7 erased and left blank,
+`codec=absent`, FM only; stage 10.1 then installs it). Either is a valid first install. With `--codec none` a start
+that fails in this stage has one suspect less, the codec's boot check, which reads all of sector 7 at every start.
 
 Without `--unprotect`, rfoundry stops at a protected radio and changes nothing. A chip its probe finds unprotected
 (stage 1, or stage 2's step 4 after the recovery) is written in that run, with or without the option: no Read
@@ -272,9 +295,11 @@ protected is lost.
 | Look for | Proves | If not |
 |---|---|---|
 | `--dry-run` prints "order: sector 0 erased first and written last (a cut install leaves no application to start)" | the vector-last plan (`check_plain` refuses any other) | Another order: the plan or the check is wrong; do not go on |
+| `--dry-run` with `--stock FILE` prints "codec mode: merge", the image's sectors as "ERASE + WRITE app", and sector 7 (0x080E0000..0x080FFFFF) as "ERASE + WRITE codec: blocks 2..129 (128 x 1024 bytes, up to 0x080FFFFF)": the plan numbers a sector's blocks from 2. Sectors 8 to 15 read "not touched", and the "erase N sector(s)" line names the image's sectors and 7, no other. With `--codec none`: "codec mode: blank" and sector 7 as "ERASE, left blank (...)" | the merge plan: sector 7 written whole, from its start to the descriptor in its last block; bank 2 untouched | Sector 7 "not touched" or "keep" on a first install, or any sector of bank 2 erased or written: the plan is wrong; do not go on |
+| "stock ... verified (SHA-256), codec windows decrypted and checked" before anything is sent | the file is the analyzed one; its key, the carve from both copies, the placement and the three CRC-32 gates held on this computer | A named version that is refused: get V9.00.96. Any other refusal: record the message; nothing was erased |
 | The first `--unprotect` run: the first GETSTATUS after the command answers busy, the device leaves USB by itself within 120 s without restarting, and rfoundry asks for the switch-off no sooner than 60 s after the command | AN3156's description of Read Unprotect | "the bootloader did not take the Read Unprotect command (status N, state S)": record them. rfoundry and the web page say when to switch off: after the radio has left USB and at least 60 s (the least wait). With no disconnect within 120 s (the longest wait) the tools say the erase is over or was not taken (120 s is more than four times the 26 s tME bound of DS12110 Table 43), and the next probe decides. **Record** whether the log shows "the bootloader left the bus ... it may be erasing" (a lost GETSTATUS reply after 0x92, taken as the command taken), and whether the bootloader came back by itself with SK1 held through the erase |
 | Every "erase" line of the first install passes | a 128 KB sector erases in up to 4 s (DS12110), inside rfoundry's 5 s per status request | "USB error while flashing" during an erase: run the same command again (the sector is then blank and erases quickly) and record it; the timeout is the `5000` in `get_status` of `rfoundry/dfu.py` |
-| After the write: "verify: read back N blocks", then "write the vector table at 0x08000000" and "verify: read back the vector table", before Leave | the loader takes a 1024-byte UPLOAD of block 2 after Set Address Pointer and ABORT, for every block (the probe's 4-byte read is the only upload any document describes for a protected chip), and it put every block, written as block 2 after its own Set Address Pointer, at that pointer | A refused read or a mismatch stops the install with the image not started; the radio stays in the loader. A refused read on every block: record the status and state; the read-back is `Dfu.read_back` in `rfoundry/dfu.py` and `Dfu.readBack` in the web flasher's `dfu.js` |
+| After the write: "verify: read back N blocks" (N includes sector 7's 128 blocks in a merge), then "write the vector table at 0x08000000" and "verify: read back the vector table", before Leave | the loader takes a 1024-byte UPLOAD of block 2 after Set Address Pointer and ABORT, for every block (the probe's 4-byte read is the only upload any document describes for a protected chip), and it put every block, written as block 2 after its own Set Address Pointer, at that pointer | A refused read or a mismatch stops the install with the image not started; the radio stays in the loader. A refused read on every block: record the status and state; the read-back is `Dfu.read_back` in `rfoundry/dfu.py` and `Dfu.readBack` in the web flasher's `dfu.js` |
 | A mismatch at the same address on a second run of the same command | not a one-off. The expected cause is option-byte protection the regression left in place (a write-protected or PCROP sector; loader V9.0 does not clear PCROP, AN2606 Table 146). It is not the block numbering: both tools send every block as block 2 right after its own Set Address Pointer, so a block's address is the pointer whatever the loader multiplies the block number by (AN3156 5.1; stage 1 has the descriptor's `wTransferSize`) | **Record the address, and whether it is a sector's first block, and stop retrying.** Run the same install once with the other tool (rfoundry or the web flasher; both send the same requests): the same address again is the chip, another result is the tool or the computer's USB. No tool here writes option bytes (question 14) |
 | After the second loader entry the write runs and the radio starts | the ROM's Leave into the image (question 19) | The radio shows nothing: switch it off and on (rfoundry says so). Still nothing: section "If it does not start" below |
 | The USB serial port enumerates as "CS7000 M17 PLUS" | the clock, USB | No USB at all: the image did not start (USB has a clock on every clock tree) |
@@ -297,6 +322,16 @@ of the ID words; `tests/hil/test_chip_reg.py` (CPUID 0x411FC271) and `tests/hil/
 A known limit: reading a program flash word whose programming was cut short (an install that lost power) takes a
 bus fault on this chip (RM0433 4.7.7). A `dump` or `peek` across such a word restarts the radio with a crash record
 instead of answering. Install again; a whole image leaves no such word in the range it wrote.
+
+The same limit and the codec ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 2.3): the boot check reads the
+descriptor and all 105243 placed bytes of sector 7 at every start, so a torn word there would be a fault at every
+start, not a failed CRC-32.
+
+| Look for | Proves | If not |
+|---|---|---|
+| Nothing: **nobody cuts the power during an install to see this.** What stands in for the test is the installers' rule, run against the fake loader with a cut at every block of sector 7: sector 7 is left as it is only at a radio that is not read protected and holds a vector table, which every install writes last. Otherwise it is written whole or erased whole | (host tests only) | |
+| After an install that was cut by accident (USB or power): the same command again. A merge runs whole. A keep is void ("the radio holds no vector table ..."): rfoundry merges from its saved copy of the codec or from `--stock FILE`, or refuses and names `--stock FILE` and `--codec none`. **Record what it printed** | the rule on a radio, without provoking it | The radio then faults at every start (a crash record with a bus fault, a restart loop, or nothing on USB): loader mode and `--codec none` erase sector 7; if it starts after that, the codec's sector was the cause. Record it |
+| **The limit that stays.** A sector 7 left torn by another program (a generic DFU tool) under a vector table that program wrote: RadioFoundry faults at every start until an install through the ROM loader with `--stock FILE` or `--codec none`. The firmware does not guard the boot check's reads. Use rfoundry or the web flasher only | not checked on purpose | |
 
 ## 4. Power, the knob, the expander
 
@@ -412,7 +447,44 @@ radio's full power. Nothing transmits (`board.cal=none`).
 | Sync on a DMR signal from the bench ([dmr-bench.md](dmr-bench.md)): the call's source and talk group show | the IF into the chip, the I/Q order, tones off | No sync with RSSI present: the LO side and I/Q order together (`reg 3 3`) |
 | BER against level | the IF level, the reference's accuracy | `ctrl3`; question 1 |
 
-DMR voice does not play: there is no codec. Data, text and the hotspot's receive side need none.
+Data, text and the hotspot's receive side need no codec. DMR voice needs the radio's own codec in sector 7: the two
+subsections below. Everything in them is untested.
+
+### 10.1 The codec: merge, install, the boot check
+
+No RF. The codec is the one in the maker's `M17_PLUS_HOST_V9.00.96_20260303_1.bin`, merged on this computer into
+sector 7 ([codec-cs7000p.md](../spec/codec-cs7000p.md), "Hosting"). If stage 3 installed with `--stock FILE`, the
+install rows below are already done: go on at the `probe` row.
+
+| Look for | Proves | If not |
+|---|---|---|
+| `python3 tools/codec_extract.py --stock M17_PLUS_HOST_V9.00.96_20260303_1.bin --board cs7000p` ends with "... verified" and "wrote build/cs7000p/rfoundry_cs7000p_codec.bin (1048576 bytes; ...)" | the file is the analyzed one; the key, the carve, the placement, the three gates | Another version is named and refused: get V9.00.96. "the rewritten code's CRC-32 ... is not the ... that follows from the map", or the like: the tool or the map is wrong; stop and report it |
+| `rfoundry flash IMAGE --board cs7000p --stock FILE --dry-run`: sector 7 "ERASE + WRITE codec", "order: sector 0 erased first and written last" | the plan | |
+| The install's "verify: read back" passes | the ROM loader wrote sector 7 | The radio starts nothing until the same command has run again |
+| `rfoundry probe`: `codec    cs7000p-v90096-s7`; `rfoundry_debug.py view --section dmr`: `dmr.codec=1` | the descriptor (tag 0x00090096), both CRC-32s over 105243 bytes (code 0xA6BAF942, block 0x1DD4537C), the first word, as flashed | `absent` after a merge: rfoundry says the radio has no usable codec and to flash again with `--stock`. Do that once. `absent` again: **record** the install's read-back lines, and run the host check below on the merged image: it tells a wrong image from a wrong write |
+| `rfoundry_debug.py peek 0xE000ED14` (the SCB's `CCR`, 4 bytes): bits 3 and 4 clear. Once after the install's own start (the ROM loader's jump) and once after a power cycle. **Record both values** | the start-up's restore of `CCR` and that nothing set a trap bit since | A set bit is a finding, not a harmless state: the start-up clears both, so something set it later. Record the value and which start it was, and run no DMR voice until it is found |
+| `rfoundry_debug.py view --section tasks`: `tasks.free.audio`, before any DMR voice. **Record it** | the baseline of the audio task's stack | |
+| An update without `--stock`: the plan shows sector 7 as "keep (codec in the radio stays: ...)", and afterwards `codec=` is as before | keep: the update erased only the image's sectors (0 to 4 for today's default image) | The update says the keep is void: the radio was in its loader without a vector table, or the probe was not remembered. Give `--stock`. `codec=absent` after a keep: the loader erased more than asked; report it |
+| `tests/hil/test_codec_info.py` and `tests/hil/test_codec_cpu.py` | the same checks as tests (`codec_check`) | |
+
+To check a merged image without a radio: the last 131072 bytes of the merged file are sector 7, and
+`tests/host/cs7000pCodecTest FILE pinned` runs the boot check's steps on them with the pinned CRC-32s. The file
+stays outside the repository.
+
+### 10.2 DMR voice, receive
+
+No RF from the radio. A voice call from the bench ([dmr-bench.md](dmr-bench.md)).
+
+| Look for | Proves | If not |
+|---|---|---|
+| The call plays from the speaker, intelligible | decode from the codec's placed address; the tables where the merge put them; the PCM path of stage 8 | No audio with the call shown: `dmr.codec`, then `voice.rx_frames` in `dmr_stats`. A restart with a crash record: **record it whole** (`crash show`) and stop DMR voice: a fault inside 0x080E0004..0x080F9B23 is the codec at its placed address |
+| No crash record and no restart over a minute of received voice | no fault in the codec: alignment on the real core (the LDRD on T3 and T5), no divide by zero | Record the crash's `pc` and status words. A usage fault with a trap bit set in `CCR`: stage 10.1's row |
+| `view --section tasks` after that minute: `tasks.free.audio`, expected above 128. **Record it** | the audio task's stack under decode (2192 bytes inside the codec, less than encode's 4048) | Under 128: stop and report it |
+| No gaps: `dmr.underruns` in the `dmr` section and `voice.rx_underruns` in `dmr_stats` stay | decode within its 20 ms at this clock | Underruns that rise with voice only: record the counts |
+| The AMBE silence frame from the bench decodes to silence | the page's silence frame check, on the radio | |
+| The receive side of the codec page's "Only a radio can check" list: voice quality and level through this radio's audio path, bit order from the HR_C6000, the FEC results | | recorded |
+
+Transmitted voice is in stage 11, after the calibration.
 
 ## 11. Transmit, only with the owner
 
@@ -436,7 +508,13 @@ that and is never made (Bench knobs, above).
 | The measured values go into `rfcal_cs7000p.c`: the PA rows and the floor (`CS7000P_APC_FLOOR`) from `power_cal.py`, the FM and DMR modulation pairs, the reference offset (`ref_set`). All of them: `cs7000p_cal_tx_ok()` needs the PA row, the pair for the mode and the reference (hardware page 13.2). Rebuild with `CS7000P_BENCH_DMR_TX=1` and install | `board.cal=model`, a `tx_drive` in the core view that is not all 0, and the radio transmits FM without the override | `tx_drive` still 0: a PA point is still `CS7000P_CAL_UNSET` |
 | DMR bursts: `tools/bench/pa_cal.py --radio PORT --bench HOST --freq MHZ --pad-db DB --max-w W --allow-rf` (question 25; `--pad-db` the pads between the radio and the SDR, `--max-w` the highest output measured above). It keys over the debug link, the bench gateway measures each burst's ramp; its open-loop keys use the drive override, which in DMR needs `CS7000P_BENCH_DMR_TX=1` | the burst runner and the sequencer on a radio, the key-up constants it reports | "the radio has no power calibration here": the step above is not done. `board.pll` unlock count, `board.dac` refusal count, `board.tx_refused` |
 | Afterwards, as analysis only (neither keys the radio): `tools/bench/burstramp.py` on an I/Q capture of the bursts, `tools/bench/pa_shape.py` on `pa_cal.py`'s saved runs (`--out`) | the ramp shapes | |
-| `pa_cal.py`'s constants into the board file; rebuild without `CS7000P_BENCH_DMR_TX`; the values on the hardware page | the radio transmits DMR without the override (no voice: no codec) | |
+| `pa_cal.py`'s constants into the board file; rebuild without `CS7000P_BENCH_DMR_TX`; the values on the hardware page | the radio transmits DMR without the override (voice needs the codec of stage 10.1) | |
+| **DMR voice, transmit.** Only when `board.cal` is not `none`, the codec is in place (`dmr.codec=1`, stage 10.1) and received voice passed (stage 10.2); under `--allow-rf`, on the dummy load. First the test signal in place of the microphone (`rfoundry_debug.py radio voice-test on`, view key `voice.tx_test`): the bench decodes the call and hears the stepped tone | the encoder from its placed address, the frames on air | No call on the bench with DMR data working: `dmr.codec`, then the rows below |
+| `rfoundry_debug.py view --section tasks` after a transmission: `tasks.free.audio`. **Record it** beside stage 10.1's and 10.2's values | the audio task's stack under encode, the deepest call: 4048 bytes inside the codec, 4104 with the veneer. `make stack-check` computes `deepest 4456 free 328` of 5120 and does not see into the codec | Under 128 bytes free, or a crash record with a stack overflow: stop DMR voice and report it. `AUDIO_TASK_STACK` is shared by both STM32 families (`platform/stm32/hrc/i2s_pcm.c`): raising it is the owner's decision |
+| No late blocks in a minute of transmitted voice: `dmr.underruns` in the `dmr` section and `call.tx_underruns` in `dmr_stats` stay | encode within its 20 ms at this clock | Underruns that rise only with voice: record the counts and the clock (`board.clock`) |
+| `rfoundry_debug.py view --section dmr`: `voice.enc_flags=0x1840` with the default encode options | the flags word the host passes | Another value with default options: `drivers/vocoder/ambe2_flags.h` against `voice.enc_options` |
+| Then the microphone: a voice call from the radio decodes on the bench | the microphone path in DMR (the open point on `EXP_MIC_POWER` in section 13) | Silence with the test signal working: `MIC_5V` while armed, then `CS7000P_E0_MIC` |
+| The transmit rules do not change with the codec: without calibration the radio refuses every transmission, voice included (`board.tx_refused`) | the calibration verdict is ahead of the vocoder | A key-up with `board.cal=none`: stop, report it |
 
 What the shared sequencer (`drivers/rf/chainseq`) assumes about this chain, each to check once:
 
@@ -495,13 +573,19 @@ Open points found while the board was written, beside the hardware page's 36 que
 | The ROM loader's `wTransferSize` and how it places block N after one Set Address Pointer: in no document. Neither tool depends on it: every block is block 2 after its own Set Address Pointer | stage 1's descriptor record; stage 3's read-back |
 | The AK2365A read alignment: `chip_reg` 2 returns bits 8 to 1 of ten samples | stage 9's 0x0B read-back |
 | PCM playback in DMR mode: the board writes no codec register, and whether 4:0x22 bits 1 and 2 must be set again after the DMR entry is not known | a key beep on a DMR channel |
-| The microphone in DMR: on from the arm (`EXP_MIC_POWER`, `EXP_MIC_INT`) to its end. Nothing uses it yet (no codec). Once something does, a silent DMR transmission: the microphone rail first (`MIC_5V` present while armed), then the codec input bit (`CS7000P_E0_MIC`) | `MIC_5V` on a meter while a DMR transmission is armed (stage 11) |
+| The microphone in DMR: on from the arm (`EXP_MIC_POWER`, `EXP_MIC_INT`) to its end. The codec's encoder uses it once the codec is merged (stage 10.1). Once something does, a silent DMR transmission: the microphone rail first (`MIC_5V` present while armed), then the codec input bit (`CS7000P_E0_MIC`) | `MIC_5V` on a meter while a DMR transmission is armed (stage 11) |
 | The battery while keyed: the transmit check reads `POW_DET` once, before the key-up. Only the core's monitor ends a transmission when the battery sags | stage 11 |
 | A safe request (`board_rf_safe()`) leaves the HR_C6000 in the mode it was in, the FM transmit set-up included, until the next `tx_off()` or status poll: the reference oscillator sits on the transmit set-up's control level with the PA off | a frequency counter on the reference after a forced safe request |
 | `status()` is where the receiver is restored after a safe request and where the bench changes `chip_reg` 3:3 and 3:4 are applied. If the core stops polling it in some state, they wait for the next `rx()`. In the power's off state it does not restore | by reading the code paths once the radio runs |
 | The burst runner's key-up under a bench drive uses the drive as its own top | no difference with the fixed key-up constant; matters once the constants are measured |
 | After an underrun or overrun the two I2S streams may be a few samples out of step until the next audio stop and start (RM0433 50.9.12, 50.9.13; an overrun with an early frame in one frame, 50.9.14) | `board.i2s` `und=` / `ovr=` over a few minutes of audio: 0 expected |
 | STM32H743 revision Y only: ADC and DAC conversions at the same time may cost ADC accuracy (ES0392 2.9.7), and 12 bits are not guaranteed with VDDA above 3.3 V (2.9.10) | `board.mcu_rev` |
+| The codec from its placed address: nothing but an emulator has run this codec, and no run had the eight small blanked spans or the merged image itself ([codec-cs7000p.md](../spec/codec-cs7000p.md) "Hosting") | stages 10.1, 10.2 and 11 |
+| `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP` at run time: the start-up clears both and the host checks once before its first codec call; nothing checks later | stage 10.1's `peek`, after the loader's jump and after a power cycle |
+| The audio task's stack with the codec: `make stack-check` gives `deepest 4456 free 328` of 5120 bytes and does not see into the codec; the codec page's 4048 bytes for encode are an emulator's figure | `tasks.free.audio` before voice, after received voice and after transmitted voice (stages 10.1, 10.2, 11) |
+| Encode and decode within 20 ms at this clock: the emulator gives instruction counts only | the underrun counts of stages 10.2 and 11 |
+| Whether a read of a torn flash word faults as the HAL says ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 2.3) | not to be tried on purpose; stage 3's rows |
+| The keep across an update: the ROM loader erases only the sectors asked | stage 10.1's update row |
 | Port C's pin modes are set by a read-modify-write that is not atomic (`platform/stm32/gpio.c`), from three tasks: the audio task (PC11, PC12, the I2S pads), the GPS task (PC7) and the radio task (PC13, the AK2365A's data line, under the interrupt mask). A GPS or audio task cut by the radio task's masked write can write PC13's old mode back: PC13 an input in an IF chip write (a frame lost unseen: a wrong filter or a deaf receiver until the next receive set-up) or an output after a frame. The backlight's PC9 is set up before any task and is off this list | the RSSI and noise readings, or a 0x0B read-back, after many receive set-ups with GPS and audio running; open in the shared code (an owner's decision) |
 
 ## Every assumption, by question number

@@ -7,15 +7,19 @@ The CS7000 M17 PLUS is a UHF handheld: STM32H743VI, HR_C6000, a SKY72310 synthes
 IF chip, a discrete PA with a current loop, a 32 MB SPI NOR flash, a GPS module, and a 24-bit output expander that
 carries every rail enable. The port is `boards/cs7000p` on `platform/stm32h7`.
 
-Status: **nothing in this file has been run on a radio: all of it is untested.** The image builds, its host tests
-pass and its static stack check passes. The order to check things on a radio, and the knob to change when a check
-fails, is [cs7000p-bringup.md](../testing/cs7000p-bringup.md).
+Status: **in bring-up on one radio (2026-11-22).** The image starts; the display, the keys (their order and the
+channel selector's code read, 9.4), USB, the debug link and settings storage work; FM receive works with clear audio
+(the reference hold, 6.5) and DMR calls are received and decoded, without audio. Everything else in this file is
+untested unless a section says it was seen on that radio: in particular the codec route (2.3,
+[codec-cs7000p.md](codec-cs7000p.md)), DMR voice audio and every transmission. The image builds, its host tests pass
+and its static stack check passes. The order to check things on a radio, and the knob to change when a check fails, is
+[cs7000p-bringup.md](../testing/cs7000p-bringup.md).
 
 Words used here:
 
 | Word | Meaning |
 |---|---|
-| unverified | Written from the schematic or a datasheet, never seen on a radio. Everything in this file is, unless it says otherwise |
+| unverified | Written from the schematic or a datasheet, never seen on a radio. Everything in this file is, unless it says it was seen or measured on a radio |
 | open | In no allowed source. The code carries no value for it, or a value behind a gate that keeps it out of use |
 | assumed LCD board | The display and keypad board is not in the maker's schematic. The OEM's 2018 board is the working assumption (section 9) |
 
@@ -24,7 +28,7 @@ What the radio refuses until it is calibrated or checked:
 | Refused | By | Lifted when |
 |---|---|---|
 | Any transmission: FM, DMR data, the hotspot, Tier III registration | the calibration verdict in `tx()` and in the burst key-up (section 13) | the model tables are filled from bench measurements |
-| DMR voice transmit, received voice audio | the core: no vocoder (`board.vocoder` is NULL) | a codec route exists |
+| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); untested |
 | Settings and codeplug writes, on every unit, blank flash or not | the foreign-region guard with `STORAGE_CLAIM_FIRST` (section 10) | the owner claims the region after a backup of the whole chip |
 | The power hold | `power_cs7000p.c` (section 5) | the knob has been read on, some tens of milliseconds after reset |
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |
@@ -120,15 +124,50 @@ reading depends on (section 5).
 
 | Region | Memory | Holds |
 |---|---|---|
-| `FLASH` | bank 1, 0x08000000 to 0x08100000 | the image. Bank 2 is unused: a ROM bootloader version with a bank 2 erase fault (AN2606 Table 146, V9.1) is never asked to erase it |
+| `FLASH` | bank 1, sectors 0 to 6: 0x08000000 to 0x080E0000, 896 KB | the image |
+| not in the linker script | bank 1, sector 7: 0x080E0000 to 0x08100000, 128 KB | the radio's AMBE+2 codec, placed by the merge on the user's machine, and its descriptor in the last 128 bytes (0x080FFF80). Blank without a merge. No byte of the image shares the sector, so an update that writes the image keeps the codec ([codec-cs7000p.md](codec-cs7000p.md), "Hosting") |
+| not used | bank 2, 0x08100000 to 0x08200000 | nothing: a ROM bootloader version with a bank 2 erase fault (AN2606 Table 146, V9.1) is never asked to erase it |
 | `RAM` | AXI SRAM, 0x24000000, 512 KB less 32 bytes | `.data`, `.bss` (DMA buffers are here: DMA1 and DMA2 reach it), the main stack at the top. The ROM bootloader's Leave wants the initial stack pointer more than 16 bytes below the end of the RAM |
-| `CCMRAM` | DTCM, 0x20000000, 128 KB | `.ccmdata`, `.ccmbss`, `.ccmram`, the RTOS heap with every task stack. CPU only: no DMA reaches it |
+| `CCMRAM` | DTCM, 0x20000000, 128 KB | `.ccmdata`, `.ccmbss`, `.ccmram` (with DMR built: the codec host's state block, FEC state and its bit and PCM buffers, 6392 bytes), the RTOS heap with every task stack (it takes the rest; the link asserts 24 KB). CPU only: no DMA reaches it |
 | not used | SRAM1 to SRAM3 (their clocks stay off), SRAM4, ITCM | |
 | backup SRAM | 0x38800000, 4 KB | the crash record. Kept through a reset, lost at power-off (VBAT is on 3V3), erased by a Read Unprotect |
 
 The instruction cache is on. The data cache and the MPU are off: no DMA buffer needs cache maintenance. The task
 stacks (the RTOS heap) and the hot statics are in the DTCM, which is never cached; the main stack (start-up and every
 interrupt), `.data` and `.bss` are in the AXI SRAM, which a data cache would cover.
+
+**Sector 7 as the merge writes it** (128 blocks of 1024 bytes, counted here from 0 at the sector's start,
+[codec-cs7000p.md](codec-cs7000p.md) "Hosting"): the codec's 105243 placed bytes end at 0x080F9B23, in block 102;
+blocks 103 to 126 are 0xFF; the descriptor is in block 127, the last. rfoundry's plan numbers a sector's blocks from
+2 (`--dry-run`: "blocks 2..129"), so these are its blocks 104 and 129. The image may grow to 917504 bytes;
+`tools/ci.sh` writes every configuration's size to `build/ci/size-report.md`.
+
+**The flash's error correction** (from the HAL, `HAL_FLASHEx_BusFault_IRQHandler` in
+`third_party/stm32h7xx-hal-driver`; RM0433's flash chapter was not read again for this paragraph, and
+[cs7000p-bringup.md](../testing/cs7000p-bringup.md) stage 3 cites its 4.7.7 for the same fact). Every 32-byte flash
+word carries an error correction code. A single wrong bit is corrected. A double error on a read is a bus fault, not
+wrong data. A word that a power cut left half erased or half programmed can read so. A whole written word reads
+clean, and so, it is assumed, does erased flash: the install route relies on that when its probe reads the first
+sector after a cut install (untested on a radio). The firmware has no handler that recovers (`USE_FLASH_ECC` is 0):
+a bus fault is a crash record and a restart.
+
+| Read of program flash | When | With a torn word there |
+|---|---|---|
+| The boot check of the codec (`present()` in `platform/stm32/hrc/vocoder.c`): the descriptor, then every placed byte of sector 7 for its CRC-32, with plain loads | at every start, with DMR built | a fault at every start: the image never comes up |
+| The codec read-back over the debug link (READ_MEM) | when a tool saves the codec | a restart instead of an answer |
+| `dump` or `peek` over the debug link | on request | the same |
+
+What the installers do about it ([release.md](../dev/release.md#the-codec-on-this-route)): no image is started over a
+sector 7 that an unfinished install may have touched. Sector 7 is left as it is only when the ROM bootloader shows
+that the radio is not read protected and holds a vector table, which every install writes last, after everything
+else it wrote, sector 7 included, was read back. In every other case the plan writes the sector whole or erases it
+whole.
+
+The limit that stays: a sector 7 that another program (a generic DFU tool) left torn, under a vector table that
+program wrote. RadioFoundry then faults at every start until an install through the ROM bootloader (SK1 at
+power-on, 2.5) with `--stock` or `--codec none` writes or erases the sector. The firmware does not guard the boot
+check's reads. Whether a torn word really reads as a fault on this chip has not been tried, and is not to be tried
+on purpose.
 
 ### 2.4 Reset
 

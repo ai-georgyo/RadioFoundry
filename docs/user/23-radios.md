@@ -790,12 +790,15 @@ A 128 x 64 monochrome screen.
 ## Connect Systems CS7000 M17 PLUS
 
 A UHF handheld with a keypad, a channel selector, a volume knob with the power switch, GPS and a 160 x 128 color
-screen. **In development, for testers: nothing has been checked on a radio yet.** Know these four things first:
+screen. **In development, for testers.** On the first radio it starts, the display, the keys, USB and settings
+storage work, FM receive works with clear audio, and DMR calls are received and decoded. The voice codec, DMR voice
+audio and transmitting have not been tried. Know these four things first:
 
 - **It does not transmit yet.** RadioFoundry has no power or modulation calibration for this radio and guesses none,
   so it refuses every transmission, FM and DMR, until the values have been measured on a bench.
-- **No DMR voice.** No voice codec is known for this radio. DMR calls show on the screen without audio, and you can't
-  talk on DMR. DMR data and FM don't need a codec.
+- **DMR voice is untested.** It needs the radio's voice codec, which the installer takes from Connect Systems'
+  firmware file V9.00.96 on your computer. Without the file the radio runs without DMR voice: DMR calls show on the
+  screen without audio, and you can't talk on DMR. DMR data and FM don't need a codec.
 - **The first installation erases the original firmware and its bootloader for good.** RadioFoundry cannot put them
   back: going back is the maker's own recovery procedure.
 - **RadioFoundry stores nothing on the radio's memory chip until you hand the chip over**, after a full backup.
@@ -809,20 +812,20 @@ first, then use these values.
 | Item | CS7000 M17 PLUS |
 |---|---|
 | Before the first installation | In this order: (1) **save your codeplug with the maker's programming software (CPS), and note the Radio Info screen** (versions, serial number) while the original firmware still runs; (2) get Connect Systems' recovery files and instructions for the CS7000 M17 PLUS from its software page; (3) **run that recovery once and check that the radio works on its original firmware afterwards**: it is the only way back; (4) the recovery loads Connect Systems' default codeplug (`ResetDefault_M17PLUS.rdbx`) over yours, so write your saved codeplug back with the CPS |
-| Stock firmware file | None |
+| Stock firmware file | `M17_PLUS_HOST_V9.00.96_20260303_1.bin` (V9.00.96, the DMR program), [Connect Systems' download](https://www.connectsystems.com/amateur-files/software/CS7000%20M17%20PLUS/M17_PLUS_HOST_V9.00.96_20260303_1.bin), SHA-256 `1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59`. For the voice codec only: the radio's update mode needs no key. Versions V9.00.95, V9.00.09 and V9.00.05 are recognized and refused |
 | Cable | The maker's programming cable on the accessory connector. It carries USB; the radio has no USB socket |
 | Bootloader key | Hold **SK1**, the side key above PTT, while you turn the radio on with the volume knob. The screen lights up gray and stays blank. Release the key |
-| First installation | The installer removes the processor's read protection, which **erases the original firmware and its bootloader**, and waits until the erase is over (at least 60 s, until the radio has left USB). Leave the radio on and connected until then. Then it asks you to switch the radio off and hold SK1 again, and writes RadioFoundry. Should the bootloader come back by itself after the erase, rfoundry says so and installs at once. If the radio does not go off with the knob, take the battery off for a few seconds ([why](#cs7000-m17-plus-power-switch)) |
+| First installation | The installer removes the processor's read protection, which **erases the original firmware and its bootloader**, and waits until the erase is over (at least 60 s, until the radio has left USB). Leave the radio on and connected until then. Then it asks you to switch the radio off and hold SK1 again, and writes RadioFoundry. Should the bootloader come back by itself after the erase, rfoundry says so and installs at once. If the radio does not go off with the knob, take the battery off for a few seconds ([why](#cs7000-m17-plus-power-switch)). Removing the read protection erases the voice codec too, so give the installer the stock firmware file at this installation. Without it the radio is installed without DMR voice |
 | Backup | The original firmware can't be backed up: it can't be read. The web installer offers a backup of the memory chip (32 MB: the original channels, settings and factory data) right after the installation; nothing is written to the chip before that backup. Take it and keep the file: it is the only copy. rfoundry takes no backup: take it as the Memory chip row says |
 | Memory chip | Nobody knows where the original firmware keeps its data on it, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer |
 | Original channels | Not brought over: the installer has no channel step for this radio, because the original firmware's codeplug format is not known. Program the radio in the [Codeplug Editor](04-programming.md#the-codeplug-editor) |
 | Tools | The web installer or rfoundry. Another DFU tool may leave the end of the firmware unwritten |
 | Bootloader USB device (Zadig) | The device with USB ID `0483` `DF11`, [driver steps](02-installing.md#windows-the-bootloader-driver) |
-| Updating | One pass, nothing erased but the firmware. Without the key: with RadioFoundry running and the cable in, the web installer's **Restart into Update Mode** or `rfoundry flash` restarts the radio into its bootloader ([how](02-installing.md#radios-installed-through-the-processors-own-bootloader)). **Untested: this restart has not been tried on a radio yet.** The radio refuses it on some channel selector positions: turn the selector four clicks either way and try again. The key (SK1 at power-on) stays the other way in, and the installer shows its steps |
+| Updating | One pass, nothing erased but the firmware: the voice codec stays. Without the key: with RadioFoundry running and the cable in, the web installer's **Restart into Update Mode** or `rfoundry flash` restarts the radio into its bootloader ([how](02-installing.md#radios-installed-through-the-processors-own-bootloader)). **Untested: this restart has not been tried on a radio yet.** The radio refuses it on some channel selector positions: turn the selector four clicks either way and try again. The key (SK1 at power-on) stays the other way in, and the installer shows its steps. After an installation that was interrupted, the installer writes the codec again, and asks for the stock firmware file if it has no copy of the codec |
 | Going back | Connect Systems' recovery procedure, with its files and tools. Its bootloader key still works: the processor's bootloader can't be erased |
 | Board name | `cs7000p` |
 
-From a terminal, with an image file (the web installer's build, or its manual kit): `rfoundry flash IMAGE --board cs7000p --unprotect` the first time, without `--unprotect` for an update. For an update, leave the radio on with RadioFoundry running: rfoundry restarts it into its bootloader, and asks for SK1 only if the radio refuses or does not appear. There is no release image for this radio yet, so `--release` doesn't work. rfoundry writes the firmware only and takes no backup of the memory chip.
+From a terminal, with an image file (the web installer's build, or its manual kit): `rfoundry flash IMAGE --board cs7000p --unprotect --stock M17_PLUS_HOST_V9.00.96_20260303_1.bin` the first time, and `rfoundry flash IMAGE --board cs7000p` for an update. `--codec none` in place of `--stock FILE` installs without the voice codec. For an update, leave the radio on with RadioFoundry running: rfoundry restarts it into its bootloader, and asks for SK1 only if the radio refuses or does not appear. There is no release image for this radio yet, so `--release` doesn't work. rfoundry writes the firmware and the codec only and takes no backup of the memory chip.
 
 ### CS7000 M17 PLUS keys
 
@@ -840,8 +843,8 @@ From a terminal, with an image file (the web installer's build, or its manual ki
 | **PTT** | **PTT**. The accessory connector's PTT line is read as PTT too |
 | Channel selector | Does nothing yet: how the switch codes its 16 positions hasn't been measured. Use **Up** and **Down** |
 
-Which of the six keys above the number keys is which (F1, F2, OK, BACK, Up, Down) has not been checked on a radio.
-If they come out mixed up, that is why: report what each key does.
+Which of the six keys above the number keys is which (F1, F2, OK, BACK, Up, Down) was read on one radio. If they
+come out mixed up on yours, report what each key does: your radio may have another keypad board.
 
 These are the defaults, and the same jobs as on the other radios ([Key roles](#key-roles)). **Settings > Keys** can
 give SK1, SK2, SK3, F1, F2 and the top key other jobs.
@@ -889,7 +892,7 @@ still work. Report it.
 ### What the CS7000 M17 PLUS lacks
 
 - Transmitting, until the radio is calibrated. That takes the hotspot with it.
-- DMR voice, both ways: no codec. Received calls are shown, not played.
+- DMR voice without the codec: received calls are shown, not played. With the codec, DMR voice is untested.
 - M17. RadioFoundry has no M17 mode.
 - Bluetooth, the man-down sensor and the vibrator: not used.
 - The channel selector, until its positions are measured.
@@ -899,7 +902,8 @@ still work. Report it.
 - Single frequency repeating, the split duplex repeater, P25 and NXDN: not written for this radio.
 - The air band and broadcast receivers: the radio has neither.
 - Chinese as the radio's language: the screen is too small for its font.
-- An update without the key: the radio can't enter its bootloader from the menu or the installer yet. Hold SK1.
+- Entering the bootloader from the radio's menu. The installer's restart into it is untested on a radio; if it
+  fails, hold SK1.
 
 ## Planned radios
 

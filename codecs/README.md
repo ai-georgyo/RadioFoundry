@@ -28,6 +28,7 @@ and the release images never contain it. Each radio uses the codec from its own 
    | MD-9600 | TYT `MD9600-CSV(V4)-V16.45.bin` (V4 boards) | `de368437de05307d3e217f049bb5e30b1a8ec201e50b8e81aa5c506089c53532` |
    | MD-9600 | Any other TYT MD-9600 or Retevis RT90 original firmware file (versions 03.28 to 26.57, V5 radios' 26.xx files included, in the CSV, CSV-GPS, REC and GPS-REC variants) | The hashes are in [docs/spec/codec-md9600.md](../docs/spec/codec-md9600.md#stock-files) |
    | DM-1801 Pro | A 1 MB program flash read of the radio running its stock firmware (`stub/stubtool.py --progmem`) | Any file whose codec code window hashes to `8f7641b6…` (`tools/hrc7000_codec.py`) |
+   | CS7000 M17 PLUS | Connect Systems `M17_PLUS_HOST_V9.00.96_20260303_1.bin` (V9.00.96, the DMR program) | `1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59` |
 
    The DM-1801 Pro has no published update file, so the codec comes from the radio's own flash. Read it **before** the
    first RadioFoundry install: RadioFoundry overwrites the stock firmware, and the codec with it.
@@ -40,9 +41,18 @@ and the release images never contain it. Each radio uses the codec from its own 
 
    Next to the plain image, the build writes `build/dm1701/rfoundry_dm1701_codec.bin`. Flash that one.
 
+   The CS7000 M17 PLUS is installed through its processor's own bootloader, so its merged image goes out with
+   `tools/rfoundry`: `rfoundry flash build/cs7000p/rfoundry_cs7000p_codec.bin --board cs7000p`
+   ([docs/dev/release.md](../docs/dev/release.md#the-codec-on-this-route)). `tools/stm32_dfu.py` does not serve that
+   radio. Its codec route is untested on a radio.
+
 The DM-1701, the MD-380 and the MD-9600 need no key file, because the codec tool derives the key from the stock file (a few seconds
 for the MD-380). If you have the radio's 1024-byte firmware key file, you can put it here too, and the build uses it
 instead.
+
+The CS7000 M17 PLUS has no bootloader key. Its stock file carries a key of its own, which the codec tool derives
+from the file and uses only to read it: there is no key file to add. Only V9.00.96 is a codec source. The build
+recognizes V9.00.95, V9.00.09 and V9.00.05, says that their codec has not been mapped and names the file to use.
 
 The DB25-D writes `build/db25d/rfoundry_db25d_codec.bin`: the first stage, the application and the codec in one file, the one
 to flash (DMR on that radio is a receive-only build option, `CONFIG_DMR=y`, hardware-db25d.md 9).
@@ -57,5 +67,5 @@ Git ignores everything in this folder except this README and `.gitignore`, and m
 published.
 
 To merge by hand instead (a different image or output path), run the board's codec tool directly:
-`tools/codec_extract.py` for the DM-1701 and the MD-380, `tools/hrc7000_codec.py` for the DM-32 and the DB25-D PRO (`--board db25d`). For flashing, including keeping the
+`tools/codec_extract.py` for the DM-1701, the MD-380 and the CS7000 M17 PLUS (`--board cs7000p`), `tools/hrc7000_codec.py` for the DM-32 and the DB25-D PRO (`--board db25d`). For flashing, including keeping the
 codec that's already in the radio, see [docs/dev/release.md](../docs/dev/release.md) and `tools/rfoundry`.

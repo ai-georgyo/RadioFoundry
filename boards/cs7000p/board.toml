@@ -19,6 +19,7 @@ aprs_tocall = "C"
 
 [docs]
 hardware = "docs/spec/hardware-cs7000p.md"
+codec = "docs/spec/codec-cs7000p.md"
 bringup = "docs/testing/cs7000p-bringup.md"
 
 # One-line summaries for the site and the generated tables; the facts are in docs.hardware. unconfirmed: a hardware
