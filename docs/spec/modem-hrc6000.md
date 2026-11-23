@@ -776,8 +776,9 @@ modulation DAC on pin 75. The driver's set-ups leave 0x25 = 0x0E: with it that D
 transmits. The hold writes 0x25 = 0x0C (the same with bit 1 clear): measured on a radio, the DAC is then on while
 receiving, at the level of the two-point bias 0x47 / 0x48, ten bits unsigned over its range
 ([hrc6000-registers.md](hrc6000-registers.md) 3.22). The manual's control word for it (bit 5 set, bit 3 clear) does
-nothing on that pin. The host writes the bias as mid-scale (512) plus the reference offset, after the driver's own
-offset write: the offset alone would be the DAC at 0 V, and while the chip transmits the same DAC idles at mid-scale
+nothing on that pin. The host writes the bias as mid-scale (512) plus the reference offset, and 0x04 itself, in
+place of the driver's offset call: that call puts the offset alone in the bias first, the DAC near 0 V, which kicks
+the reference by several kHz at every receive entry. While the chip transmits the same DAC idles at mid-scale
 plus 0x04, so receive and transmit sit on one frequency. The word is written whole, not read and modified; it reads
 back. An FM transmission keeps the driver's 0x0E, which the same measurement shows on with
 analog transmit enabled (0x60 = 0x80); a DMR transmission keeps the hold (nothing in the DMR entry or the slot engine
