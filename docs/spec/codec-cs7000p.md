@@ -549,9 +549,9 @@ of 16.
 * CRC-32, as placed and pinned: code 0xA6BAF942, block 0x1DD4537C. They need the bytes of the blanked spans and are
   the tool's: its run on the stock file printed them after the three values above matched.
 * The firmware reports `cs7000p-v90096-s7` when the descriptor, both CRC-32s and the first word of A match.
-* `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP`: the platform clears both at start-up (the image can be entered by the ROM
-  bootloader's jump, without a reset), and the host clears them once more before its first codec call if either is
-  set.
+* `CCR.UNALIGN_TRP` and `CCR.DIV_0_TRP`: the STM32 start-up clears both (`platform/stm32/main.c`, every family:
+  the image can be entered by the ROM bootloader's jump, without a reset), and the host clears them once more before
+  its first codec call if either is set.
 * A word of this flash that a power cut left half written can read as a bus fault
   ([hardware-cs7000p.md](hardware-cs7000p.md) 2.3). The installers therefore never start an image over a sector 7
   that an unfinished install touched ([release.md](../dev/release.md#the-codec-on-this-route)). The boot check

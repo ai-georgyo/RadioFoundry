@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // The processor state the stock codec needs (docs/spec/codec-placement.md, "STM32 radios"): the two traps of the
-// core's configuration and control register off. The host makes sure once, before its first codec call
+// core's configuration and control register off. The start-up clears them on every STM32 family (main.c: a
+// bootloader's jump to the image is no reset), and the host makes sure once more, before its first codec call
 // (hrc/vocoder.c); nothing may set either bit afterwards, and nothing in the tree does.
 // No hardware here: the host tests run it (tests/host/codecDescTest.c).
 #ifndef RFOUNDRY_STM32_CODEC_CPU_H

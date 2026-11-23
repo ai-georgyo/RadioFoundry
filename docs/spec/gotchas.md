@@ -890,11 +890,12 @@ at unaligned addresses (no `-mno-unaligned-access`), so a set `UNALIGN_TRP` faul
 fault tracer that wants a divide trap must leave it off while DMR voice can run. Where the bits are cleared:
 `codec_cpu_traps_off()` in `platform/stm32/codec_cpu.h` clears `UNALIGN_TRP` (bit 3) and `DIV_0_TRP` (bit 4) when
 one is set, and `present()` in `platform/stm32/hrc/vocoder.c` calls it once, the first time it runs, before the
-descriptor is read and before any codec call, with DSB and ISB when it wrote; a platform whose image can be entered
-without a reset clears both at start-up too (`stm32h7_soc_init()`: the ROM bootloader jumps to the image). Nothing
-checks again after that: a bit set after the first codec call is not caught. On the STM32F4 radios the check in
-`present()` cost 32 bytes of image and changes no behavior, since both bits are 0 after reset and nothing sets
-them. Untested on a radio.
+descriptor is read and before any codec call, with DSB and ISB when it wrote. The start-up (`main()` in
+`platform/stm32/main.c`, before the family's core set-up) calls the same function on every STM32 family: every image
+is entered by a bootloader's jump (the maker's bootloader, or the processor's ROM bootloader), not by a reset, and
+the bits are the build's concern as much as the codec's. Nothing checks again after that: a bit set after the first
+codec call is not caught. Both bits are 0 after a reset and nothing in the tree sets them, so on a radio whose
+bootloader leaves them clear neither clear changes behavior. Untested on a radio.
 
 ## 14. SFR (single frequency repeater)
 

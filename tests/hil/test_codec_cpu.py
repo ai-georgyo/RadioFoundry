@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 The RadioFoundry Authors
 """The processor state the STM32 stock codec needs (docs/spec/codec-placement.md, "Processor state"): the core's
-CCR.UNALIGN_TRP (bit 3) and CCR.DIV_0_TRP (bit 4) are 0. The platform clears both at start-up where the image can be
-entered without a reset, the host clears them once before its first codec call, and nothing may set them later
+CCR.UNALIGN_TRP (bit 3) and CCR.DIV_0_TRP (bit 4) are 0. Every STM32 image clears both at start-up
+(platform/stm32/main.c: a bootloader's jump into the image is no reset), the host clears them once more before its
+first codec call, and nothing may set them later
 (docs/spec/gotchas.md). Read only: one READ_MEM of the system control block (docs/spec/debuglink.md 3.10), nothing
 transmitted.
 

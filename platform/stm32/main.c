@@ -5,6 +5,7 @@
 #include "platform.h"
 #include "board.h"
 #include "hal_watchdog.h"
+#include "codec_cpu.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -20,6 +21,12 @@ int main(void)
 	board_rf_safe();	// transmitter off before anything that could hang (docs/spec/crash-log.md 8)
 	stm32_sysboot_check();	// REBOOT ROM-DFU: into the ROM bootloader before anything is set up
 	stm32_irq_stack_fill();	// before the first interrupt: the main stack's high water mark and canary (irq_stack.c)
+	// Both traps of CCR off, their reset value, whatever started the image: a bootloader's jump is no reset. The build
+	// loads words at unaligned addresses, and the stock codec also divides without a test for zero (codec_cpu.h)
+	if (codec_cpu_traps_off(&SCB->CCR)) {
+		__DSB();
+		__ISB();
+	}
 	STM32_SOC_INIT();	// the family's core set-up (stm32_family.h): after the ROM entry check, which wants reset state
 #if CONFIG_WATCHDOG
 	hal_watchdog_start();	// after the ROM entry check: the IWDG can't be stopped and the ROM never feeds it
