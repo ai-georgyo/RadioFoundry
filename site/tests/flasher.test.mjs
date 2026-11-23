@@ -113,7 +113,9 @@ test("code placed before the tables matches rfoundry", async () => {
 });
 
 // Every board with stock files: each file's profile in the flasher data, its codec the board's, its layout inside the
-// flash the board leaves to the codec and below the descriptor
+// flash the board leaves to the codec and below the descriptor. The file's key is the board's bootloader key where the
+// board has one; a board whose bootloader has none takes a file only in a container that carries its own key, and
+// that key is the file's, never a bootloader's (rfoundry's StockPlacement.test_stock_boards)
 test("stock-file boards: profiles and layouts", () => {
 	for (const b of Object.values(fb.boards).filter((x) => Object.values(fb.profiles).some((p) => p.board === x.id))) {
 		const profs = Object.values(fb.profiles).filter((p) => p.board === b.id);
@@ -122,7 +124,14 @@ test("stock-file boards: profiles and layouts", () => {
 			assert.equal(p.codec_profile, b.codec.id, p.name);
 			// a file for another radio (file_radio) gives the codec only, encrypted with that radio's key
 			if (p.file_radio) assert.notEqual(p.key_sha256, b.key_sha256, p.name);
-			else assert.equal(p.key_sha256, b.key_sha256, p.name);
+			else if (b.key_sha256) assert.equal(p.key_sha256, b.key_sha256, p.name);
+			else {
+				assert.equal(p.container, stockfw.TWIN, `${b.id}: no bootloader key to decrypt ${p.name} with`);
+				assert.ok(p.key_sha256 && !Object.values(fb.boards).some((x) => x.key_sha256 === p.key_sha256), p.name);
+				assert.deepEqual(p.segments, [], p.name);
+			}
+			// a container named is one the page reads
+			assert.ok([undefined, stockfw.TWIN].includes(p.container), p.name);
 			const lay = stockfw.layoutWindows(p, fb);
 			for (const [a, n] of lay) assert.ok(a + n <= b.flash_end && b.codec.windows.some(([wa, wn]) => wa === a && wn === n), p.name);
 			if (p.placement) assert.ok(lay.slice(0, -1).every(([a, n]) => a + n <= fb.descriptor.addr), p.name);
