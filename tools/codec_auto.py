@@ -5,16 +5,19 @@
 
 Looks through codecs/ for a stock firmware file the board's codec tool supports (checked by SHA-256, so file names
 don't matter) and runs that tool to write <image>_codec.bin next to the image. With no supported file it says so and
-does nothing: the plain image is still the build's output. A board without a codec route (board.toml [codec] none)
-has no tool: it says the board's reason and does nothing. See codecs/README.md.
+does nothing: the plain image is still the build's output. A file of the radio's maker that is known but whose codec
+has not been mapped (stockfw.UNMAPPED_FILES) is named with the file to use instead, then the same. A board without a
+codec route (board.toml [codec] none) has no tool: it says the board's reason and does nothing. See codecs/README.md.
 """
 import argparse
 import contextlib
+import copy
 import hashlib
 import io
 import os
 import subprocess
 import sys
+import tempfile
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
@@ -76,7 +79,20 @@ def profile_shas(profiles):
     return {stockfw.key_sha(h) for h in profiles}
 
 
+def unmapped(folder, board):
+    """[(path, why)] for the files in the folder that are known files of this board's maker whose codec has not been
+    mapped (stockfw.UNMAPPED_FILES): each with the sentence that names the file to use instead"""
+    out = []
+    for path in candidates(folder):
+        f = stockfw.UNMAPPED_FILES.get(sha256_file(path))
+        if f is not None and f["board"] == board:
+            with open(path, "rb") as fh:
+                out.append((path, stockfw.unmapped(fh.read())))
+    return out
+
+
 def self_test():
+    from unittest import mock
     sha = "ab" * 32
     fake = {sha: {"board": "one"}, stockfw.profile_key(sha, "two"): {"board": "two"}}
     fails = []
@@ -102,6 +118,38 @@ def self_test():
             rc = main(["--board", b, "--image", os.path.join(TOOLS, "no-such-image.bin"), "--dir", TOOLS])
         if rc != 0 or "no codec for this radio" not in out.getvalue() or why not in out.getvalue():
             fails.append("%s: a board without a codec route gave %r, exit %r" % (b, out.getvalue(), rc))
+    # The same call for a board made here, so the case runs whatever the registry holds: the first registry entry
+    # with its codec route taken away (a reason, no tool)
+    bid, why = "no-route-test", "this test's board has no codec route"
+    nb = copy.copy(next(iter(boards.BOARDS.values())))
+    nb.id, nb.codec_none, nb.codec_tool, nb.has_codec = bid, why, None, False
+    out = io.StringIO()
+    with mock.patch.dict(boards.BOARDS, {bid: nb}), mock.patch.dict(CODEC_TOOLS, {bid: None}), \
+            contextlib.redirect_stdout(out):
+        rc = main(["--board", bid, "--image", os.path.join(TOOLS, "no-such-image.bin"), "--dir", TOOLS])
+    if rc != 0 or "no codec for this radio" not in out.getvalue() or why not in out.getvalue():
+        fails.append("a board without a codec route gave %r, exit %r" % (out.getvalue(), rc))
+    print("ran   a board without a codec route: its reason, exit 0, no file looked at")
+    # A maker's file whose codec has not been mapped, in the folder of a board with a codec tool: the sentence that
+    # names the file to use, then as with no supported file (exit 0, nothing written). The file is random bytes
+    # under its own hash
+    with_tool = next((b for b, t in CODEC_TOOLS.items() if t and not hasattr(__import__(t), "identify")), None)
+    if with_tool is None:
+        fails.append("no board with a codec tool that knows its files by SHA-256")
+    else:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old-version.bin")
+            with open(path, "wb") as f:
+                f.write(os.urandom(8192))
+            entry = {"board": with_tool, "name": "old-version.bin", "version": "V0.1"}
+            out = io.StringIO()
+            with mock.patch.dict(stockfw.UNMAPPED_FILES, {sha256_file(path): entry}), contextlib.redirect_stdout(out):
+                rc = main(["--board", with_tool, "--image", os.path.join(d, "image.bin"), "--dir", d])
+            text = out.getvalue()
+            if rc != 0 or "has not been mapped" not in text or "V0.1" not in text or "no supported" not in text \
+                    or os.listdir(d) != ["old-version.bin"]:
+                fails.append("a file whose codec is not mapped gave %r, exit %r" % (text, rc))
+        print("ran   a known file whose codec is not mapped: the sentence, exit 0, built without the codec")
     for f in fails:
         print("FAIL:", f)
     print("codec_auto self-test %s" % ("PASSED" if not fails else "FAILED"))
@@ -143,6 +191,8 @@ def main(argv=None):
     stock = next((p for p in candidates(args.dir) if os.path.getsize(p) > 4096 and known(p)), None)
     out = args.output or os.path.splitext(args.image)[0] + "_codec.bin"
     if stock is None:
+        for path, why in unmapped(args.dir, args.board):
+            print("codec: %s: %s" % (os.path.relpath(path), why))
         print("codec: no supported %s stock firmware in %s, built without the codec (codecs/README.md)"
               % (args.board, os.path.relpath(args.dir)))
         if os.path.exists(out) and os.path.getmtime(out) < os.path.getmtime(args.image):

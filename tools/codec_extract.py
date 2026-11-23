@@ -5,21 +5,25 @@
 board.toml says [codec] tool = "codec_extract").
 
 Recipes from each radio's codec page (docs/spec/codec-<radio>.md, "Extraction recipe"):
-  1. check the stock file ("OutSecurityBin" container, one of rfoundry/stockfw.py PROFILES) by SHA-256 and its segment
-     table; the file picks the radio. Or take a read of the radio's internal flash made while it ran its stock firmware
-     (stub/stubtool.py PORT --progmem FILE): the codec is plain there, found by the code window's SHA-256, no key;
-  2. decrypt every codec window: plain = file[off] XOR key[(off - 0x100) mod 1024], with the radio's 1024-byte key
-     (a key file checked by SHA-256 as tools/stm32_dfu.py does, or derived from the stock file and checked the same
-     way);
+  1. check the stock file (one of rfoundry/stockfw.py PROFILES) by SHA-256 and by what its container's header says;
+     the file picks the radio. Two containers are read: "OutSecurityBin", with a segment table, and the one that
+     holds its image twice (rfoundry/twinfw.py). Or take a read of the radio's internal flash made while it ran its
+     stock firmware (stub/stubtool.py PORT --progmem FILE): the codec is plain there, found by the code window's
+     SHA-256, no key;
+  2. decrypt every codec window. An "OutSecurityBin" file: plain = file[off] XOR key[(off - 0x100) mod 1024], with the
+     radio's 1024-byte bootloader key (a key file checked by SHA-256 as tools/stm32_dfu.py does, or derived from the
+     stock file and checked the same way). A file of the other kind has a 256-byte key of its own, derived from the
+     file's two copies and checked by its SHA-256; such a radio's bootloader has no key, and --key is refused;
   3. check each window's SHA-256 and the code's first word 0x4FF0E92D;
-  4. write a new image: the built application from 0x0800C000, then the codec where its profile places it, 0xFF between
-     (docs/spec/codec-placement.md): the tables at their stock address, the code moved as one block (right after
-     the tables, or at the start of sector 10 or 11 as the build's profile says), with the addresses the build's
-     codec map lists rewritten, and the descriptor at 0x080FFF80 that tells the firmware where the code is.
+  4. write a new image: the built application from where the board's image starts, then the codec where its profile
+     places it, 0xFF between (docs/spec/codec-placement.md): the code moved as one block and the tables kept at their
+     stock address or moved too, as the build's profile says, with the addresses the build's codec map lists
+     rewritten, and the descriptor at 0x080FFF80 that tells the firmware where the code is.
 
 The codec is DVSI's and the radio maker's, not ours: it is never stored in this repository or in a release. This tool
 reads your stock file and your key file and writes the merged image to a file you choose (by default next to the
-built image, in build/, which git ignores). Flash the result with tools/stm32_dfu.py.
+built image, in build/, which git ignores). Flash the result with tools/stm32_dfu.py, or with tools/rfoundry for a
+radio installed through its processor's bootloader.
 """
 import argparse
 import os
@@ -32,11 +36,12 @@ import stm32_dfu  # noqa: E402  (key table and key file check, hardware-dm1701.m
 
 # The container, decryption, profiles and merge live in the rfoundry package (one implementation for both tools)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rfoundry"))
-from rfoundry.stockfw import (APP_BASE, CODEC_SIG, DESC_ADDR, FLASH_BASE, FLASH_END, HEADER_LEN,  # noqa: E402,F401
-                              KEY_LEN, MAGIC, PROFILES, SYN_BL, SYN_SELF_REF, SYN_TABLE_REF, StockError as ExtractError,
-                              app_file_offset, build_synthetic_stock, decrypt, derive_key, descriptor, extract,
-                              find_profile, from_flash, is_container, layout, layout_name, merge, no_codec,
-                              parse_container, profile_for_board, profile_key, sha256, windows)
+from rfoundry.stockfw import (APP_BASE, CODEC_SIG, DESC_ADDR, FLASH_BASE, FLASH_END, GATES, HEADER_LEN,  # noqa: E402,F401
+                              KEY_LEN, MAGIC, OUTSECURITY, PROFILES, SYN_BL, SYN_SELF_REF, SYN_TABLE_REF,
+                              StockError as ExtractError, app_file_offset, build_synthetic_stock, container_kind,
+                              decrypt, derive_key, descriptor, extract, find_profile, from_flash, gate_crcs,
+                              is_container, layout, layout_name, merge, no_codec, parse_container, placed_parts,
+                              profile_for_board, profile_key, sha256, stock_segments, windows)
 from rfoundry.codecmap import bl_target  # noqa: E402
 from rfoundry import boards  # noqa: E402  (the board registry: the boards this tool serves)
 import zlib  # noqa: E402
@@ -49,6 +54,7 @@ MDUV380_V1926 = "75e4d470b451cb5d191a647c0836c71801433b826cc4a7fe2c48d750036bd98
 RT3S_V21960 = "447ed4e09482c45661cd6e4c83d1e9f777463993ab7dd48b0e0597bb14f519ee"
 DM1701_V0201 = "cd9ff4bdb7ba1c464299f3e366bfe72f2e948f3505a8fe54ac19047bff4d6713"
 DM1701_V0206_NOCSV = "4230c8d0aabf15f3f165c29a118a5f8f9b906a2d9b7d215c1d8a7bc0e3978bd9"
+CS7000P_V90096 = "1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59"
 
 EPILOG = """\
 examples:
@@ -59,14 +65,20 @@ examples:
                                                                     --board an MD-9600 file is a DM-1701 codec source)
   %(prog)s --stock flash.bin --board mduv380                       (a stub read of a radio on its stock firmware)
   %(prog)s --stock stock.bin --key dm1701.key --image build/dm1701/rfoundry_dm1701.bin -o build/dm1701/rfoundry_dm1701_codec.bin
+  %(prog)s --stock "M17_PLUS_HOST_V9.00.96_20260303_1.bin" --board cs7000p
+                                                                   (a radio rfoundry installs through its processor's
+                                                                    bootloader: no key; image build/cs7000p/rfoundry_cs7000p.bin)
   %(prog)s --self-test
 
 then flash:  tools/stm32_dfu.py --model dm1701 --key ~/keys/dm1701.key build/dm1701/rfoundry_dm1701_codec.bin
+        or:  rfoundry flash build/cs7000p/rfoundry_cs7000p_codec.bin --board cs7000p   (tools/rfoundry: a radio
+                                                                    installed through its processor's bootloader)
 
 Supported stock files: rfoundry/stockfw.py PROFILES (--help lists them below). The key file is the radio's
 1024-byte firmware key (its SHA-256 is in the board's board.toml [flash.dfu]); without --key it is derived from the
-stock file and checked by that hash. Neither is in this repository. For flashing release images, tools/rfoundry does
-all of this in one step.
+stock file and checked by that hash. A radio whose bootloader has no key takes none: its stock file is decrypted with
+the file's own key, derived from the file. Neither is in this repository. For flashing release images, tools/rfoundry
+does all of this in one step.
 
 supported stock files:
 """ + "".join("  %-34s %-14s %s (sha256 %s...)\n" % (p["name"], p["board"], p["version"], h[:8])
@@ -97,6 +109,7 @@ def check_output_path(path):
 
 def self_test():
     import random
+    from unittest import mock
     rng = random.Random(1701)
     fails = []
 
@@ -277,11 +290,108 @@ def self_test():
                      "MD-9600 %05X: application reaching the tables refused" % tag)
         expect_error(lambda: extract(gstock, bad_key, gprofiles), "MD-9600 %05X wrong key refused" % tag)
 
+    # CS7000 M17 PLUS V9.00.96 (docs/spec/codec-cs7000p.md): the container that holds its image twice, under a
+    # 256-byte key of its own (the radio's bootloader has none). 23 windows: the code (three ranges with the maker's
+    # code between) to the start of sector 7, the two islands and the twenty tables joined into one block after it,
+    # every span that is not the codec's 0xFF, the descriptor at the end of the sector
+    import rfoundry.twinfw as tw
+    from rfoundry import codecmap as cm
+    creal = PROFILES[CS7000P_V90096]
+    cstock, cprofiles, ccode, _ = build_synthetic_stock(key, rng, CS7000P_V90096)
+    cprof = cprofiles[sha256(cstock)]
+    cmap = sf.code_map(cprof)
+    check(tw.parse(cstock) == (0x80, 0x1AD4BC, 0xD6A56) and len(cstock) == 0x1AD53E,
+          "CS7000: container parsed (payload offset, payload length, image length)")
+    check(tw.offset(creal, 0x080A4F24) == 0x84FA8 and tw.phase(creal, 0x84FA8) == 0x28,
+          "CS7000: code window file offset 0x84FA8, key phase 0x28 (spec)")
+    check(tw.offset(creal, 0x080C469C) == 0xA4720 and tw.phase(creal, 0xA4720) == 0xA0,
+          "CS7000: first table window file offset 0xA4720, key phase 0xA0 (spec)")
+    check(tw.offset(creal, 0x080A4F24, 1) == 0x84FA8 + 0xD6A5A, "CS7000: the second copy 0xD6A5A further on (spec)")
+    check(tw.derive_key(cstock, cprof["key_sha256"]) == key[:tw.KEY_LEN], "CS7000: the key from the file's two copies")
+    cp, cwins = extract(cstock, None, cprofiles)
+    CCODE, CBLOCK = 0x080E0004, 0x080F5CA0
+    check([(a, len(d)) for a, d in cwins] == [(CCODE, 0x15C98), (CBLOCK, 0x3E83), (DESC_ADDR, 0x80)],
+          "CS7000: the code at the start of sector 7, the other windows as one block after it, the descriptor")
+    cc, cb = cwins[0][1], cwins[1][1]
+    cstockw = windows(cp)
+    csrc = [a for a, _, _ in cstockw]
+    cdst = [CCODE, CBLOCK] + cp["placement"]["extra"]
+    check(sf.pack_after(CCODE + 0x15C98, cstockw[1:]) == cdst[1:] and cdst[-1] + cstockw[-1][1] == 0x080F9B23,
+          "CS7000: each window after the code at the lowest address with its stock address modulo 16, to 0x080F9B23")
+    csites = cm._layout_sites(cmap, [w[:2] for w in cstockw], csrc, cdst)
+    check(len(csites) == 96 and sum(1 for x in csites if x[2]["kind"] == "bl") == 12,
+          "CS7000: 96 sites are rewritten, 12 of them calls from island 1 into the code")
+    T17 = cdst[csrc.index(0x080F4674)]
+    check(T17 == 0x080F9AA4 and [struct.unpack_from("<I", cc, o)[0] for o in (0x5C4, 0xC9C)] == [T17 - 2] * 2,
+          "CS7000: the two words that point two bytes below a table moved with it")
+    b0 = cmap["branches"][0]
+    check(bl_target(cb, b0["at"] - csrc[1], CBLOCK + b0["at"] - csrc[1]) == b0["target"] + CCODE - csrc[0],
+          "CS7000: an island's call into the code re-encoded")
+    choles = cm.holes(cmap)
+    check(len(choles) == 7 and sum(n for _, n in choles) == 33368 and all(cc[o:o + n] == b"\xFF" * n for o, n in choles),
+          "CS7000: the code's seven spans that are not the codec's are 0xFF (33368 bytes)")
+    skip = {o + i for o, n in choles for i in range(n)}
+    for w, off, r, _, _ in csites:
+        if w == 0:
+            skip.update(range(off, off + 4))
+            skip.update(range(off + r.get("off2", 0) - r.get("off", 0), off + r.get("off2", 0) - r.get("off", 0) + 4))
+    check(all(cc[i] == ccode[i] for i in range(len(cc)) if i not in skip), "CS7000: nothing else in the code changed")
+    _, cstocksegs = stock_segments(cstock, None, cprofiles)
+    tholes = cm.table_holes(cmap)
+    same, blank, used = True, 0, set()
+    for (a, d), at in zip(cstocksegs[1:], cdst[1:]):
+        o = at - CBLOCK
+        used.update(range(o, o + len(d)))
+        hole = {x + i for x, n in tholes.get(a, []) for i in range(n)}
+        site = {off + i for w, off, _, _, _ in csites if csrc[w] == a for i in range(4)}
+        blank += sum(1 for i in hole if cb[o + i] == 0xFF)
+        same = same and all(cb[o + i] == d[i] for i in range(len(d)) if i not in hole and i not in site)
+    check(blank == 14 and len(tholes) == 3, "CS7000: three table windows' spans that are not the codec's are 0xFF (14 bytes)")
+    check(same and all(cb[i] == 0xFF for i in range(len(cb)) if i not in used) and len(cb) - len(used) == 128,
+          "CS7000: nothing else in the block changed, and the 128 bytes between its windows are 0xFF")
+    cd = cwins[2][1]
+    check(struct.unpack_from("<10I", cd, 0) == (0x43534544, 1, 0x00090096, CCODE, 0x15C98, zlib.crc32(cc), 1,
+                                                 CBLOCK, 0x3E83, zlib.crc32(cb))
+          and cd[40:124] == bytes(84) and struct.unpack_from("<I", cd, 124)[0] == zlib.crc32(cd[:124]),
+          "CS7000: descriptor tag, code window, one table window, its CRC")
+    changed = [(a, bytearray(d)) for a, d in cstocksegs]
+    changed[0][1][0x7200] ^= 1		# a byte of the second range
+    try:
+        placed_parts(cp, changed)
+        check(False, "CS7000: a changed byte in a range fails the gate")
+    except ExtractError as e:
+        check("rewritten code's CRC-32" in str(e), "CS7000: a changed byte in a range fails the gate")
+    cmerged = merge(image, cp, cwins)
+    check(len(cmerged) == 0x100000 and cmerged[:len(image)] == image
+          and cmerged[len(image):CCODE - 0x08000000] == b"\xFF" * (CCODE - 0x08000000 - len(image)),
+          "CS7000: merged image 1048576 bytes from 0x08000000, the application unchanged, 0xFF up to the codec")
+    check(sf.split_merged(cmerged, cprofiles) == (image, cp, cwins), "CS7000: the merged image splits into its parts again")
+    expect_error(lambda: merge(cstock, cp, cwins), "CS7000: the maker's file as --image refused")
+    expect_error(lambda: merge(bytes(CCODE - 0x08000000 + 1), cp, cwins), "CS7000: an application reaching the codec refused")
+    expect_error(lambda: extract(cstock, None, cprofiles, board="dm1701"), "CS7000: the file refused for another radio")
+    expect_error(lambda: extract(cstock[:-1] + bytes([cstock[-1] ^ 1]), None, cprofiles), "CS7000: another file refused")
+
+    def says(fn, *words):
+        try:
+            fn()
+        except ExtractError as e:
+            return all(w in str(e) for w in words)
+        return False
+
+    older = cstock[:-1] + bytes([cstock[-1] ^ 1])	# a stand-in for a version whose codec has not been mapped
+    with mock.patch.dict(sf.UNMAPPED_FILES, {sha256(older): {"board": "cs7000p", "name": "older.bin", "version": "V0.1"}}):
+        check(says(lambda: find_profile(older), "older.bin (V0.1)", "has not been mapped", creal["name"]),
+              "CS7000: a version whose codec is not mapped is named, with the file to use")
+    cboot = tw.build_synthetic_boot(rng)
+    check(says(lambda: find_profile(cboot), "bootloader file", "no codec") and is_container(cboot),
+          "CS7000: a bootloader file in the maker's container is named and refused")
+    check(is_container(cstock[:0x100]) and says(lambda: find_profile(cstock[:0x100]), "unknown stock file"),
+          "CS7000: a cut file is still a stock file, and an unknown one")
+
     # main() end to end on the synthetic file
     import contextlib
     import io
     import tempfile
-    from unittest import mock
     with tempfile.TemporaryDirectory() as d:
         sp, ip, op = (os.path.join(d, n) for n in ("stock.bin", "rfoundry_dm1701.bin", "out.bin"))
         for path, blob in ((sp, stock), (ip, image)):
@@ -316,12 +426,34 @@ def self_test():
     return 1 if fails else 0
 
 
+def placed_report(stock, key, board=None, profiles=None):
+    """--placed: (lines, ok) for a stock file whose profile places its codec. One line per gate of the placement (the
+    CRC-32 of the bytes, the gate, "ok" or "MISMATCH"), then, only when every gate holds, one line per window as the
+    merge writes it: address, length, CRC-32, SHA-256. These are a profile's "placed" values, so it works for a profile
+    that has none yet, and nothing is compared with them"""
+    prof, segs = stock_segments(stock, key, profiles, board)
+    if not prof.get("placement"):
+        raise ExtractError("%s has no placement: its codec stays at its stock addresses" % prof["name"])
+    lines, ok = [], True
+    want = prof["placement"].get("gates")
+    if want:
+        got = gate_crcs(prof, segs)
+        for k, what in GATES:
+            ok = ok and got[k] == want[k]
+            lines.append("gate   %-24s 0x%08X  expected 0x%08X  %s"
+                         % (what, got[k], want[k], "ok" if got[k] == want[k] else "MISMATCH"))
+    if ok:
+        for a, d in placed_parts(prof, segs):
+            lines.append("placed 0x%08X+0x%X  crc32 0x%08X  sha256 %s" % (a, len(d), zlib.crc32(d) & 0xFFFFFFFF, sha256(d)))
+    return lines, ok
+
+
 def test_desc(path, board="dm1701", profile=None):
     """Write the codec sectors as the merge leaves them for a synthetic codec of the board's first stock file (or of
     the stock file whose SHA-256 profile is: an MD-9600 file, whose tables the merge moves), for
     tests/host/codecDescTest.c (the firmware's descriptor checks and this writer must agree): from the end of the
     board's application region (the DM-1701's and the MD-9600's sectors 10 and 11, 0x080C0000..0x08100000; the
-    MD-380's sector 11, 0x080E0000..0x08100000) to the end of flash"""
+    MD-380's sector 11 and the CS7000 M17 PLUS's sector 7, 0x080E0000..0x08100000) to the end of flash"""
     import random
     rng = random.Random(1701)
     key = bytes(rng.randrange(256) for _ in range(KEY_LEN))
@@ -348,6 +480,9 @@ def main():
     ap.add_argument("-o", "--output", help="merged image to write (default: <image>_codec.bin next to the image)")
     ap.add_argument("--test-profile", metavar="SHA256", help="with --test-desc: the stock file whose layout the synthetic "
                     "codec takes (default: the board's first)")
+    ap.add_argument("--placed", action="store_true", help="for maintainers, with --stock: print the codec's windows as "
+                    "the file's profile places them (address, length, CRC-32, SHA-256), after one line per gate of "
+                    "the placement; writes no file. How a new profile's \"placed\" values are made (docs/dev/codec.md)")
     ap.add_argument("--self-test", action="store_true", help="check the tool's logic on a synthetic file and key")
     ap.add_argument("--test-desc", metavar="FILE", help="write the codec sectors for a synthetic codec, as merged "
                     "(tests/host/codecDescTest.c), for --board")
@@ -374,9 +509,20 @@ def main():
         board = prof["board"]
         if args.board and args.board != board:
             raise ExtractError("%s is a %s stock file, not a %s one" % (args.stock, board, args.board))
+        # A bootloader key only for a board whose bootloader has one, and only for a file it encrypts: a file in a
+        # container with a key of its own is decrypted with that key, derived inside (stockfw.stock_segments)
+        has_key = boards.get(board).key_sha256 is not None
+        if args.key and not has_key:
+            raise ExtractError("the %s's bootloader has no key: it takes the image as it is" % boards.get(board).name)
         key = None
-        if readout is None:
+        if readout is None and has_key and container_kind(stock) == OUTSECURITY:
             key = stm32_dfu.load_key(args.key, board) if args.key else derive_key(stock, prof["key_sha256"])
+        if args.placed:
+            if readout is not None:
+                raise ExtractError("--placed takes the stock file, not a flash readout")
+            lines, ok = placed_report(stock, key, args.board)
+            print("\n".join(lines))
+            return 0 if ok else 1
         image_path = args.image or os.path.join(repo_root(), "build", board, "rfoundry_%s.bin" % board)
         out = args.output or os.path.splitext(image_path)[0] + "_codec.bin"
         with open(os.path.expanduser(image_path), "rb") as f:
@@ -384,7 +530,7 @@ def main():
         check_output_path(out)
         prof, wins = readout or extract(stock, key, board=args.board)
         merged = merge(image, prof, wins)
-        for w in stm32_dfu.check_image(merged, board):
+        for w in stm32_dfu.check_image(merged, board) if has_key else ():	# the radios tools/stm32_dfu.py flashes
             print("warning: %s" % w)
         with open(out, "wb") as f:
             f.write(merged)

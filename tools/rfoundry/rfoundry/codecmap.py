@@ -43,7 +43,7 @@ def _num(v, what):
 def _site(r, what):
     """A ref's site, numbers made ints: "off" (and "off2" for a movw/movt pair) in the code, or "at" (an address)"""
     x = dict(r)
-    for k in ("off", "off2", "at", "value", "target"):
+    for k in ("off", "off2", "at", "value", "target", "anchor"):
         if k in x:
             x[k] = _num(x[k], "%s %s" % (what, k))
     x["kind"] = x.get("kind", "word")
@@ -51,6 +51,14 @@ def _site(r, what):
         raise MapError("%s: unknown kind %r" % (what, x["kind"]))
     if x["kind"] == "movw_movt" and "off2" not in x:
         raise MapError("%s: a movw/movt pair without off2" % what)
+    return x
+
+
+def _span(x, what):
+    """A range or a hole: "off" and "len" made ints, and a range's "first_word" where it has one"""
+    x = dict(x, off=_num(x.get("off"), what + " off"), len=_num(x.get("len"), what + " len"))
+    if "first_word" in x:
+        x["first_word"] = _num(x["first_word"], what + " first_word")
     return x
 
 
@@ -68,6 +76,9 @@ def normalize(raw):
     c = dict(m["code"])
     for k in ("flash", "len", "run"):
         c[k] = _num(c.get(k), "%s code.%s" % (p, k))
+    for k in ("ranges", "holes"):		# optional: a map without them keeps its keys as they are
+        if k in c:
+            c[k] = [_span(x, "%s code.%s" % (p, k)) for x in c[k]]
     m["code"] = c
     m["entries"] = {k: _num(v, "%s entry %s" % (p, k)) for k, v in m["entries"].items()}
     for k in ("self_refs", "island_ptrs", "table_refs", "island_refs"):
@@ -81,6 +92,8 @@ def normalize(raw):
     m["table_windows"] = [dict(w, **{k: _num(w[k], "%s table window %s" % (p, k))
                                      for k in ("flash", "run", "len", "min_start", "min_len") if k in w})
                           for w in m.get("table_windows", [])]
+    m["table_windows"] = [dict(w, holes=[_span(x, "%s table window hole" % p) for x in w["holes"]]) if "holes" in w else w
+                          for w in m["table_windows"]]
     m["outside_refs"] = list(m.get("outside_refs", []))
     check(m)
     return m
@@ -93,7 +106,9 @@ def _ref_sites(r):
 def check(m):
     """The checks every map must pass before it is used: refs inside the code (whole aligned words, or movw/movt
     instruction pairs), entries inside the code, table refs pointing into a listed object, branches from an island
-    into the code, nothing pointing outside the codec."""
+    into the code, nothing pointing outside the codec. A code window that names its ranges is exactly those ranges
+    with one listed hole between two of them, and no hole (the code's or a table window's) holds a site, an entry, an
+    address a ref holds or a branch's target."""
     p, c = m["profile"], m["code"]
     if c["len"] <= 0:
         raise MapError("%s: empty code window" % p)
@@ -121,10 +136,16 @@ def check(m):
         if island_of(m, r["target"]) is None:
             raise MapError("%s: island pointer at +0x%X (0x%08X) points into no island" % (p, r["off"], r["target"]))
     objs = m["objects"]
+    for k in ("self_refs", "island_ptrs", "island_refs", "branches"):
+        if any("anchor" in r for r in m[k]):
+            raise MapError("%s: only a table ref has an anchor" % p)
     for r in m["table_refs"]:
         site_ok(r, "table ref")
-        if objs and object_of(m, r["target"]) is None:
-            raise MapError("%s: table ref at +0x%X (0x%08X) points into no object" % (p, r["off"], r["target"]))
+        if "anchor" in r and not 0 < abs(r["anchor"] - r["target"]) < 16:
+            raise MapError("%s: table ref at +0x%X: its anchor 0x%08X is not next to its value 0x%08X"
+                           % (p, r["off"], r["anchor"], r["target"]))
+        if objs and object_of(m, held(r)) is None:
+            raise MapError("%s: table ref at +0x%X (0x%08X) points into no object" % (p, r["off"], held(r)))
     for r in m["island_refs"] + m["branches"]:
         if "at" not in r or island_of(m, r["at"]) is None:
             raise MapError("%s: island ref or branch at 0x%08X lies in no island" % (p, r.get("at", 0)))
@@ -134,12 +155,114 @@ def check(m):
     for b in m["branches"]:
         if m["isa"] != "thumb2" or b["at"] % 2 or not c["run"] <= b["target"] < c["run"] + c["len"]:
             raise MapError("%s: branch at 0x%08X is not a Thumb-2 bl into the code" % (p, b["at"]))
+    spans = holes(m)
+    _spans_ok(p, "the code", spans, c["len"])
+    rs = sorted((x["off"], x["len"]) for x in c.get("ranges", []))
+    if spans and not rs:
+        raise MapError("%s: holes without the code's ranges" % p)
+    if rs and rs[0][0] != 0:
+        raise MapError("%s: the code doesn't start with a range" % p)
+    at = 0
+    for a, n in rs:
+        if n <= 0 or a < at:
+            raise MapError("%s: the code's range at +0x%X is empty or overlaps the one before" % (p, a))
+        if a > at and (at, a - at) not in spans:
+            raise MapError("%s: the code between its ranges at +0x%X is not a listed hole" % (p, at))
+        at = a + n
+    if rs and at != c["len"]:
+        raise MapError("%s: the code's ranges don't end where the code ends" % p)
+    used = [(o, 4) for k in ("self_refs", "island_ptrs", "table_refs") for r in m[k] for o in _ref_sites(r)] + \
+           [(o, 2) for o in m["entries"].values()]
+    for o, n in used:
+        if any(a < o + n and o < a + hn for a, hn in spans):
+            raise MapError("%s: +0x%X, a site or an entry, lies in a hole" % (p, o))
+    # nor what the codec reaches in its own code through a listed address: a self ref's value, a branch's target
+    # (the halfword there: a Thumb address carries bit 0)
+    for v in [r["value"] for r in m["self_refs"]] + [b["target"] for b in m["branches"]]:
+        o = (v & ~1) - c["run"]
+        if any(a < o + 2 and o < a + hn for a, hn in spans):
+            raise MapError("%s: 0x%08X, an address in the code that a ref or a branch holds, lies in a hole" % (p, v))
+    # a table window's holes: inside it, and nothing the code or an island addresses lies in one, nor an island's
+    # entry or one of its sites (where a table window holds the islands)
+    addressed = [held(r) for r in m["table_refs"]] + [r["target"] for r in m["table_refs"] + m["island_refs"]]
+    sites = [(r["at"], 4) for r in m["island_refs"] + m["branches"]] + [(r["target"] & ~1, 2) for r in m["island_ptrs"]]
+    for w in m["table_windows"]:
+        ws = sorted((h["off"], h["len"]) for h in w.get("holes", []))
+        _spans_ok(p, "table window 0x%08X" % w["flash"], ws, w["len"])
+        for a, n in ws:
+            lo, hi = w["flash"] + a, w["flash"] + a + n
+            if any(lo <= v < hi for v in addressed):
+                raise MapError("%s: a ref points into the hole +0x%X of table window 0x%08X" % (p, a, w["flash"]))
+            if any(lo < s + sn and s < hi for s, sn in sites):
+                raise MapError("%s: a site or an entry of an island lies in the hole +0x%X of table window 0x%08X"
+                               % (p, a, w["flash"]))
     if m["outside_refs"]:
         raise MapError("%s: the codec refers outside its windows; it can't be moved" % p)
     offs = [o for k in ("self_refs", "island_ptrs", "table_refs") for r in m[k] for o in _ref_sites(r)]
     ats = [r["at"] for r in m["island_refs"] + m["branches"]]
     if len(offs) != len(set(offs)) or len(ats) != len(set(ats)):
         raise MapError("%s: a site is listed twice" % p)
+
+
+def held(r):
+    """The address a table ref's value moves with: its anchor where it has one (a value that lies just outside the
+    object it belongs to, as a pointer its reader steps before the first load), else the value itself"""
+    return r.get("anchor", r["target"])
+
+
+def holes(m):
+    """[(offset, length)] of the code window's spans that are not the codec's (the maker's code or data that stock
+    keeps between or inside the codec's ranges), in order; [] for a code window that is all codec"""
+    return sorted((h["off"], h["len"]) for h in m["code"].get("holes", []))
+
+
+def table_holes(m):
+    """{table window's stock address: [(offset, length)]} for the table windows that hold bytes that are not the
+    codec's; a window without any is not in it"""
+    return {w["flash"]: sorted((h["off"], h["len"]) for h in w["holes"]) for w in m["table_windows"] if w.get("holes")}
+
+
+def _spans_ok(p, what, spans, length):
+    for (a, n), (b, _) in zip(spans, spans[1:] + [(length, 0)]):
+        if n <= 0 or a < 0 or a + n > b:
+            raise MapError("%s: hole +0x%X+0x%X is outside %s or overlaps the next" % (p, a, n, what))
+
+
+def blank(data, spans):
+    """A window with the given spans (holes(), table_holes()) filled with 0xFF: what a merge writes, so that nothing
+    of the stock image that is not the codec goes into the merged one. No listed site and nothing a ref addresses lies
+    in a hole (check)"""
+    out = bytearray(data)
+    for off, n in spans:
+        out[off:off + n] = b"\xFF" * n
+    return bytes(out)
+
+
+def ranges_only(code, m):
+    """The code window with everything outside its ranges (code.ranges) filled with 0xFF"""
+    out = bytearray(b"\xFF" * len(code))
+    for r in m["code"].get("ranges", []):
+        out[r["off"]:r["off"] + r["len"]] = code[r["off"]:r["off"] + r["len"]]
+    return bytes(out)
+
+
+def stock_crc(x):
+    """The CRC-32 a map gives for the stock bytes of its code, a range, an island or a table window ("crc32"), or None.
+    The maps that carry them are those whose placed CRC-32s are derived without the bytes (relocate_crcs, ranges_crc,
+    crc_join)"""
+    return None if x.get("crc32") is None else _num(x["crc32"], "crc32")
+
+
+def crc_join(parts):
+    """The CRC-32 of a concatenation from its parts, [(CRC-32 or bytes, length)], without the bytes of a part given by
+    its CRC-32"""
+    acc, total = 0, 0
+    for c, n in parts:
+        if isinstance(c, (bytes, bytearray)):
+            c = zlib.crc32(c)
+        acc = zlib.crc32(bytes(n), acc ^ 0xFFFFFFFF) ^ 0xFFFFFFFF ^ c ^ zlib.crc32(bytes(n))
+        total += n
+    return (acc ^ zlib.crc32(bytes(total))) & 0xFFFFFFFF
 
 
 def island_of(m, addr):
@@ -478,8 +601,8 @@ def _layout_sites(m, wins, src, dst):
             if (lay[i] - a) % (align if i == 0 else 4):
                 raise MapError("%s: window %d moved by 0x%X breaks its alignment" % (p, i, lay[i] - a))
 
-    def moved(v, lay, what):
-        w = _window_of(wins, v)
+    def moved(v, lay, what, with_=None):
+        w = _window_of(wins, v if with_ is None else with_)
         if w is None:
             raise MapError("%s: %s 0x%08X lies in no codec window" % (p, what, v))
         return (v + lay[w] - wins[w][0]) & 0xFFFFFFFF
@@ -490,7 +613,7 @@ def _layout_sites(m, wins, src, dst):
         out.append((0, r["off"], r, moved(v, src, "self ref"), moved(v, dst, "self ref")))
     for r in m["island_ptrs"] + m["table_refs"]:
         v = r["target"]
-        out.append((0, r["off"], r, moved(v, src, "table ref"), moved(v, dst, "table ref")))
+        out.append((0, r["off"], r, moved(v, src, "table ref", r.get("anchor")), moved(v, dst, "table ref", r.get("anchor"))))
     for r in m["island_refs"]:
         w = _window_of(wins, r["at"])
         if w is None or w == 0:
@@ -546,11 +669,9 @@ def relocate(m, wins, parts, src, dst):
     return [bytes(d) for d in out]
 
 
-def relocate_crcs(m, wins, crcs, src, dst):
-    """The CRC-32 of each window after relocate(src -> dst), from its CRC-32 at src, without the bytes. CRC-32 is affine
-    over XOR for messages of one length (crc(a ^ b) = crc(a) ^ crc(b) ^ crc(zeros)), and relocate changes only the
-    listed sites, from values the map and the two layouts give. So a new layout's CRCs, which the firmware pins, follow
-    from a known one's and the map alone."""
+def _site_diffs(m, wins, src, dst):
+    """For each window, the XOR of its bytes at src and after relocate(src -> dst): zero but at the listed sites, where
+    the two layouts' values differ. From the map and the layouts alone"""
     diffs = [bytearray(n) for _, n in wins]
     for w, off, r, have, want in _layout_sites(m, wins, src, dst):
         a, b = bytearray(8), bytearray(8)
@@ -567,4 +688,30 @@ def relocate_crcs(m, wins, crcs, src, dst):
         _put(b, 0, r, want)
         for j in range(4):
             diffs[w][off + j] ^= a[j] ^ b[j]
+    return diffs
+
+
+def relocate_crcs(m, wins, crcs, src, dst):
+    """The CRC-32 of each window after relocate(src -> dst), from its CRC-32 at src, without the bytes. CRC-32 is affine
+    over XOR for messages of one length (crc(a ^ b) = crc(a) ^ crc(b) ^ crc(zeros)), and relocate changes only the
+    listed sites, from values the map and the two layouts give. So a new layout's CRCs, which the firmware pins, follow
+    from a known one's and the map alone."""
+    diffs = _site_diffs(m, wins, src, dst)
     return [(c ^ zlib.crc32(bytes(d)) ^ zlib.crc32(bytes(len(d)))) & 0xFFFFFFFF for c, d in zip(crcs, diffs)]
+
+
+def ranges_crc(m, wins, src, dst):
+    """The CRC-32 of ranges_only(the code after relocate(src -> dst)), from the stock CRC-32 of each range (code.ranges
+    "crc32"), the map and the two layouts, without the bytes; None for a map without ranges or without their CRC-32s"""
+    rs = sorted(m["code"].get("ranges", []), key=lambda r: r["off"])
+    if not rs or any(stock_crc(r) is None for r in rs):
+        return None
+    diff = _site_diffs(m, wins, src, dst)[0]
+    parts, at = [], 0
+    for r in rs:
+        if r["off"] > at:
+            parts.append((b"\xFF" * (r["off"] - at), r["off"] - at))
+        d = bytes(diff[r["off"]:r["off"] + r["len"]])
+        parts.append((stock_crc(r) ^ zlib.crc32(d) ^ zlib.crc32(bytes(r["len"])), r["len"]))
+        at = r["off"] + r["len"]
+    return crc_join(parts)
