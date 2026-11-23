@@ -1311,7 +1311,8 @@ def cmd_flash_dfuse(args, board, man, image, merged=None):
     goes to the program flash (alternate setting 0); the option bytes are never selected or written.
 
     A board with a codec route has the codec step of the keyed route (codec_step), --codec none for an install
-    without a codec (the codec's sector erased and left blank), and one step more: a keep is settled once the loader
+    without a codec (the codec's sector erased and left blank; a radio that reports its codec hands over a copy first
+    and is asked, by the codec's id, before it is erased), and one step more: a keep is settled once the loader
     has answered (settle_keep), before anything is asked or erased. A board without one has no codec step.
 
     A radio that runs RadioFoundry is restarted into the bootloader over its debug link where the board's firmware
@@ -1342,11 +1343,27 @@ def cmd_flash_dfuse(args, board, man, image, merged=None):
         if board.has_codec:
             if merged or stock is not None:
                 say("stock    --codec none: the codec in the %s is not written" % ("image" if merged else "stock file"))
+            # the sector is erased: a radio that reports its codec hands over a copy first, as before every other
+            # update that erases it (get_saved_codec), and is told by name what it loses
+            reported = sim_running_codec(board, sim) if sim else (probe or {}).get("codec")
+            working = board.codec_present(reported)
+            if not sim:
+                saved = get_saved_codec(args, board, probe)
+            risk = "DMR voice will stay off (FM works) until you flash with --stock"
+            if working:
+                risk = ("the radio's working codec %s is erased. %s" % (reported, (
+                        "A copy is saved in %s: the next install without --codec none writes it again" % saved.path
+                        if saved is not None and saved.path else
+                        "No copy of it is saved on this computer: DMR voice will stay off (FM works) until you flash "
+                        "with --stock (%s)" % stock_hint(board))))
             d = Decision(planmod.BLANK, "asked for: the radio is installed without a codec, and the codec's sector "
-                         "is erased and left blank",
-                         risk="DMR voice will stay off (FM works) until you flash with --stock", expect_codec=False)
+                         "is erased and left blank", risk=risk, expect_codec=False)
             say("codec    %s: %s" % (d.mode.upper(), d.why))
             warn(d.risk)
+            if working and not (args.yes or args.dry_run or sim) and not ask_yes(
+                    "Erase the radio's working codec %s?" % reported):
+                say("nothing done (not confirmed: answer the question on a terminal, or pass --yes)")
+                return 1
     else:
         if merged and stock is not None:
             say("stock    the image carries the codec, so the stock file is not used")

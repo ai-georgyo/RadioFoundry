@@ -850,10 +850,12 @@ class RealRun(PlainCodec):
         state.remember_probe({"board": b.debuglink_names[0], "git": "00000000", "codec": codec, "port": "gone",
                               "uid": None})
 
-    def run_real(self, b, dev, *argv, answer=None, comes_back=True, verify=None):
+    def run_real(self, b, dev, *argv, answer=None, comes_back=True, verify=None, live=None):
         """(exit code, stdout, stderr, the questions asked). answer: what every question gets; None fails the test at
         a question. comes_back: after a Read Unprotect the radio is put in its bootloader again. verify: a stand-in
-        for cli.verify_after, which the run then calls after the install (without one the run carries --no-verify)"""
+        for cli.verify_after, which the run then calls after the install (without one the run carries --no-verify).
+        live: a probe the radio gives now, over its debug link (a stand-in for cli.get_probe; the run then carries no
+        --no-probe, and the radio restarts into its bootloader by its keys, as with no restart offered)"""
         usb = fakedfu.FakeUsb([dev])
         asked = []
 
@@ -869,15 +871,17 @@ class RealRun(PlainCodec):
             return True, None
 
         with mock.patch.dict(stockfw.PROFILES, synthetic(b)[1]), \
-                mock.patch.object(cli, "get_probe", remembered_probe), \
+                mock.patch.object(cli, "get_probe", remembered_probe if live is None else (lambda a, log=None: live)), \
+                mock.patch.object(cli, "restart_into_bootloader", return_value=None), \
                 mock.patch.object(debuglink, "probe", return_value=None), \
                 mock.patch.object(debuglink, "find_ports", return_value=None), \
                 mock.patch.object(dfumod, "import_usb", return_value=usb), \
                 mock.patch.object(cli, "wait_unprotect", side_effect=left), \
                 mock.patch.object(cli, "verify_after", verify or mock.Mock(side_effect=AssertionError)), \
                 mock.patch.object(cli.time, "sleep"), mock.patch.object(cli, "ask_yes", ask):
-            rc, out, err = base.run_cli(["flash", self.bp, "--board", b.id, "--wait", "0", "--no-probe",
-                                         "--no-reporting"] + ([] if verify else ["--no-verify"]) + list(argv))
+            rc, out, err = base.run_cli(["flash", self.bp, "--board", b.id, "--wait", "0", "--no-reporting"]
+                                        + ([] if live else ["--no-probe"]) + ([] if verify else ["--no-verify"])
+                                        + list(argv))
         return rc, out, err, asked
 
     def test_a_remembered_probe_and_a_protected_radio(self):
@@ -947,6 +951,58 @@ class RealRun(PlainCodec):
         self.holds_codec(b, dev, segs)
         for s in b.codec_sectors():
             self.assertIn(s.addr, dev.erased)
+
+    def test_no_codec_on_a_radio_with_its_codec(self):
+        """--codec none erases the codec's sector. A radio that reports its codec hands over a copy first, as before
+        every other update that erases it, is told by the codec's id what it loses, and is asked before it is erased"""
+        b = self.b
+        _, profiles, prof, segs = synthetic(b)
+        live = {"board": b.debuglink_names[0], "git": "00000000", "codec": b.codec.id, "port": "/dev/ttyFAKE0",
+                "uid": None}
+
+        def clear():		# a synthetic copy checks only against the synthetic profiles
+            with mock.patch.dict(stockfw.PROFILES, profiles):
+                for c in codecsave.copies(b):
+                    os.remove(c.path)
+        self.addCleanup(clear)
+        for yes, answer in ((["--yes"], None), ([], True), ([], False)):
+            clear()
+            dev = fakedfu.FakeRomUsbDevice(b, fakedfu.rom_installed(b, random.Random(4), segs))
+            before = bytes(dev.flash)
+            got = (prof, segs[:len(stockfw.placed_windows(prof))])
+            with mock.patch.dict(stockfw.PROFILES, profiles), \
+                    mock.patch.object(codecsave, "from_radio", return_value=got) as read:
+                rc, out, err, asked = self.run_real(b, dev, "--codec", "none", *yes, answer=answer, live=live)
+            read.assert_called_once()			# read back before anything was asked or erased
+            with mock.patch.dict(stockfw.PROFILES, profiles):
+                copy = codecsave.find(b)
+            self.assertIsNotNone(copy)
+            self.assertIn("codec    read back from the radio (debug link) and checked; saved in %s" % copy.path, out)
+            self.assertIn("the radio's working codec %s is erased. A copy is saved in %s: the next install without "
+                          "--codec none writes it again" % (b.codec.id, copy.path), err)
+            self.assertLess(out.index("codec    read back"), out.index("codec    BLANK"))
+            if yes:
+                self.assertEqual((rc, asked), (0, []), out + err)
+            else:
+                self.assertEqual(asked[0], "Erase the radio's working codec %s?" % b.codec.id)
+            if answer is False:
+                self.assertEqual((rc, len(asked), dev.erased, dev.blocks), (1, 1, [], 0), out + err)
+                self.assertTrue(bytes(dev.flash) == before)
+                self.assertIn("nothing done (not confirmed", out)
+            else:
+                self.assertEqual(rc, 0, out + err)
+                self.blank(b, dev)
+        # what the radio said only earlier (a remembered probe) reads nothing back; without a copy it says so
+        clear()
+        self.remembered(b, b.codec.id)
+        dev = fakedfu.FakeRomUsbDevice(b, fakedfu.rom_installed(b, random.Random(4), segs))
+        with mock.patch.object(codecsave, "from_radio", side_effect=AssertionError("read over the debug link")):
+            rc, out, err, asked = self.run_real(b, dev, "--codec", "none", "--yes")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("the radio's working codec %s is erased. No copy of it is saved on this computer: DMR voice "
+                      "will stay off (FM works) until you flash with --stock (%s)" % (b.codec.id, cli.stock_hint(b)),
+                      err)
+        self.blank(b, dev)
 
     def test_a_keep_with_a_vector_table(self):
         """The loader shows a radio that is not read protected and holds a vector table: the remembered probe's keep
