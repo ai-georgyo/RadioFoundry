@@ -342,7 +342,8 @@ after that answer, before the Read Unprotect question, before the erase question
 
 A void keep is decided again, in this order: a saved copy of the codec and not `--codec keep`: merge from it; a
 stock file given and not `--codec keep`: merge from it; otherwise the install is refused with nothing changed, and
-the message names `--stock FILE` and `--codec none`. Where the decision changes, the codec is taken from its source
+the message names `--stock FILE` and `--codec none`. A refused `--codec keep` is named as what stops the merge, with
+the source the same command would use without it: adding `--stock` to it would only repeat the refusal. Where the decision changes, the codec is taken from its source
 (which can still refuse a bad file with nothing erased), the plan is made and checked again, and the new decision
 and plan are printed. `--dry-run` asks no loader: it says that a keep holds only for a radio that is not read
 protected and has a vector table.
