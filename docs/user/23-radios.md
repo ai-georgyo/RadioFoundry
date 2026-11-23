@@ -16,7 +16,7 @@ and what has been checked on it.
 | [TYT MD-380](#tyt-md-380) | TYT MD-390, Retevis RT3 | FM with CTCSS both ways, DMR voice and SMS in simplex and through a repeater or hotspot on either slot, and codeplug and ID database programming work on a UHF radio. Open: DCS, the tone deviation and the untested VHF image. |
 | [TYT MD-UV380](#tyt-md-uv380) | TYT MD-UV390, Retevis RT3S, TYT MD-UV390 Plus 10 W | Built on the UV380 family code, with the MD-UV380's keys, display, power tables and GPS. Run on radios by community testers. |
 | [TYT MD-9600](#tyt-md-9600) | Retevis RT90 | One image serves every board revision. On a V1-V3 radio, FM and DMR on both bands, DMR voice and data, text messages, roaming, scan, dual watch, APRS, the hotspot, each split duplex half and the USB network services work on air, with every power level checked on a wattmeter on both bands. V4A/V5 boards are detected; on older boards the radio asks for the revision once. Open: V4 boards have not run on a radio, one V4A/V5 report has DMR transmit dropping out (#750), and SFR loses inbound voice frames. |
-| [Connect Systems CS7000 M17 PLUS](#connect-systems-cs7000-m17-plus) |  | Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and decoded. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link. DMR voice needs the codec, merged from the maker's firmware file V9.00.96 at install; that route has not run on a radio. |
+| [Connect Systems CS7000 M17 PLUS](#connect-systems-cs7000-m17-plus) |  | Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and played with the codec, merged from the maker's firmware file V9.00.96 at install. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link; DMR voice transmit, at the arm's top stage, is untested. |
 | [Retevis RT10](#retevis-rt10) |  | Boots from the boot ROM with the host link, stub entry, the watchdog and the crash log. FM receive with CTCSS/DCS decode, FM transmit, DMR transmit and receive with the radio's own codec, P25 (conventional, and trunked transmit) and NXDN at 4800 bit/s on stored channels, and APRS transmit work on the radio. |
 <!-- end generated -->
 
@@ -819,8 +819,8 @@ A 128 x 64 monochrome screen.
 ## Connect Systems CS7000 M17 PLUS
 
 A UHF handheld with a keypad, a channel selector, a volume knob with the power switch, GPS and a 160 x 128 color
-screen. **In development, for testers: one radio runs it so far, and it has only received.** Know these four things
-first:
+screen. **In development, for testers: one radio runs it so far, and it has only received.** On that radio FM receive
+works with clear audio, and DMR calls are received and played with the voice codec. Know these four things first:
 
 - **It doesn't transmit unless you arm it, and transmitting has never been tried.** RadioFoundry can transmit on the
   maker's calibration, but no radio has done so yet. It refuses every transmission, FM and DMR, until you arm it from
@@ -830,10 +830,12 @@ first:
   connected. Receive uses the calibration at once: with it in place (on a radio that lost it, after the restore from
   your backup, [below](#installing-on-the-cs7000-m17-plus)) the receiver takes its tuning from it, and the signal
   strength reads on the maker's scale, so the figures differ from before. On the first radio, after the restore, FM
-  sounded as good as before, DMR calls were decoded, and a strong signal read a few dB lower.
-- **DMR voice is untested.** It needs the radio's voice codec, which the installer takes from Connect Systems'
-  firmware file V9.00.96 on your computer. Without the file the radio runs without DMR voice: DMR calls show on the
-  screen without audio, and you can't talk on DMR. DMR data and FM don't need a codec.
+  sounded as good as before, DMR calls were decoded and played, and a strong signal read a few dB lower.
+- **DMR voice needs the radio's voice codec**, which the installer takes from Connect Systems' firmware file
+  V9.00.96 on your computer. With it, received DMR calls play from the speaker (checked on one radio). Without the
+  file the radio runs without DMR voice: DMR calls show on the screen without audio. DMR data and FM don't need a
+  codec. Talking on DMR needs the arm's last stage (DMR), like every DMR transmission, and has never been tried: on a
+  radio the codec has only played calls, never encoded the microphone.
 - **The first installation erases the original firmware and its bootloader for good.** RadioFoundry cannot put them
   back: going back is the maker's own recovery procedure.
 - **RadioFoundry stores nothing on the radio's memory chip until you hand the chip over**, after a full backup. It
@@ -943,7 +945,8 @@ has no zone line. It has not been tried on a radio.
 
 - Transmitting without the arm: until you arm it after each start, nothing transmits, the hotspot included.
   Transmitting has not been tried on a radio.
-- DMR voice without the codec: received calls are shown, not played. With the codec, DMR voice is untested.
+- DMR voice without the codec: received calls are shown, not played. With the codec they are played; talking on DMR
+  needs the arm's last stage (DMR) and is untested.
 - M17. RadioFoundry has no M17 mode.
 - Bluetooth, the man-down sensor and the vibrator: not used.
 - Beeps while the radio transmits or sleeps between receive checks, and all beeps in a build without DMR.

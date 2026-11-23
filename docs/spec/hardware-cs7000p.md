@@ -8,11 +8,13 @@ IF chip, a discrete PA with a current loop, a 32 MB SPI NOR flash, a GPS module,
 carries every rail enable. The port is `boards/cs7000p` on `platform/stm32h7`.
 
 Status: **one radio runs the port; what was seen on it is in the bring-up page's
-[First radio](../testing/cs7000p-bringup.md#first-radio), and everything else in this file is untested. On it the
-maker's table was restored from the owner's backup and receive runs on it (2026-11-24). Nothing of the transmit path
-has run on a radio: no key-up of any kind has been made on one.** The codec route (2.3,
-[codec-cs7000p.md](codec-cs7000p.md)) and DMR voice audio are untested. The image builds, its host tests pass and its static stack check passes. The order to check things on a radio, and the knob to change when a check
-fails, is [cs7000p-bringup.md](../testing/cs7000p-bringup.md).
+[First radio](../testing/cs7000p-bringup.md#first-radio), and everything else in this file is untested.** On that
+radio DMR calls are received, decoded and played by the radio's own codec, merged into sector 7 (2.3,
+[codec-cs7000p.md](codec-cs7000p.md)), and the maker's table was restored from the owner's backup and receive runs on
+it (2026-11-24). **Nothing of the transmit path has run on a radio: no key-up of any kind has been made on one, DMR
+voice included, and the codec has decoded but never encoded on one.** The image builds, its host tests pass and its
+static stack check passes. The order to check things on a radio, and the knob to change when a check fails, is
+[cs7000p-bringup.md](../testing/cs7000p-bringup.md).
 
 Words used here:
 
@@ -28,7 +30,7 @@ What the radio refuses until it is calibrated or checked:
 |---|---|---|
 | Any transmission on the model tables (all unset): FM, DMR data, the hotspot, Tier III registration | the calibration verdict in `tx()` and in the burst key-up (section 13) | the model tables are filled from bench measurements |
 | Any transmission on the maker's table (`board.cal=maker`) | the owner's transmit arm (13.2): off at every start, never stored | the owner arms it over the debug link until power-off, in stages (FM at the low level, FM, then DMR), with a test TX limit list naming the frequency (`radio tx-arm`, 13.2) |
-| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); untested |
+| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); received voice plays on one radio, transmit is untested |
 | Settings and codeplug writes, on every unit, blank flash or not | the foreign-region guard with `STORAGE_CLAIM_FIRST` (section 10) | the owner claims the region after a backup of the whole chip |
 | The power hold | `power_cs7000p.c` (section 5) | the knob has been read on, some tens of milliseconds after reset |
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |
