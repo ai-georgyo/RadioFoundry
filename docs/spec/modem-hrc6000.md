@@ -804,9 +804,12 @@ below it. The answer is compared with the order the driver holds, so a board may
 **Receive hold** (`ref_dac_hold`), for a board whose reference oscillator takes its control voltage from the chip's
 modulation DAC on pin 75. The driver's set-ups leave 0x25 = 0x0E: with it that DAC is on only while the chip
 transmits. The hold writes 0x25 = 0x0C (the same with bit 1 clear): measured on a radio, the DAC is then on while
-receiving, at mid-scale, moved by the offset in 0x04 ([hrc6000-registers.md](hrc6000-registers.md) 3.22). The manual's
-recipe (bit 5 set, bit 3 clear, the level in 0x47 / 0x48) does nothing on that pin. The word is written whole, not read
-and modified; it reads back. An FM transmission keeps the driver's 0x0E, which the same measurement shows on with
+receiving, at the level of the two-point bias 0x47 / 0x48, ten bits unsigned over its range
+([hrc6000-registers.md](hrc6000-registers.md) 3.22). The manual's control word for it (bit 5 set, bit 3 clear) does
+nothing on that pin. The host writes the bias as mid-scale (512) plus the reference offset, after the driver's own
+offset write: the offset alone would be the DAC at 0 V, and while the chip transmits the same DAC idles at mid-scale
+plus 0x04, so receive and transmit sit on one frequency. The word is written whole, not read and modified; it reads
+back. An FM transmission keeps the driver's 0x0E, which the same measurement shows on with
 analog transmit enabled (0x60 = 0x80); a DMR transmission keeps the hold (nothing in the DMR entry or the slot engine
 writes 0x25), and what the DAC does in a DMR TX slot under either word is not measured. Without the option 0x25 is
 never written by the host.

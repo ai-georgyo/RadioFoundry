@@ -192,6 +192,14 @@ static bool ref_is(int8_t off)
 	return regs[4][0x47] == (uint8_t)off && regs[4][0x04] == (uint8_t)off && regs[4][0x48] == (off < 0 ? 0x03 : 0x00);
 }
 
+// The same under the receive hold: 0x04 as the driver leaves it, and the held DAC's level in the two-point bias, ten
+// bits unsigned, mid-scale plus the offset. Never the offset alone: that is the DAC at 0 V
+static bool ref_held(int8_t off)
+{
+	uint16_t level = (uint16_t)(512 + off);
+	return regs[4][0x04] == (uint8_t)off && regs[4][0x47] == (uint8_t)level && regs[4][0x48] == (uint8_t)(level >> 8);
+}
+
 // --- the tests ---
 
 // What the driver's own set-ups leave in the two registers the host rewrites
@@ -261,7 +269,7 @@ static void test_init_hold(void)
 	CHECK(regs[4][0x10] == 0x80 && h.r10 == 0x80);	// FM: hrc6000_fm_rx_pcm not applied
 	CHECK(regs[4][0xE0] == 0x89);			// FM receive: the driver's codec set-up, untouched
 	CHECK(regs[4][0x01] == 0xB0);			// straight
-	CHECK(ref_is(-5));
+	CHECK(ref_held(-5));
 	CHECK(held(regs[4][0x25]) && h.r25 == regs[4][0x25]);
 	// the hold is the driver's value with bit 1 clear, whatever the driver writes: 0x0C from its 0x0E
 	CHECK(regs[4][0x25] == (uint8_t)(plain_25 & ~0x02u) && regs[4][0x25] == 0x0Cu);
@@ -271,7 +279,7 @@ static void test_init_hold(void)
 	// the other side of the LO at init
 	fake_reset();
 	CHECK(hrc6000_if_init(&h, &dev, &cfg_hold, HZ_HIGH_SIDE));
-	CHECK(regs[4][0x01] == 0xF0 && ref_is(0));
+	CHECK(regs[4][0x01] == 0xF0 && ref_held(0));
 	fake_reset();
 	side_flip = true;
 	CHECK(hrc6000_if_init(&h, &dev, &cfg_hold, HZ_HIGH_SIDE));
@@ -288,7 +296,7 @@ static void test_fm(void)
 	regs[4][0x25] = 0x0E;	// as a set-up elsewhere would leave it
 	uint32_t w45 = n_w[0x45];
 	hrc6000_if_retune(&h, HZ_B);
-	CHECK(ref_is(9) && h.tuned_hz == HZ_B && held(regs[4][0x25]));
+	CHECK(ref_held(9) && h.tuned_hz == HZ_B && held(regs[4][0x25]));
 	CHECK(n_w[0x45] == w45 && n_restart == 0);
 	CHECK(regs[4][0x01] == 0xB0);
 
@@ -346,7 +354,7 @@ static void test_fm(void)
 	CHECK(regs[4][0x10] == 0x80 && h.r10 == 0x80 && regs[4][0x60] == 0x00 && regs[4][0x36] == 0x02);
 	CHECK(regs[4][0xE0] == 0x89);
 	CHECK(regs[4][0xA1] == 0x00);
-	CHECK(ref_is(-5));
+	CHECK(ref_held(-5));
 	CHECK(held(regs[4][0x25]) && h.r25 == regs[4][0x25]);
 	CHECK(seq_w[0x47] < seq_w[0x25]);	// the receive level, then the hold
 	x = n_xfer;
@@ -364,7 +372,7 @@ static void test_fm(void)
 	hrc6000_if_retune(&h, HZ_HIGH_SIDE);
 	CHECK(n_w[0x01] == w01 && regs[4][0x01] == 0xB0);
 	hrc6000_if_fm_tx_end(&h);
-	CHECK(regs[4][0x01] == 0xF0 && ref_is(0) && h.tuned_hz == HZ_HIGH_SIDE);
+	CHECK(regs[4][0x01] == 0xF0 && ref_held(0) && h.tuned_hz == HZ_HIGH_SIDE);
 	CHECK(h.errors == 0);
 }
 
@@ -389,7 +397,7 @@ static void test_dmr(void)
 	CHECK(at_enter[0xE4] == 0x20 + 7);
 	CHECK(at_enter[0x36] == 0x00);
 	CHECK(held(at_enter[0x25]) && h.r25 == at_enter[0x25]);	// the hold is back before the engine runs
-	CHECK(at_enter[0x47] == 0 && at_enter[0x48] == 0);
+	CHECK(at_enter[0x47] == 0x00 && at_enter[0x48] == 0x02);	// the held level: mid-scale, never 0
 	CHECK(seq_w[0x47] < seq_w[0x25]);
 
 	// already there
@@ -407,7 +415,7 @@ static void test_dmr(void)
 	hrc6000_if_retune(&h, HZ_B);
 	CHECK(n_w[0x45] == w45 + 1 && n_w[0x46] == w46 + 1 && n_restart == 1);
 	CHECK(regs[4][0x45] == pair_byte(HZ_B, true, false) && regs[4][0x46] == pair_byte(HZ_B, true, true));
-	CHECK(regs[4][0x01] == 0xB0 && ref_is(9) && h.tuned_hz == HZ_B);
+	CHECK(regs[4][0x01] == 0xB0 && ref_held(9) && h.tuned_hz == HZ_B);
 	hrc6000_if_retune(&h, HZ_B);
 	CHECK(n_w[0x45] == w45 + 1 && n_restart == 1);
 
@@ -440,14 +448,14 @@ static void test_dmr(void)
 	CHECK(at_leave[0x10] == 0x6E && at_leave[0x60] == 0x00);	// the engine goes off while the chip is still in DMR
 	CHECK(regs[4][0x10] == 0x80 && h.r10 == 0x80 && regs[4][0x36] == 0x02);
 	CHECK(regs[4][0x01] == 0xF0);
-	CHECK(ref_is(0) && h.tuned_hz == HZ_HIGH_SIDE);	// its frequency's offset, as after a DMR entry
+	CHECK(ref_held(0) && h.tuned_hz == HZ_HIGH_SIDE);	// its frequency's offset, as after a DMR entry
 	CHECK(held(regs[4][0x25]) && h.r25 == regs[4][0x25]);
 
 	// and in again without a pair
 	hrc6000_if_mode(&h, true, HZ_A);
 	CHECK(n_enter == 2 && at_enter[0x45] == SAFE_GAIN && at_enter[0x46] == SAFE_GAIN);
 	CHECK(at_enter[0x01] == 0xB0 && held(at_enter[0x25]) && at_enter[0xE0] == 0x8B && at_enter[0x36] == 0x00);
-	CHECK(at_enter[0x47] == (uint8_t)-5 && at_enter[0x48] == 0x03);
+	CHECK(at_enter[0x47] == 0xFB && at_enter[0x48] == 0x01);	// 512 - 5
 
 	// a DMR entry from an FM transmission ends it
 	hrc6000_if_mode(&h, false, HZ_A);
@@ -460,7 +468,7 @@ static void test_dmr(void)
 	hrc6000_if_mode(&h, false, HZ_HIGH_SIDE);
 	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
 	hrc6000_if_fm_tx_end(&h);
-	CHECK(regs[4][0x01] == 0xF0 && ref_is(0) && h.tuned_hz == HZ_HIGH_SIDE);
+	CHECK(regs[4][0x01] == 0xF0 && ref_held(0) && h.tuned_hz == HZ_HIGH_SIDE);
 	CHECK(h.errors == 0);
 }
 #else
@@ -475,7 +483,7 @@ static void test_dmr(void)
 	CHECK(!h.dmr && n_xfer == x && n_enter == 0 && n_leave == 0);
 	CHECK(regs[4][0x10] == 0x80 && regs[4][0x36] == 0x02 && held(regs[4][0x25]));
 	hrc6000_if_retune(&h, HZ_B);
-	CHECK(n_restart == 0 && ref_is(9));
+	CHECK(n_restart == 0 && ref_held(9));
 	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
 	hrc6000_if_fm_tx_end(&h);
 	CHECK(h.errors == 0);
@@ -615,13 +623,13 @@ static void test_failures(void)
 	hrc6000_if_fm_tx_end(&h);
 	fail_w = 0x47;
 	hrc6000_if_retune(&h, HZ_B);
-	CHECK(h.errors == 3);
+	CHECK(h.errors == 4);	// the driver's write and the held level's
 	fail_w = -1;
 #if CONFIG_DMR
 	hrc6000_if_mode(&h, true, HZ_B);
 	fail_w = 0x46;
 	hrc6000_if_retune(&h, HZ_A);
-	CHECK(h.errors == 4 && n_restart == 1);	// the receiver still searches again on the new channel
+	CHECK(h.errors == 5 && n_restart == 1);	// the receiver still searches again on the new channel
 	fail_w = -1;
 #endif
 }

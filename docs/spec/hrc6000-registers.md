@@ -749,10 +749,17 @@ from the DAC on pin 75 (DAC_IVOUT), so whether that DAC is on shows as a receive
 | 0x00 (receiving) | bit 3 = 1, bit 1 = 0 and bit 5 = 0 | 0x08, 0x09, 0x0C, 0x0D, 0x18, 0x19, 0x1C, 0x1D |
 | 0x80 (analog transmit on) | bit 1 = 1, unless bits 5 and 3 are both 1 | 0x02, 0x06, 0x0E, 0x16, 0x26, 0x36; not 0x2E, 0x3E |
 
-Bits 4, 2 and 0 made no difference to this DAC. When on with no modulation it sits at mid-scale; 0x04 moves it (a
-visible shift at 0x7F and 0x80), 0x02 and 0x47 / 0x48 do not. So on this pin the manual's "bit 5 = 1 and bit 3 = 0
-keeps the DAC on, at the level of 0x47 / 0x48" does nothing; it may describe the other DAC (pin 74), which this
-measurement cannot see. A DMR TX slot was not measured.
+Bits 4, 2 and 0 made no difference to this DAC. So on this pin the manual's control word for the hold ("bit 5 = 1
+and bit 3 = 0") does nothing; it may describe the other DAC (pin 74), which this measurement cannot see.
+
+The level, on the same radio:
+
+| State | Level |
+|---|---|
+| On while receiving (0x60 = 0x00) | The two-point bias, 0x47 and 0x48 bits 1-0, ten bits unsigned over the DAC's range, as 4.7.2 says of the held level. The search above ran with the bias at 0x200 and the oscillator was on frequency. With the bias at 0 under the same control word the radio stayed off channel: the DAC is on at 0 V, no better than off |
+| On with analog transmit (0x60 = 0x80) | Mid-scale with no modulation, whatever the bias holds (on frequency with the bias at 0). 0x04 moves it (a visible shift at 0x7F and 0x80); 0x02 does not |
+
+A DMR TX slot was not measured, nor whether one step of 0x04 and one of the bias are the same size.
 
 ---
 
