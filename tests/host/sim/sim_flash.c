@@ -7,11 +7,13 @@
 
 uint8_t *sim_flash_data;
 static uint32_t *erase_count;
+static uint32_t *program_count;
 static uint32_t budget;		// units left before the cut, 0 = not armed
 static bool armed, cut;
 static uint32_t units, violations, reads;
 static uint32_t bad_addr, bad_len;
 static uint32_t unread_addr, unread_len;
+static sim_flash_log_fn log_fn;
 
 static bool sim_init(void) { return true; }
 
@@ -37,7 +39,7 @@ static bool spend(void)
 	return true;
 }
 
-static bool sim_read(uint32_t addr, void *buf, uint32_t len)
+static bool read_op(uint32_t addr, void *buf, uint32_t len)
 {
 	reads++;
 	if (cut || !in_range(addr, len)) {
@@ -50,7 +52,7 @@ static bool sim_read(uint32_t addr, void *buf, uint32_t len)
 	return true;
 }
 
-static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
+static bool write_op(uint32_t addr, const void *buf, uint32_t len)
 {
 	const uint8_t *p = buf;
 	if (cut || !in_range(addr, len)) {
@@ -60,6 +62,9 @@ static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 		return false;
 	}
 	for (uint32_t i = 0; i < len; i++) {
+		if (i == 0 || ((addr + i) % SIM_FLASH_SECTOR) == 0) {
+			program_count[(addr + i) / SIM_FLASH_SECTOR]++;
+		}
 		if (!spend()) {
 			return false;
 		}
@@ -71,7 +76,7 @@ static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 	return true;
 }
 
-static bool sim_erase(uint32_t addr)
+static bool erase_op(uint32_t addr)
 {
 	uint32_t base = addr & ~(SIM_FLASH_SECTOR - 1u);
 	if (cut || !in_range(base, SIM_FLASH_SECTOR)) {
@@ -90,6 +95,33 @@ static bool sim_erase(uint32_t addr)
 	return true;
 }
 
+static bool sim_read(uint32_t addr, void *buf, uint32_t len)
+{
+	bool ok = read_op(addr, buf, len);
+	if (log_fn != NULL) {
+		log_fn('r', addr, len, ok ? buf : NULL, ok);
+	}
+	return ok;
+}
+
+static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
+{
+	bool ok = write_op(addr, buf, len);
+	if (log_fn != NULL) {
+		log_fn('w', addr, len, buf, ok);
+	}
+	return ok;
+}
+
+static bool sim_erase(uint32_t addr)
+{
+	bool ok = erase_op(addr);
+	if (log_fn != NULL) {
+		log_fn('e', addr, 0, NULL, ok);
+	}
+	return ok;
+}
+
 hal_flash_t sim_flash = {
 	.init = sim_init, .size = 0, .erase_size = SIM_FLASH_SECTOR,
 	.read = sim_read, .write = sim_write, .erase = sim_erase, .map = NULL,
@@ -100,6 +132,7 @@ void sim_flash_create(uint32_t size, const hal_flash_map_t *map)
 	sim_flash_free();
 	sim_flash_data = malloc(size);
 	erase_count = calloc(size / SIM_FLASH_SECTOR + 1u, sizeof(uint32_t));
+	program_count = calloc(size / SIM_FLASH_SECTOR + 1u, sizeof(uint32_t));
 	memset(sim_flash_data, 0xFF, size);
 	sim_flash.size = size;
 	sim_flash.map = map;
@@ -113,8 +146,10 @@ void sim_flash_free(void)
 {
 	free(sim_flash_data);
 	free(erase_count);
+	free(program_count);
 	sim_flash_data = NULL;
 	erase_count = NULL;
+	program_count = NULL;
 }
 
 void sim_flash_cut_after(uint32_t n)
@@ -134,6 +169,7 @@ void sim_flash_power_on(void)
 uint32_t sim_flash_units(void) { return units; }
 uint32_t sim_flash_reads(void) { return reads; }
 uint32_t sim_flash_erases(uint32_t addr) { return erase_count[addr / SIM_FLASH_SECTOR]; }
+uint32_t sim_flash_programs(uint32_t addr) { return program_count[addr / SIM_FLASH_SECTOR]; }
 uint32_t sim_flash_violations(void) { return violations; }
 
 void sim_flash_bad_range(uint32_t addr, uint32_t len)
@@ -146,4 +182,9 @@ void sim_flash_bad_read(uint32_t addr, uint32_t len)
 {
 	unread_addr = addr;
 	unread_len = len;
+}
+
+void sim_flash_set_log(sim_flash_log_fn fn)
+{
+	log_fn = fn;
 }

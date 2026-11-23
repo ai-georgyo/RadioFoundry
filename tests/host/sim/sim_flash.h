@@ -26,12 +26,19 @@ void sim_flash_power_on(void);
 // Units used so far (programmed bytes + erases), and erases per sector so far
 uint32_t sim_flash_units(void);
 uint32_t sim_flash_erases(uint32_t addr);
+// Program calls that reached a sector so far (one per call per sector it touches, torn ones included)
+uint32_t sim_flash_programs(uint32_t addr);
 // Read calls so far, for a test of how much a reader reads
 uint32_t sim_flash_reads(void);
 // A worn range: programs there fail (nothing programmed); erases still work. len 0 clears it
 void sim_flash_bad_range(uint32_t addr, uint32_t len);
 // An unreadable range: reads that touch it fail. len 0 clears it
 void sim_flash_bad_read(uint32_t addr, uint32_t len);
+// An operation log, for a test that pins the exact flash operations of a run: fn (NULL: none) is called after every
+// read, program and erase with its kind ('r', 'w', 'e'), address, length (0 for an erase), the bytes read or asked to
+// be programmed (NULL for an erase and a failed read) and its result. Kept across sim_flash_create()
+typedef void (*sim_flash_log_fn)(char kind, uint32_t addr, uint32_t len, const void *data, bool ok);
+void sim_flash_set_log(sim_flash_log_fn fn);
 // Count an operation that programs a 1 where the flash holds a 0 (a missing erase), as an error
 uint32_t sim_flash_violations(void);
 
