@@ -1540,10 +1540,20 @@ TESTS   += storageClaimFirstTest
 storageClaimFirstTest: storageClaimFirstTest.c $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h sim/sim_flash.h)
 	$(CC) $(CFLAGS) -DSTORAGE_CLAIM_FIRST=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageClaimFirstTest.c $(STORE)
 
+# The journal's flash operations pinned: a scripted run, every operation and its result hashed against a golden value
+# taken once from the storage.c of commit 51dedf59 (docs/spec/settings-store.md 6). JOURNAL_LOG_STORAGE builds it on
+# another storage.c (the golden's source, storageJournalLogTest.c)
+JOURNAL_LOG_STORAGE ?= $(CORE)/storage/storage.c
+TESTS   += storageJournalLogTest
+
+storageJournalLogTest: storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c
+
 run: run-settings
-run-settings: settingsTest storageClaimFirstTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
+run-settings: settingsTest storageClaimFirstTest storageJournalLogTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
 	./settingsTest
 	./storageClaimFirstTest
+	./storageJournalLogTest
 	./spiNorTest
 	./spiNorAddr4Test
 	./spiNandTest
