@@ -76,6 +76,9 @@ void stm32h7_soc_init(void)
 	// A tick or a context switch left pending would run the RTOS's handlers before the scheduler exists
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk | SCB_ICSR_PENDSVCLR_Msk;
 	SCB->VTOR = (uint32_t)(uintptr_t)g_pfnVectors;	// SystemInit set it too (USER_VECT_TAB_ADDRESS, platform.mk)
+	// The build loads words at unaligned addresses, and the stock codec also divides without a test for zero: both
+	// traps off, their reset value, whatever the loader that jumped here left
+	SCB->CCR &= ~(SCB_CCR_UNALIGN_TRP_Msk | SCB_CCR_DIV_0_TRP_Msk);
 	__DSB();
 	__ISB();
 	__enable_irq();
