@@ -1420,6 +1420,7 @@ reason as `why=`:
 | 10 | the synthesizer not locked on the carrier |
 | 11 | a line or DAC write refused or failed (the interlock, a safe request from outside) |
 | 12 | the power's off state (5.4): the radio let go of the supply and the knob still powers it. Checked before everything else: an armed bench drive is neither used nor dropped |
+| 13 | not used yet: kept for the owner's transmit arm, which this build does not have |
 | 14 | the reference DAC in the maker's coding for a receive test (`chip_reg` 3:5 not 0, 6.5). Checked after the off state and before everything else: an armed bench drive is neither used nor dropped |
 
 The only way the firmware keys an uncalibrated radio is the debug link's drive override (`tx_drive`, 1 to 4095).
