@@ -12,9 +12,24 @@ Some of RadioFoundry's authors also worked on a popular alternative aftermarket 
 - `docs/spec/capabilities.md`: what the aftermarket firmware can do on each radio, as user-level capabilities. No menu trees, screen layouts or key mappings from it.
 - the carry-over package (below).
 
-**Implementers (the "clean" side)** work only in this repository plus a read-only external reference folder kept outside it. They never open the aftermarket firmware trees, their upstream releases, or any source derived from them. Their inputs are `docs/`, the carry-over package, datasheets and manuals, public standards (ETSI TS 102 361, the MMDVM protocol) and permissively licensed third-party code.
+**Implementers (the "clean" side)** work only in this repository plus a read-only external reference folder kept outside it. They never open the aftermarket firmware trees, their upstream releases, or any source derived from them. Their inputs are `docs/`, the carry-over package, datasheets and manuals, public standards (ETSI TS 102 361, the MMDVM protocol), the M17 specification without its code listings, outputs of the Codec 2 reference run outside the tree (below) and permissively licensed third-party code.
 
 The UI is designed in `docs/ux/` from first principles of good radio usability, not from the aftermarket firmware's menus.
+
+## Copyleft protocol and codec sources
+
+M17 and Codec 2 have copyleft sources. They are used as follows.
+
+| Source | License | Who may read it | What may be taken |
+|---|---|---|---|
+| M17 Protocol Specification | GFDL prose, GPL-2.0+ code listings | Spec writers and implementers, with the code listings removed first | Facts only. No sentences are copied; [docs/spec/m17.md](spec/m17.md) restates them |
+| Codec 2 design document and reference source | LGPL 2.1 | Spec writers only | Prose and equations written fresh in [docs/spec/codec2.md](spec/codec2.md), internal values dumped on synthetic inputs, and the table values below |
+| Codec 2 reference implementation, built and run | LGPL 2.1 | Implementers, as a black box outside the repository | Its outputs, compared through the external harness |
+
+- Implementers never read Codec 2 code, any fork of it or any M17 implementation's code.
+- The external harness (`HARNESS.md`, `tables.json`, the synthetic inputs, the reference outputs and the comparison
+  script) lives outside the repository. None of its files are committed. The host tests read it through
+  `RFOUNDRY_C2_HARNESS` and skip that part without it.
 
 ## Carry-over package
 
@@ -30,6 +45,17 @@ The authors' own work moves over; the aftermarket firmware's doesn't.
 - Micrium uC/OS, C-SKY or Dahua SDK code, or any file without a clear permissive license.
 - GPL code (MMDVMHost FEC, Linux vsprintf, …). FEC is written fresh from ETSI TS 102 361-1.
 - The AMBE codec or any stock firmware image.
+
+## Third-party values used by maintainer decision
+
+Numbers taken from another project's source by decision of the RadioFoundry maintainer, not under a license grant from
+that project. Values only: no code, comments or identifiers come with them, and the files that hold them stay MIT.
+Each file names the values in its header, and its directory's `THIRD_PARTY` and `REUSE.toml` record them.
+
+| Files | Values | Source, license | Decision | Spec |
+|---|---|---|---|---|
+| `core/codec2/c2_tab.c` | Codec 2 LSP quantizer levels, modes 1600 and 3200 | Codec 2 reference implementation, LGPL 2.1 | 2026-11-22 | [codec2.md](spec/codec2.md) sections 1, 14, 16 |
+| `core/codec2/c2_enc_tab.c` | Codec 2 pitch estimator low-pass taps | Codec 2 reference implementation, LGPL 2.1 | 2026-11-22 | [codec2.md](spec/codec2.md) sections 1, 14.3, 17 |
 
 ## Records and checks
 

@@ -17,15 +17,15 @@
 // in the bins, an unvoiced one's the level the synthesis turns into noise of the band's power.
 #include <string.h>
 #include "mbe_est.h"
-#include "mbe_dsp.h"
+#include "../dsp/dsp.h"
 #include "../dsp/fxp.h"
 
 typedef int16_t __attribute__((may_alias)) i16a;
 typedef uint32_t __attribute__((may_alias)) u32a;
 
 #define HALF		110			// the window is samples -HALF..HALF around its center
-#define FFT_LEN		(2 * MBE_FFT_N)		// 512
-#define BINS		(MBE_FFT_N - 1)		// bins 1..255 are kept
+#define FFT_LEN		(2 * DSP_FFT_N)		// 512
+#define BINS		(DSP_FFT_N - 1)		// bins 1..255 are kept
 #define COMB_AT		120			// scratch words while the window is filled: the frame's samples ...
 #define NL_AT		250			// ... and the pitch search's copy (both in the part of the FFT input that is zero)
 #define LP_TAPS		15
@@ -89,7 +89,7 @@ static void pitch(const mbe_est_state_t *s, i16a *nl, mbe_est_t *e)
 		int32_t num = fxp_dot16(x, x - lag, AC_LEN), v = -32768;
 
 		if (num > 0 && e0 > 0 && et > 0)
-			v = fxp_clamp(mbe_log2_q11((uint32_t)num) - ((mbe_log2_q11((uint32_t)e0) + mbe_log2_q11((uint32_t)et)) >> 1),
+			v = fxp_clamp(dsp_log2_q11((uint32_t)num) - ((dsp_log2_q11((uint32_t)e0) + dsp_log2_q11((uint32_t)et)) >> 1),
 				      -32768, 0);
 		sc[lag - LAG_MIN] = (int16_t)v;
 		// the window one sample further back
@@ -183,7 +183,7 @@ void mbe_est_frame(mbe_est_state_t *s, const int16_t pcm[MBE_FRAME_LEN], int32_t
 	}
 	sh = 14 - bits_of((uint32_t)m);
 	for (int k = 0; k <= HALF; k++, ph += 19522579u) {	// 2^32 / 220
-		int32_t w = 17695 + ((15073 * mbe_cos_i(ph)) >> 15);
+		int32_t w = 17695 + ((15073 * dsp_cos_i(ph)) >> 15);
 		int32_t a = comb[HALF + k], b = comb[HALF - k];
 
 		a = sh >= 0 ? a * (1 << sh) : a >> -sh;	// a multiply: a left shift of a negative value is undefined
@@ -193,7 +193,7 @@ void mbe_est_frame(mbe_est_state_t *s, const int16_t pcm[MBE_FRAME_LEN], int32_t
 			buf[FFT_LEN - k] = (b * w) >> 15;
 	}
 	memset(buf + HALF + 1, 0, (FFT_LEN - 2 * HALF - 1) * sizeof buf[0]);
-	mbe_rfft(buf);
+	dsp_rfft(buf);
 
 	// bins 1..255 as 13-bit pairs at the front, their power after them
 	m = 0;
@@ -340,8 +340,8 @@ void mbe_est_params(mbe_est_state_t *s, const int32_t *buf, const mbe_est_t *e, 
 				du[i - 1] = 0;
 				continue;
 			}
-			lge = mbe_log2_q11(h.E);
-			av = ((lge - (mbe_log2_q11(h.ww) - 15 * 2048)) >> 1) + C_VOICED - ex;
+			lge = dsp_log2_q11(h.E);
+			av = ((lge - (dsp_log2_q11(h.ww) - 15 * 2048)) >> 1) + C_VOICED - ex;
 			au = (lge >> 1) + C_UNVOICED - ex;
 			p->a[i - 1] = (int16_t)fxp_clamp(av, -32767, 32767);
 			du[i - 1] = (int16_t)fxp_clamp(au - av, -32767, 32767);

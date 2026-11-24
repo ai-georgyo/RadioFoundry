@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Tables of the MBE core's fixed-point helpers (mbe_dsp.h). Plain function tables: one quarter of a sine wave, 2^x and
-// log2 over one octave, 64 steps each, linearly interpolated by the callers.
-#include "mbe_dsp.h"
+// Tables of the voice codecs' shared fixed-point helpers (dsp.h). Plain function tables: one quarter of a sine wave,
+// 2^x and log2 over one octave, 64 steps each, linearly interpolated by the callers.
+#include "dsp.h"
 
-const int16_t mbe_sin_tab[257] = {
+const int16_t dsp_sin_tab[257] = {
 	0, 201, 402, 603, 804, 1005, 1206, 1407, 1608, 1809, 2009, 2210,
 	2410, 2611, 2811, 3012, 3212, 3412, 3612, 3811, 4011, 4210, 4410, 4609,
 	4808, 5007, 5205, 5404, 5602, 5800, 5998, 6195, 6393, 6590, 6786, 6983,
@@ -29,11 +29,11 @@ const int16_t mbe_sin_tab[257] = {
 	32757, 32761, 32765, 32766, 32767,
 };
 
-// cos(2 pi i / 1024), Q15: mbe_sin_idx(i + 256) for every i, the quarter wave above unfolded (mbeExactTest checks
-// each entry against it). The oscillators look up one per harmonic per sample; folding the quarter wave there cost two
-// branches and a third of that loop's instructions on the C-SKY build. 2 KB of flash, so only where mbe_dsp.h uses it
-#if defined(MBE_COS_TAB)
-const int16_t mbe_cos_tab[1024] = {
+// cos(2 pi i / 1024), Q15: dsp_sin_idx(i + 256) for every i, the quarter wave above unfolded (mbeExactTest checks
+// each entry against it). The MBE oscillators look up one per harmonic per sample; folding the quarter wave there cost
+// two branches and a third of that loop's instructions on the C-SKY build. 2 KB of flash, so only where dsp.h uses it
+#if defined(DSP_COS_TAB)
+const int16_t dsp_cos_tab[1024] = {
 	32767, 32766, 32765, 32761, 32757, 32752, 32745, 32737, 32728, 32717, 32705, 32692,
 	32678, 32663, 32646, 32628, 32609, 32589, 32567, 32545, 32521, 32495, 32469, 32441,
 	32412, 32382, 32351, 32318, 32285, 32250, 32213, 32176, 32137, 32098, 32057, 32014,
@@ -123,7 +123,7 @@ const int16_t mbe_cos_tab[1024] = {
 };
 #endif
 
-const uint16_t mbe_exp2_tab[65] = {
+const uint16_t dsp_exp2_tab[65] = {
 	16384, 16562, 16743, 16925, 17109, 17296, 17484, 17674, 17867, 18061, 18258, 18457,
 	18658, 18861, 19066, 19274, 19484, 19696, 19911, 20127, 20347, 20568, 20792, 21019,
 	21247, 21479, 21713, 21949, 22188, 22430, 22674, 22921, 23170, 23423, 23678, 23936,
@@ -132,7 +132,7 @@ const uint16_t mbe_exp2_tab[65] = {
 	31379, 31720, 32066, 32415, 32768,
 };
 
-const uint16_t mbe_log2_tab[65] = {
+const uint16_t dsp_log2_tab[65] = {
 	0, 733, 1455, 2166, 2866, 3556, 4236, 4907, 5568, 6220, 6863, 7498,
 	8124, 8742, 9352, 9954, 10549, 11136, 11716, 12289, 12855, 13415, 13968, 14514,
 	15055, 15589, 16117, 16639, 17156, 17667, 18173, 18673, 19168, 19658, 20143, 20623,

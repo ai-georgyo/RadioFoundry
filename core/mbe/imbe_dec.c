@@ -25,7 +25,7 @@
 #include "imbe.h"
 #include "imbe_q.h"
 #include "imbe_tab.h"
-#include "mbe_dsp.h"
+#include "../dsp/dsp.h"
 #include "../dsp/fxp.h"
 
 #define OUT_GAIN	IMBE_OUT_GAIN
@@ -74,7 +74,7 @@ void imbe_q_layout(imbe_bits_t *c, int L, int K, const uint8_t *nb)
 	take(c, 2, 0);
 }
 
-static int32_t cos_turn(uint32_t unit, int num) { return mbe_cos_i(unit * (uint32_t)num); }
+static int32_t cos_turn(uint32_t unit, int num) { return dsp_cos_i(unit * (uint32_t)num); }
 
 void imbe_state_reset(imbe_state_t *s)
 {
@@ -270,7 +270,7 @@ static void enhance_and_smooth(imbe_dec_state_t *s, mbe_params_t *p, int total, 
 	int L = p->L;
 
 	for (int l = 0; l < L; l++)
-		r0 += (uint32_t)mbe_exp2_q11(fxp_clamp(2 * p->a[l], -32768, 26 * 2048));
+		r0 += (uint32_t)dsp_exp2_q11(fxp_clamp(2 * p->a[l], -32768, 26 * 2048));
 	s->energy = s->energy - s->energy / 20 + r0 / 20;
 	if (s->energy < ENERGY_MIN)
 		s->energy = ENERGY_MIN;
@@ -278,7 +278,7 @@ static void enhance_and_smooth(imbe_dec_state_t *s, mbe_params_t *p, int total, 
 
 	// voicing: V = 45.255 E^0.375 / exp(277.26 rate) with some errors, 1.414 E^0.375 with more; as log2
 	if (s->err_rate > ER_CLEAN || total > 4) {
-		int32_t lv = (3 * mbe_log2_q11(s->energy)) >> 3;
+		int32_t lv = (3 * dsp_log2_q11(s->energy)) >> 3;
 
 		lv += s->err_rate <= ER_SOME && !c4 ? 11264 - (int32_t)((400u * s->err_rate) >> 13) : 1024;
 		for (int l = 0; l < L; l++)
@@ -291,9 +291,9 @@ static void enhance_and_smooth(imbe_dec_state_t *s, mbe_params_t *p, int total, 
 	else
 		s->amp_max = (int32_t)fxp_clamp(s->amp_max + 6000 - 300 * total, 1, 1 << 26);
 	for (int l = 0; l < L; l++)
-		am += (uint32_t)mbe_exp2_q11(fxp_clamp(p->a[l] + 4 * 2048, -32768, 24 * 2048));	// Q4
+		am += (uint32_t)dsp_exp2_q11(fxp_clamp(p->a[l] + 4 * 2048, -32768, 24 * 2048));	// Q4
 	if (((uint32_t)s->amp_max << 4) <= am) {
-		int32_t lg = mbe_log2_q11((uint32_t)s->amp_max << 4) - mbe_log2_q11(am);
+		int32_t lg = dsp_log2_q11((uint32_t)s->amp_max << 4) - dsp_log2_q11(am);
 
 		for (int l = 0; l < L; l++)
 			p->a[l] = (int16_t)fxp_clamp(p->a[l] + lg, -32767, 32767);

@@ -8,11 +8,11 @@
 #include "imbe.h"
 #include "imbe_q.h"
 #include "imbe_tab.h"
-#include "mbe_dsp.h"
+#include "../dsp/dsp.h"
 #include "mbe_est.h"
 #include "../dsp/fxp.h"
 
-static int32_t cos_turn(uint32_t unit, int num) { return mbe_cos_i(unit * (uint32_t)num); }
+static int32_t cos_turn(uint32_t unit, int num) { return dsp_cos_i(unit * (uint32_t)num); }
 
 // The code b of a uniform quantizer of 2^bits levels for x (Q16): the level nearest to x, found against the same
 // level values the dequantizer computes (the border between b and b + 1 is the even multiple of the half step between
