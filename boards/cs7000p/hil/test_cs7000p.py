@@ -9,12 +9,13 @@ here writes the data flash: the table's check reads it through STORAGE READ. The
 schematic, so most of these are the first evidence that a line or a polarity is right. The display, the build features and the storage region's generic checks are
 tests/hil/test_health.py's (from board.toml [hil]). A board's own test: skipped other_board on any other radio
 (tests/hil/hil_plugin.py). Their feature markers are optional: they record bring-up, they gate nothing."""
+import time
 import zlib
 
 import pytest
 
+from rfoundry_debug import FACTORY_RESULTS, ST_BAD_ARG
 from rfoundry_hil import DebugLinkError, skip
-from rfoundry_debug import FACTORY_RESULTS
 
 KEYS = ["clock", "mcu_rev", "rom_loader", "rdp", "exp", "knob", "hold", "pow_det_mv", "vbat_mv", "vdda_mv", "vol_raw",
         "vox_raw", "lcd_board", "panel", "keys_raw", "chsw_raw", "chsw", "phone_det", "bt_strap", "flash", "store",
@@ -32,6 +33,11 @@ EXP_APC_LOOP = 1 << 3
 EXP_TX_RAIL = 1 << 9
 EXP_POWER_HOLD = 1 << 20
 EXP_TX_BITS = EXP_APC_LOOP | EXP_TX_RAIL
+
+# chip_reg 3:5 (hardware-cs7000p.md 14): the reference DAC's coding in receive, 0 the measured hold, 1 the maker's
+# state, 2 the same with 4:0x26 = 0x7D. Chip 0 page 4 is the HR_C6000
+BOARD_CHIP, REF_CODING = 3, 5
+HRC_CHIP, HRC_PAGE = 0, 4
 
 
 def board_view(r):
@@ -256,6 +262,50 @@ def test_receiver_chips(radio):
     assert pll == "locked", f"synthesizer not locked: {b['pll']}"
     assert int(pf["vco_hz"]) > 0 and int(pf["r"]) > 0, b["pll"]
     assert b["lo_side"] in ("low", "high")
+
+
+@pytest.mark.feature("fm", optional=True)
+def test_reference_coding_knob(radio):
+    """chip_reg 3:5 reaches the modem at the next receive set-up, and back (hardware-cs7000p.md 6.5): 1 leaves the
+    set-up's 4:0x25 = 0x0E with the driver's 4:0x26 = 0xFD, 2 adds 4:0x26 = 0x7D, 0 gives the measured hold 0x0C and
+    0xFD again. It writes that RAM-only knob and sets it back, whatever happens; it keys nothing. Whether the receiver
+    stays on channel in the maker's state is bring-up stage 9's test, with a carrier."""
+    try:
+        start = radio.link.chip_reg(BOARD_CHIP, REF_CODING)
+    except DebugLinkError as e:
+        if e.status == ST_BAD_ARG:
+            skip("not_built", "firmware without chip_reg 3:5 (older than the reference coding knob)")
+        raise
+    if fields(board_view(radio)["hrc"])[0] != "1":
+        skip("no_hw", "the HR_C6000 did not answer: no receive set-up to apply the knob")
+
+    def r25():
+        return fields(radio.view(["board"]).get("board.hrc", ""))[1].get("r25")
+
+    def adc():
+        return radio.link.chip_reg(HRC_CHIP, 0x26, page=HRC_PAGE)
+
+    def until(cond, what, timeout=10.0):
+        # taken at the radio task's next status poll; a receiver asleep (FM battery saving) takes it when it wakes
+        end = time.monotonic() + timeout
+        while not cond():
+            assert time.monotonic() < end, f"timed out after {timeout} s waiting for {what}"
+            time.sleep(0.2)
+
+    try:
+        assert radio.link.chip_reg(BOARD_CHIP, REF_CODING, 1) == 1
+        until(lambda: r25() == "0x0e", "board.hrc r25=0x0e under 3:5 = 1")
+        assert adc() == 0xFD, f"4:0x26 0x{adc():02x} under 3:5 = 1: the driver's 0xFD expected"
+        assert radio.link.chip_reg(BOARD_CHIP, REF_CODING, 2) == 2
+        until(lambda: adc() == 0x7D, "4:0x26 = 0x7D under 3:5 = 2")
+        assert r25() == "0x0e"
+        assert radio.link.chip_reg(BOARD_CHIP, REF_CODING, 0) == 0
+        until(lambda: r25() == "0x0c", "board.hrc r25=0x0c with 3:5 back at 0")
+        until(lambda: adc() == 0xFD, "4:0x26 = 0xFD with 3:5 back at 0")
+    finally:
+        radio.link.chip_reg(BOARD_CHIP, REF_CODING, start)
+    if start != 0:
+        print(f"chip_reg 3:5 was {start} before the test (a bench test in progress?) and is set back to it")
 
 
 @pytest.mark.feature("beep", optional=True)

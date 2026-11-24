@@ -1076,7 +1076,7 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len)
 
 #if CONFIG_DEBUGLINK
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
-enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_VCO_RULE = 6 };
+enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE };
 
 // The receive tuning value. Refused whenever a transmit bit is set: the same DAC is the PA's reference then, and
 // the board's interlock alone would let a value through with both bits set. Test and write under one mask, so the
@@ -1145,6 +1145,19 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 			retune_req = true;
 		}
 		*val = (uint8_t)cs7000p_rf.ref_offset;
+		return true;
+	case BOARD_REF_CODING:
+		// The reference DAC's coding in receive (hardware-cs7000p.md 6.5): 0 the measured hold, 1 the maker's
+		// state, 2 the same with the maker's 4:0x26, for a receive test of the maker's coding. Not 0: every
+		// transmission is refused. The modem takes it at the next receive set-up, in full
+		if (write) {
+			if (*val > CS7000P_REF_MAKER_ADC) {
+				return false;
+			}
+			cs7000p_rf.ref_coding = (uint8_t)*val;
+			retune_req = true;
+		}
+		*val = cs7000p_rf.ref_coding;
 		return true;
 	case BOARD_VCO_RULE:
 		// 0: the VCO by frequency (the maker's rule), 1: by direction in receive, the rule before it (for a receive

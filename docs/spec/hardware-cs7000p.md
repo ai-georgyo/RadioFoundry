@@ -700,6 +700,14 @@ and the squelch still did not open on channel. The bias is now mid-scale plus th
 control voltage at this frequency. The table of control words is in
 [hrc6000-registers.md](hrc6000-registers.md) 3.22.
 
+**The maker's coding, for a receive test.** The maker's program keeps 4:0x25 = 0x0E and 4:0x26 = 0x7D and puts a
+signed trim in the bias ([calibration-cs7000p.md](calibration-cs7000p.md) 5.2, 5.13, 8 item 1). Which coding the pin 75
+DAC has under 0x0E in receive is open. The measured hold stays the default. `chip_reg` 3:5 (section 14) selects the maker's
+state through the IF host's `ref_coding` option ([modem-hrc6000.md](modem-hrc6000.md) 8.2): 1 is 0x0E with the
+level the signed offset, 2 the same with 4:0x26 = 0x7D. RAM only, 0 after every start, taken at the next receive set-up
+in full, and while it is not 0 every transmission is refused (`why=14`, 13.2). 4:0x04 in receive stays the reference
+offset (the IF host's `rx_tx_offset`): whether 4:0x04 moves the held level under 0x0C is not measured.
+
 **Still open** (open question 1): the offset in 4:0x04 that puts this unit exactly on frequency (the passband is
 flat near its center, so it needs a frequency counter on the transmitter or a narrower measurement), the same for
 other units, and what the DAC does in a DMR TX slot. Until the offset is measured, receive and transmit may sit a
@@ -1367,6 +1375,7 @@ reason as `why=`:
 | 10 | the synthesizer not locked on the carrier |
 | 11 | a line or DAC write refused or failed (the interlock, a safe request from outside) |
 | 12 | the power's off state (5.4): the radio let go of the supply and the knob still powers it. Checked before everything else: an armed bench drive is neither used nor dropped |
+| 14 | the reference DAC in the maker's coding for a receive test (`chip_reg` 3:5 not 0, 6.5). Checked after the off state and before everything else: an armed bench drive is neither used nor dropped |
 
 The only way the firmware keys an uncalibrated radio is the debug link's drive override (`tx_drive`, 1 to 4095).
 (A raw SoC `CHIP_REG` write to DAC1 or GPIOE can key the PA outside every check here, 4.3: the bench must not make
@@ -1404,10 +1413,10 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 
 | Chip | Page / register | Access |
 |---|---|---|
-| 0 | HR_C6000, pages 1 and 4 (2 and 3 are FIFOs a read would drain). Every receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again | read / write; a write is followed by the register read back |
+| 0 | HR_C6000, pages 1 and 4 (2 and 3 are FIFOs a read would drain). Every receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again (and 0x26 with 3:5 = 2) | read / write; a write is followed by the register read back |
 | 1 | SKY72310, page 0, registers 0 to 14, values to 0xFFF. The driver's next tune overwrites the divider registers | write only (the value written is returned) |
 | 2 | AK2365A, 0x01 to 0x04, 0x0B and 0x0C (the registers the data sheet names; it forbids access to the others). Page 0 reads with the data line pulled down, page 1 pulled up: a value that is the same both ways came from the chip. Where the read bits fall is from the data sheet's drawing and unverified | read / write; a write is followed by a read back |
-| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back at the next one; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte). 6: the receive VCO rule, 0 by frequency (the maker's, the default), 1 by direction (the line set in every receive set-up, as before the rule: for a receive test across 479 MHz); transmit follows f_tx either way, and nothing keeps it over a restart. 3, 4 and 6 take effect at the radio task's next status poll (a receive set-up) | read / write |
+| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back at the next one; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte). 5: the reference DAC's coding in receive (6.5), 0 the measured hold (4:0x25 = 0x0C, the default), 1 the maker's state (0x0E, the level the signed offset), 2 the same with 4:0x26 = 0x7D; not 0 refuses every transmission (`why=14`); nothing keeps it over a restart. 6: the receive VCO rule, 0 by frequency (the maker's, the default), 1 by direction (the line set in every receive set-up, as before the rule: for a receive test across 479 MHz); transmit follows f_tx either way, and nothing keeps it over a restart. 3, 4, 5 and 6 take effect at the radio task's next status poll (a receive set-up) | read / write |
 | 0xFF (`soc`) | The SoC's own registers ([debuglink.md](debuglink.md) 3.24). **Never DAC1 (0x40007400-0x400077FF) or GPIOE (0x58021000-0x580213FF)**: a write there bypasses the interlock (4.3) and can key the PA | read / write; a write is refused only while transmitting |
 
 ---
