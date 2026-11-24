@@ -1194,19 +1194,26 @@ STORAGE ops 4 and 5 ([settings-store.md](settings-store.md) 4.2): the backup's 5
 reader (13.1) and against the window and the record (a valid table there that differs is refused), then the window
 written through the kept rewrite, read back, and the record written. The board refuses it while a transmission is up
 or a table a restore wrote is not taken yet, and shows the result as `cal_rec`'s `restore=` (15). The owner's tool
-that drives the ops is not in the tree yet; until a restore runs, the kept rewrite keeps whatever the window holds,
-blank bytes included. A codeplug restore of the
-backup does not bring the table back either: the CPS tools and the web flasher's Restore send none of its bytes (the
-web flasher names the range in its log). Compare before relying on it:
-the CPS read of the codeplug regions (`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and
-its sha256 against the backup's says whether the table is still there.
+is `tools/rfoundry_debug.py storage factory --backup FILE` ([04-programming.md](../user/04-programming.md#the-makers-calibration-inside-the-codeplugs-memory)):
+it reads the window twice through STORAGE READ and prints the CRC-32 and sha256 of the window, the record's CRC-32
+(op 3; the record is in no area STORAGE READ opens) and the file's 0x1000-0x11FF, and compares the maker's records
+at 0x01E000-0x01FFFF with the file's. `--restore` runs ops 4 and 5 only when those records equal the file's (the
+identity gate: nothing of ours writes them, so they are this radio's backup's and almost surely not another radio's;
+`--no-identity` overrides it, and a file of the 512 bytes alone needs it), with the window CRC of its own read as the
+handshake, then polls op 3 and reads the window back. Until a restore runs, the kept rewrite keeps whatever the
+window holds, blank bytes included. A codeplug restore of the backup does not bring the table back: the CPS tools and
+the web flasher's Restore send none of its bytes (`cps_client.py` names `storage factory` on stderr, the web flasher
+names the range in its log). Under a firmware without the command, the CPS read of the codeplug regions
+(`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and its sha256 against the backup's says
+whether the table is still there.
 
 **Not kept: the maker's device information** at 0x000080-0x00021F. It shares sector 0 with the open-firmware layout's
 own fields (device info 0x0080, callsign 0x00E0, DMR ID 0x00E8), so the owner can change the callsign and the DMR ID,
 and "start a new codeplug" clears them. Going back to the maker's firmware therefore needs the whole backup written
 back first: the maker's program checks nothing in the table (that page's 2.2) and would transmit on whatever it holds,
 and a radio whose window is blank would transmit on codes of 255. The order: the table restored while RadioFoundry
-still runs (the maker's program has no command an owner can use for it), then sector 0 through the CPS (a codeplug
+still runs (`storage factory --backup FILE --restore`, above; the maker's program has no command an owner can use for
+it), then sector 0 through the CPS (a codeplug
 write of the backup's EEPROM image), then the maker's recovery. No tool in the tree writes the whole chip back yet;
 the site offers no stock target for this radio.
 

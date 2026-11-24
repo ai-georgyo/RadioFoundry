@@ -552,6 +552,22 @@ Then the result (0 `ok`, or the failure), and `changed()` after every job that g
 the board then takes the window as it now is. The result lives in RAM: `none` after a start. There is no retry: the
 owner's tool shows the result, and the owner runs it again.
 
+**The owner's tool**, `tools/rfoundry_debug.py storage factory [--backup FILE] [--restore] [--no-identity]`. FILE is a
+backup bundle (its data flash part from address 0, `spi-flash.bin`), a raw data flash image from address 0, or a
+file of exactly the range's size. The range comes from op 3 and must be one of the board's `[[flash.protect]]`
+entries in the registry (else the tool stops: it and the firmware disagree). It reads the window twice (READ) and
+prints the CRC-32 and sha256 of the window and of the file's range, op 3's record CRC-32 (the record lies in no area
+READ opens), and each pair's same or differs; it compares the board's other protected data ranges with the file's the
+same way. Exit 0 when all are the same, 1 when one differs. `--restore` refuses on its own, sending nothing, a file
+range that is all 0xFF or all 0x00, and a window and record that hold the file's bytes already (exit 0); then the
+**identity gate**: with a whole image every other protected data range must equal the radio's (the maker's data the
+map keeps whole, which no writer of the core changes, so a backup of this radio holds the same bytes and another
+radio's almost surely does not), and a file of the range alone carries no such evidence; `--no-identity` lets either
+through. Then op 4 in chunks, op 5 with the file's CRC-32 and the CRC-32 of the window the tool read (never the one
+op 3 reports: the handshake states that the host compared what it read), op 3 polled until the result is not
+`pending` (10 s), and the window read back and compared. Exit 0 restored, 2 refused or failed. The HIL tests never
+send an op 5 whose window CRC is the window's (`tests/hil/README.md`).
+
 `storage_factory_write(addr, bytes, len)` takes exactly one listed range, its address and size, inside one sector that
 holds other bytes too (a range across a sector end would take two rewrites, and a whole kept sector is never written),
 in a region of ours; else it returns false and writes nothing. It is built under `CONFIG_FACTORY_COPY` only, and the

@@ -244,6 +244,7 @@ class CpsWrites(unittest.TestCase):
             self.assertEqual(len(err.splitlines()), 1, err)
             self.assertIn("0x%X-0x%X" % (lo, hi), err)
             self.assertIn("kept", err)
+            self.assertIn("rfoundry_debug.py storage factory --backup", err, "the way to put a backup's bytes back")
 
     def test_blank_range_no_message(self):
         cc = self.cps_client
