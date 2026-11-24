@@ -79,8 +79,8 @@ The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), ea
 | `cs7000pExpTest` (and `...Floor`) | the expander's one writer and the shared DAC's interlock, an interrupt racing the interlock's masked section, the reset word, the SK1 wait before a software reset |
 | `cs7000pPowerTest` | `power_cs7000p.c` on fakes: the hold, the power-off order, the scan stopping, a sagging pack, the off state's LEDs, a `led()` call the power-off cuts into, the off watch idle once the off state ends |
 | `cs7000pBatteryTest` | the battery model, the knob's switch-open threshold, the hold and the off watch rules |
-| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR |
-| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`) |
+| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR; `chip_reg` 3:5: RAM only, a receive set-up, every key-up refused |
+| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`), the reference coding's (`why=14`) |
 | `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict |
 | `cs7000pPinsTest`, `cs7000pPanelTest`, `cs7000pKeysTest`, `cs7000pSpeakerTest`, `cs7000pSubPwmTest`, `cs7000pStoreTest` | the pin set-up and its never-driven list, the LCD board check and the panel ID, the keys and the selector, the speaker lines, PC8's duty, the flash map |
 
@@ -190,7 +190,8 @@ model tables in `rfcal_cs7000p.c`; the polarity of an expander bit in `exp_cs700
 
 Run-time, over the debug link (`tools/rfoundry_debug.py reg 3 N [VALUE]`,
 [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 14): 3:0 the receive tuning DAC, 3:1 the expander shadow (read),
-3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset. Chip 0 is the HR_C6000, 1 the SKY72310 (write
+3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset, 3:5 the reference DAC's coding (receive only).
+Chip 0 is the HR_C6000, 1 the SKY72310 (write
 only), 2 the AK2365A. **Never write DAC1 or GPIOE with `reg soc`**: such a write bypasses the interlock and can key
 the PA, at any stage and whatever `board.cal` says (hardware page 4.3, 14). No step on this page needs a SoC write.
 
@@ -403,6 +404,7 @@ radio's full power. Nothing transmits (`board.cal=none`).
 | A generator on channel: `board.rssi_raw` rises, `board.noise_raw` falls | **the first LO's side** (question 2), the receive rail, the front end | Nothing at f, with the read-back above passing: `rfoundry_debug.py reg 3 3 1` flips the side. If that is the answer, build with `CS7000P_LO_HIGH=1` |
 | The carrier's leak or the receive LO on a counter while stepping 4:0x47, 0x48, 0x04 and 0x25 through `reg 0 ... --page 4` | **the reference oscillator's control** (question 1): which register moves it, the coding, the on-frequency level | Then `CS7000P_REF_OFFSET`, and the reference trim for the unit. Note the frequency against time after the synthesizer rail comes on (question 35): `CS7000P_REF_SETTLE_MS` |
 | The same with `reg 3 2` at 0 %, 50 % and 100 % duty | PC8's pull on the reference (question 4): about 0.27 V of control voltage over the swing | The spectrum close in shows the PWM's ripple |
+| The maker's coding of the reference DAC ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 8 item 1), receive only, nothing keyed: a carrier on channel, note what `reg 3 4` reads, then `reg 3 5 1` and `reg 3 4 0` (bias 0, 4:0x04 0), `board.hrc` reads `r25=0x0e`. Then `reg 3 4` in steps of a few and back to 0, then `reg 3 5 2` (`reg 0 0x26 --page 4` reads 0x7D), then `reg 3 5 0`: `r25=0x0c` and 4:0x26 0xFD again, and `reg 3 4` back to the value noted. A key-up meanwhile is refused with `why=14`. `test_reference_coding_knob` (`boards/cs7000p/hil/test_cs7000p.py`) checks the register values without a carrier | the DAC's coding under 0x0E: on channel with the bias at 0, about 18-21 Hz per step (the hardware page, 6.5). Whether 4:0x26 = 0x7D changes anything | Off channel by about 10 kHz with the bias at 0: not the inferred coding; note it, and the hold stays |
 | `reg 3 0` swept at several frequencies for the best sensitivity. **Record the DAC code per frequency** | the front-end tuning voltage | The values go into the table in `rfcal_cs7000p.c`; meanwhile `CS7000P_RX_TUNE_NOMINAL` |
 | FM audio from the speaker on a modulated carrier, wide and narrow | the chip's FM demodulation of the 450 kHz IF, the AK2365A's filter words, the IF level (question 9) | No audio with RSSI present: the I/Q order, `ctrl3` (the IF buffer gain), the 4:0x36 feed-through |
 | RSSI and noise at -120, -110, -100, -80, -60 dBm. **Record them** | the mappings | `CS7000P_FE_GAIN_DB`, the squelch thresholds |
@@ -503,7 +505,7 @@ Open points found while the board was written, beside the hardware page's 36 que
 | The microphone in DMR: on from the arm (`EXP_MIC_POWER`, `EXP_MIC_INT`) to its end. Nothing uses it yet (no codec). Once something does, a silent DMR transmission: the microphone rail first (`MIC_5V` present while armed), then the codec input bit (`CS7000P_E0_MIC`) | `MIC_5V` on a meter while a DMR transmission is armed (stage 11) |
 | The battery while keyed: the transmit check reads `POW_DET` once, before the key-up. Only the core's monitor ends a transmission when the battery sags | stage 11 |
 | A safe request (`board_rf_safe()`) leaves the HR_C6000 in the mode it was in, the FM transmit set-up included, until the next `tx_off()` or status poll: the reference oscillator sits on the transmit set-up's control level with the PA off | a frequency counter on the reference after a forced safe request |
-| `status()` is where the receiver is restored after a safe request and where the bench changes `chip_reg` 3:3 and 3:4 are applied. If the core stops polling it in some state, they wait for the next `rx()`. In the power's off state it does not restore | by reading the code paths once the radio runs |
+| `status()` is where the receiver is restored after a safe request and where the bench changes `chip_reg` 3:3 to 3:6 are applied. If the core stops polling it in some state, they wait for the next `rx()`. In the power's off state it does not restore | by reading the code paths once the radio runs |
 | The burst runner's key-up under a bench drive uses the drive as its own top | no difference with the fixed key-up constant; matters once the constants are measured |
 | After an underrun or overrun the two I2S streams may be a few samples out of step until the next audio stop and start (RM0433 50.9.12, 50.9.13; an overrun with an early frame in one frame, 50.9.14) | `board.i2s` `und=` / `ovr=` over a few minutes of audio: 0 expected |
 | STM32H743 revision Y only: ADC and DAC conversions at the same time may cost ADC accuracy (ES0392 2.9.7), and 12 bits are not guaranteed with VDDA above 3.3 V (2.9.10) | `board.mcu_rev` |

@@ -78,7 +78,14 @@ typedef enum {
 	CS7000P_TX_UNLOCKED = 10,	// the synthesizer did not lock on the carrier
 	CS7000P_TX_BUS = 11,		// a line or DAC write was refused (the interlock, a safe request) or failed
 	CS7000P_TX_OFF = 12,		// the power's off state: the supply was let go and the knob still powers the radio
+	// 13 is kept for the owner's transmit arm
+	CS7000P_TX_REF_CODING = 14,	// the reference DAC is in the maker's coding for a receive test (chip_reg 3:5)
 } cs7000p_tx_why_t;
+
+// The reference DAC's coding in receive, chip_reg 3:5 (hardware-cs7000p.md 6.5): the measured hold (4:0x25 = 0x0C,
+// the level 512 plus the offset), the maker's state (0x0E, the level the signed offset), the same with the maker's
+// 4:0x26. RAM only. Anything but the hold refuses every transmission (CS7000P_TX_REF_CODING)
+enum { CS7000P_REF_HOLD = 0, CS7000P_REF_MAKER = 1, CS7000P_REF_MAKER_ADC = 2 };
 
 // A transmission the core asks for, with what the board knows at that moment
 typedef struct {
@@ -100,11 +107,13 @@ typedef struct {
 	chainseq_ops_t ops;
 	chainseq_t seq;
 	// Bench state: the first LO's side, the tuning value in place of the table's (0: the table's), the modem's
-	// reference offset, the VCO line in receive by direction (chip_reg 3:6) instead of by frequency
+	// reference offset, the VCO line in receive by direction (chip_reg 3:6) instead of by frequency, the reference
+	// DAC's coding in receive (CS7000P_REF_HOLD and the others, chip_reg 3:5)
 	bool lo_high;
 	bool vco_rx_dir;
 	uint16_t tune_override;
 	int8_t ref_offset;
+	uint8_t ref_coding;
 	int16_t trim_ppb;		// the reference trim, taken at the next tune
 	volatile bool safed;		// cs7000p_rf_safe() since the radio task's last request
 	volatile bool restore;		// ... and since the radio task last took it (cs7000p_rf_restore_take)

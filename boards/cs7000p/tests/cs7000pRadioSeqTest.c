@@ -613,6 +613,42 @@ static void test_off_state(void)
 	CHECK(ev_n == 0 && inv_fail == 0 && trips == 0);
 }
 
+// The reference DAC in the maker's coding (chip_reg 3:5): every transmission refused, a calibrated one and one on
+// the bench drive, FM and DMR, after the off state and before everything else; the bench drive neither used nor
+// dropped
+static void test_ref_coding(void)
+{
+	CHECK(CS7000P_TX_REF_CODING == 14);	// the hardware page's number: append only
+	for (uint8_t k = CS7000P_REF_MAKER; k <= CS7000P_REF_MAKER_ADC; k++) {
+		for (int dmr = 0; dmr < 2; dmr++) {
+			bring_up(&cal_ok, 446u * MHZ);
+			rf.ref_coding = k;
+			cs7000p_tx_req_t q = req(446u * MHZ, 1, dmr != 0);
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING && !rf.admit);
+			CHECK(rf.tx_refused == 1 && rf.tx_refused_why == CS7000P_TX_REF_CODING && ev_n == 0);
+			CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK && !tx_bits_ever());
+			q.hz = 520u * MHZ;	// whatever else is wrong: this reason
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING);
+			q.off = true;		// but the off state's first
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF);
+		}
+	}
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	rf.ref_coding = CS7000P_REF_MAKER;
+	cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
+	q.limit_list = true;
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING && rf.ovr_drive == 600);
+	q.now_ms = T_SETTLED;
+	rf.ref_coding = CS7000P_REF_HOLD;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && rf.admit_drive == 600);
+	CHECK(ev_n == 0 && inv_fail == 0 && trips == 0);
+	// A new chain is the hold
+	cs7000p_rf_init(&rf, &io, &cal_ok);
+	CHECK(rf.ref_coding == CS7000P_REF_HOLD);
+}
+
 // --- FM transmit ---
 
 static void test_fm_tx(void)
@@ -1186,6 +1222,7 @@ int main(void)
 	test_partial_cal();
 	test_settle_battery_band();
 	test_off_state();
+	test_ref_coding();
 	test_fm_tx();
 	test_fm_refusals();
 	test_rf_safe();

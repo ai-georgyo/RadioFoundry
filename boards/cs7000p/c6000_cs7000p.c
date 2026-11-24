@@ -10,7 +10,7 @@
 // - the AK2365A's 450 kHz output is the chip's only receive input, and FM receive audio is the chip's own, on its
 //   line out: there is no analog path from the discriminator to the speaker;
 // - the reference oscillator's control voltage comes from one of the chip's modulation DACs, so that DAC is held on
-//   while receiving (ref_dac_hold);
+//   while receiving (ref_dac_hold), in the measured coding or, for a receive test, the maker's (ref_coding);
 // - the microphone amplifier is on another codec input than the driver's set-ups choose (CS7000P_E0_MIC);
 // - the chip's reset is the MCU's, so it starts from its reset state at every start, asleep (an expander bit).
 #include <stddef.h>
@@ -39,6 +39,7 @@
 #define FM_MIC_GAIN		7	// the same
 #define RX_GAIN_DB		2	// 4:0x37, as the tree's other IF-fed HR_C6000 (unverified here)
 #define SAFE_GAIN		0x80u	// the DMR modulation pair while the calibration has none
+#define MAKER_ADC_CTL		0x7Du	// 4:0x26 as the maker's program leaves it (calibration-cs7000p.md 5.13)
 #define VOICE_SPI_PINS		(PIN_MASK(PIN_DMR_VCLK) | PIN_MASK(PIN_DMR_VMISO) | PIN_MASK(PIN_DMR_VMOSI))
 
 // The configuration port on PB12-PB15 and the voice port on SPI1 (PB3-PB5, chip select PB6) at 48 MHz / 16 = 3 MHz
@@ -76,6 +77,25 @@ static int8_t ref_offset(void *ctx, uint32_t hz)
 	return cs7000p_rf.ref_offset;
 }
 
+// The bench's choice of coding (chip_reg 3:5): the measured hold unless a receive test asks for the maker's state
+static uint8_t ref_coding(void *ctx, uint8_t *adc_ctl)
+{
+	(void)ctx;
+	uint8_t k = cs7000p_rf.ref_coding;
+	*adc_ctl = k == CS7000P_REF_MAKER_ADC ? MAKER_ADC_CTL : 0u;
+	return k == CS7000P_REF_HOLD ? HRC6000_IF_REF_MID : HRC6000_IF_REF_SIGNED;
+}
+
+// 4:0x04 in receive: the reference offset, as before the option. Whether 4:0x04 moves the held level under 0x0C is
+// not measured, so nothing else goes there while receiving
+static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
+{
+	(void)ctx;
+	(void)hz;
+	(void)dmr;
+	return cs7000p_rf.ref_offset;
+}
+
 static const hrc6000_if_cfg_t host_cfg = {
 	.dmr_mic_gain = DMR_MIC_GAIN,
 	.rx_gain_db = RX_GAIN_DB,
@@ -86,6 +106,8 @@ static const hrc6000_if_cfg_t host_cfg = {
 	.lo_high = lo_high,
 	.mod_pair = mod_pair,
 	.ref_offset = ref_offset,
+	.ref_coding = ref_coding,
+	.rx_tx_offset = rx_tx_offset,
 #if CONFIG_DMR
 	.dmr_enter = stm32_hrc_dmr_enter,
 	.dmr_leave = stm32_hrc_dmr_leave,
@@ -147,7 +169,11 @@ void cs7000p_c6000_mode(bool dmr, uint32_t hz)
 
 void cs7000p_c6000_retune(uint32_t hz)
 {
-	hrc6000_if_retune(&host, hz);
+	if (hrc6000_if_retune(&host, hz)) {
+		// The coding changed and the mode's whole set-up ran: its feed-through is open as after a mode change
+		pcm_chip();
+		cs7000p_radio_speaker();
+	}
 }
 
 bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
@@ -198,7 +224,7 @@ void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25)
 
 // The debug link's CHIP_REG, chip 0: pages 1 and 4 (2 and 3 are the data and vocoder FIFOs, which a read would
 // drain). Straight on the bus, each access one transaction; the driver's next set-up overwrites a write, and every
-// receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again
+// receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again (and 0x26 with chip_reg 3:5 = 2)
 bool cs7000p_c6000_reg(uint8_t page, uint8_t reg, uint32_t *val, bool write)
 {
 	if (modem.bus == NULL || (page != HRC_PAGE_AUX && page != HRC_PAGE_SYS) || (write && *val > 0xFFu)) {

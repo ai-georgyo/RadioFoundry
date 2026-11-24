@@ -911,6 +911,51 @@ static void test_table_rx_unchanged(void)
 	CHECK(dbm[0] == dbm[1] && dbm[1] == dbm[2] && dbm[2] == dbm[3]);
 }
 
+#if CONFIG_DEBUGLINK
+// chip_reg 3:5, the reference DAC's coding for a receive test: RAM only, taken at the next status poll by a receive
+// set-up, and while it is not the hold every transmission is refused, the bench drive's too
+static void test_ref_coding(void)
+{
+	radio_status_t st;
+	uint32_t v = 0;
+	start();
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, false) && v == CS7000P_REF_HOLD);
+	v = 3;
+	CHECK(!cs7000p_chip_reg(3, 0, 5, &v, true) && cs7000p_rf.ref_coding == CS7000P_REF_HOLD);
+	v = CS7000P_REF_MAKER;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true) && v == CS7000P_REF_MAKER && cs7000p_rf.ref_coding == CS7000P_REF_MAKER);
+	int retunes = modem.retunes;
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes + 1);	// a receive set-up, which asks the modem's coding again
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes + 1);
+	int writes = mic_writes;
+	CHECK(cs7000p_radio.tx_drive(600) && !cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_REF_CODING && !modem.fm_tx && mic_writes == writes);
+	CHECK((shadow & EXP_TX_BITS) == 0u && cs7000p_rf.ovr_drive == 600);
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	runner.answer = runner.plan = true;
+	cs7000p_rf.tx_refused_why = 0;
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, NULL) && !runner.armed);
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_REF_CODING);
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	v = CS7000P_REF_MAKER_ADC;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true) && v == CS7000P_REF_MAKER_ADC);
+	// Back to the hold: the bench drive keys again
+	v = CS7000P_REF_HOLD;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true) && cs7000p_rf.ref_coding == CS7000P_REF_HOLD);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	cs7000p_radio.tx_off();
+	CHECK(!modem.fm_tx);
+	// Never stored: a new start is the hold
+	v = CS7000P_REF_MAKER;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	start();
+	CHECK(cs7000p_rf.ref_coding == CS7000P_REF_HOLD);
+}
+#endif
+
 int main(void)
 {
 	test_fm_mic();
@@ -922,6 +967,9 @@ int main(void)
 	test_restore();
 #endif
 	test_table_rx_unchanged();
+#if CONFIG_DEBUGLINK
+	test_ref_coding();
+#endif
 	sim_flash_free();
 	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",
 	       failures);
