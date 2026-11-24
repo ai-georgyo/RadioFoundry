@@ -160,7 +160,7 @@ is `tools/bringup.py list --radio <id>`.
 | `settings_store` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
 | `codeplug_foreign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
 | `nand_storage` | ✕ | ✕ | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `factory_copy` | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `factory_copy` | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | not recorded | ✕ |
 | `codec_check` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ | pass, needs re-run |
 | `air_raw` | off | off | off | off | off | off | off | off | off |
 | `audio_probe` | not written | off | not written | not written | not written | off | off | not written | not written |
@@ -276,7 +276,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | `AUDIO_PROBE` | … | ○ | … | … | … | ○ | ○ | … | … |
 | `STUB_ENTRY` | ● | ● | ● | ● | ● | ● | ● | … | ● |
 | `NAND_STORAGE` | ✕ | ✕ | ✕ | ● | ✕ | ✕ | ✕ | ✕ | ✕ |
-| `FACTORY_COPY` | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ |
+| `FACTORY_COPY` | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ● | ✕ |
 | `CRASH_LOG` | ● | ● | ● | ● | ● | ● | ● | ● | ● |
 | `CRASH_SCREEN` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
 | `CRASH_REPORT` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
