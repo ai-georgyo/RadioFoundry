@@ -7,6 +7,14 @@
 // power-off the knob overrode) the receiver is not set up again, the speaker amplifier stays off (also behind a
 // speaker call the power-off cut into) and nothing transmits, FM or DMR, and all of it comes back once that state
 // ends.
+//
+// The maker's factory table, on core/storage and the factory copy as the board builds them (the board's map, kept
+// bytes, claimed first) over the simulated NOR flash: the table in use taken at init, the source and the view's keys
+// for a blank, zero, unstable and damaged window, with and without a valid record, a conflict, a use rule's failure;
+// a restore's request taken only at the status poll, never under a transmission; and no receive write changed by a
+// table. Built again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is
+// invented.
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include "cs7000p.h"
@@ -15,6 +23,12 @@
 #include "speaker_cs7000p.h"
 #include "rfops_cs7000p.h"
 #include "rfplan_cs7000p.h"
+#include "makercal_cs7000p.h"
+#include "store_cs7000p.h"
+#include "storage/storage.h"
+#include "storage/factory_copy.h"
+#include "debuglink/dlog.h"
+#include "sim/sim_flash.h"
 #include "radio/tx_limit.h"
 #include "radio/pa_keyup.h"
 #include "dmr_keyup/dmr_keyup.h"
@@ -41,14 +55,28 @@ uint32_t fake_nops;
 static bool pll_ld = true;		// the synthesizer's lock line
 static uint32_t now_us = 1000000u;
 
+// Every write to the hardware the fakes see (pins, the expander, the DAC, the modem's calls), hashed in order: two
+// runs that wrote the same things in the same order hash the same
+static uint32_t hw_hash = 2166136261u;
+
+static void hw(uint32_t kind, uint32_t a, uint32_t b)
+{
+	const uint32_t w[3] = { kind, a, b };
+	for (unsigned i = 0; i < 3; i++) {
+		for (unsigned k = 0; k < 4; k++) {
+			hw_hash = (hw_hash ^ ((w[i] >> (8u * k)) & 0xFFu)) * 16777619u;
+		}
+	}
+}
+
 void stm32_gpio_clock(GPIO_TypeDef *port) { (void)port; }
 void stm32_pin_force(GPIO_TypeDef *port, uint16_t pins, bool level) { (void)port; (void)pins; (void)level; }
 void stm32_pin_out(GPIO_TypeDef *port, uint16_t pins, bool level, bool od)
 {
-	(void)port; (void)pins; (void)level; (void)od;
+	hw(1, (uint32_t)(port - fake_ports) << 16 | pins, (uint32_t)level << 1 | od);
 }
-void stm32_pin_in(GPIO_TypeDef *port, uint16_t pins, uint32_t pull) { (void)port; (void)pins; (void)pull; }
-void stm32_pin_write(GPIO_TypeDef *port, uint16_t pins, bool level) { (void)port; (void)pins; (void)level; }
+void stm32_pin_in(GPIO_TypeDef *port, uint16_t pins, uint32_t pull) { hw(2, (uint32_t)(port - fake_ports) << 16 | pins, pull); }
+void stm32_pin_write(GPIO_TypeDef *port, uint16_t pins, bool level) { hw(3, (uint32_t)(port - fake_ports) << 16 | pins, level); }
 void stm32_wait_ns(uint32_t ns) { now_us += ns / 1000u; }
 
 bool stm32_pin_read(GPIO_TypeDef *port, uint16_t pin)
@@ -66,7 +94,32 @@ SemaphoreHandle_t xSemaphoreCreateMutex(void) { static int m; return &m; }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t m, TickType_t wait) { (void)m; (void)wait; return pdTRUE; }
 BaseType_t xSemaphoreGive(SemaphoreHandle_t m) { (void)m; return pdTRUE; }
 
-const board_t board = { .battery_critical_mv = 6000 };
+// The storage layer's locks: one task here
+void storage_lock(void) {}
+void storage_unlock(void) {}
+void storage_quick_lock(void) {}
+void storage_quick_unlock(void) {}
+
+// The log ring: the last line kept
+static char log_last[96];
+
+#if CONFIG_DEBUGLINK
+void dlog(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(log_last, sizeof(log_last), fmt, ap);
+	va_end(ap);
+}
+#endif
+
+const board_t board = {
+	.battery_critical_mv = 6000,
+	.flash = &sim_flash,
+#if CONFIG_FACTORY_COPY
+	.factory_copy = &cs7000p_factory_copy,
+#endif
+};
 
 // --- The expander and the DAC, with the interlock of exp_cs7000p.h ---
 
@@ -77,6 +130,7 @@ static int mic_writes;			// writes that moved a microphone bit
 // As the real writer: the mask first, then the check and the word
 bool cs7000p_exp_set(uint32_t set, uint32_t clear)
 {
+	hw(4, set, clear);
 	const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
 	bool ok = exp_set_ok(set, dac_now, CS7000P_APC_FLOOR);
 	if (ok) {
@@ -97,6 +151,7 @@ uint32_t cs7000p_exp_get(void) { return shadow; }
 
 bool cs7000p_apc_dac(uint16_t v)
 {
+	hw(5, v, 0);
 	if (v > CS7000P_DAC_MAX || (v != 0u && !exp_dac_ok(shadow, v, CS7000P_APC_FLOOR))) {
 		return false;
 	}
@@ -158,9 +213,9 @@ static struct {
 } modem;
 
 bool cs7000p_c6000_init(void) { return true; }
-void cs7000p_c6000_mode(bool dmr, uint32_t hz) { (void)hz; modem.dmr = dmr; }
-void cs7000p_c6000_retune(uint32_t hz) { (void)hz; modem.retunes++; }
-void cs7000p_c6000_rx_hold(void) {}
+void cs7000p_c6000_mode(bool dmr, uint32_t hz) { hw(6, dmr, hz); modem.dmr = dmr; }
+void cs7000p_c6000_retune(uint32_t hz) { hw(7, hz, 0); modem.retunes++; }
+void cs7000p_c6000_rx_hold(void) { hw(8, 0, 0); }
 bool cs7000p_c6000_fm_rx(void) { return !modem.dmr && !modem.fm_tx; }
 void cs7000p_c6000_fm_audio(bool on) { modem.audio = on; }
 bool cs7000p_c6000_reg(uint8_t page, uint8_t reg, uint32_t *val, bool write)
@@ -411,11 +466,409 @@ static void test_off_state(void)
 	}
 }
 
+// --- The maker's factory table ---
+
+#define WIN	CS7000P_STORE_TABLE_ADDR
+#define REC	CS7000P_STORE_CAL_ADDR
+#define N	CS7000P_MAKER_SIZE
+
+static void put32be(uint8_t *t, unsigned off, uint32_t v)
+{
+	t[off] = (uint8_t)(v >> 24);
+	t[off + 1] = (uint8_t)(v >> 16);
+	t[off + 2] = (uint8_t)(v >> 8);
+	t[off + 3] = (uint8_t)v;
+}
+
+static void fill16(uint8_t *t, unsigned off, uint16_t v)
+{
+	for (unsigned i = 0; i < 8; i++) {
+		t[off + 2u * i] = (uint8_t)v;
+		t[off + 2u * i + 1u] = (uint8_t)(v >> 8);
+	}
+}
+
+// An invented table that passes every rule of the reader (the layout of calibration-cs7000p.md 3; the values made up,
+// as cs7000pMakerCalTest's). other: a byte the maker never reads, so two radios' tables differ and both are valid
+static void invented(uint8_t t[N], uint8_t other)
+{
+	static const uint32_t tx[8] = { 400200000u, 429800000u, 430200000u, 445000000u, 458000000u, 472000000u,
+					492000000u, 511800000u };
+	static const uint32_t rx[8] = { 400500000u, 420000000u, 440000000u, 460000000u, 478950000u, 479050000u,
+					495000000u, 511500000u };
+	static const uint8_t high[8] = { 190, 194, 195, 210, 213, 215, 212, 209 };
+	static const uint8_t low[8] = { 100, 99, 99, 108, 115, 122, 126, 127 };
+	static const uint8_t tune[8] = { 120, 124, 128, 132, 136, 140, 150, 160 };
+	memset(t, 0, N);
+	for (unsigned i = 0; i < 8; i++) {
+		put32be(t, 0x000u + 4u * i, tx[i]);
+		put32be(t, 0x020u + 4u * i, rx[i]);
+	}
+	t[0x040] = 60;
+	t[0x041] = 160;
+	memcpy(t + 0x044, tune, 8);
+	memset(t + 0x04C, 40, 8);	// squelch level 9 open, close; level 1 open, close
+	memset(t + 0x054, 50, 8);
+	memset(t + 0x05C, 120, 8);
+	memset(t + 0x064, 130, 8);
+	memcpy(t + 0x06C, high, 8);
+	memcpy(t + 0x074, low, 8);
+	memset(t + 0x084, 40, 8);	// CTCSS at 67.0 and 254.1 Hz, DCS
+	memset(t + 0x08C, 52, 8);
+	memset(t + 0x094, 200, 8);
+	memset(t + 0x0B4, 80, 8);	// the DMR and FM pairs
+	memset(t + 0x0BC, 100, 8);
+	memset(t + 0x0C4, 120, 8);
+	memset(t + 0x0CC, 135, 8);
+	t[0x0DC] = 0x7B;		// trim A
+	t[0x0DD] = 0xA0;		// the battery byte
+	memset(t + 0x0EC, 20, 8);	// high power bursts: advance, S, R, H, F
+	memset(t + 0x0F4, 12, 8);
+	memset(t + 0x0FC, 19, 8);
+	fill16(t, 0x104, 300);
+	fill16(t, 0x114, 310);
+	memset(t + 0x124, 21, 8);	// low power
+	memset(t + 0x12C, 12, 8);
+	memset(t + 0x134, 20, 8);
+	fill16(t, 0x13C, 301);
+	fill16(t, 0x14C, 311);
+	memset(t + 0x15C, 61, 8);
+	memset(t + 0x164, 159, 8);
+	t[0x174] = 0x7D;		// trim B
+	t[0x1FF] = other;		// never read
+}
+
+static uint8_t table_a[N], table_b[N];
+static char tline[128], rline[128];
+
+// A fresh chip: the window holds w (NULL: blank), the board sector a record of the factory copy's for r (NULL: blank)
+static void chip(const uint8_t *w, const uint8_t *r)
+{
+	sim_flash_create(CS7000P_STORE_FULL_SIZE, &cs7000p_flash_map);
+	if (w != NULL) {
+		memcpy(&sim_flash_data[WIN], w, N);
+	}
+#if CONFIG_FACTORY_COPY
+	if (r != NULL) {
+		static uint8_t rec[FACTORY_COPY_REC_LEN(N)];
+		factory_copy_record_build(rec, WIN, r, N);
+		memcpy(&sim_flash_data[REC], rec, sizeof(rec));
+	}
+#else
+	(void)r;
+#endif
+}
+
+// A start as app.c runs one: the storage layer (claimed: the owner has claimed the region by now), the factory
+// copy's load, then the radio. misread: an address whose second read from here on comes back with a bit flipped
+static void boot(bool claimed, uint32_t misread)
+{
+	sim_flash_power_on();
+	(void)storage_init();
+	if (claimed && storage_region() == STORAGE_REGION_FOREIGN) {
+		CHECK(storage_claim());
+	}
+	if (misread != 0u) {
+		sim_flash_misread(misread, 2);
+	}
+#if CONFIG_FACTORY_COPY
+	factory_copy_load(&cs7000p_factory_copy);
+#endif
+	start();
+	sim_flash_misread(0, 0);
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	cs7000p_cal_rec_line(rline, sizeof(rline));
+}
+
+static bool line_is(const char *got, const char *fmt, ...)
+{
+	char want[128];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(want, sizeof(want), fmt, ap);
+	va_end(ap);
+	if (strcmp(got, want) != 0) {
+		printf("  got  %s\n  want %s\n", got, want);
+		return false;
+	}
+	return true;
+}
+
+static bool sector_blank(uint32_t a)
+{
+	for (uint32_t i = 0; i < CS7000P_STORE_SECTOR_SIZE; i++) {
+		if (sim_flash_data[a + i] != 0xFFu) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static uint32_t crc(const uint8_t *b)
+{
+	return storage_crc32(0, b, N);
+}
+
+static uint16_t fields_of(const uint8_t *b)
+{
+	cs7000p_maker_t m;
+	CHECK(cs7000p_maker_parse(b, crc(b), CS7000P_APC_FLOOR, &m));
+	return m.fields;
+}
+
+static void test_table_sources(void)
+{
+	uint8_t blank[N], zero[N], damaged[N], use[N];
+	invented(table_a, 0x5A);
+	invented(table_b, 0xA5);
+	memset(blank, 0xFF, N);
+	memset(zero, 0, N);
+	memcpy(damaged, table_a, N);
+	damaged[0x046] = 0;		// a tune code of 0: an integrity rule
+	memcpy(use, table_a, N);
+	use[0x0DD] = 0;			// the battery byte at 0: a use rule only
+	CHECK(fields_of(table_a) == CS7000P_MK_F_ALL && fields_of(use) == (CS7000P_MK_F_ALL & ~CS7000P_MK_F_BATTERY));
+	const uint16_t all = CS7000P_MK_F_ALL;
+
+	// A blank window and no record: none, nothing written. The window's CRC is the one a backup's blank 512 bytes give
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=blank src=none crc=0x%08x why=blank off=0x000 fields=0x0000 bat=0x00", crc(blank)));
+	CHECK(strstr(log_last, "cal: maker table blank (blank)") == log_last);
+	// A zero window
+	chip(zero, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=zero src=none crc=0x%08x why=zero off=0x000 fields=0x0000 bat=0x00", crc(zero)));
+	// A damaged one: the rule and the byte
+	chip(damaged, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=refused src=none crc=0x%08x why=code off=0x046 fields=0x0000 bat=0x00",
+		      crc(damaged)));
+	CHECK(strstr(log_last, "cal: maker table refused (code) at 0x046: none used") == log_last);
+	// An unstable one: two reads that differ
+	chip(table_a, NULL);
+	boot(true, WIN + 0x40u);
+	CHECK(line_is(tline, "cal_table=unread src=none crc=0x00000000 why=unstable off=0x000 fields=0x0000 bat=0x00"));
+#if CONFIG_FACTORY_COPY
+	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=none"));
+	CHECK(sector_blank(REC));	// a window not valid is never copied
+
+	// Each of them with a valid record: the record is the source, the window's state and reason beside it, and the
+	// window is not written
+	chip(NULL, table_a);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=blank src=record crc=0x%08x why=blank off=0x000 fields=0x%04x bat=0xa0",
+		      crc(blank), all));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_a)));
+	CHECK(strstr(log_last, "cal: maker table ok src=record crc=") == log_last && strstr(log_last, "win=blank") != NULL);
+	CHECK(memcmp(&sim_flash_data[WIN], blank, N) == 0);
+	chip(zero, table_a);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=zero src=record crc=0x%08x why=zero off=0x000 fields=0x%04x bat=0xa0", crc(zero),
+		      all));
+	chip(damaged, table_a);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=refused src=record crc=0x%08x why=code off=0x046 fields=0x%04x bat=0xa0",
+		      crc(damaged), all));
+	chip(table_a, table_a);
+	boot(true, WIN + 0x40u);
+	CHECK(line_is(tline, "cal_table=unread src=record crc=0x00000000 why=unstable off=0x000 fields=0x%04x bat=0xa0",
+		      all));
+
+	// A valid window: in use. Its copy is written only in a region of ours: not before the claim, then once
+	chip(table_a, NULL);
+	boot(false, 0);
+	CHECK(storage_region() == STORAGE_REGION_FOREIGN);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
+		      all));
+	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=none") && sector_blank(REC));
+	CHECK(line_is(log_last, "cal: maker table ok src=window crc=0x%08x rec=blank fields=0x%04x", crc(table_a), all));
+	boot(true, 0);
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=1 restore=none", crc(table_a)));
+	CHECK(memcmp(&sim_flash_data[REC + FACTORY_COPY_REC_HDR], table_a, N) == 0);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
+		      all));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_a)));
+
+	// Window and record both valid and different (another radio's table in one of them): neither is used
+	chip(table_a, table_b);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=none crc=0x%08x why=conflict off=0x000 fields=0x0000 bat=0x00",
+		      crc(table_a)));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_b)));
+	CHECK(line_is(log_last, "cal: window and record differ: none used"));
+	CHECK(memcmp(&sim_flash_data[WIN], table_a, N) == 0);
+
+	// Receive points out of order in the window, a valid record: the record, the window's reason beside it
+	uint8_t order[N];
+	memcpy(order, table_a, N);
+	memcpy(order + 0x024, table_a + 0x028, 4);
+	memcpy(order + 0x028, table_a + 0x024, 4);
+	chip(order, table_a);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=refused src=record ") == tline && strstr(tline, " why=point_order ") != NULL);
+	CHECK(memcmp(&sim_flash_data[WIN], order, N) == 0);
+
+	// Someone else's bytes in the board sector: the valid window in use, the sector shown and never overwritten
+	chip(table_a, NULL);
+	memcpy(&sim_flash_data[REC + 0x100u], "not ours", 8);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
+		      all));
+	CHECK(line_is(rline, "cal_rec=other crc=- wrote=0 restore=none"));
+	CHECK(memcmp(&sim_flash_data[REC + 0x100u], "not ours", 8) == 0 && sim_flash_data[REC] == 0xFFu);
+	// A record of ours whose own CRC fails, beside a blank window: not a source; its bytes' CRC shown
+	chip(NULL, table_a);
+	sim_flash_data[REC + FACTORY_COPY_REC_HDR + 0x10u] ^= 1u;
+	boot(true, 0);
+	uint8_t flipped[N];
+	memcpy(flipped, table_a, N);
+	flipped[0x10] ^= 1u;
+	CHECK(line_is(tline, "cal_table=blank src=none crc=0x%08x why=blank off=0x000 fields=0x0000 bat=0x00", crc(blank)));
+	CHECK(line_is(rline, "cal_rec=bad crc=0x%08x wrote=0 restore=none", crc(flipped)));
+	CHECK(strstr(log_last, "cal: maker table blank (blank) at 0x000: none used rec=bad") == log_last);
+
+	// A table failing a use rule alone is valid: in use, copied, its group dropped
+	chip(use, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0x00", crc(use),
+		      all & ~CS7000P_MK_F_BATTERY));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=1 restore=none", crc(use)));
+#else
+	CHECK(line_is(rline, "cal_rec=off crc=- wrote=0 restore=none"));
+	// Without the copy: the window alone, never a record
+	chip(table_a, table_b);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
+		      all));
+	CHECK(line_is(log_last, "cal: maker table ok src=window crc=0x%08x rec=off fields=0x%04x", crc(table_a), all));
+	chip(use, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0x00", crc(use),
+		      all & ~CS7000P_MK_F_BATTERY));
+	CHECK(sector_blank(REC));
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(line_is(tline, "cal_table=blank src=none crc=0x%08x why=blank off=0x000 fields=0x0000 bat=0x00", crc(blank)));
+	// A chip that doesn't answer
+	sim_flash_bad_read(WIN, N);
+	boot(true, 0);
+	sim_flash_bad_read(0, 0);
+	CHECK(line_is(tline, "cal_table=unread src=none crc=0x00000000 why=read off=0x000 fields=0x0000 bat=0x00"));
+#endif
+}
+
+#if CONFIG_FACTORY_COPY
+// A restore's changed() only raises the request; the table in use changes at the radio task's status poll, never
+// under a transmission, and a receive set-up follows. busy() holds from the request until it is taken
+static void test_table_request(void)
+{
+	radio_status_t st;
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=blank src=none") == tline);
+	CHECK(!cs7000p_factory_copy.busy());
+
+	// The copy's state moves on as a restore's job leaves it (the window written, the record after it)
+	memcpy(&sim_flash_data[WIN], table_a, N);
+	factory_copy_load(&cs7000p_factory_copy);
+	cs7000p_factory_copy.changed();
+	CHECK(cs7000p_factory_copy.busy());
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	CHECK(strstr(tline, "cal_table=blank src=none") == tline);	// nothing taken off the radio task
+
+	// Not under a transmission: kept until it ends
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	cs7000p_radio.status(&st);
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	CHECK(strstr(tline, "cal_table=blank src=none") == tline && cs7000p_factory_copy.busy());
+	cs7000p_radio.tx_off();
+	int retunes = modem.retunes;
+	cs7000p_radio.status(&st);
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	cs7000p_cal_rec_line(rline, sizeof(rline));
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0",
+		      crc(table_a), CS7000P_MK_F_ALL));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=1 restore=none", crc(table_a)));
+	CHECK(!cs7000p_factory_copy.busy());
+	CHECK(modem.retunes == retunes + 1 && cs7000p_rf.seq.state == CHAINSEQ_ST_RX);	// the receive set-up after it
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes + 1);	// once
+	// busy() while a transmission is up, DMR's arm included
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	CHECK(cs7000p_factory_copy.busy());
+	cs7000p_radio.tx_off();
+	CHECK(!cs7000p_factory_copy.busy());
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	runner.answer = true;
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, NULL) && cs7000p_factory_copy.busy());
+	cs7000p_radio.tx_off();
+	CHECK(!cs7000p_factory_copy.busy());
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+}
+#endif
+
+// The receive side, as a run of set-ups: FM wide and narrow, DMR, across the receive VCO switch, a sleep and a
+// wake-up, the status polls. Its hardware writes hashed, and the readings
+static uint32_t rx_run(int16_t *dbm)
+{
+	radio_status_t st;
+	hw_hash = 2166136261u;
+	now_us = 1000000u;
+	start();
+	CHECK(cs7000p_radio.rx(433500000u, RADIO_BW_12K5, NULL));
+	CHECK(cs7000p_radio.rx(485000000u, RADIO_BW_25K, NULL));
+	cs7000p_radio.rx_sleep(true);
+	cs7000p_radio.rx_sleep(false);
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	CHECK(cs7000p_radio.rx(439000000u, RADIO_BW_12K5, NULL));
+	cs7000p_radio.status(&st);
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	cs7000p_radio.status(&st);
+	*dbm = st.rssi_dbm;
+	return hw_hash;
+}
+
+// Nothing receives on the table yet: every receive write and reading is the same with a valid table, with none and
+// with a damaged one
+static void test_table_rx_unchanged(void)
+{
+	uint8_t damaged[N];
+	memcpy(damaged, table_a, N);
+	damaged[0x046] = 0;
+	int16_t dbm[4];
+	uint32_t h[4];
+	chip(NULL, NULL);
+	boot(true, 0);
+	h[0] = rx_run(&dbm[0]);
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=ok src=window") == tline);
+	h[1] = rx_run(&dbm[1]);
+	chip(damaged, NULL);
+	boot(true, 0);
+	h[2] = rx_run(&dbm[2]);
+	chip(NULL, NULL);
+	boot(true, 0);
+	h[3] = rx_run(&dbm[3]);
+	CHECK(h[0] == h[1] && h[1] == h[2] && h[2] == h[3]);
+	CHECK(dbm[0] == dbm[1] && dbm[1] == dbm[2] && dbm[2] == dbm[3]);
+}
+
 int main(void)
 {
 	test_fm_mic();
 	test_dmr_mic();
 	test_off_state();
-	printf("# cs7000pRadioTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
+	test_table_sources();
+#if CONFIG_FACTORY_COPY
+	test_table_request();
+#endif
+	test_table_rx_unchanged();
+	sim_flash_free();
+	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",
+	       failures);
 	return failures ? 1 : 0;
 }

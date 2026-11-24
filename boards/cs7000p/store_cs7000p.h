@@ -29,9 +29,10 @@
 #define CS7000P_STORE_MAKER_SIZE	0x2000u
 // The board sector: in the hole between the core's journal (0x019000-0x01AFFF) and the maker's records (0x01E000),
 // which no CPS address maps to, blank on the unit seen, and no constant-address flash call of the maker's program
-// falls in it (calibration-cs7000p.md 2.4). It is to hold the tree's own verified copy of the maker's table (a record
-// with the magic RFFC, hardware-cs7000p.md 10.2); nothing writes it yet, and only the view reads it. The map does not
-// keep it: it is the tree's own, and no CPS address or editor reaches it.
+// falls in it (calibration-cs7000p.md 2.4). It is the factory copy's record: the tree's own verified copy of the
+// maker's table (magic RFFC, core/storage/factory_copy.h, hardware-cs7000p.md 10.3), which only the copy writes, once,
+// over a blank sector (board.factory_copy, radio_cs7000p.c). The map does not keep it: it is the tree's own, and no
+// CPS address or editor reaches it.
 // A later record of values the tree measures itself (RFC1, hardware-cs7000p.md 13.3) gets the next sector, 0x01C000
 #define CS7000P_STORE_CAL_ADDR		0x01B000u
 #define CS7000P_STORE_CAL_SIZE		CS7000P_STORE_SECTOR_SIZE

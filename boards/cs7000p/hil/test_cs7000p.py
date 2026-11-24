@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 The RadioFoundry Authors
 """CS7000 M17 PLUS bring-up checks (docs/testing/cs7000p-bringup.md), radio only, never transmits. They read the debug
-link's `board` view section (docs/spec/hardware-cs7000p.md 15), which only this radio has: the clock that started,
-the chip's revision and ROM bootloader, the knob and the supply hold, the output expander and the shared DAC, the LCD
-board check and the panel's ID, the data flash and its reserved sector, the calibration state, the synthesizer, the
-modem and its I2S direction probe. The port was written from the schematic, so most of these are the first evidence
-that a line or a polarity is right. The display, the build features and the storage region's generic checks are
+link's `board` view section and its second, `board2` (docs/spec/hardware-cs7000p.md 15), which only this radio has:
+the clock that started, the chip's revision and ROM bootloader, the knob and the supply hold, the output expander and
+the shared DAC, the LCD board check and the panel's ID, the data flash and its reserved sector, the calibration state,
+the synthesizer, the modem and its I2S direction probe, the maker's factory table and the tree's copy of it. Nothing
+here writes the data flash: the table's check reads it through STORAGE READ. The port was written from the
+schematic, so most of these are the first evidence that a line or a polarity is right. The display, the build features and the storage region's generic checks are
 tests/hil/test_health.py's (from board.toml [hil]). A board's own test: skipped other_board on any other radio
 (tests/hil/hil_plugin.py). Their feature markers are optional: they record bring-up, they gate nothing."""
+import zlib
+
 import pytest
 
 from rfoundry_hil import skip
@@ -16,6 +19,12 @@ KEYS = ["clock", "mcu_rev", "rom_loader", "rdp", "exp", "knob", "hold", "pow_det
         "vox_raw", "lcd_board", "panel", "keys_raw", "chsw_raw", "chsw", "phone_det", "bt_strap", "flash", "store",
         "cal", "tx_refused", "dac", "lo_side", "pll", "ak", "rssi_raw", "noise_raw", "qt_raw", "rx_tune",
         "ref_offset", "pc8_duty", "hrc", "gps_baud", "adc_restarts"]
+# board2's (board.view_split), still board.<key>
+KEYS2 = ["cal_table", "cal_rec"]
+
+# The maker's factory table (store_cs7000p.h): a factory range, which STORAGE READ may read. The copy's record at
+# 0x01B000 is in no area STORAGE READ opens
+TABLE_ADDR, TABLE_SIZE = 0x001000, 0x200
 
 # exp_cs7000p.h
 EXP_APC_LOOP = 1 << 3
@@ -25,7 +34,7 @@ EXP_TX_BITS = EXP_APC_LOOP | EXP_TX_RAIL
 
 
 def board_view(r):
-    v = r.view(["board"])
+    v = r.view(["board"])       # board2 with it, where the firmware has it
     return {k[len("board."):]: val for k, val in v.items() if k.startswith("board.")}
 
 
@@ -115,6 +124,40 @@ def test_calibration_state(radio):
     assert b["cal"] in ("none", "model"), b["cal"]
     if b["cal"] == "none":
         print("cal=none: transmit is refused (docs/testing/power-calibration.md fills the tables)")
+
+
+@pytest.mark.feature("factory_copy")
+def test_factory_table_keys(radio):
+    """The maker's table and its copy as the firmware took them at start, in board2. The window's CRC the view gives is
+    the CRC-32 of the 512 bytes read through STORAGE READ now (the one to compare with the backup's 0x1000-0x11FF),
+    and a window in use beside an ok record means the record holds the same bytes. Read only."""
+    b = board_view(radio)
+    if "cal_table" not in b:
+        skip("not_built", "firmware without the table's view keys (older than the factory copy's board2)")
+    missing = [k for k in KEYS2 if k not in b]
+    assert not missing, f"board2 keys missing: {missing}"
+    win, t = fields(b["cal_table"])
+    rec, r = fields(b["cal_rec"])
+    print(f"cal_table {b['cal_table']}; cal_rec {b['cal_rec']}")
+    assert win in ("unread", "blank", "zero", "refused", "ok"), b["cal_table"]
+    assert t["src"] in ("window", "record", "none"), b["cal_table"]
+    assert rec in ("unread", "blank", "ok", "bad", "newer", "other", "off"), b["cal_rec"]
+    # The source order (settings-store.md 4.2): the window when valid, else an ok record, never both when they differ
+    if t["src"] == "window":
+        assert win == "ok", b["cal_table"]
+        # an ok record beside the window in use is its copy: the same bytes (else the source would be none)
+        assert rec != "ok" or r["crc"] == t["crc"], b
+    elif t["src"] == "record":
+        assert win != "ok" and rec == "ok", b
+    else:
+        assert t["why"] == "conflict" or (win != "ok" and rec != "ok"), b
+    if win == "unread":
+        skip("state", f"the window was not read at this start ({t['why']}): nothing to compare")
+    window = radio.link.storage_read(TABLE_ADDR, TABLE_SIZE)
+    assert zlib.crc32(window) == int(t["crc"], 16), \
+        f"the window's CRC now 0x{zlib.crc32(window):08x}, the view's {t['crc']}: the window changed since the start"
+    if win == "blank":
+        print("the window is blank: the table is lost on this radio until it is restored from the backup")
 
 
 @pytest.mark.feature("ui_navigation", optional=True)

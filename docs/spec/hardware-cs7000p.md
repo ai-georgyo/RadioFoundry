@@ -57,7 +57,8 @@ The calibration and the maker's data on the flash are now known in part, from
 the maker's device information is at 0x000080-0x00021F, and its records at 0x01E000, 0x01E400 and 0x01F000 (that
 page's 2.1 and 2.4). The rest of the maker's data (its codeplug, fonts, voice prompts) is not mapped. Every write
 of the firmware keeps the table's bytes and the records; the device information is not kept (10.3). The firmware
-does not read the table yet (section 13.1).
+reads the table at start, keeps a verified copy of it and shows both; it uses none of the table's values yet (10.3,
+13.1).
 
 The OEM model is Shenzhen Covalue's DR7810S-2. The service manual and the FCC filing describe that model and its
 STM32F405 predecessor; where they disagree with the schematic, the schematic wins.
@@ -1119,7 +1120,7 @@ codeplug tool's addresses hold.
 | Open-firmware "EEPROM" image | 0x000000 | 64 KB | sector 1 holds the maker's table: kept (below) |
 | Settings ring | 0x011000 | 8 sectors | foreign-guarded |
 | Journal | 0x019000 | 2 sectors | foreign-guarded |
-| **Board sector** | 0x01B000 | 1 sector | for the tree's own verified copy of the maker's table (a record with the magic `RFFC`), in the hole no CPS address maps to. Blank on the unit seen; no constant-address flash call of the maker's program falls there ([calibration-cs7000p.md](calibration-cs7000p.md) 2.4). Nothing writes it yet |
+| **Board sector** | 0x01B000 | 1 sector | the factory copy's record: the tree's own verified copy of the maker's table (magic `RFFC`, [settings-store.md](settings-store.md) 4.2), in the hole no CPS address maps to. Blank on the unit seen; no constant-address flash call of the maker's program falls there ([calibration-cs7000p.md](calibration-cs7000p.md) 2.4). Written once, by the firmware (10.3) |
 | Unit record | 0x01C000 | 1 sector | reserved for the record of values the tree measures itself (13.3). Nothing reads or writes it yet |
 | The maker's records | 0x01E000 | 2 sectors | kept whole (10.3). Never erased or programmed |
 | Open-firmware "flash" image | 0x020000 to 0xE00000 | | |
@@ -1169,9 +1170,24 @@ sectors that the storage layer did not open for one kept rewrite (`board.flash` 
 tools agree through the `[[flash.protect]]` entries: the CPS tools send no byte of a range, and the web flasher's
 codeplug editor and Restore keep them ([board-registry.md](../dev/board-registry.md), "Protected regions").
 
+**The copy.** The board gives the core's factory copy ([settings-store.md](settings-store.md) 4.2) the table's range
+(the map's first) and the board sector, 0x01B000, as its record; its checker is the table's reader (13.1): the reader's
+state ok and every integrity rule. At each start, after the codeplug and before the radio, the copy reads the window
+and the record twice each. The table in use is the window when it passes the reader, else the record when it holds an
+ok copy (shown `src=record`), and none when both pass and differ (`why=conflict`: compare both CRCs with the backup).
+The record is written once, by the firmware, when the region is claimed, the window passes and the sector is blank;
+nothing else writes it, and nothing of this writes the window. The radio takes the table in use at its init and parses
+it; a later change of it (only a restore will make one) is a request its task takes at its next status poll, never
+under a transmission, followed by a receive set-up. The view's `cal_table` and `cal_rec` (15) show the outcome, and the
+log a line, `cal: maker table ok src=window crc=0x... rec=... fields=0x...`, or why none is used. A build without
+`CONFIG_FACTORY_COPY` reads the window alone (`cal_rec=off`). If the window held another radio's valid table at the
+first claimed start, that table is in the record now: compare `cal_table`'s CRC with the backup's 0x1000-0x11FF before
+the first start of such a firmware. Nothing receives or transmits on the table yet.
+
 **A table already lost stays lost until it is restored.** An earlier build of the port kept nothing: a CPS write of
 part 1 after the claim replaced the table with the PC's bytes, and installing such a build again ends the protection.
-The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF). The owner's
+The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF): the reader
+refuses it, nothing is copied from it (`cal_table=blank src=none`), and the record stays blank. The owner's
 whole-chip backup still holds the table. The firmware's restore path for it is not written yet: until then nothing
 writes the window, and the kept rewrite keeps whatever it holds, blank bytes included. A codeplug restore of the
 backup does not bring the table back either: the CPS tools and the web flasher's Restore send none of its bytes (the
@@ -1214,9 +1230,9 @@ The port also protects the chip another way:
   there (its device information, and the data not mapped) is then at risk, and the backup is the only copy.
 - A valid record of RadioFoundry's proves one claim. A radio that went back to the maker's firmware and returns is
   "ours" at the first start if a record survived: the backup is then the owner's job again.
-- Nothing writes the board sector yet. A writer may touch it only when it is blank or carries the tree's own magic,
-  a rule the bytes of any other firmware fail. The firmware does not interpret the maker's table yet (a backup reads
-  it as bytes).
+- Only the factory copy writes the board sector, once, and only over a blank sector: a record of another kind there
+  (`cal_rec=other`, `store=foreign`) is shown and never overwritten. The firmware reads the maker's table and shows
+  it (13.1), and uses none of its values yet.
 
 One thing the maker's documents do show: its programming software loads a repeater database to 0x780000 through
 0xFB3FFF of this chip ("Loading the GPS Database"). 0x780000 to 0xF3FFFF of that range is inside the map's
@@ -1265,8 +1281,10 @@ Each unit carries the maker's factory table, 512 bytes at 0x001000-0x0011FF of t
 coding, interpolation and the checks a reader must make are in [calibration-cs7000p.md](calibration-cs7000p.md). The
 maker's program checks none of its values (that page's 2.2), and no transmission has been made with any of them.
 
-**The firmware does not read the table yet.** The port has model tables in source (`rfcal_cs7000p.c`), all unset,
-and every value below is still the model's. The last column is the maker's field for the same value:
+**The firmware reads the table and uses none of it yet.** The radio takes the table in use at its init (the window's
+or the copy's record, 10.3), parses it and shows it (`board.cal_table`, 15); no receive or transmit value comes from it.
+The port has model tables in source (`rfcal_cs7000p.c`), all unset, and every value below is still the model's. The
+last column is the maker's field for the same value:
 
 | Value | Now | Supplied by | In the maker's table ([calibration-cs7000p.md](calibration-cs7000p.md)) |
 |---|---|---|---|
@@ -1282,8 +1300,9 @@ and every value below is still the model's. The last column is the maker's field
 The maker's sequences around these values are not copied, only the values
 ([calibration-cs7000p.md](calibration-cs7000p.md) 6.5): the port's order of section 7.5 stands.
 
-The table's reader is written and nothing calls it yet: `makercal_cs7000p.{h,c}`, pure, host-tested on invented
-tables (`cs7000pMakerCalTest`). It refuses what [calibration-cs7000p.md](calibration-cs7000p.md) 7 refuses, in two
+The table's reader: `makercal_cs7000p.{h,c}`, pure, host-tested on invented tables (`cs7000pMakerCalTest`); the
+radio's intake of it on the board's map, the core's storage and the copy (`cs7000pRadioTest`, and without the copy
+`cs7000pRadioNoCopyTest`). It refuses what [calibration-cs7000p.md](calibration-cs7000p.md) 7 refuses, in two
 kinds of rule. An **integrity** rule (that page's section 7, with a trim bound of 64 steps) makes the table not
 valid: it is never used or copied, and a restore refuses such bytes. A **use** rule (the port's own: an RSSI point at 0x00 or 0xFF, a
 sub-audio level of 0, burst hold or PA-off values that differ across the points, the battery byte at 0x00 or 0xFF)
@@ -1368,8 +1387,9 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 
 ## 15. Debug link view keys
 
-`view_cs7000p.c`; each is `board.<key>` in view section 28 ([debuglink.md](debuglink.md) 3.7). The diagnostics page shows the same
-readings.
+`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last two, which are in section 39
+(`board2`, `board_t.view_split`: `board` is near the size of one reply; [debuglink.md](debuglink.md) 3.7). The
+diagnostics page shows the bring-up readings.
 
 | Key | Values |
 |---|---|
@@ -1385,7 +1405,7 @@ readings.
 | `chsw_raw`, `chsw` | the selector's four lines (`0xf` all open); `unverified` or the position |
 | `phone_det`, `bt_strap` | PA13, PA14 (`0` / `1`, through `GPIOA->IDR`) |
 | `flash` | JEDEC ID, size, `addr4`, and `refused=`, the erases and programs the driver refused in a sector holding the maker's bytes outside the storage layer's grant (10.3; 0 unless a writer misses the rule): `EF4019 size=0x2000000 addr4=1 refused=0` |
-| `store` | the board sector at 0x01B000 (10.2): `blank` / `ours` (the magic `RFFC`) / `foreign` / `unread` (no chip, or the read failed; asked again at the next request). Read once, at the first request |
+| `store` | the board sector at 0x01B000 (10.2): `blank` / `ours` (the magic `RFFC`) / `foreign` / `unread` (no chip, or the read failed; asked again at the next request). Read once, at the first request; the record's own state is `cal_rec`'s |
 | `cal` | `none` / `model` |
 | `tx_refused` | the count and `why=`, the last reason (13.2) |
 | `dac` | the shared DAC's code now (0 = off) and `refused=`, the refused DAC writes and refused expander writes together |
@@ -1398,8 +1418,11 @@ readings.
 | `i2s` | running, `dir=` (`ok` / `swapped` / `busy` / `none` / `unknown`), `ioswp=`, `edges=` the two probe counts, `und=`, `ovr=`. Only in a build with DMR |
 | `gps_baud` | the rate the module answered at; 0: not heard, or built without GPS |
 | `adc_restarts` | overrun recoveries of the ADC scan; 0 is expected |
+| `cal_table` (`board2`) | the maker's table as taken at start (10.3, 13.1): the window's state `unread` / `blank` / `zero` / `refused` / `ok`; `src=` the table in use, `window` / `record` / `none`; `crc=` the CRC-32 of the window's 512 bytes (Python's `zlib.crc32`; 0 when unread), the figure to compare with the backup's 0x1000-0x11FF; `why=` the window's first failed rule (the reader's names), `read` / `unstable` when unread, `conflict` when window and record are both valid and differ; `off=` the byte it failed at; `fields=` the field groups of the table in use that passed (`CS7000P_MK_F_*`, 0 with none in use); `bat=` its battery byte. `cal_table=blank src=none crc=0x... why=blank off=0x000 fields=0x0000 bat=0x00` on a radio whose table was lost |
+| `cal_rec` (`board2`) | the copy's record at 0x01B000: `unread` / `blank` / `ok` / `bad` / `newer` / `other` ([settings-store.md](settings-store.md) 4.2), `off` in a build without `CONFIG_FACTORY_COPY`; `crc=` of its 512 bytes (`-` when it holds none of ours); `wrote=` 1 when this start wrote it, 2 when it tried and failed (tried again at the next start), else 0; `restore=none` (no restore at this start) |
 
-`boards/cs7000p/hil/test_cs7000p.py` reads them on a radio. It never transmits.
+`boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
+through STORAGE READ (and an ok record's bytes with `cal_rec`'s). It never transmits or writes.
 
 ---
 

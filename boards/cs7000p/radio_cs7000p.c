@@ -7,17 +7,21 @@
 // (docs/testing/cs7000p-bringup.md).
 //
 // The radio has no calibration, so it refuses every transmission (rfcal_cs7000p.h, rfops_cs7000p.h): the one way to
-// key it is the bench's drive override under a test TX limit.
+// key it is the bench's drive override under a test TX limit. The maker's factory table is taken at init (the bytes
+// in use the core's factory copy chose, core/storage/factory_copy.h) and parsed (makercal_cs7000p.h), and shown;
+// nothing receives or transmits on it yet (hardware-cs7000p.md 13.1).
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
 // interrupt and the debug link's task never mix, and PC13's change of direction never interleaves with another
 // task's set-up of a port C pin. PC13 is an output only inside a frame.
 //
-// Everything here is the radio task's, but: status readers (cs7000p_radio_state), the bench drive (tx_drive,
-// tx_drive_now), chip_reg (the debug link's task), cs7000p_speaker_pcm (the audio task), cs7000p_radio_rf_safe (any
-// context) and the burst runner's ops (the modem's and the timer's interrupts).
+// Everything here is the radio task's, but: status readers (cs7000p_radio_state, the table's view lines), the bench
+// drive (tx_drive, tx_drive_now), chip_reg (the debug link's task), cs7000p_speaker_pcm (the audio task),
+// cs7000p_radio_rf_safe (any context), the factory copy's busy() and changed() (the restore's task) and the burst
+// runner's ops (the modem's and the timer's interrupts).
 #include <stddef.h>
+#include <string.h>
 #include "cs7000p.h"
 #include "config.h"
 #include "pins.h"
@@ -28,6 +32,8 @@
 #include "rfops_cs7000p.h"
 #include "speaker_cs7000p.h"
 #include "subpwm_cs7000p.h"
+#include "makercal_cs7000p.h"
+#include "store_cs7000p.h"
 #include "hal_time.h"
 #include "bus/wire3_gpio/wire3_gpio.h"
 #include "rf/sky72310/sky72310.h"
@@ -37,6 +43,10 @@
 #include "radio/pa_keyup.h"
 #include "dmr_keyup/dmr_keyup.h"
 #include "hrc/dmr_glue.h"
+#include "storage/storage.h"
+#include "storage/factory_copy.h"
+#include "debuglink/dlog.h"
+#include "debuglink/dl_fmt.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
@@ -68,6 +78,186 @@ static bool rx_valid;		// a receive set-up exists to go back to
 static radio_bw_t rx_bw;
 // A receive set-up asked for from outside the radio task (the bench's LO side or reference offset): status() runs it
 static volatile bool retune_req;
+
+// --- The maker's factory table (calibration-cs7000p.md; hardware-cs7000p.md 13.1) ---
+
+_Static_assert(CS7000P_STORE_TABLE_SIZE == CS7000P_MAKER_SIZE, "the map's first factory range is the maker's table");
+_Static_assert((unsigned)CS7000P_MK_WHY_COUNT < (unsigned)FACTORY_COPY_WHY_READ,
+	       "the reader's reasons are the board's numbers, 1-0xEF");
+
+// The bytes in use: the factory copy's load fills them before init (the window's, or the record's when the window
+// fails the reader), all 0xFF when there are none. Without the copy, init reads the window into them itself
+static uint8_t cal_raw[CS7000P_MAKER_SIZE];
+// The table in use as parsed, and the copy's state it came with: the radio task's, written at init and when it takes
+// a request (cal_req), read by the view's lines
+static cs7000p_maker_t maker;
+static factory_copy_state_t cal_st;
+// The copy's changed() (a restore wrote): the radio task takes it at its status poll, parses the table now in use
+// there and sets receive up again. The table in use never changes on another task
+static volatile bool cal_req;
+
+// The copy's checker: the bytes are the maker's when the reader's state is ok and every integrity rule passes (spec
+// 7). The port's use rules never fail it: they only drop a field group (makercal_cs7000p.h)
+static bool cal_check(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off)
+{
+	return cs7000p_maker_check(b, n, CS7000P_APC_FLOOR, why, off);
+}
+
+#if !CONFIG_FACTORY_COPY
+static bool all_bytes(const uint8_t *b, uint32_t n, uint8_t v)
+{
+	for (uint32_t i = 0; i < n; i++) {
+		if (b[i] != v) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// A build without the copy reads the window alone, as the copy's load does: twice, compared, then checked, under the
+// storage lock (a CPS write from the debug link's task may be rewriting the window's sector). No record: the window is
+// the only source
+static void cal_read_window(factory_copy_state_t *s)
+{
+	const uint32_t a = CS7000P_STORE_TABLE_ADDR, n = CS7000P_MAKER_SIZE;
+	uint8_t again[64];
+	storage_lock();
+	bool read = board.flash != NULL && board.flash->read != NULL && board.flash->size >= a + n &&
+		    board.flash->read(a, cal_raw, n);
+	bool same = read;
+	for (uint32_t off = 0; read && same && off < n; off += sizeof(again)) {
+		read = board.flash->read(a + off, again, sizeof(again));
+		same = read && memcmp(again, cal_raw + off, sizeof(again)) == 0;
+	}
+	storage_unlock();
+	memset(s, 0, sizeof(*s));
+	s->loaded = true;
+	if (!read || !same) {
+		s->why = read ? FACTORY_COPY_WHY_UNSTABLE : FACTORY_COPY_WHY_READ;
+	} else {
+		s->win_crc = storage_crc32(0, cal_raw, n);
+		if (cal_check(cal_raw, n, &s->why, &s->off)) {
+			s->win = FACTORY_COPY_WIN_OK;
+			s->source = FACTORY_COPY_SRC_WINDOW;
+			return;
+		}
+		s->win = all_bytes(cal_raw, n, 0xFF) ? FACTORY_COPY_WIN_BLANK :
+			 (all_bytes(cal_raw, n, 0) ? FACTORY_COPY_WIN_ZERO : FACTORY_COPY_WIN_REFUSED);
+	}
+	memset(cal_raw, 0xFF, n);	// no bytes in use
+}
+#endif
+
+#if CONFIG_DEBUGLINK	// the view and the log
+// The names the view and the log show: the copy's, and without it the same words
+static const char *cal_src_name(uint8_t src)
+{
+#if CONFIG_FACTORY_COPY
+	return factory_copy_src_name(src);
+#else
+	return src == FACTORY_COPY_SRC_WINDOW ? "window" : "none";
+#endif
+}
+
+static const char *cal_win_name(uint8_t win)
+{
+#if CONFIG_FACTORY_COPY
+	return factory_copy_win_name(win);
+#else
+	static const char *const names[] = { "unread", "blank", "zero", "refused", "ok" };
+	return win < sizeof(names) / sizeof(names[0]) ? names[win] : "?";
+#endif
+}
+
+// The window's reason: one of the copy's own, else the reader's
+static const char *cal_why_name(uint8_t why)
+{
+#if CONFIG_FACTORY_COPY
+	const char *n = factory_copy_why_name(why);
+	if (n != NULL) {
+		return n;
+	}
+#else
+	if (why == FACTORY_COPY_WHY_READ || why == FACTORY_COPY_WHY_UNSTABLE) {
+		return why == FACTORY_COPY_WHY_READ ? "read" : "unstable";
+	}
+#endif
+	return cs7000p_maker_why_name(why);
+}
+
+static const char *cal_rec_name(uint8_t rec)
+{
+#if CONFIG_FACTORY_COPY
+	return factory_copy_rec_name(rec);
+#else
+	(void)rec;
+	return "off";	// a build without the copy keeps no record
+#endif
+}
+
+// One line each time the table in use is taken
+static void cal_log(const factory_copy_state_t *s)
+{
+	if (s->source != FACTORY_COPY_SRC_NONE && maker.valid) {
+		if (s->source == FACTORY_COPY_SRC_RECORD) {
+			dlog("cal: maker table ok src=record crc=0x%08x rec=%s fields=0x%04x win=%s", (unsigned)maker.crc,
+			     cal_rec_name(s->rec), maker.fields, cal_win_name(s->win));
+		} else {
+			dlog("cal: maker table ok src=window crc=0x%08x rec=%s fields=0x%04x", (unsigned)maker.crc,
+			     cal_rec_name(s->rec), maker.fields);
+		}
+	} else if (s->why == FACTORY_COPY_WHY_CONFLICT) {
+		dlog("cal: window and record differ: none used");
+	} else {
+		dlog("cal: maker table %s (%s) at 0x%03x: none used rec=%s", cal_win_name(s->win), cal_why_name(s->why),
+		     (unsigned)s->off, cal_rec_name(s->rec));
+	}
+}
+#endif
+
+// The table in use taken: the copy's state now (or the window read here, without the copy), then the parse. Radio
+// task only, at init and at the status poll that takes a request; logged once each time
+static void cal_take(void)
+{
+	factory_copy_state_t s;
+#if CONFIG_FACTORY_COPY
+	factory_copy_get(&s);	// not loaded (no configuration): all zero, the source none
+#else
+	cal_read_window(&s);
+#endif
+	const bool any = s.source != FACTORY_COPY_SRC_NONE;
+	const uint32_t crc = s.source == FACTORY_COPY_SRC_WINDOW ? s.win_crc :
+			     (s.source == FACTORY_COPY_SRC_RECORD ? s.rec_crc : 0u);
+	(void)cs7000p_maker_parse(any ? cal_raw : NULL, crc, CS7000P_APC_FLOOR, &maker);
+	cal_st = s;
+#if CONFIG_DEBUGLINK
+	cal_log(&s);
+#endif
+}
+
+#if CONFIG_FACTORY_COPY
+// The restore (settings-store.md 4.2) is refused while a transmission is up or a table it wrote is not taken yet
+static bool cal_busy(void)
+{
+	return tx_on || dmr_armed || cal_req;
+}
+
+// Only the request: the table in use changes at the radio task's next status poll
+static void cal_changed(void)
+{
+	cal_req = true;
+}
+
+// The maker's table is the map's first factory range (store_cs7000p.c); the copy's record is the board sector
+const factory_copy_cfg_t cs7000p_factory_copy = {
+	.range = 0,
+	.record_addr = CS7000P_STORE_CAL_ADDR,
+	.check = cal_check,
+	.busy = cal_busy,
+	.changed = cal_changed,
+	.table = cal_raw,
+};
+#endif
 
 // --- The synthesizer's bus ---
 
@@ -662,6 +852,9 @@ static const dmr_keyup_ops_t keyup_ops = {
 // Task level, after board_init(): the clock runs (the burst runner's timer reads it) and the ADC scan is up
 static void init(void)
 {
+	// The table in use: the factory copy's load ran before (app.c); without the copy, the window read here. Before
+	// the chain, and nothing of it is applied yet
+	cal_take();
 	if (speaker_lock == NULL) {
 		speaker_lock = xSemaphoreCreateMutex();
 	}
@@ -741,6 +934,13 @@ static void rx_sleep(bool sleep)
 
 static void status(radio_status_t *st)
 {
+	// A table a restore wrote: taken here, never under a transmission, then a receive set-up as a bench change asks.
+	// busy() holds until it is taken, so no second request lands in between
+	if (cal_req && !tx_on && !dmr_armed) {
+		cal_take();
+		cal_req = false;
+		retune_req = true;
+	}
 	// A safe request from outside (a power-off the knob overrode leaves the chain idle and the amplifier off), or
 	// a bench change that wants a retune: the receiver set up again, here, in the radio task. The request is taken
 	// only here, and before the set-up: one that lands during it asks again, and one that came during a
@@ -834,6 +1034,33 @@ void cs7000p_radio_state(cs7000p_radio_state_t *s)
 		.ref_offset = cs7000p_rf.ref_offset,
 	};
 }
+
+#if CONFIG_DEBUGLINK
+// The view's two lines of the table (hardware-cs7000p.md 15), from the debug link's task: plain data. The window's
+// state, the source of the table in use, the window's CRC-32 (the one a host compares with its backup), the window's
+// reason and offset, the field groups and the battery byte of the table in use
+void cs7000p_cal_table_line(char *buf, uint8_t len)
+{
+	dl_fmt(buf, len, "cal_table=%s src=%s crc=0x%08x why=%s off=0x%03x fields=0x%04x bat=0x%02x",
+	       cal_win_name(cal_st.win), cal_src_name(cal_st.source), (unsigned)cal_st.win_crc, cal_why_name(cal_st.why),
+	       (unsigned)cal_st.off, maker.fields, maker.valid ? maker.battery : 0u);
+}
+
+// The copy's record: its state, the CRC-32 of its bytes (- when it holds none of ours), whether this start wrote it
+// (2: tried and failed, tried again at the next start), the last restore's result (none: no restore at this start)
+void cs7000p_cal_rec_line(char *buf, uint8_t len)
+{
+	const bool ours = cal_st.rec == FACTORY_COPY_REC_OK || cal_st.rec == FACTORY_COPY_REC_BAD;
+	char crc[12];
+	if (ours) {
+		dl_fmt(crc, sizeof(crc), "0x%08x", (unsigned)cal_st.rec_crc);
+	} else {
+		crc[0] = '-';
+		crc[1] = '\0';
+	}
+	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=none", cal_rec_name(cal_st.rec), crc, cal_st.wrote);
+}
+#endif
 
 // --- chip_reg (hardware-cs7000p.md 14): the bench's way to the chips, from the debug link's task ---
 
