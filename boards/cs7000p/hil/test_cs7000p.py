@@ -13,7 +13,8 @@ import zlib
 
 import pytest
 
-from rfoundry_hil import skip
+from rfoundry_hil import DebugLinkError, skip
+from rfoundry_debug import FACTORY_RESULTS
 
 KEYS = ["clock", "mcu_rev", "rom_loader", "rdp", "exp", "knob", "hold", "pow_det_mv", "vbat_mv", "vdda_mv", "vol_raw",
         "vox_raw", "lcd_board", "panel", "keys_raw", "chsw_raw", "chsw", "phone_det", "bt_strap", "flash", "store",
@@ -157,7 +158,33 @@ def test_factory_table_keys(radio):
     assert zlib.crc32(window) == int(t["crc"], 16), \
         f"the window's CRC now 0x{zlib.crc32(window):08x}, the view's {t['crc']}: the window changed since the start"
     if win == "blank":
-        print("the window is blank: the table is lost on this radio until it is restored from the backup")
+        print("the window is blank: the table is lost on this radio until it is restored from the backup "
+              "(tools/rfoundry_debug.py storage factory --backup FILE --restore)")
+
+
+@pytest.mark.feature("factory_copy", optional=True)
+def test_factory_info_matches_view(radio):
+    """STORAGE op 3 FACTORY_INFO says what board2's cal_table and cal_rec say: the source, the window's state and
+    CRC, the record's state and CRC, the last restore. The board takes the copy's state at its init and after a
+    restore, so the two agree unless a restore's outcome is being taken. Read only."""
+    b = board_view(radio)
+    if "cal_table" not in b:
+        skip("not_built", "firmware without the table's view keys (older than the factory copy's board2)")
+    try:
+        info = radio.link.factory_info()
+    except DebugLinkError as e:
+        skip("not_built", f"no FACTORY_INFO in this firmware ({e})")
+    if info is None:
+        skip("not_built", "FACTORY_INFO reports no factory copy")
+    win, t = fields(b["cal_table"])
+    rec, r = fields(b["cal_rec"])
+    assert (info["addr"], info["size"]) == (TABLE_ADDR, TABLE_SIZE), info
+    assert (info["source"], info["window"]) == (t["src"], win), (info, b["cal_table"])
+    assert f"0x{info['window_crc']:08x}" == t["crc"], (info, b["cal_table"])
+    assert info["record"] == rec, (info, b["cal_rec"])
+    want = f"0x{info['record_crc']:08x}" if rec in ("ok", "bad") else "-"
+    assert r["crc"] == want, (info, b["cal_rec"])
+    assert FACTORY_RESULTS[info["result"]][0] == r["restore"], (info, b["cal_rec"])
 
 
 @pytest.mark.feature("ui_navigation", optional=True)

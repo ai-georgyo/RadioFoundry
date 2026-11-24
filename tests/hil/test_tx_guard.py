@@ -2,15 +2,17 @@
 # Copyright (c) 2026 The RadioFoundry Authors
 """The TX guard (README.md, "Transmit frequencies"): layer 1 refuses a debug link request that would key outside the
 rig's tx_mhz, layer 2 (Radio.tx_gate) sets the firmware's test TX limit: blocked outside radio_tx tests, the run's
-transmit frequencies in them. No radio: these run
-anywhere, and tools/ci.sh runs them."""
+transmit frequencies in them. And the factory restore guard: no test sends a FACTORY_RESTORE the radio could accept.
+No radio: these run anywhere, and tools/ci.sh runs them."""
 import struct
 import types
+import zlib
 
 import pytest
 
 import hil_config
 import rfoundry_hil as H
+from rfoundry_debug import STORAGE_OP_FACTORY_INFO
 
 
 class FakeConfig:
@@ -259,3 +261,37 @@ def test_t3_camped_checks_its_control_channel(rig):
     with pytest.raises(RuntimeError, match="467.37500 MHz"):
         H._guarded_request(t3_link(True, 467.375), H.T3, bytes([12]) + struct.pack("<IBB", 1, 1, 37))
     H._guarded_request(t3_link(True, 461.4625), H.T3, bytes([12]) + struct.pack("<IBB", 1, 1, 37))
+
+
+class FactoryLink:
+    """The factory range a FACTORY_RESTORE guard reads (op 3's range, the window through STORAGE READ)"""
+
+    def __init__(self, window=b"\x01\x02\x03\x04", info=True):
+        self.window, self.info = window, info
+
+    def factory_info(self):
+        return {"addr": 0x1000, "size": len(self.window)} if self.info else None
+
+    def storage_read(self, addr, n):
+        assert (addr, n) == (0x1000, len(self.window))
+        return self.window
+
+
+def restore(window_crc):
+    return H.STORAGE, struct.pack("<BHII", H.STORAGE_OP_FACTORY_RESTORE, 4, 0, window_crc)
+
+
+@pytest.mark.parametrize("allow_rf", [False, True])
+def test_factory_restore_guard(rig, monkeypatch, allow_rf):
+    """No HIL test runs a factory restore that writes: a FACTORY_RESTORE whose window CRC is the window's is never
+    sent, with or without --allow-rf; one with another CRC (the radio's check 7 refuses it) goes through"""
+    monkeypatch.setattr(hil_config, "CONFIG", FakeConfig(allow_rf, []))
+    live = zlib.crc32(b"\x01\x02\x03\x04")
+    with pytest.raises(RuntimeError, match="FACTORY_RESTORE not sent"):
+        H._guarded_request(FactoryLink(), *restore(live))
+    assert rig == []
+    H._guarded_request(FactoryLink(), *restore(live ^ 1))
+    H._guarded_request(FactoryLink(info=False), *restore(live))        # no factory copy: the radio refuses it
+    H._guarded_request(FactoryLink(), H.STORAGE, bytes([STORAGE_OP_FACTORY_INFO]))   # the other ops pass
+    assert [p[0] for _, p in rig] == [H.STORAGE_OP_FACTORY_RESTORE, H.STORAGE_OP_FACTORY_RESTORE,
+                                      STORAGE_OP_FACTORY_INFO]

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -24,7 +25,8 @@ from rfoundry_debug import (DebugLink, DebugLinkError, as_int, find_network_radi
                        parse_counters,
                        to_rgb, write_png, ACTIONS, PRESS, LONG, UP, APRS, APRS_OP_MESSAGE, APRS_OP_SEND_NOW,
                        APRS_OP_STATUS, DATA_OP_CALL_ALERT, DATA_OP_EMERGENCY, DATA_OP_IP_SEND,
-                       DATA_OP_RADIO_CHECK, DATA_OP_SMS, DMR_DATA, KEY, OP_TONE_BURST, PTT, RADIO, T3)
+                       DATA_OP_RADIO_CHECK, DATA_OP_SMS, DMR_DATA, KEY, OP_TONE_BURST, PTT, RADIO, STORAGE,
+                       STORAGE_OP_FACTORY_RESTORE, T3)
 
 
 # Layer 1 of the TX guard (README.md, "Transmit frequencies"): with --allow-rf, every debug link request that keys the
@@ -103,9 +105,29 @@ def tx_freqs(link, where):
 _request = DebugLink.request
 
 
+def factory_restore_guard(link, payload):
+    """No HIL test runs a factory restore that writes (settings-store.md 4.2): a FACTORY_RESTORE is sent only when its
+    window CRC is not the CRC-32 of the window the radio holds now, so the radio's own check 7 (window_crc) refuses it
+    whatever the checks before it let through. Raises RuntimeError before anything is sent otherwise. A test that
+    needs another refusal sends a wrong window CRC as well: the radio's checks 1-6 come first"""
+    if len(payload) < 11:
+        return                  # malformed: the radio answers bad argument
+    sent = int.from_bytes(payload[7:11], "little")
+    try:
+        info = link.factory_info()
+        window = link.storage_read(info["addr"], info["size"]) if info else None
+    except DebugLinkError as e:
+        raise RuntimeError(f"FACTORY_RESTORE not sent: the window could not be read to check it ({e})")
+    if window is not None and zlib.crc32(window) == sent:
+        raise RuntimeError("FACTORY_RESTORE not sent: its window CRC is the radio's window's, so the radio could "
+                           "accept it and write its data flash; no HIL test runs a restore that writes")
+
+
 def _guarded_request(self, cmd, payload=b"", *args, **kwargs):
     import hil_config
     p = bytes(payload)
+    if cmd == STORAGE and p[:1] == bytes([STORAGE_OP_FACTORY_RESTORE]):
+        factory_restore_guard(self, p)
     if cmd == T3 and p[:1]:     # what tx_freqs needs to know of a system staged through this link
         staged = self.__dict__.setdefault("_t3_staged", {})
         if p[0] == 1:
