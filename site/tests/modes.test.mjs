@@ -678,3 +678,307 @@ test("Systems tab: the recommended ham system's button is there for a type that 
 	// the type list starts on Tier III, which has one
 	assert.deepEqual(labels.find(([x]) => x === "editor.modes.add_ham"), ["editor.modes.add_ham", false]);
 });
+
+// --- M17 (docs/spec/m17-codeplug.md) ---
+
+import * as m17 from "../static/js/codeplug/mode_m17.js";
+import { webcrypto } from "node:crypto";
+
+// The vectors' text between bars, spaces kept
+const barred = (l) => l.slice(l.indexOf("|") + 1, l.lastIndexOf("|"));
+const hx = (n) => parseInt(n, 16);
+
+test("vectors: M17 channel block, both broadcast directions, reserved bits kept", () => {
+	const fields = ([sq, r, can, tx, dst, enc, key]) => ({ squelch: hx(sq), mode1600: r === "1", can: hx(can), txCan: hx(tx), dst: hx(dst), enc: hx(enc), keyId: hx(key) });
+	const v = vectors("m17conv");
+	assert.ok(v.length >= 30);
+	for (const l of v) {
+		const [op, ...w] = l.split(" ");
+		if (op === "dec") {
+			const d = m17.decodeConv(bytes(w[0]));
+			assert.deepEqual({ ...d, txCan: d.txCan ?? d.can }, fields(w.slice(1)), l);
+		} else if (op === "enc") {
+			assert.equal(hexOf(m17.encodeConv(fields(w))), w[7], l);
+		} else if (op === "keep") {
+			assert.equal(hexOf(m17.encodeConv(fields(w.slice(1)), bytes(w[0]))), w[8], l);
+		} else assert.fail(l);
+	}
+	// what the editor holds for a TX CAN that is the CAN: "not set", so a new CAN takes it along
+	assert.equal(m17.decodeConv(bytes("0007")).txCan, null);
+	assert.equal(hexOf(m17.encodeConv({ ...m17.decodeConv(bytes("0007")), can: 9 })).slice(0, 6), "000900");
+});
+
+test("vectors: M17 radio-wide record", () => {
+	const fields = ([a, sign, gnss, st, text]) => ({ src: hx(a), sign: sign === "1", gnss: gnss === "1", station: hx(st),
+		text: text === "-" ? "" : new TextDecoder().decode(bytes(text)) });
+	const v = vectors("m17wide");
+	assert.ok(v.length >= 15);
+	for (const l of v) {
+		const [op, ...w] = l.split(" ");
+		if (op === "dec") assert.deepEqual(m17.decodeWide(bytes(w[0])), fields(w.slice(1)), l);
+		else if (op === "enc") assert.equal(hexOf(m17.encodeWide(fields(w))), w[5], l);
+		else if (op === "keep") assert.equal(hexOf(m17.encodeWide(fields(w.slice(1)), bytes(w[0]))), w[6], l);
+		else assert.fail(l);
+	}
+});
+
+test("vectors: M17 addresses, text to address and back", () => {
+	const v = vectors("m17call");
+	assert.ok(v.length >= 30);
+	for (const l of v) {
+		const [op, a, k] = l.split(" ");
+		if (op === "text") {
+			const r = m17.parseAddr(barred(l));
+			if (a === "-") assert.ok(r.error, l);
+			else assert.deepEqual(r, { addr: hx(a) }, l);
+		} else if (op === "addr") {
+			assert.deepEqual(m17.addrText(hx(a)), { kind: hx(k), text: barred(l) }, l);
+		} else assert.fail(l);
+	}
+	// the refusals say which rule: a typo is never read as a space
+	assert.deepEqual(["", "   ", "ABCDEFGHIJ", "AB_CD"].map((s) => m17.parseAddr(s).error), ["empty", "empty", "long", "chars"]);
+	for (let a = 1; a < 0xEE6B27FFFFFF; a = a * 7 + 13) assert.equal(m17.parseAddr(m17.addrText(a).text).addr, a);
+});
+
+test("vectors: M17 system secret, the public key the editor stores with d, its fingerprint", async () => {
+	const v = vectors("m17secret");
+	assert.ok(v.length >= 12);
+	for (const l of v) {
+		const [op, ...w] = l.split(" ");
+		if (op === "rec") {
+			const s = m17.decodeSecret(bytes(w[0]));
+			const valid = !s.raw && m17.secretValid({ d: s.d, q: "" });
+			assert.deepEqual([valid ? 1 : 0, valid && s.q ? 1 : 0], [hx(w[1]), hx(w[2])], l);
+			if (valid) assert.equal(s.d, w[0].slice(0, 64));
+		} else if (op === "pub") {
+			const [d, q, fp] = w;
+			assert.equal(hexOf(m17.pubOfPriv(bytes(d))), q, l);
+			assert.equal(await m17.fingerprint(bytes(q)), fp.match(/..../g).join(" "), l);
+			assert.ok(await m17.pubImports(bytes(q)), l);
+			assert.equal(hexOf(m17.pubCompressed(m17.pubUncompressed(bytes(q)))), q);
+			assert.equal(hexOf(m17.pubCompressed(m17.pubUncompressed(bytes(q)).subarray(1))), q, "64 bytes, X || Y");
+			// stored: d and Q; d alone reads as valid with Q left to the radio
+			assert.equal(hexOf(m17.encodeSecret({ d, q: "" }, null)), d + q);
+			assert.ok(m17.secretValid({ d, q }) && m17.secretValid({ d, q: "" }));
+			assert.ok(!m17.secretValid({ d, q: q.slice(0, 64) + (q.endsWith("0") ? "1" : "0") }), "a Q that isn't d's");
+		} else assert.fail(l);
+	}
+});
+
+test("M17 public keys: every encoding a station gives, checked on the curve like WebCrypto does", async () => {
+	const q = "02B91931F4DC5EFC54C23C0B8C87704C45585BD791046FEF05BFBFD5A0CE9B53B3";
+	const full = hexOf(m17.pubUncompressed(bytes(q)));
+	assert.equal(full.slice(0, 2), "04");
+	for (const s of [q, full, full.slice(2), "03" + q.slice(2)]) {
+		const c = m17.pubCompressed(bytes(s));
+		assert.ok(c && (await m17.pubImports(c)), s);
+	}
+	assert.equal(hexOf(m17.pubCompressed(bytes(full))), q);
+	// off the curve, X past p, the wrong length or prefix, the point at infinity's zeros: none
+	const bad = [full.slice(0, -2) + (full.endsWith("00") ? "01" : "00"), "02" + "FF".repeat(32), q.slice(0, -2), "05" + q.slice(2), "00".repeat(64), "04" + "00".repeat(64)];
+	for (const s of bad) assert.equal(m17.pubCompressed(bytes(s)), null, s);
+	// the CAVP public key validation vectors on the curve and off it (p256.md 12)
+	assert.ok(m17.pubCompressed(bytes("e0f7449c5588f24492c338f2bc8f7865f755b958d48edb0f2d0056e50c3fd5b786d7e9255d0f4b6f44fa2cd6f8ba3c0aa828321d6d8cc430ca6284ce1d5b43a0")));
+	assert.equal(m17.pubCompressed(bytes("f2d1c0dc0852c3d8a2a2500a23a44813ccce1ac4e58444175b440469ffc1227332bfe992831b305d8c37b9672df5d29fcb5c29b4a40534683e3ace23d24647dd")), null);
+	// a key WebCrypto makes: the editor's d G is WebCrypto's Q
+	const d = await m17.generateKey();
+	assert.ok(m17.privValid(bytes(d)));
+	const k = await webcrypto.subtle.importKey("jwk", { kty: "EC", crv: "P-256", d: Buffer.from(bytes(d)).toString("base64url"),
+		...(await (async () => {
+			const pub = m17.pubUncompressed(m17.pubOfPriv(bytes(d)));
+			return { x: Buffer.from(pub.subarray(1, 33)).toString("base64url"), y: Buffer.from(pub.subarray(33)).toString("base64url") };
+		})()) }, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+	const sig = await webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, k, new Uint8Array([1, 2, 3]));
+	const pubKey = await webcrypto.subtle.importKey("raw", m17.pubUncompressed(m17.pubOfPriv(bytes(d))), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+	assert.ok(await webcrypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pubKey, sig, new Uint8Array([1, 2, 3])));
+});
+
+// A codeplug with an M17 system (traffic keys, the signing key, two station keys) and two M17 channels
+function m17Sample() {
+	const m = empty();
+	const sys = newSystem(m, 6, "M17 Net");
+	sys.trafficKeys = [{ id: 1, key: "A1B2C3", alg: 1 }, { id: 7, key: "000102030405060708090A0B0C0D0E0F" }];
+	sys.secret = { d: "3F9BC000FAB83AED4551EC40A5F6A7C178B255BA654C0684D242BC8F59F8DA18", q: "" };
+	sys.entries = [
+		{ cls: 128, group: 0xFF, flags: 0, control: false, addr: 0x4B13D106, pub: "02B91931F4DC5EFC54C23C0B8C87704C45585BD791046FEF05BFBFD5A0CE9B53B3", raw: null },
+		{ cls: 128, group: 0xFF, flags: 0, control: false, addr: 0x1680B7, pub: "036B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296", raw: null },
+	];
+	m.systems.push(sys);
+	const a = newChannel({ name: "M17 Ops", rxHz: 433475000, txHz: 433475000 });
+	const b = newChannel({ name: "M17 All", rxHz: 439500000, txHz: 431900000 });
+	m.channels.push(a, b);
+	numberAll(m);
+	setKind(m, a, 6);
+	a.system = sys;
+	a.params = { ...a.params, can: 3, squelch: 1, dst: 0x9FDD51, enc: 2, keyId: 7 };
+	setKind(m, b, 6);
+	m.modeSettings[6] = { src: 0x4B13D106, sign: true, gnss: false, station: 2, text: "Hello" };
+	return { m, a, b, sys };
+}
+
+test("M17: channels, the system's keys and station keys, the radio-wide record round-trip; Q is stored with d", () => {
+	const { m, a } = m17Sample();
+	assert.equal(a.tagTx, true, "a new channel transmits, as NXDN's");
+	assert.deepEqual(validate(m).filter((p) => p.level === "error"), []);
+	const img = encode(m);
+	const e = area(img);
+	assert.equal(hexOf(decodeTag(getValue(e, MODE_KEY.tag + a.number - 1)).params), "0103000000009FDD51020700");
+	assert.equal(hexOf(getValue(e, MODE_KEY.secret)), "3F9BC000FAB83AED4551EC40A5F6A7C178B255BA654C0684D242BC8F59F8DA18" +
+		"02B91931F4DC5EFC54C23C0B8C87704C45585BD791046FEF05BFBFD5A0CE9B53B3");
+	assert.equal(hexOf(getValue(e, MODE_KEY.traffic)), "0001010000A1B2C3");
+	assert.equal(hexOf(getValue(e, MODE_KEY.traffic + 1)), "0002070000000102030405060708090A0B0C0D0E0F");
+	assert.equal(hexOf(getValue(e, MODE_KEY.entry)), "0080FF0000004B13D10602B91931F4DC5EFC54C23C0B8C87704C45585BD791046FEF05BFBFD5A0CE9B53B3");
+	assert.equal(hexOf(getValue(e, MODE_KEY.setting + 6)).slice(0, 26), "00004B13D106010248656C6C6F");
+	const d = decode(img);
+	const [da, db] = d.channels;
+	assert.deepEqual([da.kind, da.system, da.params], [6, d.systems[0], { squelch: 1, mode1600: false, can: 3, txCan: null, dst: 0x9FDD51, enc: 2, keyId: 7 }]);
+	assert.deepEqual([db.kind, db.system, db.params.dst], [6, null, m17.ADDR_BROADCAST]);
+	assert.deepEqual(d.systems[0].secret.d, m.systems[0].secret.d);
+	assert.deepEqual(d.systems[0].entries.map((x) => [x.cls, x.addr, x.pub]), m.systems[0].entries.map((x) => [x.cls, x.addr, x.pub]));
+	assert.deepEqual(d.modeSettings[6], m.modeSettings[6]);
+	assert.deepEqual(encode(d).bytes, img.bytes);
+	// secrets: the signing key and both traffic keys, out of a file export without keys
+	assert.equal(countSecrets(img.bytes), 3);
+	const red = encode(d);
+	withoutSecrets(red.bytes);
+	assert.equal(countSecrets(red.bytes), 0);
+	assert.ok(decode(red).systems[0].entries.length === 2, "station keys are not secrets");
+	// d alone, as another tool stores it: read as set, kept as it is until changed
+	putArea(img.bytes, setValue(area(img), MODE_KEY.secret, bytes("3F9BC000FAB83AED4551EC40A5F6A7C178B255BA654C0684D242BC8F59F8DA18")));
+	const d2 = decode(img);
+	assert.equal(d2.systems[0].secret.q, "");
+	assert.equal(getValue(area(encode(d2)), MODE_KEY.secret).length, 32);
+	assert.ok(!validate(d2).some((p) => p.code === "mode_secret_bad"));
+	// a secret of another length: kept whole
+	putArea(img.bytes, setValue(area(img), MODE_KEY.secret, Uint8Array.of(1, 2, 3)));
+	assert.deepEqual(getValue(area(encode(decode(img))), MODE_KEY.secret), Uint8Array.of(1, 2, 3));
+	// a blank radio-wide record writes none; one read keeps a later layout's bytes
+	d.modeSettings[6] = { src: 0, sign: false, gnss: false, station: 0, text: "" };
+	assert.equal(hexOf(getValue(area(encode(d)), MODE_KEY.setting + 6)), "00".repeat(60), "the stored record, cleared");
+	const blank = empty();
+	blank.modeSettings[6] = { src: 0, sign: false, gnss: false, station: 0, text: "" };
+	assert.equal(getValue(area(encode(blank)), MODE_KEY.setting + 6), null);
+});
+
+test("M17: the problems list", () => {
+	const has2 = (p, code, item) => has(p, code, item);
+	const { m, a, b, sys } = m17Sample();
+	let p = validate(m);
+	assert.ok(!has2(p, "m17_sign_no_key") && !has2(p, "m17_key_missing"));
+	// the channel's key gone from its system, a channel encrypted on no system
+	a.params.keyId = 8;
+	b.params.enc = 1;
+	p = validate(m);
+	assert.ok(has2(p, "m17_key_missing", a) && has2(p, "m17_key_missing", b));
+	a.params.keyId = 7;
+	b.params.enc = 0;
+	// a destination that is a word for everyone
+	b.params.dst = m17.parseAddr("ALL").addr;
+	assert.ok(has2(validate(m), "m17_callsign_all", b));
+	b.params.dst = m17.ADDR_BROADCAST;
+	// keys of a length no algorithm has, a zero scrambler seed, a station key off the curve or with no callsign
+	sys.trafficKeys.push({ id: 9, key: "0001020304" }, { id: 10, key: "0000", alg: 1 });
+	sys.entries[1].pub = "02" + "FF".repeat(32);
+	sys.entries[0].addr = 0xEE6B28000000;
+	p = validate(m);
+	for (const code of ["m17_key_length", "m17_key_zero", "m17_public_key", "m17_callsign_chars"]) assert.ok(has2(p, code, sys), code);
+	// sign calls with no signing key, or with one that isn't a key
+	sys.secret = null;
+	assert.ok(has2(validate(m), "m17_sign_no_key"));
+	sys.secret = { d: "00".repeat(32), q: "" };
+	p = validate(m);
+	assert.ok(has2(p, "m17_sign_no_key") && has2(p, "mode_secret_bad", sys));
+	m.modeSettings[6].sign = false;
+	assert.ok(!has2(validate(m), "m17_sign_no_key"));
+	// our callsign as no callsign spells it; call text that isn't ASCII
+	m.modeSettings[6].src = 0xFFFFFFFFFFFF;
+	m.modeSettings[6].text = "Grüße";
+	p = validate(m);
+	assert.ok(has2(p, "m17_callsign_chars") && has2(p, "m17_text_ascii"));
+});
+
+test("M17: the editor's fields; encryption only where the radio has it", () => {
+	const t = (k) => k;
+	const { m, a } = m17Sample();
+	const keys = (f) => f.filter((x) => x.key?.startsWith("k6.")).map((x) => x.key);
+	assert.deepEqual(keys(channelForm(m, t)), ["k6.system", "k6.can", "k6.squelch", "k6.mode1600", "k6.dst", "k6.enc", "k6.keyId"]);
+	assert.deepEqual(keys(channelForm(m, t, { features: "FM,DMR,M17" })), ["k6.system", "k6.can", "k6.squelch", "k6.mode1600", "k6.dst"], "the amateur variant");
+	const form = channelForm(m, t, { features: "FM,DMR,M17,M17_AES" });
+	const field = (k) => form.find((x) => x.key === k);
+	assert.deepEqual(field("k6.enc").options(a).map(([v]) => v), [0, 2]);
+	// the key list: the system's keys of the channel's encryption
+	assert.deepEqual(field("k6.keyId").options(a).map(([v, l]) => [v, l]), [[7, "7 · AES-128"]]);
+	assert.ok(field("k6.keyId").dynamicOptions && field("k6.keyId").show(a));
+	// the destination: a callsign, All call, an address no callsign spells
+	const dst = field("k6.dst");
+	assert.equal(dst.format(a.params.dst), "AB1CD");
+	assert.equal(dst.format(m17.ADDR_BROADCAST), "editor.m17.broadcast");
+	const typed = (s) => {
+		const r = { ...a, params: { ...a.params } };
+		return dst.parse(r, dst.key, s) ?? r.params.dst;
+	};
+	assert.deepEqual(["w1aw", "", "editor.m17.broadcast", "0xEE6B28000001", "AB_CD", "ABCDEFGHIJ"].map(typed),
+		[0x1680B7, m17.ADDR_BROADCAST, m17.ADDR_BROADCAST, 0xEE6B28000001, "editor.problem.m17_callsign_chars", "editor.problem.m17_callsign_long"]);
+	assert.equal(dst.format(0xEE6B28000001), "0xEE6B28000001");
+	// leading spaces are part of the address (m17.md 10), as on the radio: one another tool stored reads back the same
+	// when the form is saved untouched; trailing ones don't count
+	assert.equal(dst.format(0xCA8), " AB");
+	assert.deepEqual([" AB", "AB  ", " AB "].map(typed), [0xCA8, 0x51, 0xCA8]);
+	// the radio-wide fields: callsign, text, the two switches
+	const st = m17.m17Kind.settings.fields;
+	assert.deepEqual(st.map((x) => [x.key, x.type]), [["src", "text"], ["text", "text"], ["gnss", "bool"], ["sign", "bool"]]);
+	assert.deepEqual(parseSpec(st[0], "n0call", t), { value: 0x4B13D106 });
+	assert.deepEqual(parseSpec(st[0], "", t), { value: 0 });
+	assert.deepEqual(parseSpec(st[1], "x".repeat(53), t), { error: "editor.err.too_long" });
+	assert.deepEqual(parseSpec(st[1], "Héllo", t), { error: "editor.problem.m17_text_ascii" });
+	// a traffic key typed: its algorithm from its length
+	const col = m17.m17System.traffic.columns[1];
+	assert.deepEqual(["A1B2", "00", "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F", "0001020304"].map((s) => parseSpec(col, s, t)),
+		[{ value: "A1B2" }, { error: "editor.problem.m17_key_zero" }, { value: "000102030405060708090A0B0C0D0E0F" }, { error: "editor.problem.m17_key_length" }]);
+	assert.equal(hexOf(m17.m17System.traffic.encode(0, { id: 3, key: "A1B2" })), "0001030000A1B2");
+	assert.equal(hexOf(m17.m17System.traffic.encode(0, { id: 3, key: "00".repeat(24) })).slice(0, 4), "0002");
+});
+
+test("M17 signing key in the system form: kept when untouched, typed or generated, its public key and fingerprint shown", async () => {
+	const { keypairField } = await import("../static/js/editor/modesview.js");
+	// a few DOM elements' worth: what the field reads and writes
+	const els = [];
+	const h = (tag, attrs = {}, ...children) => {
+		const e = { tag, ...attrs, children, textContent: "", listeners: {}, addEventListener(k, f) { this.listeners[k] = f; } };
+		els.push(e);
+		return e;
+	};
+	let gen;
+	const button = (label, fn) => (label === "editor.m17.generate" && (gen = fn), h("button", { label }));
+	const t = (k) => k;
+	const sys = m17Sample().sys;
+	const sec = m17.m17System.secret;
+	const f = keypairField({ t, h, button }, sec, sys);
+	const input = els.find((e) => e.id === "f-sec-keypair");
+	const pub = els.find((e) => e["aria-label"] === "editor.m17.public_key");
+	assert.equal(input.type, "password", "hidden until asked for");
+	assert.equal(input.value, sys.secret.d);
+	assert.equal(pub.value, hexOf(m17.pubUncompressed(m17.pubOfPriv(bytes(sys.secret.d)))));
+	// untouched: the stored secret as it is
+	const form = { secret: sys.secret };
+	assert.deepEqual(f.parse(form), []);
+	assert.equal(form.secret, sys.secret);
+	// typed: not a key, d out of range, then a key (its Q made again from it on save)
+	input.value = "12";
+	assert.equal(f.parse(form).length, 1);
+	input.value = "00".repeat(32);
+	assert.deepEqual(f.parse(form), ["editor.m17.signing_key: editor.problem.mode_secret_bad"]);
+	input.value = "00".repeat(31) + "02";
+	assert.deepEqual(f.parse(form), []);
+	assert.deepEqual(form.secret, { d: "00".repeat(31) + "02", q: "" });
+	// cleared: no key
+	input.value = "";
+	assert.deepEqual(f.parse(form), []);
+	assert.deepEqual(form.secret, sec.empty());
+	// generated: a valid key, shown with its fingerprint
+	await gen();
+	assert.ok(m17.privValid(bytes(input.value)));
+	assert.equal(pub.value.slice(0, 2), "04");
+	await new Promise((r) => setTimeout(r, 10));
+	assert.match(els.find((e) => e.textContent.startsWith("editor.m17.fingerprint")).textContent, /^editor\.m17\.fingerprint: [0-9A-F]{4}( [0-9A-F]{4}){3}$/);
+});

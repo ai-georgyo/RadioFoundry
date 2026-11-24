@@ -107,6 +107,13 @@ uint32_t gfx_utf8_next(const char *s, int *len);
 // The end cut (keep the start): by whole characters when the text has a wide character, at a word for Latin text
 void gfx_text_fit_end(const font_t *f, const char *s, int max_w, char *out, size_t out_len);
 #endif
+// UTF-8 text from the air (a message, a talker's text) as the display's one-byte text, what the text layer draws: ASCII
+// as it is, U+00A0-U+00FF as its Latin-1 byte, a character the CJK face has as its three UTF-8 bytes (CONFIG_LANG_ZH),
+// anything else as '?', one for each character or for each byte that isn't UTF-8. Control characters (C0, DEL, C1)
+// are dropped, as the DMR decoders drop them: the text layer's own bytes (font.h's glyphs and text alternates) are
+// among them. At most in_len bytes of in, or up to its NUL; out gets at most cap - 1 bytes and the NUL, cut between
+// characters. False when it had to cut
+bool utf8_to_display(char *out, size_t cap, const char *in, size_t in_len);
 #ifdef GFX_FIT_TRACE
 // Host builds only: called whenever gfx_text_fit had to shorten a text (the simulator lists them per screen)
 void gfx_fit_trace(const char *src, const char *out);

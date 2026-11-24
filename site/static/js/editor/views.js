@@ -340,7 +340,8 @@ export function channelForm(m, t, { features = null } = {}) {
 		if (mod.fallback) {
 			kindFields.push({ ...sel(`k${k.id}.fallback`, "editor.modes.fallback", (r) => fallbackOptions(m, t, r.fallback, r)), get: (r) => r.fallback, set: (r, v) => on(r) && (r.fallback = v), show: (r) => on(r) && !r.noFallback });
 		}
-		for (const spec of mod.fields()) kindFields.push(specField(spec, t, holder, `k${k.id}`));
+		// the radio's features: a field of what it doesn't run (an encryption a variant leaves out) isn't offered
+		for (const spec of mod.fields({ features })) kindFields.push(specField(spec, t, holder, `k${k.id}`));
 	}
 	return [
 		{ group: t("editor.form.basic") },

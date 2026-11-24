@@ -6,7 +6,7 @@
 // (optionally sending a test tone), and reports the levels of both I2S channels. It also reads and writes the chip's
 // RAM (board.audio_tap->modem_ram: the HR_C6000's FM data buffers) and watches its interrupt flags and one RAM word
 // for a while, to find the chip's own FM sample path (hardware-dm1701.md 21.3, candidate C). Diagnostics only: it borrows the
-// stream, so it refuses while DMR or P25 voice owns it, and a beep in the meantime may stop it (status says so).
+// stream, so it refuses while DMR, P25 or M17 voice owns it, and a beep in the meantime may stop it (status says so).
 #include <string.h>
 #include <math.h>
 #include "config.h"
@@ -19,6 +19,9 @@
 #include "dmr/ambe/ambeVoice.h"
 #if CONFIG_P25 && CONFIG_IMBE
 #include "p25/p25Voice.h"
+#endif
+#if CONFIG_M17
+#include "m17/m17_voice.h"
 #endif
 #endif
 
@@ -192,6 +195,7 @@ static void probe_block(const int16_t *mic, int16_t *spk, void *ctx)
 
 #define PROBE_VOICE_DMR	0x08u	// STATUS flags: the voice path that owns the stream
 #define PROBE_VOICE_P25	0x10u
+#define PROBE_VOICE_M17	0x20u
 
 // Which voice path owns the PCM stream now: the probe stays off it, and STATUS says which
 static uint8_t voice_owner(void)
@@ -200,6 +204,11 @@ static uint8_t voice_owner(void)
 #if CONFIG_P25 && CONFIG_IMBE
 	if (p25VoiceStreaming()) {
 		v |= PROBE_VOICE_P25;
+	}
+#endif
+#if CONFIG_M17
+	if (m17_voice_streaming()) {
+		v |= PROBE_VOICE_M17;
 	}
 #endif
 	return v;
@@ -212,7 +221,7 @@ static uint8_t probe_start(uint16_t hz, uint16_t amp, uint8_t flags)
 		return DL_ST_UNAVAILABLE;
 	}
 	if (voice_owner() != 0 && !probing) {
-		return DL_ST_BUSY;	// DMR or P25 voice owns the stream: go to an FM channel first
+		return DL_ST_BUSY;	// DMR, P25 or M17 voice owns the stream: go to an FM channel first
 	}
 	if (hz > 3800) {
 		return DL_ST_BAD_ARG;

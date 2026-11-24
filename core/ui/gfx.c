@@ -604,6 +604,67 @@ static int text_w(const font_t *f, const char *s)
 }
 #endif
 
+// One UTF-8 character at s (n bytes left): its code point and length, false for a byte that starts none (a stray
+// continuation, an overlong form, a surrogate, past U+10FFFF, or a sequence cut short), which is one byte long
+static bool utf8_char(const uint8_t *s, size_t n, uint32_t *cp, size_t *len)
+{
+	uint8_t c = s[0];
+	size_t need = c < 0x80u ? 1u : c >= 0xC2u && c <= 0xDFu ? 2u : (c & 0xF0u) == 0xE0u ? 3u :
+		c >= 0xF0u && c <= 0xF4u ? 4u : 0u;
+	*len = 1;
+	if (need == 0 || need > n)
+		return false;
+	uint32_t v = need == 1 ? c : need == 2 ? c & 0x1Fu : need == 3 ? c & 0x0Fu : c & 0x07u;
+	for (size_t k = 1; k < need; k++) {
+		if ((s[k] & 0xC0u) != 0x80u)
+			return false;
+		v = (v << 6) | (s[k] & 0x3Fu);
+	}
+	if ((need == 3 && v < 0x800u) || (need == 4 && (v < 0x10000u || v > 0x10FFFFu)) || (v >= 0xD800u && v <= 0xDFFFu))
+		return false;
+	*cp = v;
+	*len = need;
+	return true;
+}
+
+bool utf8_to_display(char *out, size_t cap, const char *in, size_t in_len)
+{
+	const uint8_t *s = (const uint8_t *)in;
+	size_t i = 0, n = 0;
+	bool whole = true;
+	if (cap == 0)
+		return in_len == 0 || in[0] == '\0';
+	while (i < in_len && s[i] != 0) {
+		uint32_t cp = 0;
+		size_t len;
+		bool ok = utf8_char(s + i, in_len - i, &cp, &len);
+		const uint8_t *put = (const uint8_t *)"?";
+		size_t k = 1;
+		uint8_t one;
+		if (ok && (cp < 0x20u || (cp >= 0x7Fu && cp < 0xA0u))) {
+			k = 0;			// a control character: dropped
+		} else if (ok && cp <= 0xFFu) {
+			one = (uint8_t)cp;	// ASCII, or a Latin-1 letter as its byte
+			put = &one;
+		}
+#if CONFIG_LANG_ZH
+		else if (ok && len == 3 && cjk_font_glyph(cp) != NULL) {
+			put = s + i;		// the CJK face draws it: as it came (gfx_utf8_next reads three bytes)
+			k = 3;
+		}
+#endif
+		if (n + k > cap - 1) {
+			whole = false;
+			break;
+		}
+		memcpy(out + n, put, k);
+		n += k;
+		i += len;
+	}
+	out[n] = '\0';
+	return whole;
+}
+
 static int text(const font_t *f, int x, int y, const char *s, color_t fg, bool opaque, color_t bg)
 {
 	char first[ALT_TEXT_MAX];

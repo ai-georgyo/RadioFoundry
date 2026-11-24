@@ -291,28 +291,26 @@ static bool find_target(uint16_t i, ui_target_t *t)
 		contact_t c;
 		if (!codeplug_contact((uint16_t)r->ref, &c))
 			return false;
-		t->id = c.id;
-		t->group = c.type != CONTACT_PRIVATE;
+		ui_addr_set_dmr(&t->addr, c.id, c.type != CONTACT_PRIVATE);
 		t->saved = true;
 		strcpy(t->name, c.name);
 		return true;
 	}
 #endif
 	case FR_TG:
-		t->id = r->ref;
-		t->group = true;
+		ui_addr_set_dmr(&t->addr, r->ref, true);
 		return true;
 #if CONFIG_DMR_TRUNK_GW
 	case FR_PHONE:
 		// The row focused (PTT talks to it) or chosen: the radio holds these digits for the gateway's request, and
 		// a search typed without calling leaves the system's dial alone
-		t->id = T3_ID_PSTNI;
+		ui_addr_set_dmr(&t->addr, T3_ID_PSTNI, false);
 		str_copy(t->name, sizeof t->name, query);
 		ui_svc_t3_dial(query);
 		return true;
 #endif
 	case FR_PRIVATE: {
-		t->id = r->ref;
+		ui_addr_set_dmr(&t->addr, r->ref, false);
 #if CONFIG_DMR
 		// The contact the search found (no scan here: the row is drawn every frame)
 		contact_t c;
@@ -360,13 +358,13 @@ static void find_item(uint16_t i, ui_item_t *it)
 	case FR_CONTACT:
 		if (find_target(i, &t)) {
 			char name[32];
-			if (t.group) {
+			if (ui_addr_group(&t.addr)) {
 				ui_sb_target(name, sizeof name, &t);
 				sb_str(&b, name);
 			} else {
 				sb_str(&b, t.name);
 				sb_chr(&b, ' ');
-				sb_u32(&b, t.id, 1);
+				sb_u32(&b, t.addr.id, 1);
 			}
 			sb_str(&vb, TR(FIND_CHIP_CONTACT, TEXT_ALT_OPEN "Contact" TEXT_ALT_NEXT TEXT_ALT_CLOSE));
 		}
@@ -441,8 +439,7 @@ static void find_select(uint16_t i, bool hold)
 	case FR_NEW_CONTACT:
 		// A typed number: the editor starts on a person for a DMR ID's 7 digits and more, else a talkgroup
 		memset(&t, 0, sizeof t);
-		t.id = r->ref;
-		t.group = r->ref < 1000000u;
+		ui_addr_set_dmr(&t.addr, r->ref, r->ref < 1000000u);
 		ui_new_contact(&t);
 		break;
 #endif

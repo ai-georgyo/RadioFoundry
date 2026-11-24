@@ -489,7 +489,7 @@ export function validateModes(m, err, warn, { features = null, baseNames } = {})
 	}
 	for (const k of KINDS) {
 		const st = k.module.settings, s = m.modeSettings?.[k.id];
-		if (st && s) st.validate(s, { err: (f, code, p = {}) => err("general", null, f, code, p), warn: (f, code, p = {}) => warn("general", null, f, code, p) });
+		if (st && s) st.validate(s, { err: (f, code, p = {}) => err("general", null, f, code, p), warn: (f, code, p = {}) => warn("general", null, f, code, p) }, m);
 	}
 	if (!m.base) return;
 	const state = decodeArea(m.base.bytes).state;

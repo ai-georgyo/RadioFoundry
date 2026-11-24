@@ -269,7 +269,7 @@ test("import: errors and odd input", () => {
 	const r = importQdmr(m, `channels:
   - analog: {id: a, name: A very long channel name, rxFrequency: 146.52, txFrequency: 146.52, rxTone: {ctcss: 1}}
   - fm: {id: b, name: B, rxFrequency: nowhere}
-  - m17: {id: c, name: C, rxFrequency: 439}
+  - tetra: {id: c, name: C, rxFrequency: 439}
 `);
 	assert.equal(m.channels.length, 1);
 	assert.equal(m.channels[0].name, "A very long chan");
@@ -490,12 +490,79 @@ test("radioFoundry block: keys are never written; a system read back keeps the k
 
 test("radioFoundry block: modes and system types this editor doesn't know are left out with a note", () => {
 	const m = empty();
-	const r = importQdmr(m, MODES.replace("mode: P25T,", "mode: M17,").replace("type: NXDN", "type: DSTAR"));
+	const r = importQdmr(m, MODES.replace("mode: P25T,", "mode: YSF,").replace("type: NXDN", "type: DSTAR"));
 	assert.deepEqual(r.notes, [{ code: "mode_unknown", n: 3 }]);
 	assert.deepEqual(m.systems.map((s) => s.name), ["Ham Trunk", "Ham P25"]);
 	assert.equal(m.channels[1].kind, 0);
 	// NXDN's system is optional: its channel stays NXDN, on no system
 	assert.deepEqual([m.channels[3].kind, m.channels[3].system], [4, null]);
+});
+
+test("qdmr's own m17 channels are dropped (version 1): a channel of a type other than FM or DMR", () => {
+	const m = empty();
+	const r = importQdmr(m, `channels:
+  - fm: {id: a, name: FM, rxFrequency: 146.52, txFrequency: 146.52}
+  - m17: {id: b, name: M17 qdmr, rxFrequency: 433.475, txFrequency: 433.475, accessNumber: 0, mode: Voice, call: ~}
+  - m17:
+      id: c
+      name: M17 too
+      rxFrequency: 439.5
+`);
+	assert.deepEqual(m.channels.map((c) => [c.name, c.kind ?? 0]), [["FM", 0]]);
+	assert.deepEqual(r.notes, [{ code: "channel_type", n: 2 }]);
+});
+
+// An M17 system (a station key; its signing key and traffic keys never written) and two M17 channels, in the
+// radioFoundry block of a DMR and an FM element, with the radio-wide record
+const M17_MODES = `channels:
+  - dmr:
+      id: ch1
+      name: M17 Net
+      rxFrequency: 433.475 MHz
+      txFrequency: 433.475 MHz
+      radioFoundry: {mode: M17, system: sys1, ownFrequencies: true, settings: {can: 3, squelch: 1, mode1600: true, dst: 10476881, enc: 2, keyId: 7}}
+  - fm:
+      id: ch2
+      name: M17 All
+      rxFrequency: 439.5 MHz
+      radioFoundry: {mode: M17, ownFrequencies: true, transmit: false}
+radioFoundry:
+  systems:
+    - id: sys1
+      type: M17
+      name: M17 Keys
+      sharing: whole
+      entries:
+        - {cls: 128, addr: 1259589894, pub: 02B91931F4DC5EFC54C23C0B8C87704C45585BD791046FEF05BFBFD5A0CE9B53B3}
+  modeSettings:
+    M17: {src: 10476881, text: Hello from M17, gnss: true, sign: true}
+`;
+
+test("radioFoundry block: M17 channels, its system with a station key and the radio-wide record, read and written", () => {
+	const m = empty();
+	assert.deepEqual(importQdmr(m, M17_MODES).notes, []);
+	const [a, b] = m.channels;
+	const [s] = m.systems;
+	assert.deepEqual([s.type, s.name, s.sharing, s.entries.length], [6, "M17 Keys", 2, 1]);
+	assert.deepEqual([s.entries[0].cls, s.entries[0].addr, s.entries[0].pub.slice(0, 4)], [128, 0x4B13D106, "02B9"]);
+	assert.deepEqual([a.kind, a.system, a.baseOwn, a.params], [6, s, true, { squelch: 1, mode1600: true, can: 3, txCan: null, dst: 0x9FDD51, enc: 2, keyId: 7 }]);
+	assert.deepEqual([b.kind, b.tagTx, b.params.dst, b.params.squelch], [6, false, 0xFFFFFFFFFFFF, 0]);
+	assert.deepEqual(m.modeSettings[6], { src: 0x9FDD51, sign: true, gnss: true, station: 0, text: "Hello from M17" });
+	// the signing key and the traffic keys stay out of the file: noted
+	s.secret = { d: "3F9BC000FAB83AED4551EC40A5F6A7C178B255BA654C0684D242BC8F59F8DA18", q: "" };
+	s.trafficKeys = [{ id: 7, key: "000102030405060708090A0B0C0D0E0F", alg: 2 }];
+	const out = exportQdmr(m);
+	assert.deepEqual(out.notes, [{ code: "mode_keys", n: 1 }]);
+	assert.doesNotMatch(out.text, /3F9BC000|000102030405/);
+	const m2 = empty();
+	assert.deepEqual(importQdmr(m2, out.text).notes, []);
+	assert.deepEqual(blockOf(m2), { ...blockOf(m), systems: blockOf(m2).systems });
+	assert.deepEqual(m2.systems[0].entries.map((e) => [e.addr, e.pub]), s.entries.map((e) => [e.addr, e.pub]));
+	assert.equal(m2.systems[0].secret, null);
+	// through the image too
+	const d = decode(encode(m));
+	assert.deepEqual(blockOf(d).channels, blockOf(m).channels);
+	assert.deepEqual(d.modeSettings[6], m.modeSettings[6]);
 });
 
 test("radioFoundry block: a file without one keeps the model's systems; a model without modes writes none", () => {

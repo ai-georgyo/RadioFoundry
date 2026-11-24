@@ -92,7 +92,7 @@ msgctxt "ABOUT_VALUE_HWOPT_UNSET"
 msgid "not set"
 msgstr "non impostato"
 
-#: core/ui/fmt.c core/ui/ui_aprs.c core/ui/ui_menus.c core/ui/ui_satellite.c core/ui/ui_screens.c
+#: core/ui/fmt.c core/ui/ui_aprs.c core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_satellite.c core/ui/ui_screens.c
 msgctxt "VALUE_OFF"
 msgid "Off"
 msgstr "No"
@@ -117,20 +117,40 @@ msgctxt "CPLUG_TOAST_NOT_SAVED"
 msgid "Not saved"
 msgstr "Non salvato"
 
+#: core/ui/ui_app.c
+msgctxt "CALL_BANNER_SIG_FAILED"
+msgid "Signature check failed"
+msgstr "Firma non valida"
+
+#: core/ui/ui_app.c
+msgctxt "CALL_BANNER_SIGNER_DIFFERS"
+msgid "Signed by another station"
+msgstr "Firmato da altra stazione"
+
+#: core/ui/ui_app.c
+msgctxt "CALL_BANNER_SIG_OLD"
+msgid "Signature OK, but old"
+msgstr "Firma OK, ma vecchia"
+
+#: core/ui/ui_app.c
+msgctxt "CALL_BANNER_SIG_REPLAY"
+msgid "Repeat of an earlier call"
+msgstr "Ripetizione di una chiamata"
+
+#: core/ui/ui_app.c
+msgctxt "CALL_BANNER_PART_SIGNED_FOR"
+msgid " signed for "
+msgstr " ha firmato per "
+
+#: core/ui/ui_app.c core/ui/ui_menus.c core/ui/ui_screens.c
+msgctxt "MSG_BODY_FROM"
+msgid "From "
+msgstr "Da "
+
 #: core/ui/ui_app.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "VALUE_ALL_CALL"
 msgid "All call"
 msgstr "Chiamata a tutti"
-
-#: core/ui/ui_app.c
-msgctxt "TALK_TOAST_FOR_NOW_ONLY"
-msgid "For now only: save it in qdmr"
-msgstr "Per ora: salvalo in qdmr"
-
-#: core/ui/ui_app.c
-msgctxt "WHY_TALK_TARGET_NOT_IN_BUILD"
-msgid "Talk target: not in this build"
-msgstr "Destinaz.: non in questa build"
 
 #: core/ui/ui_app.c
 msgctxt "TALK_TOAST_DEFAULT_NOW"
@@ -141,6 +161,26 @@ msgstr "Ora predef.: "
 msgctxt "TALK_TOAST_TALKING_TO"
 msgid "Talking to "
 msgstr "Parli con "
+
+#: core/ui/ui_app.c core/ui/ui_svc_m17.c
+msgctxt "MSG_WHY_M17_CHANNEL"
+msgid "{Send from an M17 channel|M17 channels only}"
+msgstr "{Invia da un canale M17|Solo canali M17}"
+
+#: core/ui/ui_app.c
+msgctxt "M17_WHY_STORED_HOLD_OK"
+msgid "Hold OK to set it"
+msgstr "Tieni OK per impostarlo"
+
+#: core/ui/ui_app.c
+msgctxt "TALK_TOAST_FOR_NOW_ONLY"
+msgid "For now only: save it in qdmr"
+msgstr "Per ora: salvalo in qdmr"
+
+#: core/ui/ui_app.c
+msgctxt "WHY_TALK_TARGET_NOT_IN_BUILD"
+msgid "Talk target: not in this build"
+msgstr "Destinaz.: non in questa build"
 
 #: core/ui/ui_app.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "EMPTY_NO_CALLS_HEARD"
@@ -161,6 +201,16 @@ msgstr "Inviato a "
 msgctxt "MSG_BANNER_DELIVERED_TO"
 msgid "Delivered to "
 msgstr "Consegnato a "
+
+#: core/ui/ui_app.c
+msgctxt "MSG_BANNER_NOT_SENT_TO"
+msgid "Not sent to "
+msgstr "Non inviato a "
+
+#: core/ui/ui_app.c
+msgctxt "MSG_BANNER_CHANNEL_BUSY"
+msgid "Channel busy: send again"
+msgstr "Canale occupato: reinvia"
 
 #: core/ui/ui_app.c
 msgctxt "BANNER_NO_ANSWER_FROM"
@@ -513,6 +563,41 @@ msgid "VOX: not on this radio yet"
 msgstr "VOX: non ancora su questa radio"
 
 #: core/ui/ui_app.c
+msgctxt "M17_WHY_STORED_EDITOR"
+msgid "Set it in the channel editor"
+msgstr "Impostalo nell'editor del canale"
+
+#: core/ui/ui_app.c core/ui/ui_menus.c core/ui/ui_screens.c
+msgctxt "CHAN_LABEL_RATE"
+msgid "Rate"
+msgstr "Velocità"
+
+#: core/ui/ui_app.c
+msgctxt "QUICK_TOAST_FOR_NOW"
+msgid " for now"
+msgstr " per ora"
+
+#: core/ui/ui_app.c
+msgctxt "QUICK_TOAST_PRIVACY_OFF"
+msgid "Privacy off"
+msgstr "Privacy off"
+
+#: core/ui/ui_app.c core/ui/ui_menus.c
+msgctxt "TOAST_BUSY_SAVING"
+msgid "Busy saving: try again"
+msgstr "Salvataggio in corso: riprova"
+
+#: core/ui/ui_app.c core/ui/ui_menus.c
+msgctxt "WHY_ENC_NO_KEY"
+msgid "No key: set one in the editor"
+msgstr "Nessuna chiave: impostala nell'editor"
+
+#: core/ui/ui_app.c core/ui/ui_menus.c
+msgctxt "WHY_ENC_NOT_IN_BUILD"
+msgid "Encryption: not in this build"
+msgstr "Cifratura: non in questa versione"
+
+#: core/ui/ui_app.c
 msgctxt "QUICK_TOAST_BANDWIDTH_25_KHZ"
 msgid "Bandwidth 25 kHz"
 msgstr "Banda 25 kHz"
@@ -571,11 +656,6 @@ msgstr "Timeslot 2 per ora"
 msgctxt "QUICK_TOAST_PRIVACY_ON_FOR_NOW"
 msgid "Privacy on for now"
 msgstr "Privacy on per ora"
-
-#: core/ui/ui_app.c
-msgctxt "QUICK_TOAST_PRIVACY_OFF"
-msgid "Privacy off"
-msgstr "Privacy off"
 
 #: core/ui/ui_app.c
 msgctxt "QUICK_WHY_NO_PRIVACY_KEY"
@@ -683,6 +763,16 @@ msgid "Call back: DMR only"
 msgstr "Richiama: solo DMR"
 
 #: core/ui/ui_app.c
+msgctxt "TALK_WHY_DIGITAL_ONLY"
+msgid "{Talk target: DMR and M17 only|DMR and M17 only}"
+msgstr "{Destinaz.: solo DMR e M17|Solo DMR e M17}"
+
+#: core/ui/ui_app.c
+msgctxt "TALK_WHY_DMR_CHANNELS_ONLY"
+msgid "Talk target: DMR channels only"
+msgstr "Destinaz.: solo canali DMR"
+
+#: core/ui/ui_app.c
 msgctxt "LOCK_TOAST_PTT_OFF_HOLD_STAR"
 msgid "PTT is off while locked: hold * to unlock"
 msgstr "PTT off da bloccata: tieni * per sbloccare"
@@ -696,11 +786,6 @@ msgstr "PTT off da bloccata: tieni Indietro per sbloccare"
 msgctxt "LOCK_TOAST_UNLOCKED"
 msgid "Keys unlocked"
 msgstr "Tasti sbloccati"
-
-#: core/ui/ui_app.c
-msgctxt "TALK_WHY_DMR_CHANNELS_ONLY"
-msgid "Talk target: DMR channels only"
-msgstr "Destinaz.: solo canali DMR"
 
 #: core/ui/ui_app.c core/ui/ui_menus.c
 msgctxt "SET_LABEL_TG_NAME_FIRST"
@@ -767,6 +852,11 @@ msgctxt "ROAM_TOAST_MOVED_TO"
 msgid "Moved to "
 msgstr "Spostato in "
 
+#: core/ui/ui_aprs.c
+msgctxt "MSG_ROW_NEW_APRS"
+msgid "New APRS message"
+msgstr "Nuovo messaggio APRS"
+
 #: core/ui/ui_aprs.c core/ui/ui_menus.c
 msgctxt "VALUE_1_MIN"
 msgid "1 min"
@@ -792,7 +882,7 @@ msgctxt "VALUE_30_MIN"
 msgid "30 min"
 msgstr "30 min"
 
-#: core/ui/ui_aprs.c core/ui/ui_menus.c core/ui/ui_screens.c
+#: core/ui/ui_aprs.c core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "VALUE_NONE"
 msgid "None"
 msgstr "Nessuno"
@@ -967,7 +1057,7 @@ msgctxt "APRS_LABEL_NMEA_ON_USB"
 msgid "NMEA on USB"
 msgstr "NMEA su USB"
 
-#: core/ui/ui_aprs.c core/ui/ui_menus.c core/ui/ui_screens.c
+#: core/ui/ui_aprs.c core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "VALUE_ON"
 msgid "On"
 msgstr "Sì"
@@ -1017,7 +1107,7 @@ msgctxt "APRS_TITLE_HEARD"
 msgid "Heard"
 msgstr "Sentite"
 
-#: core/ui/ui_aprs.c core/ui/ui_menus.c core/ui/ui_screens.c
+#: core/ui/ui_aprs.c core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "HINT_BACK"
 msgid "Back"
 msgstr "Indietro"
@@ -1206,6 +1296,11 @@ msgstr "Chiamata P25"
 msgctxt "DUAL_VALUE_NXDN_CALL"
 msgid "NXDN call"
 msgstr "Chiamata NXDN"
+
+#: core/ui/ui_dual.c core/ui/ui_screens.c
+msgctxt "CALL_VALUE_M17_CALL"
+msgid "M17 call"
+msgstr "Chiamata M17"
 
 #: core/ui/ui_dual.c
 msgctxt "DUAL_VALUE_AM_SIGNAL"
@@ -1512,7 +1607,7 @@ msgctxt "GPS_EMPTY_NO_SATELLITES"
 msgid "No satellites yet"
 msgstr "Ancora nessun satellite"
 
-#: core/ui/ui_gps.c core/ui/ui_menus.c core/ui/ui_screens.c
+#: core/ui/ui_gps.c core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "PART_OF"
 msgid " of "
 msgstr " di "
@@ -1541,6 +1636,391 @@ msgstr "Impostazioni > Posizione"
 msgctxt "GPS_HINT"
 msgid "Up Down page  Back"
 msgstr "Su Giù pagina  Indietro"
+
+#: core/ui/ui_heard.c core/ui/ui_menus.c
+msgctxt "HEARD_TITLE"
+msgid "Heard"
+msgstr "Ascoltati"
+
+#: core/ui/ui_heard.c core/ui/ui_menus.c
+msgctxt "HINT_OK_CHOOSE_MORE_BACK"
+msgid "OK choose  # more  Back"
+msgstr "OK scegli  # altro  Indietro"
+
+#: core/ui/ui_heard.c
+msgctxt "HEARD_EMPTY"
+msgid "No stations heard yet"
+msgstr "Nessuna stazione ascoltata"
+
+#: core/ui/ui_heard.c
+msgctxt "HEARD_BODY_STATION_GONE"
+msgid "No longer in list"
+msgstr "Non più in elenco"
+
+#: core/ui/ui_heard.c core/ui/ui_m17.c
+msgctxt "CALL_LABEL_HEARD"
+msgid "Heard"
+msgstr "Ascoltato"
+
+#: core/ui/ui_heard.c core/ui/ui_m17.c
+msgctxt "CALL_LABEL_TO"
+msgid "To"
+msgstr "A"
+
+#: core/ui/ui_heard.c core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SIGNAL"
+msgid "Signal"
+msgstr "Segnale"
+
+#: core/ui/ui_heard.c core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "TITLE_POSITION"
+msgid "Position"
+msgstr "Posizione"
+
+#: core/ui/ui_heard.c core/ui/ui_menus.c
+msgctxt "RECENT_VALUE_DATA"
+msgid "Data"
+msgstr "Dati"
+
+#: core/ui/ui_heard.c core/ui/ui_screens.c
+msgctxt "HOME_CHIP_PRIVACY"
+msgid "Priv"
+msgstr "Priv"
+
+#: core/ui/ui_m17.c
+msgctxt "CHAN_VALUE_SCRAMBLER_8"
+msgid "{Scrambler 8-bit|Scrambler 8}"
+msgstr "{Scrambler 8 bit|Scrambler 8}"
+
+#: core/ui/ui_m17.c
+msgctxt "CHAN_VALUE_SCRAMBLER_16"
+msgid "{Scrambler 16-bit|Scrambler 16}"
+msgstr "{Scrambler 16 bit|Scrambler 16}"
+
+#: core/ui/ui_m17.c
+msgctxt "CHAN_VALUE_SCRAMBLER_24"
+msgid "{Scrambler 24-bit|Scrambler 24}"
+msgstr "{Scrambler 24 bit|Scrambler 24}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_SIG_NO_KEY"
+msgid "{Signed: no key to check|No key}"
+msgstr "{Firmata: nessuna chiave per verificare|Nessuna chiave}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_SIG_LATE"
+msgid "{Not checked: joined late|Joined late}"
+msgstr "{Non verificata: entrato tardi|Entrato tardi}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_SIG_LOST"
+msgid "{Not checked: frames lost|Frames lost}"
+msgstr "{Non verificata: frame persi|Frame persi}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_SIG_NOT_CHECKED"
+msgid "{Signed: not checked|Not checked}"
+msgstr "{Firmata: non verificata|Non verificata}"
+
+#: core/ui/ui_m17.c core/ui/ui_screens.c
+msgctxt "CALL_VALUE_SIG_BY"
+msgid "{Signed by |By }"
+msgstr "{Firmata da |Da }"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SIGNER"
+msgid "Signer"
+msgstr "Firmatario"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SIGNED_TO"
+msgid "Signed to"
+msgstr "Firmata per"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SIGNED_AT"
+msgid "Signed at"
+msgstr "Firmata alle"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_TIME_NOT_SENT"
+msgid "Not sent"
+msgstr "Non inviata"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_TIME_CHECK"
+msgid "Time check"
+msgstr "Orario"
+
+#: core/ui/ui_m17.c core/ui/ui_screens.c
+msgctxt "CALL_VALUE_SIG_REPLAY"
+msgid "{Repeat of an earlier call|Repeat}"
+msgstr "{Ripetizione di una chiamata|Ripetizione}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_TIME_IN_TIME"
+msgid "In time"
+msgstr "In orario"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_TIME_OLD"
+msgid "Too old"
+msgstr "Troppo vecchia"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_TIME_NO_CLOCK"
+msgid "{Not done: no clock|No clock}"
+msgstr "{Non verificato: nessun orologio|Nessun orologio}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_EMPTY_DETAILS"
+msgid "No M17 call heard yet"
+msgstr "Nessuna chiamata M17 ascoltata"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_FROM"
+msgid "From"
+msgstr "Da"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_REFLECTOR"
+msgid "Reflector"
+msgstr "Reflector"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SENT_BY"
+msgid "Sent by"
+msgstr "Inviata da"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_screens.c
+msgctxt "CALL_VALUE_TO_YOU"
+msgid "To you"
+msgstr "A te"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_PACKET"
+msgid "Packet"
+msgstr "Pacchetto"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_PACKET_RAW"
+msgid "Raw data"
+msgstr "Dati grezzi"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_PACKET_TYPE"
+msgid "Data type "
+msgstr "Tipo di dati "
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_UNIT_BYTES"
+msgid " bytes"
+msgstr " byte"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_VOICE"
+msgid "Voice"
+msgstr "Voce"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_DATA_ONLY"
+msgid "Data only"
+msgstr "Solo dati"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "CHAN_VALUE_RATE_1600"
+msgid "{1600 bit/s + data|1600 + data|1600}"
+msgstr "{1600 bit/s + dati|1600 + dati|1600}"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "LABEL_ENCRYPTION"
+msgid "Encryption"
+msgstr "Cifratura"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_ENC_NOT_PLAYED"
+msgid "{Not played: no key|No key}"
+msgstr "{Non riprodotta: nessuna chiave|Nessuna chiave}"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_TEXT"
+msgid "Text"
+msgstr "Testo"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "POS_BODY_ALTITUDE"
+msgid "Altitude "
+msgstr "Altitudine "
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_SPEED"
+msgid "Speed"
+msgstr "Velocità"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_STATION_FIXED"
+msgid "Fixed station"
+msgstr "Stazione fissa"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_STATION_MOBILE"
+msgid "Mobile"
+msgstr "Mobile"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_VALUE_STATION_HANDHELD"
+msgid "Handheld"
+msgstr "Portatile"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_LABEL_STATION"
+msgid "Station"
+msgstr "Stazione"
+
+#: core/ui/ui_m17.c
+msgctxt "CALL_TITLE_DETAILS"
+msgid "Call Details"
+msgstr "Dettagli chiamata"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_EMPTY_NO_SIGNING_KEY"
+msgid "No signing key. Add one in the Codeplug Editor."
+msgstr "Nessuna chiave di firma. Aggiungine una nel Codeplug Editor."
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_KEY_DAMAGED"
+msgid "The key doesn't match its public key. Write it again in the editor."
+msgstr "La chiave non corrisponde alla sua chiave pubblica. Riscrivila nell'editor."
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_SIGNS_AS"
+msgid "Signs as"
+msgstr "Firma come"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c core/ui/ui_position.c
+msgctxt "VALUE_NOT_SET"
+msgid "Not set"
+msgstr "Non impostato"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_FINGERPRINT"
+msgid "Fingerprint"
+msgstr "Impronta"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "SET_LABEL_SIGN_M17_CALLS"
+msgid "Sign M17 calls"
+msgstr "Firma chiamate M17"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_CLOCK"
+msgid "Clock"
+msgstr "Orologio"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_VALUE_CLOCK_NONE"
+msgid "{None: time sent as 0|None}"
+msgstr "{Nessuno: ora inviata come 0|Nessuno}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_VALUE_CLOCK_GPS"
+msgid "GPS time"
+msgstr "Ora GPS"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_PUBLIC_KEY"
+msgid "Public key"
+msgstr "Chiave pubblica"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_EMPTY_NO_STATION_KEYS"
+msgid "{No station keys: add them in the editor|No station keys}"
+msgstr "{Nessuna chiave di stazione: aggiungile nell'editor|Nessuna chiave}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TITLE_KEY_FOR"
+msgid "Key for "
+msgstr "Chiave di "
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TITLE_SIGNING_KEY"
+msgid "Signing Key"
+msgstr "Chiave di firma"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TITLE_STATION_KEYS"
+msgid "Station Keys"
+msgstr "Chiavi di stazione"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_HINT_KEYS"
+msgid "{OK open  0-9 find  Back|OK open  Back}"
+msgstr "{OK apri  0-9 cerca  Indietro|OK apri  Indietro}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TITLE_BERT"
+msgid "M17 BER Test"
+msgstr "Test BER M17"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_WHY_BERT_M17_ONLY"
+msgid "{Go to an M17 channel first|M17 channels only}"
+msgstr "{Vai prima su un canale M17|Solo canali M17}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_STATE_BERT_NO_SIGNAL"
+msgid "No signal"
+msgstr "Nessun segnale"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_STATE_BERT_SEARCHING"
+msgid "Searching"
+msgstr "Ricerca"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_STATE_BERT_LOCKED"
+msgid "Locked"
+msgstr "Agganciato"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_STATE_BERT_LOST"
+msgid "Lock lost"
+msgstr "Aggancio perso"
+
+#: core/ui/ui_m17.c core/ui/ui_screens.c
+msgctxt "STATE_SENDING"
+msgid "SENDING"
+msgstr "INVIO"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_FRAMES"
+msgid "Frames"
+msgstr "Frame"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_ERRORS"
+msgid "Errors "
+msgstr "Errori "
+
+#: core/ui/ui_m17.c
+msgctxt "M17_UNIT_BITS"
+msgid " bits"
+msgstr " bit"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_HINT_BERT"
+msgid "{PTT send  OK reset  Back|PTT send  OK reset}"
+msgstr "{PTT invia  OK azzera  Indietro|PTT invia  OK azzera}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TOAST_BERT_RESET"
+msgid "Counts reset"
+msgstr "Contatori azzerati"
+
+#: core/ui/ui_m17.c
+msgctxt "VALUE_SET"
+msgid "Set"
+msgstr "Impostata"
 
 #: core/ui/ui_menus.c
 msgctxt "HUB_ROW_LAST_CALLER"
@@ -1573,6 +2053,11 @@ msgid "1-7 open  Back"
 msgstr "1-7 apri  Indietro"
 
 #: core/ui/ui_menus.c
+msgctxt "WHY_MESSAGES_NOT_IN_BUILD"
+msgid "Messages: not in this build"
+msgstr "Messaggi: non in questa build"
+
+#: core/ui/ui_menus.c
 msgctxt "ACT_ROW_TALK_TO"
 msgid "Talk to "
 msgstr "Parla a "
@@ -1583,6 +2068,11 @@ msgid "Private call"
 msgstr "Chiamata privata"
 
 #: core/ui/ui_menus.c
+msgctxt "ACT_ROW_CALL_DETAILS"
+msgid "Call details"
+msgstr "Dettagli chiamata"
+
+#: core/ui/ui_menus.c
 msgctxt "ACT_ROW_RADIO_CHECK"
 msgid "Radio check"
 msgstr "Controllo radio"
@@ -1591,11 +2081,6 @@ msgstr "Controllo radio"
 msgctxt "ACT_ROW_CALL_ALERT"
 msgid "Call alert"
 msgstr "Avviso chiamata"
-
-#: core/ui/ui_menus.c
-msgctxt "TITLE_POSITION"
-msgid "Position"
-msgstr "Posizione"
 
 #: core/ui/ui_menus.c
 msgctxt "ACT_ROW_IN_CONTACTS"
@@ -1628,9 +2113,9 @@ msgid "Poll short data"
 msgstr "Richiedi dati brevi"
 
 #: core/ui/ui_menus.c
-msgctxt "WHY_MESSAGES_NOT_IN_BUILD"
-msgid "Messages: not in this build"
-msgstr "Messaggi: non in questa build"
+msgctxt "ACT_WHY_DETAILS_LAST_CALL"
+msgid "{Details kept for the last call only|Last call only}"
+msgstr "{Dettagli solo per l'ultima chiamata|Solo l'ultima}"
 
 #: core/ui/ui_menus.c
 msgctxt "ACT_TOAST_CHECKING"
@@ -1656,6 +2141,11 @@ msgstr "Avviso chiamata: non in questa build"
 msgctxt "WHY_POS_REQUESTS_NOT_IN_BUILD"
 msgid "Position requests: not in this build"
 msgstr "Richieste posizione: non in questa build"
+
+#: core/ui/ui_menus.c
+msgctxt "ACT_WHY_DMR_CONTACTS_ONLY"
+msgid "{Contacts: DMR IDs only|DMR IDs only}"
+msgstr "{Contatti: solo ID DMR|Solo ID DMR}"
 
 #: core/ui/ui_menus.c
 msgctxt "ACT_TOAST_ALREADY_IN_CONTACTS"
@@ -1778,11 +2268,6 @@ msgid "Contacts: not in this build"
 msgstr "Contatti: non in questa build"
 
 #: core/ui/ui_menus.c
-msgctxt "MSG_ROW_NEW_APRS"
-msgid "New APRS message"
-msgstr "Nuovo messaggio APRS"
-
-#: core/ui/ui_menus.c
 msgctxt "MSG_HINT_LIST"
 msgid "OK open  # reply  Back"
 msgstr "OK apri  # rispondi  Indietro"
@@ -1828,24 +2313,14 @@ msgid "Couldn't delete: try again"
 msgstr "Eliminazione non riuscita: riprova"
 
 #: core/ui/ui_menus.c
-msgctxt "MSG_BODY_FROM"
-msgid "From "
-msgstr "Da "
-
-#: core/ui/ui_menus.c
 msgctxt "MSG_BODY_TO"
 msgid "To "
 msgstr "A "
 
 #: core/ui/ui_menus.c
-msgctxt "HINT_OK_CHOOSE_MORE_BACK"
-msgid "OK choose  # more  Back"
-msgstr "OK scegli  # altro  Indietro"
-
-#: core/ui/ui_menus.c core/ui/ui_screens.c
-msgctxt "CALL_VALUE_TO_YOU"
-msgid "To you"
-msgstr "A te"
+msgctxt "MSG_BODY_CUT"
+msgid "[Cut: too long for this radio]"
+msgstr "[Tagliato: troppo lungo per questa radio]"
 
 #: core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "VALUE_PRIVATE"
@@ -2008,11 +2483,6 @@ msgid "Reject"
 msgstr "Rifiuta"
 
 #: core/ui/ui_menus.c
-msgctxt "TOAST_BUSY_SAVING"
-msgid "Busy saving: try again"
-msgstr "Salvataggio in corso: riprova"
-
-#: core/ui/ui_menus.c
 msgctxt "SHARE_TOAST_IMPORTING"
 msgid "Importing..."
 msgstr "Importazione..."
@@ -2143,6 +2613,11 @@ msgid "Satellite"
 msgstr "Satellite"
 
 #: core/ui/ui_menus.c
+msgctxt "TEXT_TITLE_CALL_TEXT"
+msgid "Call Text"
+msgstr "Testo chiamata"
+
+#: core/ui/ui_menus.c
 msgctxt "SATELLITE_TLE_TITLE_LINE1_UPPER"
 msgid "1 ABC"
 msgstr "1 ABC"
@@ -2173,6 +2648,11 @@ msgid "2 abc"
 msgstr "2 abc"
 
 #: core/ui/ui_menus.c
+msgctxt "TEXT_HINT_KEEP_CALLSIGN"
+msgid "{Back delete  # ABC/123  OK keep|Back del  # mode  OK}"
+msgstr "{Indietro canc.  # ABC/123  OK tieni|Indietro canc  # modo  OK}"
+
+#: core/ui/ui_menus.c
 msgctxt "TEXT_HINT_KEEP"
 msgid "{Back delete  # ABC/123/abc  OK keep|Back del  # mode  OK}"
 msgstr "{Indietro canc.  # ABC/123/abc  OK tieni|Indietro canc  # modo  OK}"
@@ -2181,6 +2661,31 @@ msgstr "{Indietro canc.  # ABC/123/abc  OK tieni|Indietro canc  # modo  OK}"
 msgctxt "TEXT_HINT_SEND"
 msgid "{Back delete  # ABC/123/abc  OK send|Back del  # mode  OK}"
 msgstr "{Indietro canc.  # ABC/123/abc  OK invia|Indietro canc  # modo  OK}"
+
+#: core/ui/ui_menus.c
+msgctxt "CALLSIGN_WHY_FIRST_CHAR"
+msgid "{Start with a letter or digit|Letter or digit first}"
+msgstr "{Inizia con lettera o cifra|Lettera o cifra prima}"
+
+#: core/ui/ui_menus.c
+msgctxt "CALLSIGN_WHY_ALL"
+msgid "{For everyone, pick All call|Pick All call}"
+msgstr "{Per tutti, scegli Chiamata a tutti|Scegli Chiamata a tutti}"
+
+#: core/ui/ui_menus.c
+msgctxt "MYID_TOAST_CALLSIGN_SAVED"
+msgid "M17 callsign saved"
+msgstr "Nominativo M17 salvato"
+
+#: core/ui/ui_menus.c
+msgctxt "MYID_TOAST_CALLSIGN_CLEARED"
+msgid "M17 callsign cleared"
+msgstr "Nominativo M17 cancellato"
+
+#: core/ui/ui_menus.c
+msgctxt "MYID_TOAST_CALL_TEXT_SAVED"
+msgid "Call text saved"
+msgstr "Testo chiamata salvato"
 
 #: core/ui/ui_menus.c
 msgctxt "CHAN_ROW_NEW_FROM_CURRENT"
@@ -2228,6 +2733,11 @@ msgid "Radio's"
 msgstr "Della radio"
 
 #: core/ui/ui_menus.c
+msgctxt "VALUE_ANY"
+msgid "Any"
+msgstr "Tutti"
+
+#: core/ui/ui_menus.c
 msgctxt "CHAN_LABEL_NUMBER"
 msgid "Number"
 msgstr "Numero"
@@ -2237,15 +2747,15 @@ msgctxt "LABEL_MODE"
 msgid "Mode"
 msgstr "Modo"
 
-#: core/ui/ui_menus.c
-msgctxt "CHAN_LABEL_RATE"
-msgid "Rate"
-msgstr "Velocità"
-
 #: core/ui/ui_menus.c core/ui/ui_screens.c
 msgctxt "WORD_RX_ONLY"
 msgid "RX only"
 msgstr "Solo RX"
+
+#: core/ui/ui_menus.c
+msgctxt "CHAN_LABEL_DESTINATION"
+msgid "Destination"
+msgstr "Destinazione"
 
 #: core/ui/ui_menus.c
 msgctxt "CHAN_LABEL_BANDWIDTH"
@@ -2853,11 +3363,6 @@ msgid " satellites"
 msgstr " satelliti"
 
 #: core/ui/ui_menus.c
-msgctxt "POS_BODY_ALTITUDE"
-msgid "Altitude "
-msgstr "Altitudine "
-
-#: core/ui/ui_menus.c
 msgctxt "HOTSPOT_BODY_HOW_TO_START"
 msgid "Start MMDVMHost or Pi-Star on a computer on USB: hotspot mode starts by itself."
 msgstr "Avvia MMDVMHost o Pi-Star su un computer via USB: l'hotspot parte da solo."
@@ -3041,11 +3546,6 @@ msgstr "USB è di nuovo una porta seriale"
 msgctxt "MYID_LABEL_DMR_ID"
 msgid "DMR ID"
 msgstr "ID DMR"
-
-#: core/ui/ui_menus.c core/ui/ui_position.c
-msgctxt "VALUE_NOT_SET"
-msgid "Not set"
-msgstr "Non impostato"
 
 #: core/ui/ui_menus.c
 msgctxt "MYID_LABEL_RADIO_NAME"
@@ -3573,6 +4073,11 @@ msgid "Zones/Chs Received"
 msgstr "Zone/Can. ricevuti"
 
 #: core/ui/ui_menus.c
+msgctxt "TOOLS_ROW_M17_BERT"
+msgid "M17 BER test"
+msgstr "Test BER M17"
+
+#: core/ui/ui_menus.c
 msgctxt "WORD_DUAL_WATCH"
 msgid "Dual watch"
 msgstr "Doppio ascolto"
@@ -4008,6 +4513,16 @@ msgid "Show talker alias"
 msgstr "Mostra alias"
 
 #: core/ui/ui_menus.c
+msgctxt "SET_LABEL_M17_CAN"
+msgid "M17 CAN"
+msgstr "CAN M17"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_LABEL_M17_VOICE"
+msgid "M17 voice"
+msgstr "Voce M17"
+
+#: core/ui/ui_menus.c
 msgctxt "SET_LABEL_DUAL_TALK_BACK"
 msgid "Dual watch talk back"
 msgstr "Risp. doppio asc."
@@ -4036,6 +4551,16 @@ msgstr "Tipo chiave"
 msgctxt "SET_LABEL_PRIVACY_KEY"
 msgid "Key"
 msgstr "Chiave"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_ROW_M17_SIGNING_KEY"
+msgid "M17 signing key"
+msgstr "Chiave firma M17"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_ROW_M17_STATION_KEYS"
+msgid "M17 station keys"
+msgstr "Chiavi di stazione M17"
 
 #: core/ui/ui_menus.c
 msgctxt "SET_LABEL_AUTO_LOCK"
@@ -4086,6 +4611,11 @@ msgstr "Invia in chiam. DMR"
 msgctxt "SAVE_GPS_POSITION"
 msgid "Save GPS position"
 msgstr "Salva posizione GPS"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_LABEL_SEND_IN_M17_CALLS"
+msgid "Send in M17 calls"
+msgstr "Invia nelle chiamate M17"
 
 #: core/ui/ui_menus.c
 msgctxt "SET_LABEL_HOTSPOT_ALLOWED"
@@ -4178,6 +4708,16 @@ msgid "DMR ID and name"
 msgstr "ID DMR e nome"
 
 #: core/ui/ui_menus.c
+msgctxt "SET_ROW_M17_CALLSIGN"
+msgid "M17 callsign"
+msgstr "Nominat. M17"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_ROW_M17_CALL_TEXT"
+msgid "M17 call text"
+msgstr "Testo chiam. M17"
+
+#: core/ui/ui_menus.c
 msgctxt "SET_ROW_FACTORY_RESET"
 msgid "Factory reset"
 msgstr "Ripristino fabbrica"
@@ -4268,6 +4808,16 @@ msgid "Advanced"
 msgstr "Avanzate"
 
 #: core/ui/ui_menus.c
+msgctxt "SET_LABEL_DMR_KEY_TYPE"
+msgid "DMR key type"
+msgstr "Tipo chiave DMR"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_LABEL_DMR_KEY"
+msgid "DMR key"
+msgstr "Chiave DMR"
+
+#: core/ui/ui_menus.c
 msgctxt "HINT_0_9_OPEN_BACK"
 msgid "0-9 open  Back"
 msgstr "0-9 apri  Indietro"
@@ -4336,6 +4886,11 @@ msgstr " passo"
 msgctxt "SIG_UNIT_STEPS"
 msgid " steps"
 msgstr " passi"
+
+#: core/ui/ui_menus.c
+msgctxt "SET_WHY_NO_SIGNING_KEY"
+msgid "{No signing key: add one in the editor|No signing key}"
+msgstr "{Nessuna chiave di firma: aggiungila nell'editor|Nessuna chiave}"
 
 #: core/ui/ui_menus.c
 msgctxt "WHY_PERMIT_TONE_NOT_IN_BUILD"
@@ -4496,6 +5051,11 @@ msgstr "Digita un numero..."
 msgctxt "PICKER_ROW_SELECT_CONTACT"
 msgid "Select contact..."
 msgstr "Scegli un contatto..."
+
+#: core/ui/ui_menus.c
+msgctxt "PICKER_ROW_TYPE_CALLSIGN"
+msgid "Type a callsign..."
+msgstr "Scrivi un nominativo..."
 
 #: core/ui/ui_menus.c
 msgctxt "PICKER_TITLE"
@@ -4928,6 +5488,41 @@ msgid "This mode: receive only"
 msgstr "Questo modo: solo RX"
 
 #: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NO_CALLSIGN"
+msgid "No M17 callsign set"
+msgstr "Nessun nominativo M17"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_CALLSIGN_INVALID"
+msgid "M17 callsign not valid"
+msgstr "Nominativo M17 non valido"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_ENC_NOT_IN_BUILD"
+msgid "{Encrypted channel: not in this build|Encryption not built}"
+msgstr "{Canale cifrato: non in questa versione|Cifratura assente}"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_ENC_NO_KEY"
+msgid "Privacy on, no key"
+msgstr "Privacy attiva, senza chiave"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_ENC_NOT_READY"
+msgid "{Encryption not ready: try again|Not ready: retry}"
+msgstr "{Cifratura non pronta: riprova|Non pronta: riprova}"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NO_SIGNING_KEY"
+msgid "Signing on, no key"
+msgstr "Firma attiva, senza chiave"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_KEY_DAMAGED"
+msgid "Signing key damaged"
+msgstr "Chiave di firma danneggiata"
+
+#: core/ui/ui_screens.c
 msgctxt "DENY_WHY_P25T_NO_CC"
 msgid "No control channel"
 msgstr "Nessun canale controllo"
@@ -5041,6 +5636,31 @@ msgstr "Scegli un canale utente per parlare"
 msgctxt "DENY_FIX_END_BENCH_ON_PC"
 msgid "End the bench on the PC"
 msgstr "Termina il banco sul PC"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_FIX_SET_CALLSIGN"
+msgid "OK set callsign"
+msgstr "OK imposta nominativo"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_FIX_PRIVACY_OFF"
+msgid "Turn privacy off: * 6"
+msgstr "Disattiva privacy: * 6"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_FIX_WAIT_RETRY"
+msgid "Wait a moment, then PTT"
+msgstr "Attendi un attimo, poi PTT"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_FIX_SIGNING_OFF"
+msgid "{Turn signing off or add a key|Signing off or add key}"
+msgstr "{Disattiva la firma o aggiungi una chiave|Firma off o chiave}"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_FIX_REWRITE_KEY"
+msgid "Write the key again"
+msgstr "Riscrivi la chiave"
 
 #: core/ui/ui_screens.c
 msgctxt "DENY_FIX_CHECK_SYSTEM"
@@ -5168,11 +5788,6 @@ msgid "DMon"
 msgstr "DMon"
 
 #: core/ui/ui_screens.c
-msgctxt "HOME_CHIP_PRIVACY"
-msgid "Priv"
-msgstr "Priv"
-
-#: core/ui/ui_screens.c
 msgctxt "TRUNK_OTHER_KIND"
 msgid "Incompatible system"
 msgstr "Sistema incompatibile"
@@ -5228,6 +5843,31 @@ msgid ", category B only"
 msgstr ", solo categoria B"
 
 #: core/ui/ui_screens.c
+msgctxt "CALL_CHIP_LATE"
+msgid " late"
+msgstr " tardi"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_CHIP_EMERGENCY"
+msgid " EMERGENCY"
+msgstr " EMERGENZA"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_WHY_ENCRYPTED"
+msgid "Encrypted: not played"
+msgstr "Cifrata: non riprodotta"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_WHY_OTHER_TG"
+msgid "Other TG: not played"
+msgstr "Altro TG: non riprodotto"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_HINT_MON_DMON"
+msgid "MON: digital monitor"
+msgstr "MON: monitor digitale"
+
+#: core/ui/ui_screens.c
 msgctxt "CALL_BODY_PRIVATE_ID"
 msgid "Private "
 msgstr "Privata "
@@ -5278,29 +5918,74 @@ msgid "Release PTT to stop"
 msgstr "Rilascia PTT per fermare"
 
 #: core/ui/ui_screens.c
-msgctxt "CALL_CHIP_LATE"
-msgid " late"
-msgstr " tardi"
+msgctxt "CALL_VALUE_SIG_OK"
+msgid "{Signature OK|Sig OK}"
+msgstr "{Firma OK|Firma OK}"
 
 #: core/ui/ui_screens.c
-msgctxt "CALL_CHIP_EMERGENCY"
-msgid " EMERGENCY"
-msgstr " EMERGENZA"
+msgctxt "CALL_VALUE_SIG_FAILED"
+msgid "{Signature check failed|Sig failed}"
+msgstr "{Firma non valida|Firma errata}"
 
 #: core/ui/ui_screens.c
-msgctxt "CALL_WHY_ENCRYPTED"
-msgid "Encrypted: not played"
-msgstr "Cifrata: non riprodotta"
+msgctxt "CALL_VALUE_UNSIGNED"
+msgid "Not signed"
+msgstr "Non firmata"
 
 #: core/ui/ui_screens.c
-msgctxt "CALL_WHY_OTHER_TG"
-msgid "Other TG: not played"
-msgstr "Altro TG: non riprodotto"
+msgctxt "CALL_VALUE_SIG_OLD"
+msgid "{Signature OK, but old|Old}"
+msgstr "{Firma OK, ma vecchia|Vecchia}"
 
 #: core/ui/ui_screens.c
-msgctxt "CALL_HINT_MON_DMON"
-msgid "MON: digital monitor"
-msgstr "MON: monitor digitale"
+msgctxt "CALL_VALUE_SIG_OTHER"
+msgid "{Signed by another station|Other signer}"
+msgstr "{Firmato da altra stazione|Altro firmatario}"
+
+#: core/ui/ui_screens.c
+msgctxt "HOME_STATE_NO_M17_CALLSIGN"
+msgid "No M17 callsign"
+msgstr "Nessun nominativo M17"
+
+#: core/ui/ui_screens.c
+msgctxt "HOME_CHIP_SIGNED"
+msgid "Sig"
+msgstr "Firma"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_WHY_SCRAMBLED"
+msgid "Scrambled: not played"
+msgstr "Con scrambler: non riprodotta"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_WHY_OTHER_CAN"
+msgid "Other CAN: not played"
+msgstr "Altro CAN: non riprodotta"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_WHY_DATA_ONLY"
+msgid "Data only: no voice"
+msgstr "Solo dati: niente voce"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_PART_VIA"
+msgid "via "
+msgstr "via "
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_VALUE_SIG_PENDING"
+msgid "{Signed: checked at end|Signed}"
+msgstr "{Firmata: verificata alla fine|Firmata}"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_VALUE_SIG_CHECKING"
+msgid "{Checking signature|Checking}"
+msgstr "{Verifica della firma|Verifica}"
+
+#: core/ui/ui_screens.c
+msgctxt "CALL_STATE_SIGNING"
+msgid "SIGNING"
+msgstr "FIRMA"
 
 #: core/ui/ui_screens.c
 msgctxt "ACTIVITY_STATE_SQUELCH_OPEN"
@@ -5311,11 +5996,6 @@ msgstr "Squelch aperto"
 msgctxt "STATE_RECEIVING"
 msgid "Receiving"
 msgstr "Ricezione"
-
-#: core/ui/ui_screens.c
-msgctxt "STATE_SENDING"
-msgid "SENDING"
-msgstr "INVIO"
 
 #: core/ui/ui_screens.c
 msgctxt "ACTIVITY_BODY_LEFT_OF"
@@ -5656,6 +6336,16 @@ msgstr "Firmware forse destinato a un'altra versione della radio"
 msgctxt "DIAG_HINT"
 msgid "* more  Back"
 msgstr "* altro  Indietro"
+
+#: core/ui/ui_svc_m17.c
+msgctxt "MSG_WHY_PRIVACY_ON"
+msgid "{Privacy on: messages can't be encrypted|Privacy on: no messages}"
+msgstr "{Privacy attiva: i messaggi non si cifrano|Privacy: niente messaggi}"
+
+#: core/ui/ui_svc_m17.c
+msgctxt "MSG_ROW_NEW_M17"
+msgid "New M17 message"
+msgstr "Nuovo messaggio M17"
 
 #: core/ui/ui_svc_storage.c
 msgctxt "STORE_ERR_CODEPLUG_WRITE"

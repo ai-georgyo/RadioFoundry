@@ -12,6 +12,7 @@
 #include "ui_screens.h"
 #include "ui_svc.h"
 #include "i18n.h"
+#include "fmt.h"
 #include "config.h"	// the switches that shape the types below
 
 typedef enum {
@@ -46,6 +47,11 @@ typedef enum {
 	SCR_SATELLITE,			// selected satellite: live pass details and tracking controls
 	SCR_SATELLITE_TEXT,		// one 69-character TLE line
 	SCR_SIG_CHAIN,			// Settings > Signaling tones: one event's five steps (arg = sig_event_t)
+	// M17 (docs/ux/m17.md; ui_m17.c, CONFIG_M17): the last call in full, a signing key (arg 0 ours, else a station
+	// key's index + 1), the station keys, the BER test; the callsign entry (ui_menus.c); the stations heard
+	// (ui_heard.c, CONFIG_HEARD_LIST: the list, one station's details, arg its index)
+	SCR_CALL_DETAILS, SCR_M17_KEY, SCR_M17_KEYS, SCR_M17_BERT, SCR_CALLSIGN, SCR_CALL_TEXT, SCR_HEARD,
+	SCR_HEARD_ONE,
 #if CONFIG_BACKLIGHT_TEST
 	SCR_BL_TEST,			// Settings > Advanced > Backlight tests
 #endif
@@ -69,8 +75,7 @@ typedef struct {
 
 // A station or talkgroup that actions apply to
 typedef struct {
-	uint32_t id;
-	bool group;		// a talkgroup (else a person)
+	ui_addr_t addr;		// a DMR person (UI_ADDR_DMR_ID) or talkgroup (UI_ADDR_DMR_TG)
 	uint32_t heard_tg;	// a person heard on this talkgroup (0 = privately / unknown)
 	bool saved;		// in the contacts
 	char name[CODEPLUG_NAME_LEN + 1];
@@ -146,7 +151,10 @@ bool ui_about_busy(void);	// About is still working out the image hash: redraw i
 void ui_focus_changed(void);
 // Open the actions for a target (SCR_ACTIONS)
 void ui_open_actions(const ui_target_t *t);
-void ui_aprs_compose(const char *call);
+// The message composer to a callsign typed there ("" to start empty), sent by net's provider (UI_MSG_CAP_TO_CALL)
+void ui_compose_call(uint8_t net, const char *call);
+// The talk target picker has rows on a channel of this mode (radio_mode_t; ui_menus.c): else the UI says why not
+bool ui_picker_offered(uint8_t mode);
 #if CONFIG_CONTACT_EDIT
 // The contact editor on a new contact for t: its ID, type and name (a talkgroup or ID as its name when it has none)
 void ui_new_contact(const ui_target_t *t);
@@ -164,6 +172,11 @@ void ui_scan_skip(void);	// a side key set to Scan skip: skip the channel that s
 void ui_open_caller_actions(void);
 // A list row's number key ('1'..'9', '0')
 void item_num_set(ui_item_t *it, uint16_t n);
+// The UI's shared scratch (About's text buffer, ui_menus.c): for a page built each time it is drawn or a record read
+// for a moment, on the UI task only; nothing keeps a pointer into it across a frame. *cap: its size (8-byte aligned)
+char *ui_scratch(size_t *cap);
+// A page of text's keys (ui_draw_text_page): Up / Down and the knob scroll a line, up to max; BACK leaves
+bool ui_text_page_key(const input_event_t *ev, uint16_t *first, uint16_t max);
 
 #if CONFIG_DUAL_WATCH
 // Dual watch (ui_dual.c, docs/ux/dual-watch.md)
@@ -178,6 +191,7 @@ void ui_dual_key(void);				// the Dual watch key: on (the last B, or the picker)
 bool ui_dual_home_key(const input_event_t *ev);	// Home's keys while it runs (true: used)
 bool ui_dual_tick(const radio_view_t *v, uint32_t now);	// true: redraw
 const radio_view_t *ui_dual_view(const radio_view_t *v);	// the view with the selected channel's settings
+uint8_t ui_dual_sel_vfo(void);			// ... and its VFO (0 or 1) when it is one (vfo_index stays the tuned one's)
 void ui_dual_back(void);			// Back on Home with nothing to clear: twice stops the watch
 bool ui_dual_vfo_key(void);			// the VFO key: the selected channel to / from the VFO (false: off)
 #endif
@@ -213,14 +227,16 @@ const char *ui_find_query(void);
 // Recent (ui_app.c): newest first
 #define UI_RECENT_MAX	12
 typedef struct {
-	uint32_t src, dst;
-	bool group, out, to_us;
+	ui_addr_t src, dst;	// dst's kind says a talkgroup
+	bool out, to_us;
+	uint8_t sig;		// a signed call's result (M17, RADIO_M17_SIG_*; 0: none), UI_RECENT_SIG_DATA a packet
 	uint32_t ms;
 	char name[CODEPLUG_NAME_LEN + 1];	// the other station's (or the talkgroup's, for calls we made) name
 	bool gps_range;		// the caller sent its position (ETSI GPS Info) and ours was known: how far, which way
 	uint16_t gps_bearing;
 	uint32_t gps_dist_m;
 } ui_recent_t;
+#define UI_RECENT_SIG_DATA	0xFFu	// ui_recent_t.sig: a packet heard (M17), not a call
 uint8_t ui_recent_count(void);
 const ui_recent_t *ui_recent_get(uint8_t i);
 // The recent entry as an actions target (the caller of a heard call, the target of one we made)
@@ -251,7 +267,10 @@ void ui_crash_reset(void);
 void ui_crash_tick(uint32_t now_ms);
 
 // Text helpers
-void ui_sb_target(char *buf, size_t len, const ui_target_t *t);	// "TG 91 World", "Joe 9991234"
+void ui_sb_target(char *buf, size_t len, const ui_target_t *t);	// "TG 91 World", "Joe", "9991234", "All call"
+// An address alone, made where it is drawn: "TG 91", "9991234", "All call"; a callsign "N0CALL", an extended M17
+// address "#" and 12 hex digits (CONFIG_M17)
+void ui_sb_addr(sbuf_t *b, const ui_addr_t *a);
 void ui_sb_age(char *buf, size_t len, uint32_t ms);
 
 #endif

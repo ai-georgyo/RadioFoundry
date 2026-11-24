@@ -78,7 +78,8 @@ export function exportModes(m, chRef, note, frequencyText) {
 	});
 	const sysId = new Map(systems.map((s, i) => [s, `sys${i + 1}`]));
 	const ref = (r) => (r && typeof r === "object" && chRef(r)) || undefined;
-	const keys = systems.filter((s) => (s.secret && (s.secret.key || s.secret.raw)) || s.trafficKeys?.length).length;
+	// a secret of any type's (its fields, or a type's the editor keeps whole); a set one is never all blank
+	const keys = systems.filter((s) => (s.secret && Object.values(s.secret).some((v) => v !== "" && v !== 0 && v != null)) || s.trafficKeys?.length).length;
 	if (keys) note("mode_keys", keys);
 	const out = systems.map((s) => {
 		const mod = typeRow(s.type).module;

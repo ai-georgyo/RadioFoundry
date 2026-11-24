@@ -4,8 +4,11 @@
 // fields of the editor's forms (views.js formDialog), and parses what was typed for them. No mode is named here.
 //
 // Field types: "int" (min..max; blank: the field's blank value, or "any" (null) with any), "hex" (the same in hex),
-// "freq" (MHz to Hz; zero: blank is 0), "bool", "select" (options: [value, label or i18n key]), "list" (whole numbers
-// split on spaces or commas, at most count), "hexbytes" (bytes octets in hex, or blank), "text".
+// "freq" (MHz to Hz; zero: blank is 0), "bool", "select" (options(fields, record): [value, label or i18n key];
+// dynamic: options that change as the form is filled), "list" (whole numbers split on spaces or commas, at most
+// count), "hexbytes" (bytes octets in hex, or blank), "text", "note" (a table's read-only cell: text(row, t), a string
+// or a promise of one). A text field may bring its own parse(typed, t, fields) -> {value} or {error} and
+// format(value, t).
 
 import { parseFreq, mhz } from "../codeplug/fields.js";
 
@@ -14,6 +17,7 @@ export const label = (t, s) => (typeof s === "string" && s.startsWith("editor.")
 
 // What was typed for spec, for record r: {value} or {error}
 export function parseSpec(spec, raw, t, r = {}) {
+	if (spec.parse) return spec.parse(String(raw ?? ""), t, r);
 	const s = String(raw ?? "").trim();
 	const lo = lim(spec.min, r), hi = lim(spec.max, r);
 	const range = () => ({ error: t("editor.err.range", { min: spec.type === "hex" ? lo.toString(16).toUpperCase() : lo, max: spec.type === "hex" ? hi.toString(16).toUpperCase() : hi }) });
@@ -48,6 +52,7 @@ export function parseSpec(spec, raw, t, r = {}) {
 // The text a field shows for value v
 export function formatSpec(spec, v, t) {
 	if (v == null) return spec.any ? "" : "";
+	if (spec.format && spec.type !== "hex") return spec.format(v, t);
 	switch (spec.type) {
 	case "hex": return spec.format ? spec.format(v) : v.toString(16).toUpperCase();
 	case "freq": return v ? mhz(v) : "";
@@ -72,7 +77,8 @@ export function specField(spec, t, holder, id) {
 	};
 	if (spec.type === "bool") return { ...f, type: "bool", set: (r, v) => on(r) && holder.put(r, spec.key, !!v) };
 	if (spec.type === "select") {
-		return { ...f, type: "select", options: (r) => spec.options(r).map(([v, l]) => [v, label(t, l)]), set: (r, v) => on(r) && holder.put(r, spec.key, v) };
+		return { ...f, type: "select", options: (r) => spec.options(r ? holder.get(r) ?? {} : {}, r).map(([v, l]) => [v, label(t, l)]),
+			dynamicOptions: !!spec.dynamic, set: (r, v) => on(r) && holder.put(r, spec.key, v) };
 	}
 	return {
 		...f, type: "text",

@@ -58,6 +58,12 @@ enum {
 	DL_VIEW_P25,		// P25 on the channel: the call, settings, engine and voice counters (debuglink_view_p25.c)
 	DL_VIEW_P25_TRUNK,	// a trunked P25 channel's follower: system, channels, call followed, counters (the same file)
 	DL_VIEW_NXDN,		// NXDN on the channel: the call, settings, the provider's fit, engine counters (debuglink_view_nxdn.c)
+	DL_VIEW_M17,		// M17 on the channel: the call, what PTT does, the settings, signatures (debuglink_view_m17.c)
+	DL_VIEW_M17_STATS,	// M17: the engine's and the session's counters, the benches, the time (the same file; split for
+				// the reply size)
+	DL_VIEW_M17_DATA,	// M17: packets, SMS and the signature counters
+	DL_VIEW_M17_VOICE,	// M17: the voice path's counters and the BER test
+	DL_VIEW_HEARD,		// the stations heard, any mode (radio_heard.h; debuglink_view_m17.c, M17 its only source)
 	DL_VIEW_COUNT
 };
 #define DL_VIEW_VERSION		5	// bumped when a key changes meaning or goes away (new keys don't bump it)
@@ -90,6 +96,21 @@ void debuglink_p25_reset(void);
 // The nxdn section (debuglink_view_nxdn.c; "nxdn.built=0" without CONFIG_NXDN) and its counter reset
 void debuglink_view_nxdn(const radio_view_t *v, dl_text_t *t);
 void debuglink_nxdn_reset(void);
+// The M17 sections (debuglink_view_m17.c; part 0 m17, 1 m17_stats, 2 m17_data, 3 m17_voice, "m17.built=0" without
+// CONFIG_M17; 4 heard, "heard.built=0" without CONFIG_HEARD_LIST), their counter reset, and RADIO op 44 (DL_OP_M17:
+// args[0] the sub-op DL_M17_*; a DL_ST_* status)
+void debuglink_view_m17(uint8_t part, const radio_view_t *v, dl_text_t *t);
+void debuglink_m17_reset(void);
+uint8_t debuglink_m17_op(const uint8_t *args, uint16_t len);
+enum {
+	DL_M17_SETTINGS = 0,	// can, tx_can, squelch, mode, dst[6]: radio_req_m17_settings
+	DL_M17_BERT_RUN = 1,	// 0 off, 1 on, 2 counters reset: radio_req_m17_bert (the run sent on its own)
+	DL_M17_SMS = 2,		// dst[6], UTF-8 text: radio_req_m17_sms
+	DL_M17_BENCH_SIG = 3,	// none: radio_req_m17_bench, the signature bench
+	DL_M17_BENCH_CODEC = 4,	// phase, mode: radio_req_m17_bench, the codec bench
+	DL_M17_BER_MODE = 5,	// 0 off, 1 on: radio_req_m17_bert (the BER test mode)
+	DL_M17_TIME = 6,	// Unix seconds u32 (0 forgets): utc_set, UTC_SRC_HOST
+};
 void debuglink_view_keys(dl_text_t *t);
 enum {
 	DL_OP_SCAN = 20, DL_OP_SCAN_VFO = 21, DL_OP_BEEP = 22, DL_OP_TONE_BURST = 23, DL_OP_SETTING = 24,
@@ -105,18 +126,20 @@ enum {
 	DL_OP_VOICE_CAPTURE = 41,
 	DL_OP_P25 = 42,
 	DL_OP_NXDN = 43,
+	DL_OP_M17 = 44,
 };
 uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *args, uint16_t len);
 // After a reply: the host port's reattach a PA key run asked for (PA_KEYRUN_FLAG_REATTACH); else a no-op
 void debuglink_keyrun_service(void);
-// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too
+// RADIO ops the dispatcher hands to debuglink_radio_feature_op (DL_OP_M17 to debuglink_m17_op): a new DL_OP_* goes
+// here too
 static inline bool debuglink_is_feature_op(uint8_t op)
 {
 	return (op >= DL_OP_SCAN && op <= DL_OP_SETTING) || op == DL_OP_ROAM || op == DL_OP_VIBRATE || op == DL_OP_VOLUME ||
 	       op == DL_OP_DMR_FIELDS || op == DL_OP_VFO_COPY || op == DL_OP_VOICE_TEST || op == DL_OP_DTMF ||
 	       op == DL_OP_TX_LIMIT || op == DL_OP_TX_DRIVE || op == DL_OP_PA_KEYUP || op == DL_OP_VFO_SFR ||
 	       op == DL_OP_PA_SWEEP || op == DL_OP_PA_KEYRUN || op == DL_OP_VOICE_CAPTURE ||
-	       op == DL_OP_P25 || op == DL_OP_NXDN;
+	       op == DL_OP_P25 || op == DL_OP_NXDN || op == DL_OP_M17;
 }
 // VERSION's codec= (hal_vocoder_id; the name the host tests use)
 static inline const char *debuglink_codec_id(const hal_vocoder_t *v)

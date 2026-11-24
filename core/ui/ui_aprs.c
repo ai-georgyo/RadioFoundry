@@ -9,6 +9,7 @@
 #include <string.h>
 #include "ui_nav.h"
 #include "ui_svc_aprs.h"
+#include "aprs/aprs_fmt.h"
 #include "fmt.h"
 #include "i18n.h"
 #include "config.h"
@@ -37,6 +38,78 @@ WEAK uint8_t ui_svc_aprs_station_count(void) { return 0; }
 WEAK bool ui_svc_aprs_station(uint8_t i, aprs_station_t *out) { (void)i; (void)out; return false; }
 WEAK bool ui_svc_aprs_station_find(const char *call, aprs_station_t *out) { (void)call; (void)out; return false; }
 WEAK bool ui_svc_aprs_range(const aprs_station_t *s, uint32_t *m, uint16_t *deg) { (void)s; (void)m; (void)deg; return false; }
+
+#if CONFIG_APRS_AFSK
+// ======================= APRS messages as a message provider (ui_svc_msg.c) =======================
+// Over the APRS service (ui_svc_aprs.h), so the simulator runs it on its own APRS. A heard station is no one to talk
+// to (no Call; # writes to it), a new message goes to a typed callsign, with the acknowledgment and position choices,
+// in printable ASCII (aprs.md 4.1). The callsign travels as text in name: an address can't hold it without M17's base-40
+_Static_assert(APRS_MESSAGES <= UI_MSG_INDEX_MAX, "an APRS inbox index fits a message reference");
+
+static uint16_t apmsg_count(void) { return ui_svc_aprs_msg_count(); }
+
+static uint16_t apmsg_unread(void)
+{
+	aprs_view_t v;
+	return ui_svc_aprs_view(&v) ? v.unread : 0u;
+}
+
+static bool apmsg_get(uint16_t i, ui_msg_t *out)
+{
+	aprs_msg_t m;
+	if (i > 0xFFu || !ui_svc_aprs_msg((uint8_t)i, &m, false))
+		return false;
+	memset(out, 0, sizeof *out);
+	out->peer.kind = UI_ADDR_NONE;
+	out->peer.net = UI_NET_APRS;
+	str_copy(out->name, sizeof out->name, m.from);
+	out->unread = !m.read;
+	out->age_ms = ui_st.now_ms - m.ms;
+	// As the engine kept it, a byte a character (aprs.md 4.1: APRS text is ASCII), the way Messages always drew it
+	str_copy(out->text, sizeof out->text, m.text);
+	return true;
+}
+
+static void apmsg_read(uint16_t i)
+{
+	aprs_msg_t m;
+	if (i <= 0xFFu)
+		(void)ui_svc_aprs_msg((uint8_t)i, &m, true);
+}
+
+static bool apmsg_delete(uint16_t i)
+{
+	return i <= 0xFFu && ui_svc_aprs_msg_delete((uint8_t)i);
+}
+
+static bool apmsg_send(const ui_msg_to_t *to, const char *text)
+{
+	uint8_t flags = ((to->opts & UI_MSG_OPT_ACK) ? APRS_MSG_ACK : 0u) |
+		((to->opts & UI_MSG_OPT_POSITION) ? APRS_MSG_POSITION : 0u);
+	return ui_svc_aprs_send_message(to->call, text, flags);
+}
+
+// To the sender, asking for the acknowledgment (what the composer starts with)
+static bool apmsg_reply(uint16_t i, const char *text)
+{
+	aprs_msg_t m;
+	return i <= 0xFFu && ui_svc_aprs_msg((uint8_t)i, &m, false) && ui_svc_aprs_send_message(m.from, text, APRS_MSG_ACK);
+}
+
+// New APRS message: only with our callsign set
+static bool apmsg_new_ok(void)
+{
+	aprs_view_t v;
+	return ui_svc_aprs_view(&v) && v.call[0] != '\0';
+}
+
+const ui_msg_provider_t ui_msg_aprs = {
+	.net = UI_NET_APRS, .caps = UI_MSG_CAP_TO_CALL | UI_MSG_CAP_OPTIONS | UI_MSG_CAP_ASCII,
+	.text_max = APRS_MSG_TEXT_MAX, .new_row = TRN(MSG_ROW_NEW_APRS, "New APRS message"), .new_ok = apmsg_new_ok,
+	.count = apmsg_count, .unread = apmsg_unread, .get = apmsg_get, .read = apmsg_read,
+	.del = apmsg_delete, .send = apmsg_send, .reply = apmsg_reply,
+};
+#endif
 
 enum { AP_SEND, AP_AUTO, AP_FREQ, AP_POWER, AP_PATH, AP_SSID, AP_INTERVAL, AP_SMART, AP_VIA, AP_KISS, AP_HEARD, AP_MUTE,
        AP_COUNT };
@@ -475,7 +548,7 @@ static void station_select(uint16_t i, bool hold)
 {
 	(void)hold;
 	if (i == 0) {
-		ui_aprs_compose(station_call);
+		ui_compose_call(UI_NET_APRS, station_call);
 	}
 }
 #else
@@ -499,7 +572,7 @@ static void station_select(uint16_t i, bool hold)
 	(void)i; (void)hold;
 	aprs_station_t s;
 	if (ui_svc_aprs_station((uint8_t)ui_frame()->arg, &s))
-		ui_aprs_compose(s.call);
+		ui_compose_call(UI_NET_APRS, s.call);
 }
 #endif
 const ui_scr_def_t ui_aprs_station_screen = {

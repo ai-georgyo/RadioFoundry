@@ -22,9 +22,10 @@ export const aesKind = {
 		v.set([p.id == null ? 0 : AES_ALG, p.id ?? 0]);
 		return v;
 	},
-	fields: () => [{ key: "id", label: "editor.aes.id", type: "select", options: (r) => {
+	// options(params, channel), as modefields.js calls a select's: the keys of the channel's system
+	fields: () => [{ key: "id", label: "editor.aes.id", type: "select", dynamic: true, options: (p, r) => {
 		const ids = new Set((r?.system?.trafficKeys ?? []).map((k) => k.id));
-		if (r?.params?.id != null) ids.add(r.params.id);
+		if (p?.id != null) ids.add(p.id);
 		return [[null, "editor.none"], ...[...ids].sort((a, b) => a - b).map((id) => [id, String(id)])];
 	} }],
 	validate(c, p, problem) {

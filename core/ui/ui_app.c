@@ -17,7 +17,6 @@
 #include "ui_app.h"
 #include "ui_nav.h"
 #include "ui_svc.h"
-#include "ui_svc_aprs.h"
 #include "ui_screens.h"		// ui_layout_init: a line of Chinese needs a taller font
 #include "fmt.h"
 #include "i18n.h"
@@ -25,6 +24,11 @@
 #include "radio/tones.h"
 #include "config.h"
 #include "codeplug/codeplug_modes.h"	// CODEPLUG_KIND_NONE
+#if CONFIG_M17
+#include "ui_m17.h"		// ui_sb_addr: a callsign's text; Recent, banners and Quick settings on M17
+#include "m17/m17_packet.h"
+#include "m17/m17_engine.h"
+#endif
 #if CONFIG_HOTSPOT || (CONFIG_USB_NETWORK && CONFIG_HOSTLINK)
 #include "hostlink/hostlink.h"
 #endif
@@ -141,8 +145,9 @@ static void update_focus_target(void)
 {
 	const ui_scr_def_t *d = ui_scr[stack[sp].scr];
 	ui_target_t t;
-	if (d->target != NULL && d->count != NULL && stack[sp].focus < d->count() && d->target(stack[sp].focus, &t))
-		ui_svc_focus_target(t.id, !t.group);
+	if (d->target != NULL && d->count != NULL && stack[sp].focus < d->count() && d->target(stack[sp].focus, &t) &&
+			t.addr.net == UI_NET_DMR)
+		ui_svc_focus_target(t.addr.id, !ui_addr_group(&t.addr));
 	else
 		ui_svc_focus_target(0, false);
 }
@@ -365,7 +370,7 @@ static void recent_add(const ui_recent_t *r)
 	// The same station and destination again: move it to the top instead of repeating it
 	uint8_t i;
 	for (i = 0; i < recent_n; i++)
-		if (recent[i].src == r->src && recent[i].dst == r->dst && recent[i].out == r->out)
+		if (ui_addr_eq(&recent[i].src, &r->src) && ui_addr_eq(&recent[i].dst, &r->dst) && recent[i].out == r->out)
 			break;
 	if (i == recent_n && recent_n < UI_RECENT_MAX)
 		recent_n++;
@@ -381,12 +386,10 @@ void ui_recent_target(const ui_recent_t *r, ui_target_t *t)
 {
 	memset(t, 0, sizeof *t);
 	if (r->out) {
-		t->id = r->dst;
-		t->group = r->group;
+		t->addr = r->dst;
 	} else {
-		t->id = r->src;
-		t->group = false;
-		t->heard_tg = r->group ? r->dst : 0;
+		t->addr = r->src;
+		t->heard_tg = ui_addr_group(&r->dst) ? r->dst.id : 0;
 	}
 	strcpy(t->name, r->name);
 	t->saved = t->name[0] != 0;
@@ -407,14 +410,17 @@ static void recent_update(const radio_view_t *v)
 {
 	const radio_dmr_view_t *d = &v->dmr;
 	if (d->last_ms != 0 && d->last_ms != recent_seen_ms && d->last.src != 0 && d->last.src != d->own_id) {
-		bool fresh = recent_n == 0 || recent[0].src != d->last.src || recent[0].dst != d->last.dst || recent[0].out;
+		ui_addr_t src, dst;
+		ui_addr_set_dmr(&src, d->last.src, false);
+		ui_addr_set_dmr(&dst, d->last.dst, d->last.group);
+		bool fresh = recent_n == 0 || !ui_addr_eq(&recent[0].src, &src) || !ui_addr_eq(&recent[0].dst, &dst) ||
+			recent[0].out;
 		recent_seen_ms = d->last_ms;
 		if (fresh) {
 			ui_recent_t r;
 			memset(&r, 0, sizeof r);
-			r.src = d->last.src;
-			r.dst = d->last.dst;
-			r.group = d->last.group;
+			r.src = src;
+			r.dst = dst;
 			r.to_us = d->last.to_us;
 			r.ms = d->last_ms;
 			strcpy(r.name, d->last.src_name);
@@ -429,15 +435,191 @@ static void recent_update(const radio_view_t *v)
 	if (tx && !recent_tx && d->target_id != 0) {
 		ui_recent_t r;
 		memset(&r, 0, sizeof r);
-		r.src = d->own_id;
-		r.dst = d->target_id;
-		r.group = !d->target_private;
+		ui_addr_set_dmr(&r.src, d->own_id, false);
+		ui_addr_set_dmr(&r.dst, d->target_id, !d->target_private);
 		r.out = true;
 		r.ms = now;
 		strcpy(r.name, d->target_name);
 		recent_add(&r);
 	}
 	recent_tx = tx;
+}
+#endif
+
+#if CONFIG_M17
+static void banner(uint8_t kind, bool warn, const ui_addr_t *about, const char *title, const char *text);
+
+// M17 into Recent and the signature's banners (docs/ux/m17.md 4.5, 7.1): a call goes in once it ended, keyed by its
+// originator and destination as DMR's; its signature's verdict follows (it may come after the end), and a bad one
+// raises the banner once. Ours go in at PTT
+static struct {
+	uint8_t seq;		// the view's call_seq taken
+	uint8_t took : 2;	// that call: 0 not yet, 1 in Recent, 2 its banner raised, 3 taken, not in Recent (an SMS:
+				// its verdict and banner would land on the caller's Recent row before it)
+	uint8_t tx : 1;		// we were transmitting
+	uint8_t ask_call : 1;	// PTT was refused for want of our callsign: OK on Home opens its entry (next key only)
+	uint8_t set_here : 1;	// the channel the settings' changes for now belong to uses them (m17_settings_here) ...
+	uint8_t set_vfo : 1;	// ... and is the VFO (m17_set_at: which channel, or which VFO)
+	uint16_t ask_t;		// ... when the refusal was last shown, in 256 ms steps (2 bytes: RAM is short): OK keeps that
+				// meaning a moment after PTT's release
+} m17;
+#define M17_ASK_CALL_T	20u	// how long after the refusal OK still sets the callsign, 5 s (then it is the menu again)
+// The channel number of the channel the settings' changes for now belong to (m17.set_here), or in the VFO its
+// vfo_index (dual watch gives each pane its own VFO). The UI task's alone, read once a pass: cold RAM where the board
+// has it, as main RAM is short
+static uint16_t m17_set_at RFOUNDRY_COLD_RAM;
+
+#if CONFIG_M17_SIG
+static void m17_banner(const radio_m17_view_t *m)
+{
+	char title[UI_BANNER_TEXT], text[UI_BANNER_TEXT];
+	sbuf_t b;
+	tr_id_t t = m->sig == RADIO_M17_SIG_INVALID ? TRN(CALL_BANNER_SIG_FAILED, "Signature check failed") :
+		m->sig == RADIO_M17_SIG_SIGNER_DIFFERS ? TRN(CALL_BANNER_SIGNER_DIFFERS, "Signed by another station") :
+		m->sig == RADIO_M17_SIG_OLD ? TRN(CALL_BANNER_SIG_OLD, "Signature OK, but old") :
+		m->sig == RADIO_M17_SIG_REPLAY ? TRN(CALL_BANNER_SIG_REPLAY, "Repeat of an earlier call") : TR_NONE;
+	if (t == TR_NONE)
+		return;
+	ui_addr_t a = { .kind = UI_ADDR_CALL, .net = UI_NET_M17 };
+	memcpy(a.call, m->orig, sizeof a.call);
+	str_copy(title, sizeof title, tr(t));
+	sb_init(&b, text, sizeof text);
+	const radio_m17_details_t *d = m->sig == RADIO_M17_SIG_SIGNER_DIFFERS ? ui_m17_details() : NULL;
+	if (d != NULL) {	// "W1AW signed for N0CALL"
+		ui_sb_m17(&b, d->signer);
+		sb_str(&b, TR(CALL_BANNER_PART_SIGNED_FOR, " signed for "));
+	} else {
+		sb_str(&b, TR(MSG_BODY_FROM, "From "));
+	}
+	ui_sb_m17(&b, m->orig);
+	banner(UI_BANNER_CALL, true, &a, title, text);	// no tone of its own: the call's end tone has sounded
+	m17.took = 2;
+}
+#endif
+
+// The radio's M17 settings (radio_m17.h) are the VFO's and a channel switched to M17's, one copy in RAM. Talk & listen's
+// CAN and voice persist (settings_t): the VFO's own. The rest, and on a channel switched to M17 the CAN and the rate
+// too, are for now (docs/ux/m17.md 9): Back on Home, and leaving the VFO or the channel, put them back where they
+// start from (m17_settings_reset)
+static bool m17_settings_here(const radio_view_t *v)
+{
+	return v->ch.mode == RADIO_MODE_M17 && (v->vfo || v->ch.kind != CODEPLUG_KIND_M17);
+}
+
+static void m17_settings_base(radio_m17_settings_t *b)
+{
+	int32_t can = ui_svc_setting_get(UI_SET_M17_CAN);
+	memset(b, 0, sizeof *b);
+	b->can = b->tx_can = (uint8_t)(can < 0 || can > (int32_t)M17_CAN_MAX ? 0 : can);	// as ui_svc_apply hands it on
+	b->mode1600 = ui_svc_setting_get(UI_SET_M17_VOICE) != 0;
+	b->squelch = M17_SQUELCH_CAN;
+	memset(b->dst, 0xFF, sizeof b->dst);	// All call
+}
+
+// Whether the settings (as the radio task will have them) hold a change for now
+static bool m17_settings_changed(void)
+{
+	radio_m17_settings_t m, b;
+	radio_m17_settings_next(&m);
+	m17_settings_base(&b);
+	return m.can != b.can || m.tx_can != b.tx_can || m.mode1600 != b.mode1600 || m.squelch != b.squelch ||
+	       memcmp(m.dst, b.dst, sizeof m.dst) != 0;
+}
+
+static void m17_settings_reset(void)
+{
+	radio_m17_settings_t b;
+	m17_settings_base(&b);
+	radio_req_m17_settings(&b);
+}
+
+// Every pass: the settings' changes for now end with the VFO or the channel they were made on. Not while a scan runs:
+// the receiver moves then, not the user, so where it ends is judged once it has. Nor while dual watch runs, as its
+// receiver visits the other channel all the time: then the selected channel (sel, ui_dual_view) is the one the user
+// is on. Selecting a channel off the settings (FM, a stored M17 channel) keeps the changes: they go on with the other,
+// which is still watched. Selecting another channel on them ends them, as there is one copy and they would follow it
+static void m17_settings_track(const radio_view_t *v, const radio_view_t *sel)
+{
+	bool dual = false;
+	uint16_t at;
+#if CONFIG_DUAL_WATCH
+	// sel is the selected channel only while the UI runs the watch. That includes the moment a setting changed on the
+	// selected channel stops it (the radio retunes there, scan 0, and the UI starts it again): the user stays on it
+	dual = ui_st.dual.on && (v->scan == 3 /* SCAN_DUAL */ || v->scan == 0);
+#endif
+	if (v->scan != 0 && !dual)
+		return;
+	if (!dual)
+		sel = v;
+	at = sel->vfo ? sel->vfo_index : sel->channel_number;
+#if CONFIG_DUAL_WATCH
+	if (sel != v && sel->vfo)
+		at = ui_dual_sel_vfo();		// the mixed view's vfo_index is the tuned channel's
+#endif
+	bool here = m17_settings_here(sel);
+	bool moved = sel->vfo != m17.set_vfo || at != m17_set_at;
+	if (m17.set_here && (dual ? here && moved : !here || moved) && m17_settings_changed())
+		m17_settings_reset();
+	if (dual && !here)
+		return;		// a channel off the settings selected: they stay the other's
+	m17.set_here = here;
+	m17.set_vfo = sel->vfo;
+	m17_set_at = at;
+}
+
+static void m17_update(const radio_view_t *v)
+{
+	const radio_m17_view_t *m = &v->m17;
+	m17_settings_track(v, view);
+	if (v->ch.mode != RADIO_MODE_M17 || (m->flags & RADIO_M17_ON) == 0)
+		return;
+	if (m->call_seq != m17.seq) {
+		m17.seq = m->call_seq;
+		m17.took = 0;
+	}
+	if (m17.took == 0 && m->end_ms != 0 && m17_addr_get(m->orig) != 0 && (m->flags & RADIO_M17_BERT) == 0) {
+		ui_recent_t r;
+		memset(&r, 0, sizeof r);
+		r.src.kind = r.dst.kind = UI_ADDR_CALL;
+		r.src.net = r.dst.net = UI_NET_M17;
+		memcpy(r.src.call, m->orig, sizeof r.src.call);
+		memcpy(r.dst.call, m->dst, sizeof r.dst.call);
+		r.to_us = (m->flags & RADIO_M17_TO_US) != 0;
+		r.sig = m->sig;
+		r.ms = m->end_ms;
+		m17.took = 1;
+#if CONFIG_M17_PACKET
+		const radio_m17_details_t *d = (m->flags & RADIO_M17_PACKET) ? ui_m17_details() : NULL;
+		r.sig = d != NULL ? UI_RECENT_SIG_DATA : m->sig;
+		if (d != NULL && d->pkt_type == M17_PKT_SMS)	// a message goes to Messages instead
+			m17.took = 3;
+		else
+#endif
+			recent_add(&r);
+	} else if (m17.took == 1 && recent_n > 0 && recent[0].src.kind == UI_ADDR_CALL &&
+		   memcmp(recent[0].src.call, m->orig, sizeof m->orig) == 0 && recent[0].sig != m->sig &&
+		   recent[0].sig != UI_RECENT_SIG_DATA) {
+		recent[0].sig = m->sig;		// the verdict after the end
+		dirty = true;
+	}
+#if CONFIG_M17_SIG
+	if (m17.took == 1 && m->end_ms != 0)
+		m17_banner(m);
+#endif
+	// a call of ours; not a BER test's frames (the page holds BERT mode: PTT sends those)
+	bool tx = v->state == RS_TX && !v->tx_auto && (m->flags & (RADIO_M17_BERT | RADIO_M17_BERT_MODE)) == 0;
+	if (tx && !m17.tx) {
+		ui_recent_t r;
+		memset(&r, 0, sizeof r);
+		r.src.kind = r.dst.kind = UI_ADDR_CALL;
+		r.src.net = r.dst.net = UI_NET_M17;
+		memcpy(r.src.call, m->own, sizeof r.src.call);
+		memcpy(r.dst.call, m->talk, sizeof r.dst.call);
+		r.out = true;
+		r.ms = now;
+		recent_add(&r);
+	}
+	m17.tx = tx;
 }
 #endif
 
@@ -457,25 +639,50 @@ bool ui_contact_name(uint32_t id, bool group, char *out)
 	return false;
 }
 
+bool ui_addr_eq(const ui_addr_t *a, const ui_addr_t *b)
+{
+	if (a->kind != b->kind || a->net != b->net)
+		return false;
+	return a->kind == UI_ADDR_CALL ? memcmp(a->call, b->call, sizeof a->call) == 0 : a->id == b->id;
+}
+
+void ui_sb_addr(sbuf_t *b, const ui_addr_t *a)
+{
+	switch (a->kind) {
+	case UI_ADDR_DMR_ID:
+	case UI_ADDR_DMR_TG:
+		if (a->id == UI_ADDR_ALL_CALL) {
+			sb_str(b, TR(VALUE_ALL_CALL, "All call"));
+			return;
+		}
+		if (a->kind == UI_ADDR_DMR_TG)
+			sb_str(b, "TG ");
+		sb_u32(b, a->id, 1);
+		return;
+#if CONFIG_M17
+	case UI_ADDR_CALL:
+		ui_sb_m17(b, a->call);
+		return;
+#endif
+	default:
+		return;
+	}
+}
+
 void ui_sb_target(char *buf, size_t len, const ui_target_t *t)
 {
 	sbuf_t b;
 	sb_init(&b, buf, len);
-	if (t->id == 0xFFFFFFu) {
-		sb_str(&b, TR(VALUE_ALL_CALL, "All call"));
+	// A talkgroup with its name after the number; a person by name, else the address; All call as a word
+	bool all = t->addr.kind != UI_ADDR_CALL && t->addr.id == UI_ADDR_ALL_CALL;
+	if (!all && !ui_addr_group(&t->addr) && t->name[0]) {
+		sb_str(&b, t->name);
 		return;
 	}
-	if (t->group) {
-		sb_str(&b, "TG ");
-		sb_u32(&b, t->id, 1);
-		if (t->name[0]) {
-			sb_chr(&b, ' ');
-			sb_str(&b, t->name);
-		}
-	} else if (t->name[0]) {
+	ui_sb_addr(&b, &t->addr);
+	if (!all && ui_addr_group(&t->addr) && t->name[0]) {
+		sb_chr(&b, ' ');
 		sb_str(&b, t->name);
-	} else {
-		sb_u32(&b, t->id, 1);
 	}
 }
 
@@ -488,14 +695,44 @@ void ui_sb_age(char *buf, size_t len, uint32_t ms)
 
 // --- talking to a target ---
 
+// Home, and a toast that says to whom PTT talks now ("Talking to ", or "Default now: "). The toast keeps the pointer:
+// talk_msg is its text (M17's Quick settings toasts use it too: one buffer, RAM is short)
+static char talk_msg[48];
+
+static void talked(const char *name, bool permanent)
+{
+	char *msg = talk_msg;
+	ui_go_home();
+	sbuf_t b;
+	sb_init(&b, msg, sizeof talk_msg);
+	sb_str(&b, permanent ? TR(TALK_TOAST_DEFAULT_NOW, "Default now: ") : TR(TALK_TOAST_TALKING_TO, "Talking to "));
+	sb_str(&b, name);
+	ui_toast(msg);
+}
+
 void ui_talk(const ui_target_t *t, bool permanent)
 {
-	static char msg[48];
 	char name[32];
 	ui_sb_target(name, sizeof name, t);
-	if (permanent && !ui_svc_talk_to(t->id, !t->group, UI_TALK_PERMANENT)) {
+#if CONFIG_M17
+	if (t->addr.kind == UI_ADDR_CALL) {
+		// An M17 destination: the VFO's and a channel switched to M17 for now take it either way; a stored M17
+		// channel only as its own (the radio core holds no temporary destination there)
+		if (!ui_svc_m17_talk_to(t->addr.call, permanent ? UI_TALK_PERMANENT : UI_TALK_TEMPORARY)) {
+			ui_toast(view->ch.mode != RADIO_MODE_M17 ? TR(MSG_WHY_M17_CHANNEL, TEXT_ALT_OPEN
+				"Send from an M17 channel" TEXT_ALT_NEXT "M17 channels only" TEXT_ALT_CLOSE) :
+				TR(M17_WHY_STORED_HOLD_OK, "Hold OK to set it"));
+			return;
+		}
+		talked(name, permanent && !view->vfo);	// the VFO's destination is simply the VFO's
+		return;
+	}
+#endif
+	uint32_t id = t->addr.id;
+	bool private_call = !ui_addr_group(&t->addr);
+	if (permanent && !ui_svc_talk_to(id, private_call, UI_TALK_PERMANENT)) {
 		// No codeplug writer yet: use it for now and say so
-		if (ui_svc_talk_to(t->id, !t->group, UI_TALK_TEMPORARY)) {
+		if (ui_svc_talk_to(id, private_call, UI_TALK_TEMPORARY)) {
 			ui_go_home();
 			ui_toast(TR(TALK_TOAST_FOR_NOW_ONLY, "For now only: save it in qdmr"));
 		} else {
@@ -503,16 +740,11 @@ void ui_talk(const ui_target_t *t, bool permanent)
 		}
 		return;
 	}
-	if (!permanent && !ui_svc_talk_to(t->id, !t->group, UI_TALK_TEMPORARY)) {
+	if (!permanent && !ui_svc_talk_to(id, private_call, UI_TALK_TEMPORARY)) {
 		ui_toast(TR(WHY_TALK_TARGET_NOT_IN_BUILD, "Talk target: not in this build"));
 		return;
 	}
-	ui_go_home();
-	sbuf_t b;
-	sb_init(&b, msg, sizeof msg);
-	sb_str(&b, permanent ? TR(TALK_TOAST_DEFAULT_NOW, "Default now: ") : TR(TALK_TOAST_TALKING_TO, "Talking to "));
-	sb_str(&b, name);
-	ui_toast(msg);
+	talked(name, permanent);
 }
 
 void ui_open_actions(const ui_target_t *t)
@@ -524,11 +756,22 @@ void ui_open_actions(const ui_target_t *t)
 // The station Home's CONTEXT acts on: the current caller, else the last one heard
 static bool caller_target(ui_target_t *t)
 {
+#if CONFIG_M17
+	const radio_m17_view_t *m = &view->m17;
+	if (view->ch.mode == RADIO_MODE_M17 && (m->flags & RADIO_M17_LSF) && m17_addr_get(m->orig) != 0 &&
+	    (view->state == RS_RX || recent_n == 0)) {
+		memset(t, 0, sizeof *t);
+		t->addr.kind = UI_ADDR_CALL;
+		t->addr.net = UI_NET_M17;
+		memcpy(t->addr.call, m->orig, sizeof t->addr.call);
+		return true;
+	}
+#endif
 #if CONFIG_DMR
 	const radio_dmr_view_t *d = &view->dmr;
 	if (view->state == RS_RX && d->active && d->state != RDMR_IDLE && d->call.src != 0) {
 		memset(t, 0, sizeof *t);
-		t->id = d->call.src;
+		ui_addr_set_dmr(&t->addr, d->call.src, false);
 		t->heard_tg = d->call.group ? d->call.dst : 0;
 		strcpy(t->name, d->call.src_name);
 		t->saved = t->name[0] != 0;
@@ -582,7 +825,7 @@ bool ui_notify(const ui_event_t *ev)
 // also hold (" de " in Spanish)
 static const char *name_mark;
 
-static void banner(uint8_t kind, bool warn, uint32_t id, const char *title, const char *text)
+static void banner(uint8_t kind, bool warn, const ui_addr_t *about, const char *title, const char *text)
 {
 	ui_banner_t *b = &ui_st.banner;
 	uintptr_t at = (uintptr_t)name_mark - (uintptr_t)title;
@@ -590,7 +833,10 @@ static void banner(uint8_t kind, bool warn, uint32_t id, const char *title, cons
 	name_mark = NULL;
 	b->kind = kind;
 	b->warn = warn;
-	b->id = id;
+	if (about != NULL)
+		b->addr = *about;
+	else
+		memset(&b->addr, 0, sizeof b->addr);
 	b->hold = kind == UI_BANNER_ZONE_OFFER;	// the offer is the user's to answer, not to miss
 	b->until_ms = now + BANNER_MS;
 	strncpy(b->title, title, sizeof b->title - 1);
@@ -614,8 +860,8 @@ static void station(sbuf_t *b, const ui_event_t *ev)
 	name_mark = b->p;
 	if (ev->name[0])
 		sb_str(b, ev->name);
-	else if (!ui_sb_gw_caller(b, ev->id))
-		sb_u32(b, ev->id, 1);
+	else if (ev->from.kind != UI_ADDR_DMR_ID || !ui_sb_gw_caller(b, ev->from.id))
+		ui_sb_addr(b, &ev->from);
 }
 
 // The alerts that reach the user anyway (a banner, a screen, maybe a tone) also vibrate when Settings > Sound > Vibrate
@@ -637,12 +883,14 @@ static void handle_event(const ui_event_t *ev)
 		sb_str(&b, TR(MSG_BANNER_FROM, "Message from "));
 		station(&b, ev);
 		{
-			// The banner shows two lines of the message: more than the event carries, from the inbox
+			// The banner shows two lines of the message: more than the event carries, from the inbox. The event
+			// counts in its provider's inbox, and so does the banner: another mode's message arriving while it
+			// is up moves the merged rows, so the row is found when it opens (banner_open)
 			ui_msg_t m;
-			bool got = ui_svc_msg_get(ev->index, &m);
-			banner(UI_BANNER_MESSAGE, false, ev->id, title, got ? m.text : ev->text);
+			bool got = ui_svc_msg_get(ui_svc_msg_row(ev->from.net, ev->index), &m);
+			banner(UI_BANNER_MESSAGE, false, &ev->from, title, got ? m.text : ev->text);
+			ui_st.banner.msg = ev->index;
 		}
-		ui_st.banner.msg = ev->index;
 		if (ui_st.message_tone)
 			ui_svc_beep(UI_BEEP_MESSAGE);
 		vibrate(UI_VIBE_MESSAGE);
@@ -652,24 +900,31 @@ static void handle_event(const ui_event_t *ev)
 			sb_str(&b, ev->index == 1 ? TR(BANNER_SENT_TO, "Sent to ") :
 				TR(MSG_BANNER_DELIVERED_TO, "Delivered to "));
 			station(&b, ev);
-			banner(UI_BANNER_RESULT, false, ev->id, title, NULL);
+			banner(UI_BANNER_RESULT, false, &ev->from, title, NULL);
+#if CONFIG_M17_PACKET
+		} else if (ev->index == 2) {	// M17: never on air, the channel stayed busy (no delivery report there)
+			sb_str(&b, TR(MSG_BANNER_NOT_SENT_TO, "Not sent to "));
+			station(&b, ev);
+			banner(UI_BANNER_RESULT, true, &ev->from, title,
+				TR(MSG_BANNER_CHANNEL_BUSY, "Channel busy: send again"));
+#endif
 		} else {
 			sb_str(&b, TR(BANNER_NO_ANSWER_FROM, "No answer from "));
 			station(&b, ev);
-			banner(UI_BANNER_RESULT, true, ev->id, title,
+			banner(UI_BANNER_RESULT, true, &ev->from, title,
 				TR(MSG_BANNER_NOT_DELIVERED, "Not delivered: send again"));
 		}
 		break;
 	case UI_EV_CALL_ALERT:
 		sb_str(&b, TR(ALERT_BANNER_FROM, "Call alert from "));
 		station(&b, ev);
-		banner(UI_BANNER_CALL_ALERT, false, ev->id, title, TR(HINT_PTT_REPLIES, "PTT replies"));
+		banner(UI_BANNER_CALL_ALERT, false, &ev->from, title, TR(HINT_PTT_REPLIES, "PTT replies"));
 		vibrate(UI_VIBE_CALL);
 		break;
 	case UI_EV_PRIVATE_CALL:
 		sb_str(&b, TR(CALL_BANNER_PRIVATE_FROM, "Private call from "));
 		station(&b, ev);
-		banner(UI_BANNER_PRIVATE, false, ev->id, title, TR(HINT_PTT_REPLIES, "PTT replies"));
+		banner(UI_BANNER_PRIVATE, false, &ev->from, title, TR(HINT_PTT_REPLIES, "PTT replies"));
 		vibrate(UI_VIBE_CALL);
 		break;
 	case UI_EV_RADIO_CHECK:
@@ -683,17 +938,17 @@ static void handle_event(const ui_event_t *ev)
 			sb_chr(&tb, '.');
 			sb_u32(&tb, (ev->ms % 1000u) / 100u, 1);
 			sb_str(&tb, " s)");
-			banner(UI_BANNER_RESULT, false, ev->id, title, t);
+			banner(UI_BANNER_RESULT, false, &ev->from, title, t);
 		} else {
 			sb_init(&b, title, sizeof title);
 			sb_str(&b, TR(BANNER_NO_ANSWER_FROM, "No answer from "));
 			station(&b, ev);
-			banner(UI_BANNER_RESULT, true, ev->id, title,
+			banner(UI_BANNER_RESULT, true, &ev->from, title,
 				TR(BANNER_OFF_OR_OUT_OF_RANGE, "Off or out of range: try later"));
 		}
 		break;
 	case UI_EV_EMERGENCY:
-		emerg_id = ev->id;
+		emerg_id = ev->from.id;
 		strcpy(emerg_name, ev->name);
 		if (stack[sp].scr != SCR_EMERGENCY)
 			ui_push(SCR_EMERGENCY, 0);
@@ -701,7 +956,7 @@ static void handle_event(const ui_event_t *ev)
 		vibrate(UI_VIBE_EMERGENCY);
 		break;
 	case UI_EV_HOTSPOT_STARTED:
-		banner(UI_BANNER_INFO, false, 0, TR(HOTSPOT_BANNER_STARTED_BY_HOST, "Hotspot started by host"),
+		banner(UI_BANNER_INFO, false, NULL, TR(HOTSPOT_BANNER_STARTED_BY_HOST, "Hotspot started by host"),
 			TR(HOTSPOT_BANNER_OK_STOPS, "OK stops it"));
 		break;
 #if CONFIG_APRS_RX
@@ -729,11 +984,11 @@ static void handle_event(const ui_event_t *ev)
 		if (ev->ok) {
 			station(&b, ev);
 			sb_str(&b, TR(ALERT_BANNER_ANSWERED, " answered the alert"));
-			banner(UI_BANNER_RESULT, false, ev->id, title, NULL);
+			banner(UI_BANNER_RESULT, false, &ev->from, title, NULL);
 		} else {
 			sb_str(&b, TR(BANNER_NO_ANSWER_FROM, "No answer from "));
 			station(&b, ev);
-			banner(UI_BANNER_RESULT, true, ev->id, title,
+			banner(UI_BANNER_RESULT, true, &ev->from, title,
 				TR(BANNER_OFF_OR_OUT_OF_RANGE, "Off or out of range: try later"));
 		}
 		break;
@@ -742,7 +997,7 @@ static void handle_event(const ui_event_t *ev)
 		power_off_due = false;
 		off_warned = false;
 		last_use_ms = now;
-		banner(UI_BANNER_INFO, true, 0, TR(AUTOOFF_BANNER_FAILED, "Couldn't switch off"),
+		banner(UI_BANNER_INFO, true, NULL, TR(AUTOOFF_BANNER_FAILED, "Couldn't switch off"),
 			TR(AUTOOFF_BANNER_TURN_KNOB_OFF, "Turn the knob off"));
 		break;
 	case UI_EV_SCAN_STOPPED:
@@ -751,7 +1006,7 @@ static void handle_event(const ui_event_t *ev)
 		sb_str(&b, ev->index ? TR(SHARE_BANNER_CHANNEL_FROM, GLYPH_DOWNLOAD " Channel from ") :
 			TR(SHARE_BANNER_ZONE_FROM, GLYPH_DOWNLOAD " Zone from "));
 		station(&b, ev);
-		banner(UI_BANNER_ZONE_OFFER, false, ev->id, title, ev->text);
+		banner(UI_BANNER_ZONE_OFFER, false, &ev->from, title, ev->text);
 		if (ui_st.message_tone)
 			ui_svc_beep(UI_BEEP_MESSAGE);
 		vibrate(UI_VIBE_MESSAGE);
@@ -761,7 +1016,7 @@ static void handle_event(const ui_event_t *ev)
 		if (ev->index && !ev->name[0])
 			sb_str(&b, "TG ");
 		station(&b, ev);
-		banner(UI_BANNER_RESULT, !ev->ok, ev->id, title, ev->ok ? NULL :
+		banner(UI_BANNER_RESULT, !ev->ok, &ev->from, title, ev->ok ? NULL :
 			TR(SHARE_BANNER_TRY_ON_DMR, "Try again on a DMR channel"));
 		break;
 	case UI_EV_ZONE_IMPORTED:
@@ -769,7 +1024,7 @@ static void handle_event(const ui_event_t *ev)
 			char text[48];
 			sbuf_t tb;
 			sb_init(&tb, text, sizeof text);
-			sb_str(&b, ev->id ? TR(SHARE_BANNER_UPDATED, "Updated ") :
+			sb_str(&b, ev->updated ? TR(SHARE_BANNER_UPDATED, "Updated ") :
 				TR(SHARE_BANNER_IMPORTED, "Imported "));
 			sb_str(&b, ev->name);
 			if (ev->ms != 0) {
@@ -781,9 +1036,9 @@ static void handle_event(const ui_event_t *ev)
 				sb_str(&tb, ev->index == 1 ? TR(SHARE_BANNER_CHANNEL_RX_ONLY, " channel, receive only") :
 					TR(SHARE_BANNER_CHANNELS_RX_ONLY, " channels, receive only"));
 			}
-			banner(UI_BANNER_RESULT, ev->ms != 0, 0, title, text);
+			banner(UI_BANNER_RESULT, ev->ms != 0, NULL, title, text);
 		} else {
-			banner(UI_BANNER_RESULT, true, 0, TR(SHARE_BANNER_NOT_IMPORTED, "Zone not imported"),
+			banner(UI_BANNER_RESULT, true, NULL, TR(SHARE_BANNER_NOT_IMPORTED, "Zone not imported"),
 				tr(ev->why));
 		}
 		break;
@@ -798,13 +1053,20 @@ static void banner_open(void)
 	ui_banner_t *b = &ui_st.banner;
 	ui_target_t t;
 	memset(&t, 0, sizeof t);
-	t.id = b->id;
-	t.saved = ui_contact_name(b->id, false, t.name);
+	t.addr = b->addr;
+	if (t.addr.kind == UI_ADDR_NONE)
+		ui_addr_set_dmr(&t.addr, 0, false);		// a banner about no one: actions on no one, as before
+	if (t.addr.net == UI_NET_DMR)
+		t.saved = ui_contact_name(t.addr.id, ui_addr_group(&t.addr), t.name);
 	uint8_t kind = b->kind;
 	uint16_t msg = b->msg;
 	b->kind = UI_BANNER_NONE;
 	if (kind == UI_BANNER_MESSAGE)
-		ui_push(SCR_MESSAGE, msg);
+		ui_push(SCR_MESSAGE, ui_svc_msg_row(b->addr.net, msg));	// the merged row now (gone: the screen says so)
+#if CONFIG_M17
+	else if (kind == UI_BANNER_CALL)
+		ui_push(SCR_CALL_DETAILS, 0);
+#endif
 #if CONFIG_ZONE_SHARE
 	else if (kind == UI_BANNER_ZONE_OFFER)
 		ui_push(SCR_OFFER, 0);
@@ -983,6 +1245,16 @@ bool ui_try_save_channel(void)
 
 // --- Home (information-architecture.md 3) ---
 
+// On the radio's M17 settings, a change for now that Back undoes: a destination (the VFO's too), the CAN, the rate
+static bool m17_temporary(void)
+{
+#if CONFIG_M17
+	return m17_settings_here(view) && m17_settings_changed();
+#else
+	return false;
+#endif
+}
+
 static bool target_manual(void)
 {
 #if CONFIG_DMR
@@ -1123,10 +1395,9 @@ static bool talk_step(int dir)
 		return false;
 	ui_target_t t;
 	memset(&t, 0, sizeof t);
-	t.id = c.id;
-	t.group = c.type != CONTACT_PRIVATE;
+	ui_addr_set_dmr(&t.addr, c.id, c.type != CONTACT_PRIVATE);
 	strcpy(t.name, c.name);
-	ui_svc_talk_to(next == 0 ? 0 : t.id, !t.group, next == 0 ? UI_TALK_DEFAULT : UI_TALK_TEMPORARY);
+	ui_svc_talk_to(next == 0 ? 0 : t.addr.id, !ui_addr_group(&t.addr), next == 0 ? UI_TALK_DEFAULT : UI_TALK_TEMPORARY);
 	char name[32];
 	ui_sb_target(name, sizeof name, &t);
 	sbuf_t b;
@@ -1141,6 +1412,16 @@ static bool talk_step(int dir)
 
 bool ui_home_key(const input_event_t *ev)
 {
+#if CONFIG_M17
+	bool ask_call = m17.ask_call && ev->gesture == GESTURE_PRESS &&
+		(uint16_t)((uint16_t)(now >> 8) - m17.ask_t) < M17_ASK_CALL_T;
+	if (ev->gesture == GESTURE_PRESS || ev->gesture == GESTURE_LONG)
+		m17.ask_call = false;
+	if (ask_call && ev->action == ACT_SELECT) {
+		ui_callsign_open(UI_CALL_OWN);
+		return true;
+	}
+#endif
 #if CONFIG_DUAL_WATCH
 	if (ui_dual_home_key(ev))
 		return true;
@@ -1232,9 +1513,14 @@ bool ui_home_key(const input_event_t *ev)
 			ui_st.hear_all = false;
 			ui_toast(dmon_text(false));
 #endif
-		} else if (view->temporary || ui_st.privacy || (CONFIG_DMR && target_manual())) {
+		} else if (view->temporary || ui_st.privacy || (CONFIG_DMR && target_manual()) || m17_temporary()) {
 			radio_req_clear_temporary();
-			ui_svc_talk_to(0, false, UI_TALK_DEFAULT);
+#if CONFIG_M17
+			if (m17_settings_here(view))
+				m17_settings_reset();	// the destination, and on a channel the CAN and rate, for now
+			else
+#endif
+				ui_svc_talk_to(0, false, UI_TALK_DEFAULT);
 			if (ui_st.privacy && ui_svc_privacy(false))
 				ui_st.privacy = false;
 			ui_toast(TR(HOME_TOAST_CHANGES_UNDONE, "Changes undone"));
@@ -1366,7 +1652,8 @@ static void quick_change(uint8_t kind, int8_t dir)
 	case QT_SPLIT:
 		split_step(dir);
 		break;
-	case QT_CC: {
+	case QT_CC:
+	case QT_CAN: {
 		int c = ui_st.cc_edit + dir;
 		ui_st.cc_edit = (uint8_t)(c < 0 ? 15 : c > 15 ? 0 : c);
 		break;
@@ -1382,6 +1669,10 @@ static void quick_change(uint8_t kind, int8_t dir)
 	dirty = true;
 }
 
+#if CONFIG_M17
+static void m17_quick_set(uint8_t id, int32_t value);
+#endif
+
 static void quick_close_editor(void)
 {
 	uint8_t kind = ui_quick_kind(ui_st.quick_focus, view);
@@ -1389,6 +1680,10 @@ static void quick_close_editor(void)
 		return;		// the editor stays open on what was typed
 	if (kind == QT_CC && ui_st.quick_edit && !ui_svc_dmr_color_code(ui_st.cc_edit))
 		ui_toast(TR(WHY_COLOR_CODE_NOT_IN_BUILD, "Color code: not in this build"));
+#if CONFIG_M17
+	if (kind == QT_CAN && ui_st.quick_edit)
+		m17_quick_set(UI_SET_M17_CAN, ui_st.cc_edit);
+#endif
 	if (kind == QT_BRIGHTNESS)
 		ui_svc_setting_set(UI_SET_BRIGHTNESS, ui_st.brightness);
 	ui_st.quick_edit = false;
@@ -1413,6 +1708,59 @@ static void quick_unavailable(uint8_t kind)
 	default: ui_toast(TR(WHY_NOT_IN_BUILD, "Not in this build")); break;
 	}
 }
+
+#if CONFIG_M17
+// On a stored M17 channel the radio core takes its block only (m17.md 17.1): no change for now
+static bool m17_stored(void)
+{
+	return view->ch.mode == RADIO_MODE_M17 && !view->vfo && view->ch.kind == CODEPLUG_KIND_M17;
+}
+
+static const char *m17_why_stored(void)
+{
+	return TR(M17_WHY_STORED_EDITOR, "Set it in the channel editor");
+}
+
+// The VFO's rate or CAN: its own, the Talk & listen rows' (settings_t), "CAN 3". A channel switched to M17's: the
+// radio's settings alone, for now (Back on Home or another channel undoes it, m17_settings_reset), "CAN 3 for now"
+static void m17_quick_set(uint8_t id, int32_t value)
+{
+	char *msg = talk_msg;	// the toast keeps the pointer
+	sbuf_t b;
+	if (view->vfo && !ui_svc_setting_set(id, value))
+		return;
+	ui_svc_apply(id, value);
+	sb_init(&b, msg, sizeof talk_msg);
+	sb_str(&b, id == UI_SET_M17_CAN ? "CAN " : TR(CHAN_LABEL_RATE, "Rate"));
+	if (id == UI_SET_M17_CAN)
+		sb_u32(&b, (uint32_t)value, 1);
+	else
+		sb_str(&b, value ? " 1600" : " 3200");
+	if (!view->vfo)
+		sb_str(&b, TR(QUICK_TOAST_FOR_NOW, " for now"));
+	ui_toast(msg);
+}
+
+// Tile 6 on M17: the channel's transmit encryption. Off is always allowed: a stored channel's block is written (the
+// radio core keeps no temporary one), also where this build can't send what it stores (PTT's refusal says * 6). On is
+// the Codeplug Editor's, which sets the key
+static void m17_quick_privacy(void)
+{
+	bool enc = ui_m17_has(UI_M17_ENC);
+	if (m17_stored() && ((view->m17.flags & RADIO_M17_TX_ENC) || !enc)) {
+		ui_toast(ui_svc_m17_write_block(NULL, true) ? TR(QUICK_TOAST_PRIVACY_OFF, "Privacy off") :
+			TR(TOAST_BUSY_SAVING, "Busy saving: try again"));
+		return;
+	}
+#if CONFIG_M17_SCRAMBLER || CONFIG_M17_AES
+	if (enc) {
+		ui_toast(m17_stored() ? m17_why_stored() : TR(WHY_ENC_NO_KEY, "No key: set one in the editor"));
+		return;
+	}
+#endif
+	ui_toast(TR(WHY_ENC_NOT_IN_BUILD, "Encryption: not in this build"));
+}
+#endif
 
 static void quick_activate(int tile)
 {
@@ -1456,6 +1804,11 @@ static void quick_activate(int tile)
 			view->ch.mode == RADIO_MODE_DMR && p25 ? RADIO_MODE_P25 :
 			(view->ch.mode == RADIO_MODE_DMR || view->ch.mode == RADIO_MODE_P25) && nxdn ? RADIO_MODE_NXDN :
 			RADIO_MODE_FM;
+#if CONFIG_M17
+		// then M17, where the board runs it (docs/ux/m17.md 9)
+		if (to == RADIO_MODE_FM && view->ch.mode != RADIO_MODE_M17 && (feat & UI_FEAT_M17) != 0)
+			to = RADIO_MODE_M17;
+#endif
 		static char msg[12];	// the toast keeps the pointer
 		sbuf_t b;
 		if (to != RADIO_MODE_FM && (view->am || view->bcast)) {
@@ -1508,6 +1861,16 @@ static void quick_activate(int tile)
 		ui_st.quick_edit = true;
 		break;
 	case QT_HEAR_ALL:
+#if CONFIG_M17
+		if (view->ch.mode == RADIO_MODE_M17) {
+			bool on = view->m17.rx_can != M17_CAN_ANY;
+			if (ui_svc_hear_all(on))
+				ui_toast(dmon_text(on));
+			else
+				ui_toast(m17_why_stored());
+			break;
+		}
+#endif
 		if (ui_svc_hear_all(!ui_st.hear_all)) {
 			ui_st.hear_all = !ui_st.hear_all;
 			ui_toast(dmon_text(ui_st.hear_all));
@@ -1516,6 +1879,12 @@ static void quick_activate(int tile)
 		}
 		break;
 	case QT_PRIVACY:
+#if CONFIG_M17
+		if (view->ch.mode == RADIO_MODE_M17) {
+			m17_quick_privacy();
+			break;
+		}
+#endif
 		if (ui_svc_privacy(!ui_st.privacy)) {
 			ui_st.privacy = !ui_st.privacy;
 			ui_toast(ui_st.privacy ? TR(QUICK_TOAST_PRIVACY_ON_FOR_NOW, "Privacy on for now") :
@@ -1526,6 +1895,22 @@ static void quick_activate(int tile)
 		break;
 	case QT_TALK_TO:
 		ui_push(SCR_PICKER, 0);
+		break;
+#endif
+#if CONFIG_M17
+	case QT_RATE:
+		if (m17_stored())
+			ui_toast(m17_why_stored());
+		else
+			m17_quick_set(UI_SET_M17_VOICE, (view->m17.flags & RADIO_M17_TX_1600) == 0);
+		break;
+	case QT_CAN:
+		if (m17_stored()) {
+			ui_toast(m17_why_stored());
+			break;
+		}
+		ui_st.cc_edit = view->m17.tx_can;	// the color code's editor: digits or Up / Down, OK sets
+		ui_st.quick_edit = true;
 		break;
 #endif
 	case QT_POWER: {
@@ -1575,7 +1960,7 @@ bool ui_quick_key(const input_event_t *ev)
 				ui_toast(TR(QUICK_TOAST_ALL_DIGITS_TYPED, "All digits typed: OK sets TX"));
 			else
 				(void)ui_freq_entry_digit(ui_st.entry_digits, &ui_st.entry_len, (char)('0' + d));
-		} else if (ui_st.quick_edit && kind == QT_CC) {
+		} else if (ui_st.quick_edit && (kind == QT_CC || kind == QT_CAN)) {
 			int c = ui_st.cc_edit * 10 + d;
 			ui_st.cc_edit = (uint8_t)(ui_st.cc_edit < 2 && c <= 15 && ui_st.cc_edit != 0 ? c : d);
 		} else if (ui_st.quick_edit && kind == QT_BRIGHTNESS) {
@@ -1742,7 +2127,7 @@ bool ui_emergency_key(const input_event_t *ev)
 	if (ev->action == ACT_CONTEXT) {
 		ui_target_t t;
 		memset(&t, 0, sizeof t);
-		t.id = emerg_id;
+		ui_addr_set_dmr(&t.addr, emerg_id, false);
 		strcpy(t.name, emerg_name);
 		ui_svc_emergency_dismiss();
 		ui_pop();
@@ -2103,15 +2488,26 @@ static void call_back_key(void)
 		}
 		ui_target_t t;
 		memset(&t, 0, sizeof t);
-		t.group = r->group;
-		t.id = r->group ? r->dst : r->src;
-		if (!ui_contact_name(t.id, t.group, t.name) && !r->group)
+		bool group = ui_addr_group(&r->dst);
+		t.addr = group ? r->dst : r->src;
+		if (!ui_contact_name(t.addr.id, group, t.name) && !group)
 			strcpy(t.name, r->name);
 		t.saved = t.name[0] != 0;
 		ui_talk(&t, false);
 		return;
 	}
 	ui_toast(TR(EMPTY_NO_CALLS_HEARD, "No calls heard yet"));
+}
+
+// Why the talk target picker has no rows here: DMR's alone, or DMR's and M17's
+static const char *picker_why(void)
+{
+#if CONFIG_M17
+	return TR(TALK_WHY_DIGITAL_ONLY, TEXT_ALT_OPEN "Talk target: DMR and M17 only" TEXT_ALT_NEXT "DMR and M17 only"
+		TEXT_ALT_CLOSE);
+#else
+	return TR(TALK_WHY_DMR_CHANNELS_ONLY, "Talk target: DMR channels only");
+#endif
 }
 
 void ui_app_key(const input_event_t *ev)
@@ -2206,17 +2602,17 @@ void ui_app_key(const input_event_t *ev)
 		return;
 	}
 	if (ev->action == ACT_CONTEXT && ev->gesture == GESTURE_LONG) {
-		if (!CONFIG_DMR || view->ch.mode != RADIO_MODE_DMR)
-			ui_toast(TR(TALK_WHY_DMR_CHANNELS_ONLY, "Talk target: DMR channels only"));
+		if (!ui_picker_offered(view->ch.mode))
+			ui_toast(picker_why());
 		else if (stack[sp].scr != SCR_PICKER)
 			ui_push(SCR_PICKER, 0);
 		return;
 	}
 	if (ev->action == ACT_TALK_TARGET && (ev->gesture == GESTURE_PRESS || ev->gesture == GESTURE_LONG)) {
-		if (CONFIG_DMR && view->ch.mode == RADIO_MODE_DMR)
+		if (ui_picker_offered(view->ch.mode))
 			ui_push(SCR_PICKER, 0);
 		else
-			ui_toast(TR(TALK_WHY_DMR_CHANNELS_ONLY, "Talk target: DMR channels only"));
+			ui_toast(picker_why());
 		return;
 	}
 	// A reassigned side key (core/input/keyassign.h): the same on a press and a long press, on any screen
@@ -2458,7 +2854,8 @@ __attribute__((noinline)) static void knob_tick(const radio_view_t *v)
 }
 #endif
 
-bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
+// noinline: inlined into ui_task, its frame sits under every key's chain (Quick > a message screen > the contacts)
+__attribute__((noinline)) bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
 {
 	static uint32_t serial_seen;
 	static uint8_t battery_seen;
@@ -2571,6 +2968,15 @@ bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
 	}
 	zone_queued = queued;
 #endif
+#if CONFIG_M17
+	m17_update(v);
+	ui_svc_m17_poll();
+	ui_m17_tick(stack[sp].scr);
+	if (v->state == RS_TX_DENIED && (v->tx_deny == TXDENY_NO_CALLSIGN || v->tx_deny == TXDENY_CALLSIGN_BAD)) {
+		m17.ask_call = true;	// the hint says "OK set callsign"
+		m17.ask_t = (uint16_t)(now >> 8);
+	}
+#endif
 #if CONFIG_DMR
 	recent_update(v);
 	// "DMR modem off" only once it's been off a while: a channel or mode change (APRS on FM and back, a retune)
@@ -2616,10 +3022,7 @@ bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
 #endif
 	if (ui_st.entry && (now - entry_last >= ENTRY_TIMEOUT_MS || !view->vfo))
 		entry_cancel();
-	uint16_t unread = ui_svc_msg_unread();
-	aprs_view_t aprs_view;
-	if (ui_svc_aprs_view(&aprs_view))
-		unread += aprs_view.unread;
+	uint16_t unread = ui_svc_msg_unread();		// every provider's: DMR, APRS
 	if (unread != ui_st.unread) {
 		ui_st.unread = unread;
 		dirty = true;
@@ -2703,7 +3106,7 @@ bool ui_app_tick(const radio_view_t *v, uint32_t now_ms)
 				*sp_ = 0;	// first word of the name
 			sb_str(&b, name);
 		} else {
-			sb_u32(&b, t.id, 1);
+			ui_sb_addr(&b, &t.addr);
 		}
 	}
 	uint32_t serial = radio_view_serial();

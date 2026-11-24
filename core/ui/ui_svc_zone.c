@@ -146,7 +146,7 @@ static struct {
 // The import list's copy: the settings aren't held while the codeplug is written
 static settings_zs_import_t job_imports[SETTINGS_ZS_IMPORTS];
 
-// ok: name the zone's name here, index the channels written, id 1 when it updated an earlier import, ms the channels
+// ok: name the zone's name here, index the channels written, updated when it updated an earlier import, ms the channels
 // of a kind that came in unavailable (their system isn't set up here); else why, a key (TRN): the UI shows it in the
 // language in use
 static void import_done(bool ok, tr_id_t why, const zone_import_result_t *r)
@@ -158,7 +158,7 @@ static void import_done(bool ok, tr_id_t why, const zone_import_result_t *r)
 	if (r != NULL) {
 		memcpy(ev.name, r->name, sizeof ev.name - 1);
 		ev.index = r->channels;
-		ev.id = r->updated;
+		ev.updated = r->updated;
 		ev.ms = r->unavailable;
 	}
 	ev.why = why;
@@ -227,7 +227,7 @@ bool ui_svc_zone_offer_import(uint32_t serial, uint16_t zone)
 bool ui_svc_zone_event(uint8_t kind, uint32_t id, ui_event_t *ev)
 {
 	memset(ev, 0, sizeof *ev);
-	ev->id = id;
+	ui_addr_set_dmr(&ev->from, id, false);	// as the banner names it: "TG " before a talkgroup's number (index 1)
 	if (kind == DMR_DATA_EV_ZONE_SENT || kind == DMR_DATA_EV_ZONE_FAILED) {
 		ev->kind = UI_EV_ZONE_SENT;
 		ev->ok = kind == DMR_DATA_EV_ZONE_SENT;

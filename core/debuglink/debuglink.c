@@ -26,6 +26,7 @@
 #endif
 #include "input/input.h"
 #include "radio/radio.h"
+#include "radio/radio_air_modes.h"	// radio_mode_name
 #include "storage/storage.h"
 #include "settings/settings.h"
 #include "ui/gfx.h"
@@ -134,7 +135,7 @@ static bool summary_line(uint8_t i, char *buf, uint8_t len)
 	switch (i) {
 	case 0:
 		dl_fmt(buf, len, "radio %s %s ch %u '%s' %u.%05u %s%s",
-		       v->ch.mode == RADIO_MODE_NXDN ? "NXDN" : v->ch.mode == RADIO_MODE_P25 ? "P25" : v->ch.mode == RADIO_MODE_DMR ? "DMR" : "FM", v->vfo ? "VFO" : "MEM", v->channel_number, v->ch.name, (unsigned)(v->ch.rx_hz / 1000000u),
+		       radio_mode_name(v->ch.mode), v->vfo ? "VFO" : "MEM", v->channel_number, v->ch.name, (unsigned)(v->ch.rx_hz / 1000000u),
 		       (unsigned)((v->ch.rx_hz % 1000000u) / 10u), state_name((uint8_t)v->state),
 		       v->hotspot ? " HOTSPOT" : "");
 		return true;
@@ -214,6 +215,7 @@ static size_t cmd_reset(uint8_t *out)
 	debuglink_dmr_data_reset();
 	debuglink_p25_reset();
 	debuglink_nxdn_reset();
+	debuglink_m17_reset();
 	uint32_t now = hal_millis();
 	dlog("debuglink: counters reset");
 	out[0] = DL_ST_OK;
@@ -479,7 +481,9 @@ static size_t cmd_radio(const uint8_t *req, uint16_t len, uint8_t *out)
 		if (radio_op_done && (now - last_radio_op_ms) < RADIO_OP_GAP_MS) {
 			return status_only(out, DL_ST_BUSY);
 		}
-		uint8_t st = debuglink_radio_feature_op(req[0], req + 1, (uint16_t)(len - 1u));
+		// M17's (debuglink_view_m17.c) has its own file, so builds without M17 carry only its stub
+		uint8_t st = req[0] == DL_OP_M17 ? debuglink_m17_op(req + 1, (uint16_t)(len - 1u)) :
+			     debuglink_radio_feature_op(req[0], req + 1, (uint16_t)(len - 1u));
 		if (st == DL_ST_OK) {
 			last_radio_op_ms = now;
 			radio_op_done = true;

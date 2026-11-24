@@ -57,6 +57,10 @@
 #include "nxdn/nxdn_codeplug.h"
 #include "radio/radio_nxdn.h"
 #endif
+#if CONFIG_M17
+#include "m17/m17_codeplug.h"
+#include "radio/radio_m17.h"
+#endif
 #if CONFIG_KEY_ASSIGN
 #include "input/input.h"
 #include "input/input_engine.h"
@@ -338,6 +342,18 @@ static __attribute__((noinline)) int32_t setting_get_flash(uint8_t id)
 	case UI_SET_ZONE_OFFERS:
 		return settings_zs_accept_of(SETTINGS_FIELD(zs_offers));
 #endif
+#if CONFIG_M17
+	case UI_SET_M17_CAN:
+		return (SETTINGS_FIELD(cp_flags) & SETTINGS_CP_M17_CAN) >> SETTINGS_CP_M17_CAN_SHIFT;
+	case UI_SET_M17_VOICE:
+		return (SETTINGS_FIELD(cp_flags) & SETTINGS_CP_M17_1600) != 0;
+	case UI_SET_M17_SIGN:		// the radio-wide record's (m17-codeplug.md 3)
+	case UI_SET_M17_GNSS: {
+		m17_wide_t w;
+		m17_wide_load(&w);
+		return id == UI_SET_M17_SIGN ? w.sign : w.gnss;
+	}
+#endif
 #if CONFIG_DMR
 	case UI_SET_DMR_ID:
 		return (int32_t)codeplug_dmr_id();
@@ -617,6 +633,29 @@ bool ui_svc_setting_set(uint8_t id, int32_t value)
 		tftp_codeplug_allow_write(value != 0);
 #endif
 		return true;
+#if CONFIG_M17
+	case UI_SET_M17_CAN:		// ui_svc_apply hands both to the radio core (radio_req_m17_settings)
+	case UI_SET_M17_VOICE:
+		if (value < 0 || value > (id == UI_SET_M17_CAN ? (int32_t)M17_CAN_MAX : 1))
+			return false;
+		st = settings_begin();
+		settings_set_m17(st, id == UI_SET_M17_CAN ? (uint8_t)value : settings_m17_can(st),
+				 id == UI_SET_M17_CAN ? settings_m17_1600(st) : value != 0);
+		settings_end(hal_millis());
+		return true;
+	case UI_SET_M17_SIGN:		// the radio-wide record, read, changed and written by a storage job
+	case UI_SET_M17_GNSS: {
+		m17_wide_t w;
+		if (value != 0 && value != 1)
+			return false;
+		m17_wide_load(&w);
+		if (id == UI_SET_M17_SIGN)
+			w.sign = value != 0;
+		else
+			w.gnss = value != 0;
+		return ui_svc_m17_wide_set(&w);
+	}
+#endif
 #if CONFIG_ZONE_SHARE
 	case UI_SET_ZONE_OFFERS:
 		if (value != 0 && value != 1)
@@ -777,10 +816,15 @@ static struct {
 #if CONFIG_DMR
 		contact_t target;	// save_target_job's search: the stored contact found
 #endif
+#if CONFIG_M17
+		uint8_t wide[M17_CP_WIDE_LEN];	// the radio-wide record to write, as stored (wide_job): the struct is
+						// 8-byte aligned and would grow the union
+		uint8_t m17_dst[M17_ADDR_BYTES];	// the destination for the stored M17 channel (m17_dst_job)
+#endif
 	};
 	uint32_t id;		// the talk target's, or the radio's own DMR ID
 	bool private_call;
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 	bool air_set;		// write_channel_job: air is the channel's block
 	ui_air_conv_t air;
 #endif
@@ -835,8 +879,15 @@ static void zone_edit_job(void *ctx);
 #if CONFIG_KEY_ASSIGN
 static void key_write_job(void *ctx);
 #endif
+#if CONFIG_M17
+static void wide_job(void *ctx);
+static void m17_dst_job(void *ctx);
+#endif
 static void (*const cp_jobs[])(void *ctx) = {
 	save_channel_job, write_channel_job, name_job,
+#if CONFIG_M17
+	wide_job, m17_dst_job,
+#endif
 #if CONFIG_DMR
 	dmr_id_job, save_target_job,
 #endif
@@ -1148,6 +1199,98 @@ static bool nxdn_save_now(uint16_t number, const channel_t *ch, const nxdn_conv_
 }
 #endif
 
+#if CONFIG_M17
+// A plain channel in M17 (the VFO, a mode changed for now) made a stored M17 channel from the radio's M17 settings: its
+// CANs, squelch, voice and destination; the block from given instead (the channel editor's, as stored). Uses job_ch
+static bool m17_save_now(uint16_t number, const channel_t *ch, const uint8_t *given)
+{
+	radio_m17_settings_t s;
+	m17_conv_t conv;
+	radio_m17_settings(&s);
+	memset(&conv, 0, sizeof conv);
+	conv.squelch = s.squelch;
+	conv.mode1600 = s.mode1600;
+	conv.can = s.can;
+	conv.tx_can = s.tx_can;
+	conv.dst = m17_addr_get(s.dst);
+	if (given != NULL)
+		m17_conv_decode(given, M17_CP_CONV_LEN, &conv);
+	if (ch != &job_ch)
+		job_ch = *ch;
+	return m17_conv_save(number, &job_ch, &conv);
+}
+
+// A stored channel's transmit encryption as stored (byte 9), not as this build reads it: m17_conv_decode reads one the
+// build lacks as none (so nothing is sent in a cipher it can't make), and writing that back would turn the channel's
+// encryption off for good on an edit of anything else. Kept, PTT goes on refusing (TXDENY_ENC_NOT_BUILT)
+static void m17_enc_kept(m17_conv_t *conv, uint8_t stored)
+{
+	if (stored == M17_ENC_SCRAMBLER || stored == M17_ENC_AES)
+		conv->tx_enc = stored;
+}
+
+// The stored block given (the channel editor's) over the channel's tag
+static bool m17_block_save(uint16_t number, const channel_t *ch, const uint8_t *b)
+{
+	m17_conv_t conv;
+	m17_conv_decode(b, M17_CP_CONV_LEN, &conv);
+	m17_enc_kept(&conv, b[9]);
+	return m17_conv_save(number, ch, &conv);
+}
+
+// Our callsign, the call text and the two choices of the radio-wide record (m17-codeplug.md 3)
+static void wide_job(void *ctx)
+{
+	(void)ctx;
+	m17_wide_t w;
+	m17_wide_decode(job.wide, M17_CP_WIDE_LEN, &w);
+	if (!m17_wide_save(&w))
+		save_failed(TRN(STORE_ERR_CODEPLUG_WRITE, "Couldn't write the codeplug: not saved"));
+}
+
+bool ui_svc_m17_wide_set(const m17_wide_t *w)
+{
+	if (job_busy())
+		return false;
+	m17_wide_encode(w, job.wide);
+	return cp_post(wide_job);
+}
+
+static bool take_channel(void);
+
+// The stored M17 channel's block changed: its destination (a permanent talk target; job.private_call: kept), its
+// transmit encryption off (job.squelch). Read, changed, written
+static void m17_dst_job(void *ctx)
+{
+	(void)ctx;
+	m17_conv_cfg_t cfg;
+	uint8_t raw[M17_CP_CONV_LEN + CODEPLUG_TAG_HEAD_MAX];
+	if (!codeplug_channel(job.channel, &job_ch) || !m17_conv_load(job.channel, &job_ch, &cfg)) {
+		save_failed(TRN(STORE_ERR_CHANNEL_READ, "Couldn't read the channel: not saved"));
+		return;
+	}
+	if (codeplug_tag_params(job.channel, &job_ch, raw, M17_CP_CONV_LEN) > 9)
+		m17_enc_kept(&cfg.conv, raw[9]);
+	if (!job.private_call)
+		cfg.conv.dst = m17_addr_get(job.m17_dst);
+	if (job.squelch)
+		cfg.conv.tx_enc = M17_ENC_NONE;
+	if (!m17_conv_save(job.channel, &job_ch, &cfg.conv))
+		save_failed(TRN(STORE_ERR_CODEPLUG_WRITE, "Couldn't write the codeplug: not saved"));
+}
+
+bool ui_svc_m17_write_block(const uint8_t *dst, bool enc_off)
+{
+	if (!take_channel() || ui_svc_view.ch.kind != CODEPLUG_KIND_M17)
+		return false;
+	job.private_call = dst == NULL;
+	if (dst != NULL)
+		memcpy(job.m17_dst, dst, sizeof job.m17_dst);
+	job.squelch = enc_off;
+	return cp_post(m17_dst_job);
+}
+#endif
+
 // A plain channel in an air mode written as a stored channel of its kind (the VFO, a mode changed for now); false in
 // *ok's place when it isn't one: the caller writes it as a plain channel
 static bool air_save_now(uint16_t number, const channel_t *ch, bool *ok)
@@ -1163,6 +1306,12 @@ static bool air_save_now(uint16_t number, const channel_t *ch, bool *ok)
 #if CONFIG_NXDN
 	if (ch->mode == RADIO_MODE_NXDN) {
 		*ok = nxdn_save_now(number, ch, NULL);
+		return true;
+	}
+#endif
+#if CONFIG_M17
+	if (ch->mode == RADIO_MODE_M17) {
+		*ok = m17_save_now(number, ch, NULL);
 		return true;
 	}
 #endif
@@ -1233,22 +1382,25 @@ bool ui_svc_save_channel(void)
 	return take_channel() && cp_post(save_channel_job);
 }
 
-#if CONFIG_P25 || CONFIG_NXDN
-// The channel editor's P25 or NXDN channel with its block: a plain one in that mode becomes a stored one as in
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
+// The channel editor's P25, NXDN or M17 channel with its block: a plain one in that mode becomes a stored one as in
 // air_save_now; one of the kind is written with the block over its tag's, the rest of the tag kept. A copy (from: the
 // source, another number) takes the source's tag first, so it keeps the same; where that fails its tag is new. False
 // in *ok's place when ch is neither: the caller writes it as usual
 static bool air_conv_save(uint16_t number, uint16_t from, const channel_t *ch, const ui_air_conv_t *conv, bool *ok)
 {
 	bool plain = ch->kind == CODEPLUG_KIND_NONE;
-	bool p25 = false, nxdn = false;
+	bool p25 = false, nxdn = false, m17 = false;
 #if CONFIG_P25
 	p25 = plain ? ch->mode == RADIO_MODE_P25 : ch->kind == CODEPLUG_KIND_P25;
 #endif
 #if CONFIG_NXDN
 	nxdn = plain ? ch->mode == RADIO_MODE_NXDN : ch->kind == CODEPLUG_KIND_NXDN;
 #endif
-	if (!p25 && !nxdn)
+#if CONFIG_M17
+	m17 = plain ? ch->mode == RADIO_MODE_M17 : ch->kind == CODEPLUG_KIND_M17;
+#endif
+	if (!p25 && !nxdn && !m17)
 		return false;
 	if (!plain && from != 0 && from != number && codeplug_set_channel(number, ch))
 		(void)codeplug_tag_copy(from, number, ch);
@@ -1259,6 +1411,10 @@ static bool air_conv_save(uint16_t number, uint16_t from, const channel_t *ch, c
 #if CONFIG_NXDN
 	if (nxdn)
 		*ok = plain ? nxdn_save_now(number, ch, &conv->nxdn) : nxdn_conv_save(number, ch, &conv->nxdn);
+#endif
+#if CONFIG_M17
+	if (m17)
+		*ok = plain ? m17_save_now(number, ch, conv->m17) : m17_block_save(number, ch, conv->m17);
 #endif
 	return true;
 }
@@ -1275,7 +1431,7 @@ static void write_channel_job(void *ctx)
 	bool ok = false;
 	uint16_t from = (uint16_t)job.id;
 	bool done = false;
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 	done = job.air_set && air_conv_save(job.channel, from, &job.now, &job.air, &ok);
 #endif
 	if (!done && !air_save_now(job.channel, &job.now, &ok))
@@ -1306,7 +1462,7 @@ static bool write_channel_post(uint16_t number, const channel_t *ch, uint16_t fr
 	job.temp = !ui_svc_view.vfo && ui_svc_view.channel_number == number && ui_svc_view.temporary;	// here: drop the temporary changes after it
 	job.now = *ch;
 	job.id = from;
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 	job.air_set = conv != NULL;	// before the post: the job may run at once on its own task
 	if (conv != NULL)
 		job.air = *(const ui_air_conv_t *)conv;
@@ -1321,7 +1477,7 @@ bool ui_svc_write_channel(uint16_t number, const channel_t *ch, uint16_t from)
 	return write_channel_post(number, ch, from, NULL);
 }
 
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 bool ui_svc_write_channel_air(uint16_t number, const channel_t *ch, uint16_t from, const ui_air_conv_t *conv)
 {
 	return write_channel_post(number, ch, from, conv);
@@ -1479,7 +1635,9 @@ static void factory_reset_job(void *ctx)
 {
 	(void)ctx;
 	settings_t *st = settings_begin();
+	uint32_t boot_count = settings_boot_count(st);
 	settings_defaults(st);	// cp_flags too: "Use anyway" doesn't outlive a reset
+	settings_set_boot_count(st, boot_count);	// but the start-ups counted do: a nonce counter never goes back
 	board_rx_ext_set(false);
 	settings_end(hal_millis());
 	codeplug_accept(false);

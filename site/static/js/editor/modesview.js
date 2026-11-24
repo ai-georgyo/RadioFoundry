@@ -10,6 +10,7 @@ import { specField, parseSpec, formatSpec, label } from "./modefields.js";
 import { SYSTEM_TYPES, typeRow, typeName, offeredTypes, offeredKinds } from "../codeplug/modes.js";
 import { newSystem, newHamSystem, syncModes, SHARE, MODE_LIMITS } from "../codeplug/channelmodes.js";
 import { remove, assignNumbers } from "../codeplug/model.js";
+import { hex } from "../codeplug/modebytes.js";
 
 const SHARE_LEVELS = [SHARE.off, SHARE.identity, SHARE.whole];
 const shareLabel = (mod, level) => mod?.conventional && level === SHARE.whole
@@ -147,14 +148,15 @@ function systemDialog(api, s, isNew) {
 					if (mod.noRegField) r.fields = { ...r.fields, [mod.noRegField]: v === 2 };
 				}, help: mod.conventional ? null : t(mod.noRegField ? "editor.modes.transmit_help_noreg" : "editor.modes.transmit_help") },
 			systemOwnIdField(mod, t),
-			mod.secret ? { key: "needsKey", label: t("editor.modes.needs_key"), type: "bool", help: t("editor.modes.needs_key_help") } : null,
+			mod.secret && !mod.secret.optional ? { key: "needsKey", label: t("editor.modes.needs_key"), type: "bool", help: t("editor.modes.needs_key_help") } : null,
 		],
 		fallback: mod.conventional ? [] : [
 			{ key: "fallback", label: t("editor.modes.fallback"), type: "select", options: (r) => fallbackOptions(m, t, r.fallback, null, t("editor.none")),
 				help: t(mod.fallbackHelp ?? "editor.modes.fallback_help") },
 		],
 		sharing: [
-			{ key: "sharing", label: t("editor.modes.share_what"), type: "select", options: () => SHARE_LEVELS.map((n) => [n, t(shareLabel(mod, n))]), help: t(mod.sharingHelp ?? (mod.conventional ? "editor.nxdn.sharing_help" : "editor.modes.sharing_help")) },
+			{ key: "sharing", label: t("editor.modes.share_what"), type: "select", options: () => SHARE_LEVELS.map((n) => [n, t(shareLabel(mod, n))]),
+				help: t(mod.sharingHelp ?? (mod.conventional ? "editor.nxdn.sharing_help" : "editor.modes.sharing_help")) },
 		],
 	};
 	const sections = mod.sections ?? [{ id: "identity" }, { id: "radio" }, { id: "fallback" }, { id: "sharing" }];
@@ -177,9 +179,11 @@ function systemDialog(api, s, isNew) {
 	if (sec) {
 		const keyHolder = { get: (r) => r.secret ?? sec.empty(), put: (r, key, v) => (r.secret = { ...(r.secret ?? sec.empty()), [key]: v }) };
 		const share2 = at("sharing");
-		fields.splice(share2 < 0 ? fields.length : share2, 0, { group: t("editor.modes.secret") },
-			{ type: "note", key: "sys.keynote", text: () => t("editor.modes.secret_note") },
-			...sec.fields.map((x) => ({ ...specField(x, t, keyHolder, "sec"), disabled: (r) => !r.needsKey })));
+		// an optional secret (a signing key) is entered whatever the "needs its key" flag says
+		const keyFields = sec.keypair ? [keypairField(api, sec, s)]
+			: sec.fields.map((x) => ({ ...specField(x, t, keyHolder, "sec"), ...(sec.optional ? {} : { disabled: (r) => !r.needsKey }) }));
+		fields.splice(share2 < 0 ? fields.length : share2, 0, { group: t(sec.label ?? "editor.modes.secret") },
+			{ type: "note", key: "sys.keynote", text: () => t("editor.modes.secret_note") }, ...keyFields);
 	}
 	if (mod.traffic) fields.push(...trafficFields(api, s, mod.traffic));
 	formDialog(t(isNew ? "editor.modes.add_title" : "editor.modes.edit_title", { name: s.name, type: t(mod.label ?? `editor.mode_name.${row.token}`) }), fields, s, t, (work) => api.change(t("editor.undo.edit"), () => {
@@ -192,6 +196,57 @@ function systemDialog(api, s, isNew) {
 		if (sec) s.secret = !v || Object.values(v).every((x) => x === "" || x === 0) ? null : v;
 		syncModes(m);
 	}), { list: true });
+}
+
+// A secret that is a P-256 key pair (sec.keypair: generate, publicOf, uncompressed, fingerprint): the private key as
+// 64 hex digits, hidden until asked for (channel-modes.md 8), a new one generated, and the public key with its
+// fingerprint to give to other stations. Only the private key is typed: the module stores the public key with it
+export function keypairField({ t, h, button }, sec, system) {
+	const kp = sec.keypair;
+	const spec = sec.fields[0];
+	const id = "f-sec-keypair";
+	const input = h("input", { type: "password", id, value: system.secret?.[spec.key] ?? "", spellcheck: "false", autocomplete: "off", size: 66 });
+	const show = h("input", { type: "checkbox", id: `${id}-show` });
+	show.addEventListener("change", () => (input.type = show.checked ? "text" : "password"));
+	const pub = h("input", { type: "text", readonly: true, size: 66, "aria-label": t("editor.m17.public_key") });
+	const fp = h("span", { class: "small muted" });
+	const err = h("span", { class: "small ed-err" });
+	let shown = 0;
+	const update = () => {
+		const res = parseSpec(spec, input.value, t);
+		const q = !res.error && res.value ? kp.publicOf(res.value) : null;
+		err.textContent = res.error ?? (res.value && !q ? t("editor.problem.mode_secret_bad") : "");
+		pub.value = q ? hex(kp.uncompressed(q)) : "";
+		fp.textContent = "";
+		const n = ++shown;
+		if (q) kp.fingerprint(q).then((f) => n === shown && (fp.textContent = `${t("editor.m17.fingerprint")}: ${f}`));
+	};
+	const start = input.value;
+	input.addEventListener("input", update);
+	update();
+	const gen = button(t("editor.m17.generate"), async () => {
+		input.value = await kp.generate();
+		update();
+	}, { quiet: true });
+	const copy = button(t("editor.m17.export_public"), () => pub.value && navigator.clipboard?.writeText(pub.value), { quiet: true });
+	const box = h("div", { class: "form-table" },
+		h("div", { class: "form-row" }, h("label", { for: id }, label(t, spec.label)), input, h("span", { class: "small muted" }, t(spec.help)), err),
+		h("div", { class: "form-row form-check" }, h("label", { for: show.id }, t("editor.m17.show_key")), show),
+		h("div", { class: "form-row" }, h("label", {}, t("editor.m17.public_key")), pub, fp),
+		h("div", { class: "ed-actions" }, gen, copy));
+	return {
+		type: "custom", key: "sec.keypair", render: () => box, parse: (form) => {
+			// left as it was: the secret stays as stored (one of a layout the module keeps whole too)
+			if (input.value === start) return [];
+			const res = parseSpec(spec, input.value, t);
+			if (res.error) return [`${label(t, spec.label)}: ${res.error}`];
+			if (res.value && !kp.publicOf(res.value)) return [`${label(t, spec.label)}: ${t("editor.problem.mode_secret_bad")}`];
+			// a key changed: its public key is the module's to make again from it
+			const was = form.secret ?? sec.empty();
+			form.secret = res.value === was[spec.key] ? was : { ...sec.empty(), [spec.key]: res.value };
+			return [];
+		},
+	};
 }
 
 function trafficFields({ t, h, button }, system, traffic) {
@@ -217,6 +272,7 @@ function trafficFields({ t, h, button }, system, traffic) {
 	const draw = () => {
 		add.disabled = rows.length >= traffic.max;
 		tbody.replaceChildren(...rows.map((row, i) => h("tr", {},
+			// a secret column (a key, a scrambler seed) shows only as set until asked for (channel-modes.md 8)
 			...traffic.columns.map((col) => h("td", {}, col.secret ? secretCell(col, row) : cell(h, t, col, row, false))),
 			h("td", {}, button(t("editor.modes.remove_row"), () => {
 				rows.splice(i, 1);
@@ -289,9 +345,9 @@ function entryTables(api, s) {
 				const e = { ...r };
 				delete e._blank;
 				for (const col of columns(c)) {
-					if (col.type === "bool" || col.type === "select") continue;
+					if (col.type === "bool" || col.type === "select" || col.type === "note") continue;
 					const res = parseSpec(col, r._text?.[col.key] ?? formatSpec(col, r[col.key], t), t, e);
-					if (res.error) bad.push(`${t(`editor.modes.class.${c.name}`)} ${i + 1}, ${label(t, col.label)}: ${res.error}`);
+					if (res.error) bad.push(`${classLabel(t, c)} ${i + 1}, ${label(t, col.label)}: ${res.error}`);
 					else e[col.key] = res.value;
 				}
 				delete e._text;
@@ -320,15 +376,15 @@ function entryTables(api, s) {
 		const table = h("div", { class: "form-table" },
 			h("div", { class: "table-wrap" }, h("table", { class: "data" },
 				h("thead", {}, h("tr", {}, ...cols.map((x) => h("th", {}, label(t, x.label))), h("th", {}, ""))), tbody)),
-			button(`+ ${t(`editor.modes.add_${c.name}`)}`, () => {
+			button(`+ ${t(c.addLabel ?? `editor.modes.add_${c.name}`)}`, () => {
 				rows.push(fresh(c, rows));
 				draw();
 			}, { quiet: true }));
 		return {
 			control: !!c.control,
 			fields: [
-				{ group: t(`editor.modes.class.${c.name}`), ...(c.control ? {} : { collapsed: !rows.length }) },
-				{ type: "note", key: `sys.cls${c.cls}`, text: () => t(`editor.modes.class.${c.name}_help`) },
+				{ group: classLabel(t, c), ...(c.control ? {} : { collapsed: !rows.length }) },
+				{ type: "note", key: `sys.cls${c.cls}`, text: () => t(c.help ?? `editor.modes.class.${c.name}_help`) },
 				// one parse covers every table: the first table's field does it
 				{ type: "custom", key: `sys.tbl${c.cls}`, render: () => table, parse: (form) => (n === 0 ? parseAll(form) : []) },
 			],
@@ -336,8 +392,16 @@ function entryTables(api, s) {
 	});
 }
 
-// One cell's input: a checkbox, a select, or text kept as typed until Save parses it
+// A class's table heading: the module's own label, else the generic one of its name
+const classLabel = (t, c) => t(c.label ?? `editor.modes.class.${c.name}`);
+
+// One cell's input: a checkbox, a select, text kept as typed until Save parses it, or a note the row's values give
 function cell(h, t, col, r, masked = false) {
+	if (col.type === "note") {
+		const span = h("span", { class: "small muted" });
+		Promise.resolve(col.text(r, t)).then((x) => (span.textContent = x ?? ""), () => {});
+		return span;
+	}
 	if (col.type === "bool") {
 		const box = h("input", { type: "checkbox", "aria-label": label(t, col.label) });
 		box.checked = !!r[col.key];
@@ -351,7 +415,7 @@ function cell(h, t, col, r, masked = false) {
 		sel.addEventListener("change", () => (r[col.key] = opts[sel.selectedIndex][0]));
 		return sel;
 	}
-	const input = h("input", { type: masked ? "password" : "text", size: col.type === "freq" ? 9 : col.type === "hexbytes" ? 2 * col.bytes : 5, spellcheck: "false", "aria-label": label(t, col.label), value: r._text?.[col.key] ?? formatSpec(col, r[col.key], t) });
+	const input = h("input", { type: masked ? "password" : "text", size: col.size ?? (col.type === "freq" ? 9 : col.type === "hexbytes" ? 2 * col.bytes : 5), spellcheck: "false", "aria-label": label(t, col.label), value: r._text?.[col.key] ?? formatSpec(col, r[col.key], t) });
 	input.addEventListener("input", () => (r._text = { ...r._text, [col.key]: input.value }));
 	return input;
 }
@@ -367,15 +431,23 @@ export function modeSettingsPart(api, features) {
 		const now = m.modeSettings?.[k.id] ?? st.decode(null);
 		const rows = st.fields.map((spec) => {
 			const id = `ms-${k.id}-${spec.key}`;
-			const input = h("input", { type: "text", id, value: formatSpec(spec, now[spec.key] || null, t), spellcheck: "false" });
+			const store = (v) => api.change(t("editor.undo.edit"), () => (m.modeSettings = { ...m.modeSettings, [k.id]: { ...(m.modeSettings?.[k.id] ?? now), [spec.key]: v } }));
 			const err = h("span", { class: "small ed-err" });
-			input.addEventListener("change", () => {
-				const res = parseSpec(spec, input.value, t, now);
-				err.textContent = res.error ?? "";
-				if (res.error) return;
-				api.change(t("editor.undo.edit"), () => (m.modeSettings = { ...m.modeSettings, [k.id]: { ...(m.modeSettings?.[k.id] ?? now), [spec.key]: res.value } }));
-			});
-			return h("div", { class: "form-row" }, h("label", { for: id }, `${k.short}: ${label(t, spec.label)}`), input, spec.help ? h("span", { class: "small muted" }, t(spec.help)) : null, err);
+			let input;
+			if (spec.type === "bool") {
+				input = h("input", { type: "checkbox", id });
+				input.checked = !!now[spec.key];
+				input.addEventListener("change", () => store(input.checked));
+			} else {
+				input = h("input", { type: "text", id, value: formatSpec(spec, now[spec.key] || null, t), spellcheck: "false" });
+				input.addEventListener("change", () => {
+					const res = parseSpec(spec, input.value, t, now);
+					err.textContent = res.error ?? "";
+					if (!res.error) store(res.value);
+				});
+			}
+			return h("div", { class: "form-row" + (spec.type === "bool" ? " form-check" : "") }, h("label", { for: id }, `${k.short}: ${label(t, spec.label)}`),
+				input, spec.help ? h("span", { class: "small muted" }, t(spec.help)) : null, err);
 		});
 		out.push(...rows);
 	}

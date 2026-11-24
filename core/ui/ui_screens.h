@@ -12,6 +12,7 @@
 #include "gfx.h"
 #include "config.h"
 #include "fmt.h"
+#include "ui_addr.h"
 #if CONFIG_HOTSPOT
 #include "hotspot/hotspot.h"
 #endif
@@ -31,6 +32,7 @@ typedef enum {
 	UI_BANNER_RESULT,	// result of something we sent (radio check answered, message delivered, ...)
 	UI_BANNER_INFO,		// anything else ("Hotspot started by host. Back to stop.")
 	UI_BANNER_ZONE_OFFER,	// another radio offers a zone or channel: CONTEXT opens the offer
+	UI_BANNER_CALL,		// about the last call heard (an M17 signature): CONTEXT opens Call Details
 	UI_BANNER_APRS_MESSAGE,	// APRS message addressed to us: CONTEXT opens the APRS messages screen
 } ui_banner_kind_t;
 
@@ -40,8 +42,8 @@ typedef struct {
 	bool hold;		// stays until opened, hidden with BACK or what it is about is gone (until_ms unused)
 	uint8_t name_at;	// where the station's name starts in title (0: none): a title too long breaks there
 	uint32_t until_ms;
-	uint32_t id;		// the station it is about (0 = none)
-	uint16_t msg;		// UI_BANNER_MESSAGE: the message's index in the inbox
+	ui_addr_t addr;		// the station it is about (kind UI_ADDR_NONE: none)
+	uint16_t msg;		// UI_BANNER_MESSAGE: the message's index in its provider's inbox (addr.net's; ui_svc_msg_row)
 	char title[UI_BANNER_TEXT];
 	char text[UI_BANNER_TEXT];
 } ui_banner_t;
@@ -145,6 +147,8 @@ enum {
 	QT_TIMESLOT, QT_CC, QT_HEAR_ALL, QT_PRIVACY, QT_TALK_TO,
 	QT_TO_VFO,		// on a channel, in place of QT_MODE: copy the channel to the VFO
 	QT_SPLIT,		// in the VFO, in place of QT_MONITOR (FM) / QT_PRIVACY (DMR): the TX frequency or offset
+	QT_RATE,		// M17: Codec 2 3200 or 1600 + data
+	QT_CAN,			// M17: the channel access number 0-15 (a value editor, as QT_CC)
 
 };
 // The tile kind at position 0..8 (keys 1..9) for this channel or the VFO

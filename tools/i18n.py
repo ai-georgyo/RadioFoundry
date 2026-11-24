@@ -212,17 +212,135 @@ def taken_keys():
 
 class Mark:
     """One TR / TRN / TRX in the source. key is None for the old form TR("...") (only --rewrite reads it); at is
-    where the key goes: just after the opening parenthesis"""
-    def __init__(self, kind, key, text, rel, line, at):
+    where the key goes: just after the opening parenthesis; cond the build switches it is compiled under, as a C
+    preprocessor expression (line_conditions), None: always"""
+    def __init__(self, kind, key, text, rel, line, at, cond=None):
         self.kind, self.key, self.text, self.rel, self.line, self.at = kind, key, text, rel, line, at
+        self.cond = cond
 
     def where(self):
         return "%s:%d" % (self.rel, self.line)
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Build conditions: a string whose every mark sits in #if blocks of build switches is in the tables only when the
+# switches are on (generate), so a feature switched off costs no text. A condition is kept only when it is made of
+# the switches core/config.h defines (CONFIG_*), numbers, defined() and the C operators, or of a file's own macros
+# made of those; anything else (an include guard, #ifdef, a macro from elsewhere) counts as always, which only costs
+# the text. A wrong reading can't show the wrong text: a key whose condition is off has no TR_<KEY> (tr_keys.h), so
+# code using it outside its condition fails to compile
+
+CONFIG_H = os.path.join(ROOT, "core", "config.h")
+config_names_cache = None
+
+
+def config_names():
+    """The switches core/config.h defines"""
+    global config_names_cache
+    if config_names_cache is None:
+        try:
+            with open(CONFIG_H, encoding="utf-8") as f:
+                config_names_cache = frozenset(re.findall(r"^\s*#\s*define\s+(CONFIG_[A-Z0-9_]+)", f.read(), re.M))
+        except OSError:
+            config_names_cache = frozenset()
+    return config_names_cache
+
+
+COND_TOKEN = re.compile(r"\s*(&&|\|\||==|!=|<=|>=|[!()<>]|\d+[uUlL]*\b|[A-Za-z_][A-Za-z0-9_]*|\S)")
+COND_OPS = {"&&", "||", "==", "!=", "<=", ">=", "!", "(", ")", "<", ">", "defined"}
+
+
+def cond_expr(text, local):
+    """A directive's expression as a condition, or None when it names anything but switches"""
+    text = re.sub(r"/\*.*?\*/|//.*", " ", text).strip()
+    out, pos = [], 0
+    while pos < len(text):
+        m = COND_TOKEN.match(text, pos)
+        if m is None:
+            break
+        t, pos = m.group(1), m.end()
+        if t in COND_OPS or t in config_names():
+            out.append(t)
+        elif re.fullmatch(r"\d+[uUlL]*", t):
+            out.append(re.sub(r"[uUlL]+$", "", t))
+        elif t in local:
+            out.append("(%s)" % local[t])
+        else:
+            return None
+    return " ".join(out).replace("( ", "(").replace(" )", ")").replace("! ", "!") or None
+
+
+def line_conditions(src):
+    """Each line's condition (index 0: line 1): the enclosing #if blocks' conditions joined, None: always. A file whose
+    directives don't nest reads as always"""
+    lines = src.split("\n")
+    out = [None] * len(lines)
+    stack = []      # [the branches' conditions so far (None: unknown), this branch's condition (None: unknown)]
+    local = {}      # the file's own macros made of switches, defined outside any condition
+    i = 0
+    while i < len(lines):
+        start = i
+        text = lines[i]
+        while text.endswith("\\") and i + 1 < len(lines):    # a directive continued on the next line
+            i += 1
+            text = text[:-1] + " " + lines[i]
+        m = re.match(r"\s*#\s*(if|ifdef|ifndef|elif|else|endif|define|undef)\b(.*)", text)
+        if m:
+            d, rest = m.group(1), m.group(2)
+            if d == "if":
+                c = cond_expr(rest, local)
+                stack.append([[c], c])
+            elif d in ("ifdef", "ifndef"):
+                stack.append([[None], None])
+            elif d in ("elif", "else"):
+                if not stack:
+                    return [None] * len(lines)
+                prior = stack[-1][0]
+                c = cond_expr(rest, local) if d == "elif" else "1"
+                if c is None or None in prior:
+                    stack[-1][1] = None
+                else:
+                    stack[-1][1] = " && ".join(["!(%s)" % p for p in prior] + ([] if d == "else" else ["(%s)" % c]))
+                prior.append(c)
+            elif d == "endif":
+                if not stack:
+                    return [None] * len(lines)
+                stack.pop()
+            else:
+                name = re.match(r"\s+([A-Za-z_][A-Za-z0-9_]*)(\(?)(.*)", rest)
+                if name:
+                    # a macro defined under a condition, or twice, is no macro of switches: its value may vary
+                    top = all(f[1] is None for f in stack)
+                    c = cond_expr(name.group(3), local) if d == "define" and not name.group(2) else None
+                    if d == "define" and top and c is not None and name.group(1) not in local:
+                        local[name.group(1)] = c
+                    else:
+                        local.pop(name.group(1), None)
+        conds = [f[1] for f in stack if f[1] is not None]
+        for k in range(start, i + 1):
+            out[k] = " && ".join("(%s)" % c for c in conds) if conds else None
+        i += 1
+    return out if not stack else [None] * len(lines)
+
+
+def key_conditions(found):
+    """{key: condition}: its marks' conditions or'ed, None when one of them is always"""
+    conds = {}
+    for mk in found:
+        if mk.key is None or (mk.key in conds and conds[mk.key] is None):
+            continue
+        if mk.cond is None:
+            conds[mk.key] = None
+        else:
+            conds.setdefault(mk.key, set()).add(mk.cond)
+    return {k: None if c is None else next(iter(c)) if len(c) == 1 else " || ".join("(%s)" % x for x in sorted(c))
+            for k, c in conds.items()}
+
+
 def scan(rel, src, old_ok=False):
     """The marks of one file"""
     out = []
+    line_cond = None
     for m in MARK.finditer(src):
         line_start = src.rfind("\n", 0, m.start()) + 1
         head = src[line_start:m.start()].strip()
@@ -261,7 +379,10 @@ def scan(rel, src, old_ok=False):
                                 "(use tr() on a tr_id_t for text chosen at run time)" % (where, kind, tok))
         if not parts:
             raise I18nError("%s: %s() without English" % (where, kind))
-        out.append(Mark(kind, key, bytes_to_text(bytes(parts), where), rel, int(where.rsplit(":", 1)[1]), m.end()))
+        if line_cond is None:
+            line_cond = line_conditions(src)
+        line = int(where.rsplit(":", 1)[1])
+        out.append(Mark(kind, key, bytes_to_text(bytes(parts), where), rel, line, m.end(), line_cond[line - 1]))
     return out
 
 
@@ -738,15 +859,37 @@ def string_table(strings):
 
 
 def tables(found=None):
-    """What core/ui/i18n.c reads. Every key has a number: 0 none, then the keys the catalogs translate (TR, TRN), by
-    name, then the TRX ones, by name. The English table has every key's text; each language the translated keys', ""
-    where it has none (or the English itself). Flash per string: the text and its NUL per language, plus 2 bytes per
-    LANG_STRIDE strings. Returns (ids {key: number}, translated (the first TRX number), english (text, offsets),
-    [(code, name, name in this build, latin name, switch, {number: translation}, text, offsets, wide)])"""
+    """What core/ui/i18n.c reads. Every key has a number: 0 none, then the keys the catalogs translate (TR, TRN), then
+    the TRX ones; each of the two the keys built always first, then those of each build condition (key_conditions)
+    together, by name within. The English table has every key's text; each language the translated keys', "" where it
+    has none (or the English itself). Flash per string: the text and its NUL per language, plus 2 bytes per
+    LANG_STRIDE strings; a string whose condition is off keeps only its NUL. Returns (ids {key: number}, translated
+    (the first TRX number), english (text, offsets), [(code, name, name in this build, latin name, switch, {number:
+    translation}, text, offsets, wide)])"""
+    return tables_segments(found)[:4]
+
+
+def tables_segments(found=None):
+    """tables() and the segments: [(first number, end, condition or None)] in order, each a run of keys of one
+    condition"""
+    if found is None:
+        found = marks()
     source, trx = extract(found)
+    conds = key_conditions(found)
     english = {k: t for k, t, _ in source}
     english.update(trx)
-    order = [None] + sorted(k for k, _, _ in source) + sorted(k for k, _ in trx)
+    order, segs = [None], []
+    for keys in (sorted(k for k, _, _ in source), sorted(k for k, _ in trx)):
+        by = {}
+        for k in keys:
+            by.setdefault(conds.get(k), []).append(k)
+        for c in [None] + sorted(c for c in by if c is not None):
+            if c in by:
+                first = len(order) if segs or c is not None else 0     # the first segment holds number 0 too
+                order += by[c]
+                segs.append((first, len(order), c))
+    if not segs or segs[0][0] != 0:
+        segs.insert(0, (0, segs[0][0] if segs else 1, None))
     if len(order) > 0xFFFF:
         raise I18nError("more than 65535 keys: a tr_id_t is 16 bits")
     ids = {k: i for i, k in enumerate(order) if k is not None}
@@ -786,7 +929,7 @@ def tables(found=None):
         if len(blob) > 0xFFFF:
             raise I18nError("%s: more than 64 KB of text" % code)
         out.append((code, name, wide_name, latin_name, "CONFIG_LANG_" + code.upper(), pairs, blob, offs, wide))
-    return ids, translated, (en_blob, en_offs), out
+    return ids, translated, (en_blob, en_offs), out, segs
 
 
 def lookup(blob, offs, i):
@@ -807,17 +950,43 @@ def tr(ids, translated, english, lang, key):
     return lookup(english[0], english[1], i)
 
 
-def emit_table(lines, code, blob, offs):
-    lines.append("static const uint16_t lang_%s_off[] = {" % code)
-    for i in range(0, len(offs), 12):
-        lines.append("\t" + " ".join("%d," % o for o in offs[i:i + 12]))
-    lines.append("};")
-    lines.append("static const char lang_%s_text[] =" % code)
-    p = 0
+def emit_table(lines, code, blob, segs):
+    """One language's table: its strings in segments, each built when its condition is on (TRSEG_<n>, tr_keys.h), a
+    string of a segment that is off its NUL alone; the offsets add up the text of the segments before (LANG_<CODE>_T<n>)"""
+    texts, p = [], 0
     while p < len(blob):
         e = blob.index(b"\0", p)
-        lines.append("\t%s \"\\0\"" % c_bytes(blob[p:e]))
+        texts.append(blob[p:e])
         p = e + 1
+    segs = [(a, min(b, len(texts)), c) for a, b, c in segs if a < len(texts)]
+    up = code.upper()
+    lines.append("#define LANG_%s_T0\t0" % up)
+    for n, (a, b, c) in enumerate(segs):
+        size = sum(len(t) for t in texts[a:b])
+        lines.append("#define LANG_%s_T%d\t(LANG_%s_T%d + %s%d)" % (up, n + 1, up, n, "" if c is None else
+                     "TRSEG_%d * " % n, size))
+    offs, n = [], 0
+    for i in range(0, len(texts), LANG_STRIDE):
+        while i >= segs[n][1]:
+            n += 1
+        part = sum(len(t) for t in texts[segs[n][0]:i])
+        offs.append("%d + LANG_%s_T%d%s" % (i, up, n, "" if not part else " + %s%d" % (
+            "" if segs[n][2] is None else "TRSEG_%d * " % n, part)))
+    lines.append("static const uint16_t lang_%s_off[] = {" % code)
+    for i in range(0, len(offs), 6):
+        lines.append("\t" + " ".join("%s," % o for o in offs[i:i + 6]))
+    lines.append("};")
+    lines.append("static const char lang_%s_text[] =" % code)
+    for n, (a, b, c) in enumerate(segs):
+        if c is not None:
+            lines.append("#if TRSEG_%d" % n)
+        for t in texts[a:b]:
+            lines.append("\t%s \"\\0\"" % c_bytes(t))
+        if c is not None:
+            lines.append("#else")
+            for k in range(a, b, 16):
+                lines.append("\t\"%s\"" % ("\\0" * (min(b, k + 16) - k)))
+            lines.append("#endif")
     lines.append("\t;")
     lines.append("static const lang_table_t lang_%s_table = { lang_%s_off, lang_%s_text };" % (code, code, code))
 
@@ -842,14 +1011,26 @@ KEYS_HEADER = "tr_keys.h"
 
 def generate(out_path, found=None):
     """OUT.h: the tables core/ui/i18n.c includes; tr_keys.h beside it: the keys' numbers, which i18n.h includes"""
-    ids, translated, english, built = tables(found)
+    ids, translated, english, built, segs = tables_segments(found)
+    by_id = {i: k for k, i in ids.items()}
     keys = ["// Generated by tools/i18n.py from the marks in core/; do not edit",
-            "// A key's number (i18n.h): the ones the catalogs translate, then the TRX ones",
-            "#ifndef TR_KEYS_H", "#define TR_KEYS_H", "", "enum {"]
-    for k, i in sorted(ids.items(), key=lambda kv: kv[1]):
-        keys.append("\tTR_%s = %d," % (k, i))
-    keys += ["};", "#define TR_TRANSLATED\t%d\t// the first TRX key" % translated,
-             "#define TR_KEYS\t\t%d" % (len(ids) + 1), "", "#endif"]
+            "// A key's number (i18n.h): the ones the catalogs translate, then the TRX ones. A key compiled only under",
+            "// some build switches (tools/i18n.py, key_conditions) is named only while they are on: TRSEG_<n> says",
+            "// whether its segment is built",
+            "#ifndef TR_KEYS_H", "#define TR_KEYS_H"]
+    for n, (a, b, c) in enumerate(segs):
+        names = ["\tTR_%s = %d," % (by_id[i], i) for i in range(a, b) if i in by_id]
+        keys.append("")
+        if c is None:
+            keys += ["#define TRSEG_%d\t1" % n] + (["enum {"] + names + ["};"] if names else [])
+        else:
+            keys += ["#if %s" % c, "#define TRSEG_%d\t1" % n, "enum {"] + names + ["};", "#else",
+                     "#define TRSEG_%d\t0" % n, "#endif"]
+    keys += ["", "#define TR_TRANSLATED\t%d\t// the first TRX key" % translated,
+             "#define TR_KEYS\t\t%d" % (len(ids) + 1),
+             "// The segments, {first, end, built}, for the tests (tests/host/i18nTest.c)",
+             "#define TR_SEGMENTS\t{ %s }" % ", ".join("{ %d, %d, TRSEG_%d }" % (a, b, n)
+                                                       for n, (a, b, _) in enumerate(segs)), "", "#endif"]
     write_if_changed(os.path.join(os.path.dirname(os.path.abspath(out_path)), KEYS_HEADER), "\n".join(keys) + "\n")
 
     lines = ["// Generated by tools/i18n.py from the marks in core/ and core/ui/lang/*.po; do not edit", ""]
@@ -857,7 +1038,7 @@ def generate(out_path, found=None):
     lines.append("#define LANG_STRIDE\t%d" % LANG_STRIDE)
     lines.append("#if CONFIG_LANG_ANY")
     lines.append("// English: %d keys, %d bytes of text" % (len(ids), len(english[0])))
-    emit_table(lines, "en", english[0], english[1])
+    emit_table(lines, "en", english[0], segs)
     lines.append("#endif")
     lines.append("")
     for code, name, wide_name, latin_name, sw, pairs, blob, offs, wide in built:
@@ -868,7 +1049,7 @@ def generate(out_path, found=None):
             continue
         lines.append("#if %s" % sw)
         lines.append("// %s: %d strings, %d bytes of text" % (name, len(pairs), len(blob)))
-        emit_table(lines, code, blob, offs)
+        emit_table(lines, code, blob, segs)
         lines.append("#define LANG_%s_TABLE\t(&lang_%s_table)" % (code.upper(), code))
         lines.append("#else")
         lines.append("#define LANG_%s_TABLE\tNULL" % code.upper())

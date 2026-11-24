@@ -932,6 +932,60 @@
    "needs": [
     "UI_SETTINGS"
    ]
+  },
+  "home_m17": {
+   "group": "home",
+   "needs": [
+    "M17"
+   ]
+  },
+  "home_m17_rx": {
+   "group": "home",
+   "needs": [
+    "M17"
+   ]
+  },
+  "home_m17_rx_signed": {
+   "group": "home",
+   "needs": [
+    "M17_SIG"
+   ]
+  },
+  "home_m17_tx": {
+   "group": "home",
+   "needs": [
+    "M17"
+   ]
+  },
+  "call_details": {
+   "group": "calls",
+   "needs": [
+    "M17_SIG"
+   ]
+  },
+  "callsign": {
+   "group": "settings",
+   "needs": [
+    "M17"
+   ]
+  },
+  "m17_key": {
+   "group": "settings",
+   "needs": [
+    "M17_SIG"
+   ]
+  },
+  "m17_keys": {
+   "group": "settings",
+   "needs": [
+    "M17_SIG"
+   ]
+  },
+  "m17_bert": {
+   "group": "tools",
+   "needs": [
+    "M17_BERT"
+   ]
   }
  }
 }

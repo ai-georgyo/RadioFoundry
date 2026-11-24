@@ -11,6 +11,7 @@
 #include "debuglink/debuglink_proto.h"
 #include "debuglink/dl_fmt.h"
 #include "debuglink/dlog.h"
+#include "air/air_softmodem.h"
 #include "radio/radio.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -229,12 +230,18 @@ static void on_event(const air_event_t *ev, void *ctx)
 }
 
 // The profile from the host: rate u16, levels, shape, shape_param, dev_outer_hz u16, timing, bw, slot_syms u16,
-// sync_every_syms u16, idle, nsyncs (15 bytes), then per sync: id, nsyms, max_errs, flags, frame_at, syms[6]
+// sync_every_syms u16, idle, nsyncs (15 bytes); the long header goes on with sync_any_syms u16, flags, verify (19
+// bytes). Then per sync: id, nsyms, max_errs, flags, frame_at, syms[6]. The length tells the two apart (15 + 11 n or
+// 19 + 11 n, n the nsyncs byte: never both). The short one means what it meant before the long one existed: no
+// profile flags, sync_any 0, and verify AIR_VERIFY_ALL (the board's verified set alone says untested or not)
 #define PROF_HDR	15u
+#define PROF_HDR_LONG	19u
 #define PROF_SYNC	(5u + AIR_SYNC_SYMS_MAX / 4u)
 
 static bool profile(const uint8_t *b, uint16_t len, air_profile_t *p)
 {
+	uint16_t hdr;
+
 	if (len < PROF_HDR) {
 		return false;
 	}
@@ -250,11 +257,22 @@ static bool profile(const uint8_t *b, uint16_t len, air_profile_t *p)
 	p->sync_every_syms = get16(b + 11);
 	p->idle = b[13];
 	p->nsyncs = b[14];
-	if (p->nsyncs > AIR_SYNCS_MAX || len != PROF_HDR + p->nsyncs * PROF_SYNC) {
+	if (p->nsyncs > AIR_SYNCS_MAX) {
+		return false;
+	}
+	if (len == PROF_HDR + p->nsyncs * PROF_SYNC) {
+		hdr = PROF_HDR;
+		p->verify = AIR_VERIFY_ALL;
+	} else if (len == PROF_HDR_LONG + p->nsyncs * PROF_SYNC) {
+		hdr = PROF_HDR_LONG;
+		p->sync_any_syms = get16(b + 15);
+		p->flags = b[17];
+		p->verify = b[18];
+	} else {
 		return false;
 	}
 	for (uint8_t i = 0; i < p->nsyncs; i++) {
-		const uint8_t *s = b + PROF_HDR + i * PROF_SYNC;
+		const uint8_t *s = b + hdr + i * PROF_SYNC;
 		air_sync_t *y = &p->sync[i];
 		y->id = s[0];
 		y->nsyms = s[1];
@@ -266,6 +284,8 @@ static bool profile(const uint8_t *b, uint16_t len, air_profile_t *p)
 			return false;
 		}
 	}
+	// The soft modem's search gates, as a mode's const profile has them in literals
+	air_softmodem_profile_prep(p);
 	return p->sym_rate != 0 && (p->levels == 2 || p->levels == 4);
 }
 

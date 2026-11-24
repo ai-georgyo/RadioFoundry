@@ -16,7 +16,7 @@ Keep the number of concepts small and name them the same everywhere.
 | **Channel** | A saved frequency plus mode and settings (FM or DMR) | memory, slot |
 | **Zone** | A named list of channels | bank, group |
 | **VFO** | Tune any frequency by hand | frequency mode, manual mode |
-| **Talk target** | Where PTT goes right now: a talkgroup, a person, all-call or (FM) the channel | TX contact, contact, call target |
+| **Talk target** | Where PTT goes right now: a talkgroup, a person, all-call or (FM) the channel. On M17, the destination: a callsign or All call ([m17.md](m17.md)) | TX contact, contact, call target |
 | **Talkgroup (TG)** | A DMR group number with an optional name | group contact |
 | **Contact** | A person (DMR ID, name, callsign) | private contact, digital contact |
 | **Listen list** | The talkgroups a channel listens to (the codeplug's RX group list) | RX group list (that phrase appears only in "Advanced" and in qdmr) |
@@ -149,6 +149,11 @@ Contacts, Recent and Messages are the "people" side, Zones, Channels and Tools t
 - Each tile shows its current value. The voice prompt reads "Power, high" etc.
 - `BACK` or `QUICK` again closes and returns to where the user was.
 
+On an M17 channel the tiles are: 1 Power, 2 Rate (3200 / 1600), 3 CAN (0-15), 4 To VFO (Mode in the VFO), 5 Digital
+monitor (every CAN), 6 Privacy (encryption off), 7 Dual watch, 8 Talk target (the destination), 9
+Brightness ([m17.md](m17.md) 9). On a stored M17 channel, CAN, Rate and Digital monitor say "Set it in the channel
+editor": the radio keeps no temporary change there.
+
 DMR channel with no codec installed (any DMR tile, and the VFO's Mode tile switching to DMR): the DMR tiles show "DMR needs the codec (see docs)" instead of failing silently.
 
 ---
@@ -161,13 +166,13 @@ Settings has a search field on top (T9). Groups, in this order:
 |---|---|
 | **Sound** | Key tones, tone volume, talk permit tone, voice prompts (on/off, speed, verbosity), message tone, call alert tone, vibrate (radios with a motor) |
 | **Display** | Brightness, backlight timeout, theme (light/dark/high contrast/night), highlight color, filled status bar, large text, orientation (240x320 boards), hint row, Home secondary fields |
-| **Talk & listen** | Reply window, TX timeout, default squelch, VOX sensitivity and delay, mic gain, mic AGC, mic noise reduction, hear all default, talker alias show/send, name source (contacts, ID database, alias) |
-| **Privacy** | Basic Privacy keys (per channel and per contact), lock behavior (auto-lock, what stays active when locked: PTT, side keys), PIN for settings |
-| **Location** | GPS on/off, position format, send position (UDT, LRRP, APRS) and interval, reply to position requests |
+| **Talk & listen** | Reply window, TX timeout, default squelch, VOX sensitivity and delay, mic gain, mic AGC, mic noise reduction, hear all default, talker alias show/send, name source (contacts, ID database, alias), M17 CAN and M17 voice (the VFO's and a new M17 channel's) |
+| **Privacy** | Basic Privacy keys (per channel and per contact), lock behavior (auto-lock, what stays active when locked: PTT, side keys), PIN for settings; Sign M17 calls, M17 signing key, M17 station keys (with M17 signatures) |
+| **Location** | GPS on/off, position format, send position (UDT, LRRP, APRS) and interval, reply to position requests, send in M17 calls |
 | **Connections** | Hotspot defaults, USB network (at power-on, control station: PC answers data, link address; TFTP codeplug write), single frequency repeater role, ARS registration, radio check auto-reply, call alert answer, message format |
 | **Power** | Battery saver, auto power off, low-battery warning level, power level defaults |
 | **Keys** | Programmable key functions (short and long), long-press time, key repeat, Up/Down on Home (channel / zone / talk target), speed dial slots |
-| **My radio** | DMR ID, callsign, name, talker alias text, radio name, region/band limits, time and date |
+| **My radio** | DMR ID, callsign, name, talker alias text, radio name, region/band limits, time and date, M17 callsign, M17 call text |
 | **Advanced** | Calibration view, codeplug info, firmware info, frequency trim, factory reset (confirmed, P7), diagnostics, crash log (send the report, its target, Off/Ask/Auto after a crash) |
 
 Rule: each setting lives in exactly one group, and Find also reaches it by name and synonyms ("promiscuous" finds Hear all; "RX group" finds Listen lists).
@@ -316,3 +321,8 @@ The layouts are the 128x64 ones of section 7.3. Which matrix position is which k
 | Message composer | Contacts/Recent/Messages actions | 3 |
 | Settings group / setting | Settings | 3 (setting editors are inline, not a fourth level) |
 | Hotspot, Network, SFR status | Tools | 2, and shown on Home while active |
+| Call Details (M17) | `CONTEXT` > Call details, a signature banner | 2 |
+| M17 BER test, Heard | Tools | 2 |
+| Heard station | Heard | 3 |
+| M17 callsign, call text (text entry) | Settings > My radio; the PTT refusal ("OK set callsign") | 4 (1 from the refusal) |
+| M17 signing key, station keys | Settings > Privacy | 4; a station key 5 |
