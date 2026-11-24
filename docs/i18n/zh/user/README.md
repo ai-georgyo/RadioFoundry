@@ -23,7 +23,7 @@
 
 5. [按键与导航](05-keys-and-navigation.md)：五条按键规则、查找、临时更改、按键锁
 6. [主屏幕](06-home-screen.md)：每个区域显示什么、接收、发射
-7. [信道、区域与 VFO](07-channels-zones-vfo.md)
+7. [信道、区域与 VFO](07-channels-zones-vfo.md)：也包括 M17 信道
 8. [FM](08-fm.md)：静噪、监听、亚音、带宽、VOX、双音多频
 9. [DMR](09-dmr.md)：通话目标、回复、最近呼叫、联系人、时隙与色码、加密、漫游、集群系统
 10. [消息、呼叫提示与电台检查](10-messages-and-signaling.md)
@@ -33,6 +33,7 @@
 14. [热点模式](14-hotspot.md)：MMDVMHost 与 Pi-Star、SFR、两台电台组成双工中继
 15. [USB 网络模式](15-usb-network.md)：DMR 承载 IP、状态页、rig 控制、KISS、TFTP、SNMP、控制站
 16. [电池与供电](16-battery-and-power.md)
+24. [M17](24-m17.md)：呼号、信道与 VFO、CAN、通话与签名、加密、目标、快捷设置、消息、已听到列表、误码率测试
 18. [卫星跟踪](18-satellite.md)：先在电脑上选择并安装 TLE 记录，再从电台跟踪
 
 ### 参考

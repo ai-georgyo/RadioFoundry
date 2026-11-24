@@ -144,8 +144,9 @@ one without a label.
    ([pa-keyup.md](../spec/pa-keyup.md) 6).
 7. The air interface, where the modem chip has a physical layer mode ([air-interface.md](../spec/air-interface.md)):
    point `air` and `baseband` at the platform glue's provider (above); on a platform whose receive tap is optional, set the glue's `air_tap` once the tap is wired. The glue reports each mode's fit with
-   `AIR_FIT_UNTESTED` until the board sets the glue's `air_verified`, which it does only after P25 and NXDN were
-   checked on air both ways: `tests/hil/test_p25.py` (`test_p25_rx_from_bench`, `test_p25_tx_off_air`) and
+   `AIR_FIT_UNTESTED` until the board's verified set, the glue's `air_verified`, has the profile's `AIR_VERIFY_*` bit.
+   A board adds `AIR_VERIFY_P25 | AIR_VERIFY_NXDN` only after P25 and NXDN were checked on air both ways (a mode's bit
+   only after its own check): `tests/hil/test_p25.py` (`test_p25_rx_from_bench`, `test_p25_tx_off_air`) and
    `tests/hil/test_nxdn.py` (`test_nxdn_rx_speech`, `test_nxdn_tx_off_air`, both rates). Check DMR voice right after
    each: P25 runs in memory the DMR vocoder lends where the platform has that (`hal_vocoder_t.lend`). A mode the
    provider can't fit stays in `BOARD_NOT_WRITTEN` with the reason.

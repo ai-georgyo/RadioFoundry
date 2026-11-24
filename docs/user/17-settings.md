@@ -77,6 +77,8 @@ Some settings are on the menu before the feature behind them exists, or don't ap
 | Mic noise reduction | On, Off | On | Reduces steady background noise (fans, engines, wind) in what you send on DMR, also between words. Turn it off if a steady sound you want heard is cut. Dimmed on radios whose voice codec can't do it | Needs an on-air check (DMR) |
 | Monitor by default | On, Off | Off | Digital monitor (DMR: every talkgroup, promiscuous; Tier III: every talkgroup's call on the system) goes on each time you select a DMR channel, and a scan started from it keeps it on at every channel. **Back** on Home turns it off until the next channel | Works |
 | Show talker alias | On, Off | On | Show received talker aliases (names) under the caller's ID | Works |
+| M17 CAN | 0 to 15 | 0 | The channel access number of the VFO in M17 and of a new M17 channel ([M17](24-m17.md)) | Radios that run M17 ([M17](24-m17.md)); not checked on a radio yet |
+| M17 voice | 3200 bit/s, 1600 bit/s + data | 3200 bit/s | The voice rate of the VFO in M17 and of a new M17 channel | Radios that run M17 ([M17](24-m17.md)); not checked on a radio yet |
 | Dual watch talk back | On, Off | Off | Off: a call on the other channel never moves **PTT**. On: when a call ends on the other channel, that channel becomes the selected one for 10 s (restarting with each reply and call there), so **PTT** answers there ([Dual watch](12-scan.md#talk-back)) | Works |
 | Dual watch delay | 0.5 s, 1 s, 1.5 s, 2 s, 3 s, 5 s | 1 s | How long dual watch stays on a channel after a call ends, for the reply. It looks at the other channel meanwhile and shows **Busy** there ([Dual watch](12-scan.md#the-wait-after-a-call)) | Works |
 | SFR receive | Repeater, First copy, Dual-path RX | Repeater | Experimental. What a single frequency repeater user plays ([Standalone SFR](14-hotspot.md#standalone-sfr)). Repeater: only the repeater's copy. First copy: the talker's or the repeater's copy, whichever arrives first. Dual-path RX: both copies, with each damaged voice frame taken from the other copy. Dual-path RX is missing from builds without it | Works (Repeater). First copy and Dual-path RX depend on the radio: some hear only one copy at a time ([Radio reference](23-radios.md)) |
@@ -84,12 +86,17 @@ Some settings are on the menu before the feature behind them exists, or don't ap
 
 ### Privacy (key 4)
 
-If the firmware was built without privacy, the Privacy row is dimmed and OK on it shows "Privacy: not in this build".
+If the firmware was built without privacy, Key type and Key are left out. The Privacy row is then dimmed and OK on it
+shows "Privacy: not in this build", unless the firmware has M17 signatures and the radio runs M17: then Privacy holds
+the M17 rows only.
 
 | Setting | Values | Default | What it does | Status |
 |---|---|---|---|---|
 | Key type | Off, Motorola, Anytone | Off | The kind of basic privacy key ([DMR](09-dmr.md#privacy)). Off removes the key | Works |
 | Key | Motorola 1 to 255, Anytone 0 to 65535 | | The key value, typed with the number keys. Dimmed until a type is chosen | Works |
+| Sign M17 calls | On, Off | Off | Sign your M17 calls with your signing key ([Signatures](24-m17.md#signatures)). Dimmed without a key: "No signing key: add one in the editor". With it, Key type and Key read DMR key type and DMR key | Builds with M17 signatures; not checked on a radio yet |
+| M17 signing key | Page | | The callsign it signs as, its fingerprint, the clock and the public key | Builds with M17 signatures; not checked on a radio yet |
+| M17 station keys | List | | The other stations' public keys you hold; **OK** shows one | Builds with M17 signatures; not checked on a radio yet |
 
 ### Location (key 5)
 
@@ -103,6 +110,7 @@ If the firmware was built without privacy, the Privacy row is dimmed and OK on i
 | Fixed position | Latitude, Longitude | Not set | A position you type in, for a radio without GPS or one that stays in place ([how to type it](13-aprs.md#position)) | Works |
 | Save GPS position | Action | | Save the current GPS fix as the fixed-position fallback. Requires a fresh fix | GPS builds |
 | Send in DMR calls | On, Off | Off | Put your position into your DMR voice calls ([DMR](09-dmr.md#position-in-calls)) | Works |
+| Send in M17 calls | On, Off | Off | Put your GPS position into your M17 calls, at most every 5 s ([M17](24-m17.md)) | Radios that run M17 ([M17](24-m17.md)); not checked on a radio yet |
 
 #### Position
 
@@ -182,6 +190,8 @@ When the keys lock by themselves and what still works while they are locked ([Ke
 |---|---|
 | DMR ID and name | The radio model, then your DMR ID, the radio name and the two boot screen lines, as stored in the codeplug. On **DMR ID**, type a new ID with the digit keys (up to 16776415; the IDs above it are reserved for the network) and press **OK**: the radio writes it into the codeplug and uses it at once, and the Codeplug Editor or qdmr shows it on the next read. **Back** takes back the last digit, and with none left leaves the ID unchanged. On **Radio name**, **Boot 1** or **Boot 2**, **OK** opens text entry ([Text entry](07-channels-zones-vfo.md#text-entry)); **OK** there saves it, up to 16 characters |
 | About | The firmware version, its date and the radio model: the same page as **Settings > Advanced > About** (below) |
+| M17 callsign | Your M17 callsign, up to 9 characters ([M17](24-m17.md#your-callsign)). "Not set" in warn without one |
+| M17 call text | Text sent with every M17 call, up to 52 characters |
 
 ### Advanced (last row)
 

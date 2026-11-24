@@ -45,6 +45,76 @@ system type share the id. `tools/check_modes.py` (in `tools/ci.sh`) fails when t
 Nothing outside the mode's module tests a kind id: the radio core asks the registry (`codeplug_kind_built`) and the
 mode module.
 
+### 3.1 The radio core
+
+An air-framed mode is one row of the air modes' table, `radio_air_mode_t` in `core/radio/radio_air_modes.h`, defined
+in its module (`core/radio/radio_<mode>.c`) and listed under its switch in `radio_air_modes.c`. `radio_sm.c` loops
+over the table: a new mode adds a row, never a case at each site.
+
+| Row member | What the mode gives |
+|---|---|
+| `mode`, `key`, `name`, `features` | Its `radio_mode_t`, the debug link's and JSON's key (`radio_mode_key`), the word a display shows (`radio_mode_name`, never translated), its part of the feature string. Every table that names modes reads these: no copy of the names elsewhere |
+| `fits`, `take`, `receives` | Whether the board's provider carries it (any task); a codeplug channel of its kind becomes the mode; what scan and dual watch may visit |
+| `begin`, `end`, `running`, `retuned`, `apply` | The engine started on the channel and stopped; a retune; settings changed during a transmission |
+| `poll`, `rx`, `heard`, `played`, `view_off` | Every tick, the engine into the mode's part of `radio_view_t`; what scan and the LED see |
+| `tx_deny` | Refusals of its own beyond the shared checks, as new `tx_deny_t` values appended at the end (their debug link names in `debuglink_view.c` `deny_key`, under the mode's switch) |
+| `auto_tx` | Transmissions of its own: `ONCE` (a packet) or `HOLD` (a test run until it says stop or the TX time-out) |
+| `ops` | Transmit (`radio_air_ops_t`, `radio_air.h`) |
+
+Requests from other tasks are `RREQ_<MODE>_*` with a `radio_req_<mode>_*` call each (`radio.h`); the radio task acts
+on them. Work that takes long (a signature) runs one step a radio tick; `radio_task.c` sleeps a tick after a long one
+([watchdog.md](../spec/watchdog.md) 4).
+
+### 3.2 Memory
+
+The air modes run one at a time, so they share one block: `radio_air_mem_get(mode, len)` at begin,
+`radio_air_mem_put(mode)` at end (`core/radio/radio_air_mem.h`). A mode whose voice codec is in the tree runs in the
+DMR vocoder's loan where the platform lends it (`hal_vocoder_t.lend`); the others, and every mode on a platform
+without a loan, share a static arena sized for the largest built block (a union of the modes' memory types). Put
+the engine and the voice path in one type, `<mode>_mem_t`, with its size asserted against a budget macro, and keep
+statics outside the block small: they cost RAM on every radio that builds the mode, running or not.
+
+### 3.3 Voice
+
+A mode with its own codec does what P25 and M17 do (`core/p25/p25Voice.c`, `core/m17/m17_voice.c`): the codec runs in
+the audio block callback on the board's PCM audio (`hal_audio_t`), fed through queues by the engine, with its working
+memory in the mode's block. No RTOS calls and no waits in the voice path or the engine, so the host tests run them. A
+mode whose voice is the DMR vocoder's (NXDN) goes through the DMR voice path instead and cannot use the loan.
+
+### 3.4 Debug link and HIL
+
+The mode's view section (`core/debuglink/debuglink_view_<mode>.c`, a `DL_VIEW_*` before `DL_VIEW_COUNT`) answers
+`<mode>.built=0` in a build without it, so a HIL test can skip. A RADIO op for its settings and benches goes through
+the `radio_req_<mode>_*` calls. Nothing secret is ever printed. The HIL tests (`tests/hil/test_<mode>.py`) get an
+entry in `tests/hil/features.toml` and skip without a radio.
+
+### 3.5 Fit
+
+Measure the mode on every board (default and maximal; `tools/ci.sh` builds each switch off) and write the bytes in
+[feature-matrix.md](../feature-matrix.md). Every default image keeps at least 3 KB of flash and 1.5 KB of linked RAM
+free ([build-config.md](../build-config.md#room-to-grow)): a board that misses it turns the mode's parts off in its
+`config.mk`, each with a `flash:` or `RAM:` comment and the bytes, in an order the mode's spec gives. A part the
+board can't fit is `CONFIG_X ?= n`, never `BOARD_UNSUPPORTED` (that is for what the hardware can't do).
+
+### 3.6 The radio's screens
+
+The mode shares the screens: no menu of its own ([principles.md](../ux/principles.md)). What it adds:
+
+| Piece | Where |
+|---|---|
+| Home and the call screen | a call builder in `ui_screens.c` (`call_builders[]`) that fills the shared `ui_call_t`; its chips and talk line |
+| The mode's name | `ui_mode_name`, from `radio_mode_name` |
+| Quick settings | its tile table (`quick_tables`), or FM's |
+| The talk target picker | the mode's rows, asked from the mode (`pick_<mode>_fill`) |
+| The channel editor | the mode's rows, shown only on its channels |
+| Settings | rows by intent (Talk & listen, Privacy, Location, My radio), never a group per mode |
+| Messages | a provider in the message table (`ui_svc_msg.c`), when the mode carries text |
+| Addresses | `ui_addr_t` with a kind for the mode's addresses, drawn by `ui_sb_addr` |
+
+Each new screen gets a `uiFlowTest` flow that opens it and checks `screen=<name>`; the gallery is regenerated
+(`make -C tests/host ui-gallery`). Build the UI with each of the mode's sub-switches off (as `uiM17Off` does). Text
+goes through `TR()` and into every catalog ([translating.md](translating.md)).
+
 ## 4. Codeplug Editor
 
 Add `site/static/js/codeplug/mode_<mode>.js` and name it in the registry row, with the feature the radio's probe
@@ -77,4 +147,7 @@ within them needs nothing there. A mode whose channels refer to targets needs th
 ## 6. Docs
 
 Add the switch to [feature-matrix.md](../feature-matrix.md), and the mode to the user manual's
-[Programming the radio](../user/04-programming.md#digital-modes-and-systems) when users see something new.
+[Programming the radio](../user/04-programming.md#digital-modes-and-systems) when users see something new. The mode's
+spec gets a "What this firmware does" checklist, a "Tests" section and a "Not written" list; the user manual a page
+for the mode, linked from the chapters it touches (channels and the VFO, messages, scan, settings, the radio
+reference), with the translated pages under `docs/i18n/`.

@@ -74,12 +74,16 @@
 | 术语 | 含义 |
 |---|---|
 | <a id="t-aprs"></a>APRS | 自动分组报告系统：业余台站之间共享的位置和短消息。[更多](13-aprs.md) |
+| <a id="t-bert"></a>BERT（BER 测试） | 误码率测试：发送已知伪随机码型的 M17 发射，使接收方能统计收错的比特数。[更多](24-m17.md) |
 | <a id="t-brandmeister"></a>BrandMeister | 由互联服务器和通话组组成的全球业余 DMR 网络。 |
+| <a id="t-can"></a>CAN | 信道接入号：M17 信道使用的 0 到 15 的数字，类似 DMR 的色码。电台播放其信道 CAN 上的通话。[更多](24-m17.md) |
+| <a id="t-codec-2"></a>Codec 2 | M17 使用的开放语音声码器，3200 或 1600 bit/s。内置于 RadioFoundry：不需要原厂固件中的任何内容。[更多](../spec/codec2.md) |
 | <a id="t-cw-id"></a>CW 标识 | 以摩尔斯码发送的台站呼号。独立 SFR 中继信道在有通话后每隔几分钟以 FM 发送一次（设置 > 通话与收听 > SFR CW 标识）。[更多](14-hotspot.md) |
 | <a id="t-dmr-id"></a>DMR ID（RadioID、DMR IDs） | 在 DMR 上标识你电台的号码。业余 ID 来自 RadioID.net。 |
 | <a id="t-hotspot"></a>热点（Hotspot） | 通过互联网把附近电台接入 DMR 网络的小型 DMR 调制解调器。[更多](14-hotspot.md) |
 | <a id="t-igate"></a>iGate | 在空中的 APRS 分组与 APRS-IS 互联网网络之间转发的台站。 |
 | <a id="t-kiss"></a>KISS | 电脑上的 APRS 程序与电台调制解调器（TNC）之间的简单协议。 |
+| <a id="t-m17"></a>M17 | 面向业余无线电的开放数字语音与数据模式：每秒 4800 个符号的 4FSK、Codec 2 语音，以呼号寻址电台。[更多](24-m17.md) |
 | <a id="t-mdns"></a>mDNS | 多播 DNS：通过 `.local` 名称在本地网络中找到设备。[更多](../spec/mdns.md) |
 | <a id="t-mmdvm"></a>MMDVM | 多模数字语音调制解调器：MMDVMHost 使用的调制解调器协议。[更多](../spec/mmdvm-protocol.md) |
 | <a id="t-rigctld"></a>rigctld | Hamlib 的网络 rig 控制协议，供日志和 SDR 程序使用。 |

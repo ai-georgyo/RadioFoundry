@@ -7,7 +7,8 @@ Every feature, the build switch it sits behind (`CONFIG_<switch>` in `config/fea
 
 - **Bytes** = default image minus the image with that switch off (`tools/ci.sh` builds each switch off), flash bytes.
   A parent switch's figure includes its children (turning `FM` off also drops VOX, APRS, ...).
-- Figures from tools/ci.sh at 3ec14e3 (2026-10-11).
+- Figures from tools/ci.sh at 3ec14e3 (2026-10-11); the M17 figures and [Every radio](#every-radio) from builds of
+  2026-11-23.
   - DM-1701: plain build (LTO off), default image 340,680 B of 344,064 B (3,384 free). Since USRP (2026-10-13) the
     default build uses link time optimization: 330,824 B (13,240 free). Both figures are from the 336 KB app region
     the radio had before the codec moved; its app region is now sectors 3-9, 720 KB. The per-feature figures stay the
@@ -16,7 +17,8 @@ Every feature, the build switch it sits behind (`CONFIG_<switch>` in `config/fea
     region it had then. With LTO a switch also changes what gets inlined elsewhere, so small MD-380 figures are
     approximate. Since the codec moved the region is 464 KB, and since every codec window moved into sector 11
     848 KB; the switches that were off for flash are on. The per-feature figures stay the 2026-10-11 ones.
-  - `*` = off by default; measured by turning it on in the DM-1701 build (main c0022b4).
+  - `*` = off by default; measured by turning it on in the DM-1701 build (main c0022b4). The M17 ones: with LTO,
+    2026-11-23, each M17 part on top of the mode alone.
 - **Radios:** which switches each radio builds by default is in
   [Built by default on each radio](#built-by-default-on-each-radio), generated from the build. A — in a bytes column
   means not built there, so not measured.
@@ -55,6 +57,13 @@ is `tools/bringup.py list --radio <id>`.
 | `p25_trunk` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not recorded |
 | `nxdn` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | partial, needs re-run |
 | `nxdn_scrambler` | not recorded | not recorded | not recorded | not recorded | not written | not recorded | not recorded | not recorded |
+| `m17` | not recorded | off | not recorded | not recorded | not written | off | not recorded | not recorded |
+| `m17_packet` | not recorded | off | not recorded | not recorded | not written | off | not recorded | not recorded |
+| `m17_bert` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
+| `m17_sig` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
+| `m17_scrambler` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
+| `m17_aes` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
+| `heard_list` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
 | `dmr_voice` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | partial, needs re-run |
 | `dmr_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
 | `dmr_aes` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
@@ -114,7 +123,7 @@ is `tools/bringup.py list --radio <id>`.
 | `cps_openfw` | not recorded | pass (seed) | not recorded | pass (seed) | pass (seed) | not recorded | pass, needs re-run | pass, needs re-run |
 | `cps_fast` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
 | `stub_entry` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
-| `crash_log` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
+| `crash_log` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | pass, needs re-run |
 | `crash_screen` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
 | `crash_report` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | ✕ |
 | `watchdog` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass | pass |
@@ -307,6 +316,13 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | `P25_TRUNK` | ● | ● | ● | ● | … | ● | ● | ● |
 | `NXDN` | ● | ● | ● | ● | … | ● | ● | ● |
 | `NXDN_SCRAMBLER` | ● | ● | ● | ● | … | ● | ● | ● |
+| `M17` | ● | ○ | ● | ● | … | ○ | ● | ● |
+| `M17_PACKET` | ● | ○ | ● | ● | … | ○ | ● | ● |
+| `M17_BERT` | ● | ○ | ● | ● | … | ○ | ○ | ● |
+| `M17_SIG` | ● | ○ | ● | ● | … | ○ | ○ | ● |
+| `M17_SCRAMBLER` | ● | ○ | ● | ● | … | ○ | ○ | ● |
+| `M17_AES` | ● | ○ | ● | ● | … | ○ | ○ | ● |
+| `HEARD_LIST` | ● | ○ | ● | ● | … | ○ | ○ | ● |
 | `AIR_RAW` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
 | Voltage reading (board, no switch) | Battery | Battery | Battery | None | Battery | Battery | Supply | Battery |
 | Clock kept through power-off (board, no switch) | Yes | ? | Yes | ? | ? | ? | ? | No (only while on) |
@@ -330,8 +346,15 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | P25 Phase 1 conventional: the air interface (framer, soft modem, shared FEC), the engine, the P25 channel mode and the full-rate voice decoder on the MBE core | `P25` | 43,300* | 24,640* | Needs a board with an air interface provider (`board.air`); without one nothing runs ([air-interface.md](spec/air-interface.md)). Off on the MD-380 until receive is written ([hardware-md380.md](spec/hardware-md380.md) 4.11). Receive and transmit checked on air against the SDR bench on the DM-32UV and the DM-1701, receive, zone scan and dual watch on the MD-9600; the VFO's mode tile, the debug link or a stored P25 channel sets it ([p25.md](spec/p25.md)). RAM: 6,640 B on the DM-1701, 424 B on the MD-380 |
 | NXDN conventional voice, 4800 and 9600 bit/s: the frame codec, receive, the call layer, the engine and the NXDN mode in the radio core | `NXDN` | 27,300* | — | Needs `DMR` (its voice goes through the DMR vocoder path) and a board with an air interface provider (`board.air`); where the provider only receives a rate, PTT is refused at that rate. The VFO's mode tile, the debug link or a stored NXDN channel sets it ([nxdn.md](spec/nxdn.md) 6, [nxdn-codeplug.md](spec/nxdn-codeplug.md)). On the DM-1701 and the DM-32UV transmit is checked off air at both rates and receive with a bench transmitter, speech frames through the vocoder included (DM-1701); on the HR_C6000 radios the speaker plays NXDN speech through the chip's prompt tone FIFO, checked by ear on the DM-1701 and the MD-9600 ([modem-hrc6000.md](spec/modem-hrc6000.md) 10.6). RAM: 2,184 B on the DM-1701; with `P25` also on it shares P25's engine memory (9,464 B flash, 256 B RAM on top of P25) |
 | NXDN Scrambler (15-bit) | `NXDN_SCRAMBLER` | 468 | — | Needs `NXDN`; supports conventional voice calls. The NXDN air interface must support the requested direction. Checked on air against another radio running RadioFoundry and a commercial portable ([bring-up record](testing/dm32-bringup.md#nxdn-scrambler-interoperability)). |
+| M17 voice in Codec 2, packet data and the BER test on the air interface, the M17 mode in the radio core, its screens and its debug link sections | `M17` | 46,204* | — | Needs `DMR` (the air provider and the PCM audio are the board's DMR glue) and a board whose air interface provider receives M17. DM-1701: the mode alone, its parts off, measured 2026-11-23 with LTO; off by default there and on the MD-UV380 (no room: [M17 trades](#m17-trades)). Every radio's figures, flash and RAM: [M17 on each radio](#m17-on-each-radio). MD-380: receive isn't written (no receive tap for the soft modem, [hardware-md380.md](spec/hardware-md380.md) 4.11). Not checked on the air on any radio ([m17.md](spec/m17.md) 19, 20) |
+| M17 packet mode: SMS sent and received | `M17_PACKET` | 5,012* | — | Needs `M17`. RAM: 856 B (the inbox of 4 messages and the send) |
+| M17 bit error rate test | `M17_BERT` | 3,188* | — | Needs `M17`. Off by default on the MD-9600 for flash |
+| M17 stream signatures (ECDSA P-256) | `M17_SIG` | — | — | Needs `M17` ([p256.md](spec/p256.md)). 18.6 to 20.2 KB on the other radios: too big to measure in the DM-1701 image ([M17 on each radio](#m17-on-each-radio)). Off by default on the MD-9600 for flash |
+| M17 scrambler | `M17_SCRAMBLER` | 1,352* | — | Needs `M17`; off in the amateur variant. Off by default on the MD-9600 for flash |
+| M17 AES encryption | `M17_AES` | — | — | Needs `M17`; off in the amateur variant. About 2.4 KB with the random pool, on the AES DMR AES uses too ([M17 on each radio](#m17-on-each-radio)). Off by default on the MD-9600 for flash |
+| Heard list: the stations heard | `HEARD_LIST` | 2,368* | — | Needs `M17`, its only source so far. RAM: 304 B. Off by default on the MD-9600 for flash |
 | Basic privacy (Motorola / Anytone BP) | `DMR_PRIVACY` | 1,936 | 1,992 |  |
-| AES-256 DMR voice, PI header and late-entry signaling | `DMR_AES` | 3,992 | — | Requires `DMR_PRIVACY`. DM-1701: 3,992 B flash and 480 B RAM with `DMR_AES` on versus off. TX to a receiver of another make needs the modem driver's burst F field (`set_burst_f`, [dmr-voice.md](spec/dmr-voice.md) 5.1): only the HR_C7000 driver has it (DM-32UV); on the HR_C6000 and other radios our AES overs reach radios running RadioFoundry only (#864). |
+| AES-256 DMR voice, PI header and late-entry signaling | `DMR_AES` | 4,656 | — | Requires `DMR_PRIVACY`. DM-1701: 4,656 B flash and 496 B RAM with `DMR_AES` on versus off, the AES cipher (`core/crypto/aes.c`, shared with M17) included. TX to a receiver of another make needs the modem driver's burst F field (`set_burst_f`, [dmr-voice.md](spec/dmr-voice.md) 5.1): only the HR_C7000 driver has it (DM-32UV); on the HR_C6000 and other radios our AES overs reach radios running RadioFoundry only (#864). |
 | Talker alias receive and send | `DMR_TALKER_ALIAS` | 984 | 1,300 |  |
 | ETSI GPS Info in the embedded LC | `DMR_GPS` | 2,208 | 2,152 |  |
 | DMR emergency (alarm, emergency call, hot mic) | `DMR_EMERGENCY` | 3,296 | 3,188 |  |
@@ -358,6 +381,92 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | Signaling tone chains (Settings > Signaling tones) | `SIG_TONES` | — | — | Needs `BEEP`. Not measured yet: no C-SKY or ARM compiler in the session that wrote it |
 | Vibration alerts (Settings > Sound > Vibrate) | `VIBRATE` | 520* | — | Needs a vibration motor (`hal_power_t.vibrate`): none of these radios has one RadioFoundry drives. On for the DM-1801 Pro. Measured 2026-10-16 with `CONFIG_SNMP=n`; 236 B with LTO |
 | GPS receiver: the module driver and its NMEA input (Settings > Location > GPS) | `GPS` | — | 1,196 | Needs a GPS receiver. Off, DMR GPS Info, LRRP and APRS send the fixed position when one is set ([position](spec/position.md)). MD-380 measured 2026-10-22 (LTO, 58f2cebe). The DM-1701 has none from the factory but listens for an owner-fitted one (1,308 B, LTO) |
+
+### M17 on each radio
+
+What each M17 switch costs, flash / linked RAM in bytes ([build-config.md](build-config.md#room-to-grow)): the default
+image minus the image with that switch off, LTO as each radio builds (2026-11-23). The `M17` row is the whole mode
+with every part the radio has on. On the DM-1701 and the MD-UV380, where M17 is off, the figures are the image with it
+turned on (its parts off, as their `config.mk` sets them) minus the default, and each part on top of that.
+
+| M17 switch | DM-32UV | DM-1801 Pro | DB25-D PRO | RT10 | MD-9600 | DM-1701 | MD-UV380 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `M17` | 90,376 / 2,984 | 91,072 / 2,992 | 90,140 / 2,984 | 84,928 / 2,912 | 49,616 / 1,984 | 46,204 / 1,104 | 46,232 / 1,104 |
+| `M17_SIG` | 20,224 / 376 | 20,244 / 384 | 20,232 / 376 | 18,616 / 376 | 19,148 / 416 | — | — |
+| `M17_AES` | 2,360 / 208 | 2,364 / 208 | 2,356 / 208 | 2,292 / 208 | 2,588 / 224 | — | — |
+| `M17_SCRAMBLER` | 820 / 0 | 820 / 0 | 816 / 0 | 816 / 0 | 1,120 / 0 | 1,352 / 8 | 1,336 / 8 |
+| `M17_BERT` | 3,176 / 80 | 3,180 / 72 | 3,176 / 72 | 2,896 / 72 | 2,916 / 80 | 3,188 / 72 | 3,168 / 72 |
+| `HEARD_LIST` | 2,496 / 296 | 2,492 / 296 | 2,492 / 296 | 2,396 / 296 | 1,884 / 296 | 2,368 / 304 | 2,348 / 304 |
+| `M17_PACKET` | 5,024 / 840 | 5,024 / 840 | 5,004 / 840 | 4,808 / 840 | 4,808 / 840 | 5,012 / 856 | 4,980 / 856 |
+
+- MD-9600: `M17_SIG`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT` and `HEARD_LIST` are off by default for flash (with every
+  part the image is 23,316 B over its app region; DMR AES takes 4,444 B of it); its `M17` and `M17_PACKET` rows are the
+  default without them, its other rows the image with that part on minus the default.
+- `M17_AES` is AES-CTR, the nonces and the random pool: the cipher itself (`core/crypto/aes.c`) is shared with DMR AES,
+  on by default everywhere, so it is not counted here.
+- DM-1701 and MD-UV380: signatures and AES are not measured there: the image is over the app region well before them.
+- Where M17's flash goes, every part on, without LTO (DM-1701, 83 KB in all): Codec 2 and the shared DSP 14.4 KB, P-256,
+  HMAC, AES and the random pool 13.6 KB, the frames, the engine, the voice path, the codeplug and the rest of `core/m17`
+  19 KB, the radio core 10.5 KB, the screens 18.3 KB and their English text about 3.3 KB, the debug link sections
+  3.8 KB (1.8 KB of it key names and formats). RAM: the radio core's state and the SMS inbox 1.8 KB, the heard list
+  292 B, the random pool 200 B; the running mode's block is the shared arena or the vocoder's loan ([m17.md](spec/m17.md)
+  16).
+- Not checked on the air on any radio yet: no bring-up record has M17, and no board names `AIR_VERIFY_M17`, so every
+  board's provider reports M17 as untested ("not recorded" in [Checked on each radio](#checked-on-each-radio)).
+
+### M17 trades
+
+Measured, not applied: what would let M17 with its screens and its debug link sections on by default on the DM-1701
+and the MD-UV380 while the image keeps 3 KB of flash and 1.5 KB of RAM free. Flash free / linked RAM free of the whole
+image in bytes, negative when over the app region (2026-11-23, LTO on). The choice is the project lead's.
+
+M17 alone (no packets, heard list, BER test, scrambler, AES or signatures). DMR AES, on by default, takes 4,656 / 496
+of the DM-1701's room and 4,624 / 496 of the MD-UV380's:
+
+| Trade | DM-1701 | MD-UV380 | Meets the rule |
+|---|---:|---:|---|
+| none | -13,536 / 2,500 | -14,524 / 1,828 | no |
+| `LANG_ES=n` (Spanish out of the default image) | 16,408 / 2,500 | 15,436 / 1,828 | both |
+| `SATELLITE_TLE=n` | 14,536 / 3,612 | 13,660 / 2,940 | both |
+| `HOTSPOT_SPLIT=n` | 5,776 / 6,900 | 4,820 / 6,228 | both |
+| `P25_TRUNK=n` | 380 / 3,116 | -580 / 2,444 | no |
+| `NXDN=n` | -3,064 / 2,732 | -4,040 / 2,060 | no |
+| `APRS_RX=n` | -3,220 / 4,572 | -4,196 / 3,900 | no |
+| `LTO_3P=1` and `GPS_SKY=n` | -4,240 / 2,900 | -5,256 / 2,228 | no |
+| `SNMP=n` | -4,932 / 5,196 | -5,920 / 4,524 | no |
+| `GPS_SKY=n` | -7,648 / 2,684 | -8,640 / 2,012 | no |
+| `LTO_3P=1` and `NXDN_SCRAMBLER=n` | -9,660 / 2,708 | -10,664 / 2,036 | no |
+| `LTO_3P=1` (the third-party code in the link time optimization, as on the MD-380) | -10,188 / 2,708 | -11,200 / 2,036 | no |
+| `NXDN_SCRAMBLER=n` | -13,056 / 2,500 | -14,052 / 1,828 | no |
+
+M17 with its packets (SMS) and the heard list:
+
+| Trade | DM-1701 | MD-UV380 | Meets the rule |
+|---|---:|---:|---|
+| none | -20,892 / 1,332 | -21,852 / 660 | no |
+| `LANG_ES=n` | 9,232 / 1,356 | 8,240 / 684 | no (RAM) |
+| `SATELLITE_TLE=n` | 7,064 / 2,460 | 6,108 / 1,788 | both |
+| `HOTSPOT_SPLIT=n` | -1,580 / 5,708 | -2,560 / 5,036 | no |
+| `P25_TRUNK=n` and `LTO_3P=1` | -3,312 / 1,988 | -4,284 / 1,316 | no |
+| `NXDN=n` and `LTO_3P=1` | -6,672 / 1,836 | -7,584 / 1,164 | no |
+| `P25_TRUNK=n` | -6,712 / 1,764 | -7,676 / 1,092 | no |
+
+Every M17 part, with `SATELLITE_TLE=n` and `LANG_ES=n`: 10,988 / 1,724 (DM-1701), 9,996 / 1,052 (MD-UV380); the DM-1701
+meets the rule, the MD-UV380 not (RAM). The debug link's M17 sections can't be left out alone (they come with `M17` and
+`DEBUGLINK`); their key names and formats are about 1.8 KB of the 3.8 KB. Each trade's own cost is in this page's
+tables.
+
+### M17: not written, unconfirmed
+
+| Item | State |
+|---|---|
+| MMDVM M17 hotspot | Not written: no permissible source gives its commands or payload ([m17.md](spec/m17.md) 19). The hotspot NAKs them on every radio |
+| M17 reflector client (M17 over IP) | Not written: waits for the project lead's go-ahead |
+| APRS over M17 packets | Not written: the specification defines no format |
+| Working with another M17 radio or modem | Unconfirmed: no off-air test against another implementation. The transmit pulse is the modem chip's (root raised cosine 0.2, not the specification's 0.5) |
+| The specification's gaps | Unconfirmed: [m17.md](spec/m17.md) 13 lists what this firmware assumes |
+| Codec 2 and P-256 time on the C-SKY radios | Estimated, not measured on a radio ([m17.md](spec/m17.md) 20) |
+| Codec 2 on steady pure tones | A held single tone comes out several dB quieter; speech and touch tones are not affected |
 
 ## DMR data
 
@@ -460,6 +569,26 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | Voice capture for receive tests: the next 32 voice frames received, read over the debug link | `VOICE_CAPTURE` | 256* | 344* | Bench only, never in a release ([debuglink](spec/debuglink.md)) |
 
 ## Whole images
+
+### Every radio
+
+Flash free / linked RAM free in bytes, the default image and ci's maximal configuration (2026-11-23). The rule for
+defaults is at least 3 KB and 1.5 KB ([build-config.md](build-config.md#room-to-grow)).
+
+| Radio | App region / RAM region | Default | Maximal |
+|---|---:|---:|---:|
+| DM-32UV | 901,120 / 211,456 | 30,088 / 7,296 | 30,512 / 9,888 |
+| DM-1701 | 737,280 / 131,068 | 32,668 / 3,604 | 3,368 / 3,236 |
+| DM-1801 Pro | 901,120 / 211,456 | 71,636 / 28,984 | 18,860 / 28,608 |
+| DB25-D PRO | 897,024 / 216,576 | 82,160 / 38,208 | 28,660 / 37,840 |
+| MD-380 | 868,352 / 131,068 | 292,112 / 20,380 | 237,464 / 19,292 |
+| MD-UV380 | 737,280 / 131,068 | 31,708 / 2,932 | 2,400 / 2,564 |
+| MD-9600 | 737,280 / 131,068 | 4,352 / 7,812 | 2,468 / 7,500 |
+| RT10 | 901,120 / 211,456 | 313,312 / 72,264 | 194,556 / 50,056 |
+
+The DM-32UV's default keeps 7,296 B of RAM: M17 with every part takes 2,984 B of it. Its maximal configuration and the
+DM-1701's and MD-UV380's leave M17 out (their `config.mk`); the MD-9600's leaves satellite tracking and the languages
+out, so it has M17 with every part.
 
 ### DM-1701 and MD-380
 

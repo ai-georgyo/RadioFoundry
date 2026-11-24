@@ -98,6 +98,25 @@ Nothing about this dual watch has been checked on the air on any radio.
 The Anytone AT-D578UV is the radio the two-receiver case is for: its hardware has two receiver chips
 ([Anytone hardware notes](../spec/hardware-anytone.md)). RadioFoundry has no board for it, so there is no support.
 
+## M17 on each radio
+
+[M17](24-m17.md) needs the radio's air interface to receive and send it, room in flash and RAM, and Codec 2 time on
+its processor. Each part is a build switch ([feature matrix](../feature-matrix.md#built-by-default-on-each-radio)
+has the defaults and the bytes each costs). M17 hasn't been checked on the air on any radio yet.
+
+| Radio | M17 in the default image |
+|---|---|
+| DM-32UV | Every part: signatures, scrambler, AES, SMS, the heard list, the BER test |
+| DM-1801 Pro | Every part |
+| DB25-D PRO | Every part, at the full clock (the default). At the loader's 72 MHz, M17 is left out: Codec 2 needs the clock |
+| RT10 | Every part |
+| MD-9600 | Everything but signatures and AES, which don't fit in its flash beside the rest |
+| DM-1701 | Not in the default image: with its screens M17 doesn't fit in flash beside the rest. A custom build can trade another feature for it ([Installing](02-installing.md)) |
+| MD-UV380 | Not in the default image, as on the DM-1701 |
+| MD-380 | Not written: its receive path for the air interface isn't written yet |
+
+The **Amateur** build leaves the scrambler and AES out on every radio, the **Commercial** build all of M17.
+
 ## The volume bar
 
 On a radio whose volume knob RadioFoundry reads, turning the knob shows the volume at the bottom of the screen (at the
@@ -240,6 +259,7 @@ layout.
 - APRS receive needs the squelch open: the radio hears packets strong enough to open the squelch, not weaker ones.
 - No APRS iGate (passing heard packets to APRS-IS) in the default image: `CONFIG_APRS_IGATE` is off by default.
 - No vibration motor: **Settings > Sound > Vibrate** isn't in the image.
+- No M17 in the default image: it doesn't fit beside the rest ([M17 on each radio](#m17-on-each-radio)).
 
 ### Verified on the DM-1701
 
@@ -331,6 +351,7 @@ A 160 x 128 color screen, every row visible. The controller type is unconfirmed.
 - CTCSS works on air both ways. DCS isn't checked on a radio yet. A build with `CONFIG_SUBTONE=n` ([build switches](../build-config.md)) opens a channel with a tone on any carrier and sends no tone.
 - No roger beep, 1750 Hz burst or APRS on FM (the transmit tone path isn't written). APRS positions over DMR work.
 - No APRS receive.
+- No P25, NXDN or M17: the receive path for the air interface isn't written ([M17 on each radio](#m17-on-each-radio)).
 - MMDVM SFR and the split duplex repeater need the DMR chip of the DM-1701 (HR_C6000) and aren't built for the
   MD-380 (HR_C5000). Hotspot mode is in.
 - USB network mode and its services are in.
@@ -400,6 +421,7 @@ A 160 x 128 color screen, every row visible.
 - GPS only on the G models. The radio powers the module for 5 s at start-up and hides the GPS features if it hears
   nothing; then the module is switched off again. Once heard, the module is powered only while **Settings > Location >
   GPS** is on, which takes effect at once.
+- No M17 in the default image: it doesn't fit beside the rest ([M17 on each radio](#m17-on-each-radio)).
 - Nothing is checked on a radio yet: treat every function as untested.
 
 ## Baofeng DM-32UV
@@ -797,6 +819,7 @@ A 128 x 64 monochrome screen.
 - No hotspot, DTMF, USB network or IP services: they all need the transmitter.
 - No APRS: the radio doesn't pass its received audio to the decoder yet.
 - No air band or broadcast receiver, and no vibration motor.
+- No M17 signatures in the default image: they don't fit beside the rest ([M17 on each radio](#m17-on-each-radio)).
 
 ## Planned radios
 

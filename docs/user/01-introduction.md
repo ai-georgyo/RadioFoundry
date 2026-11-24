@@ -2,7 +2,7 @@
 
 # Introduction
 
-RadioFoundry is free, MIT-licensed multi-mode firmware for inexpensive digital radios: DMR, P25, NXDN and FM. It
+RadioFoundry is free, MIT-licensed multi-mode firmware for inexpensive digital radios: DMR, P25, NXDN, M17 and FM. It
 replaces the radio's stock firmware. One radio-independent core provides the digital voice stacks, the user interface, the codeplug and the host tools. Each radio adds a
 thin board layer underneath.
 
@@ -52,6 +52,8 @@ The [Radio reference](23-radios.md) lists them for each radio.
 - FM: CTCSS and DCS tones, squelch, monitor, 12.5 and 25 kHz bandwidth, VOX, touch tones.
 - A VFO for tuning a frequency by hand, in FM or in DMR. Air band AM and FM broadcast receive on radios with the hardware.
 - Scan of a zone or of the VFO band, and dual watch on two channels.
+- M17, on the radios that run it: voice in the open Codec 2 codec, calls by callsign, signed calls, text messages,
+  the stations heard and a bit error rate test ([M17](24-m17.md)).
 - APRS: position, status and messages on FM, positions over DMR, a KISS TNC.
 - Hotspot: the radio is an MMDVM modem for MMDVMHost and Pi-Star style hosts, with a single frequency repeater mode
   (MMDVM SFR).
@@ -65,7 +67,8 @@ The [Radio reference](23-radios.md) lists them for each radio.
 DMR voice needs DVSI's proprietary AMBE+2 vocoder. RadioFoundry never ships it. Each radio runs the codec from its own
 stock firmware. The installer keeps the codec already in your radio, or takes it from the stock firmware file on your
 computer and writes it to the radio ([Installing](02-installing.md)). Without the codec the radio works on FM, shows
-DMR calls and handles DMR data. It plays and sends no DMR voice.
+DMR calls and handles DMR data. It plays and sends no DMR voice. M17 voice doesn't need it: its codec, Codec 2, is
+open and built into RadioFoundry.
 
 ## Conventions in this manual
 

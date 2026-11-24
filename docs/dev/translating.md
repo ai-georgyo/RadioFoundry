@@ -269,6 +269,13 @@ an offset per 8 keys) and the Latin-1 glyphs of every font. Each further languag
 of the catalog's translations, and an offset per 8 keys. Measure a language like any switch
 ([building.md](building.md)) and put the bytes in the feature matrix.
 
+A key marked only inside a build switch's code (`#if CONFIG_M17_SIG` around its `TR`) costs nothing with the switch
+off. `tools/i18n.py --gen` reads the `#if` lines around each mark and orders the tables: the keys every build has,
+then a group per switch condition, each group's strings and offsets under that condition (`TRSEG_<n>`). A key used
+under two conditions is built when either is on. In `tr_keys.h` such a key's `TR_<KEY>` exists only when its
+condition is on, so a mark that outlives its switch is a compile error, not a missing string. `i18nTest` walks the
+groups (`TR_SEGMENTS`) and checks each one's strings are there exactly when it is built.
+
 ## Translating the web site
 
 1. Copy `site/i18n/en.json` to `site/i18n/<code>.json` and translate the values. Keep its format (one space of

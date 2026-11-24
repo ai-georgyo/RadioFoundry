@@ -838,6 +838,75 @@
    "preview": true
   },
   {
+   "term": "M17",
+   "aliases": [],
+   "category": "Amateur and network",
+   "scope": "user",
+   "definition": "An open digital voice and data mode for amateur radio: 4FSK at 4800 symbols a second, Codec 2 voice, stations addressed by their callsign.",
+   "link": "user/24-m17.md",
+   "preview": true
+  },
+  {
+   "term": "CAN",
+   "aliases": [
+    "channel access number"
+   ],
+   "category": "Amateur and network",
+   "scope": "user",
+   "definition": "Channel access number: a number from 0 to 15 an M17 channel uses, as DMR uses a color code. Radios play calls on their channel's CAN.",
+   "link": "user/24-m17.md",
+   "preview": true
+  },
+  {
+   "term": "Codec 2",
+   "aliases": [],
+   "category": "Amateur and network",
+   "scope": "user",
+   "definition": "The open voice codec M17 uses, at 3200 or 1600 bit/s. Built into RadioFoundry: it needs nothing from the stock firmware.",
+   "link": "spec/codec2.md",
+   "preview": true
+  },
+  {
+   "term": "BERT",
+   "aliases": [
+    "BER test"
+   ],
+   "category": "Amateur and network",
+   "scope": "user",
+   "definition": "Bit error rate test: an M17 transmission of a known pseudo-random pattern, so a receiver can count the bits it gets wrong.",
+   "link": "user/24-m17.md",
+   "preview": true
+  },
+  {
+   "term": "LSF",
+   "aliases": [
+    "link setup frame"
+   ],
+   "category": "Amateur and network",
+   "scope": "dev",
+   "definition": "Link setup frame: the 30 bytes at the start of an M17 transmission with its destination, source, type, META and CRC.",
+   "link": "spec/m17.md",
+   "preview": true
+  },
+  {
+   "term": "LICH",
+   "aliases": [],
+   "category": "Amateur and network",
+   "scope": "dev",
+   "definition": "Link information channel: a sixth of the LSF in every M17 stream frame, so a station that joins late can rebuild it.",
+   "link": "spec/m17.md",
+   "preview": true
+  },
+  {
+   "term": "META",
+   "aliases": [],
+   "category": "Amateur and network",
+   "scope": "dev",
+   "definition": "The 14-byte field of the M17 LSF: text, a GNSS position, an extended callsign or, with AES, the nonce.",
+   "link": "spec/m17.md",
+   "preview": true
+  },
+  {
    "term": "rigctld",
    "aliases": [],
    "category": "Amateur and network",

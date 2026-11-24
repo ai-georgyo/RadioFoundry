@@ -80,6 +80,7 @@
 | **紧急呼叫** | 告警、带热麦的紧急呼叫、警报（[dmr-emergency](docs/spec/dmr-emergency.md)） |
 | **FM** | CTCSS/DCS、回波提示音、1750 Hz 导频（[radio-features](docs/spec/radio-features.md)） |
 | **双守候、扫描、VFO** | 同时守候两个信道；区域、VFO 和双守候扫描会在有 DMR 通话时停止；FM 或 DMR 下手动输入任意频率（[radio-features](docs/spec/radio-features.md)） |
+| **M17** | 使用开放的 Codec 2 声码器的语音（无需原厂声码器）、按呼号呼叫、签名呼叫、短消息、已收听电台列表和误码率测试，仅限有足够空间的电台；尚未与其他 M17 电台互通测试（[用户手册](docs/user/24-m17.md)、[m17](docs/spec/m17.md)） |
 | **漫游** | 在空闲信标期间勘测站点，切换到区域中信号最强的中继（[dmr-roaming](docs/spec/dmr-roaming.md)） |
 | **APRS** | FM 上的位置、状态与消息，经 DMR 发往 APRS 网关的位置，KISS TNC（[aprs](docs/spec/aprs.md)） |
 | **热点** | 电台作为 USB 上的 MMDVM 调制解调器，包括 MMDVM 单频中继（[mmdvm-protocol](docs/spec/mmdvm-protocol.md)、[sfr](docs/spec/sfr.md)） |

@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh.md)
 
-**Free, MIT-licensed multi-mode firmware for affordable digital radios: DMR, P25, NXDN and FM.** One shared core runs the digital voice stacks, the UI, the codeplug and
+**Free, MIT-licensed multi-mode firmware for affordable digital radios: DMR, P25, NXDN, M17 and FM.** One shared core runs the digital voice stacks, the UI, the codeplug and
 the host tools; each radio adds a thin board layer. It brings the features low-cost stock firmware leaves
 out, with a UI designed from first principles. Anyone can use it for anything, commercial products included.
 
@@ -84,6 +84,7 @@ by the UI simulator (`make -C tests/host ui-gallery`).</sub>
 | **Emergency** | Alarm, emergency call with hot mic, alerts ([dmr-emergency](docs/spec/dmr-emergency.md)) |
 | **FM** | CTCSS/DCS, roger beep, 1750 Hz burst ([radio-features](docs/spec/radio-features.md)) |
 | **Dual watch, scan, VFO** | Two channels at once; zone, VFO and dual watch scan that stops for DMR calls in progress; any frequency by hand in FM or DMR ([radio-features](docs/spec/radio-features.md)) |
+| **M17** | Voice in the open Codec 2 codec (no stock codec needed), calls by callsign, signed calls, SMS, the stations heard and a BER test, on the radios with room for it; not yet tried against another M17 radio ([user guide](docs/user/24-m17.md), [m17](docs/spec/m17.md)) |
 | **Roaming** | Moves to the strongest repeater of a zone, surveying sites during idle beacons ([dmr-roaming](docs/spec/dmr-roaming.md)) |
 | **APRS** | Position, status and messages on FM, positions over DMR to an APRS gateway, KISS TNC ([aprs](docs/spec/aprs.md)) |
 | **Hotspot** | The radio is an MMDVM modem over USB, including MMDVM single frequency repeating ([mmdvm-protocol](docs/spec/mmdvm-protocol.md), [sfr](docs/spec/sfr.md)) |

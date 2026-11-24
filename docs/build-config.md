@@ -70,8 +70,8 @@ make BOARD=<id> VARIANT=commercial       # build/<id>-commercial/
 | Variant | Leaves out |
 |---|---|
 | (none: full) | nothing |
-| `amateur` | basic privacy, AES voice encryption, NXDN Scrambler, Motorola TMS, ARS, LRRP, control station mode, SNMP |
-| `commercial` | the MMDVM hotspot (and split duplex), APRS (and KISS, APRS-IS), satellite tracking |
+| `amateur` | basic privacy, AES voice encryption, NXDN Scrambler, M17 scrambler and AES, Motorola TMS, ARS, LRRP, control station mode, SNMP |
+| `commercial` | the MMDVM hotspot (and split duplex), APRS (and KISS, APRS-IS), satellite tracking, M17 (and its sub-features) |
 
 Each variant file starts with `## title:` and `## summary:` lines, and the comment above each switch says why it is
 left out; the site shows both. The lists are a draft for the project lead to settle.
@@ -106,7 +106,7 @@ below are for an STM32F4 radio.
 | `CONFIG_APRS_IGATE` | = APRS_RX and HOSTLINK (n where flash is short) | the iGate rules, RF to APRS-IS and messages back, with the host helper `tools/aprs_gate.py` holding the APRS-IS connection |
 | `CONFIG_DMR` | y | DMR voice: modem driver, call stack, AMBE FEC, vocoder hosting, PCM audio |
 | `CONFIG_DMR_PRIVACY` | = DMR | basic privacy (Motorola / Anytone BP) on the voice path, `core/dmr/dmrPrivacy.c` (`docs/spec/dmr-voice.md` 5) |
-| `CONFIG_DMR_AES` | = DMR_PRIVACY | AES-256 voice encryption (DMRA, PI header ALG 0x25), RX and TX on channels bound to a traffic key in the codeplug, `core/dmr/dmrAes.c` (`docs/spec/dmr-voice.md` 5.1) |
+| `CONFIG_DMR_AES` | = DMR_PRIVACY | AES-256 voice encryption (DMRA, PI header ALG 0x25), RX and TX on channels bound to a traffic key in the codeplug, `core/dmr/dmrAes.c` (`docs/spec/dmr-voice.md` 5.1). Turns on `CONFIG_CRYPTO_AES` (the cipher, `core/crypto/aes.c`) |
 | `CONFIG_DMR_TALKER_ALIAS` | = DMR | talker alias decode and our own alias TX (`docs/spec/dmr-voice.md` 3) |
 | `CONFIG_DMR_GPS` | = DMR | ETSI GPS Info in the embedded LC (FLCO 8): the caller's position on the receive screen (with distance and bearing when ours is known), in Recent and on the debug link; ours sent in the alias superframes when Settings > Location > Send in DMR calls is on and there is a position (GPS, host, fixed: `docs/spec/position.md`; no APRS needed; `docs/spec/dmr-voice.md`) |
 | `CONFIG_DMR_SMS` | = DMR | text messages: ETSI IP text (the default format) and ETSI defined short data, received (inbox, ETSI response) and sent (docs/spec/dmr-data.md 5) |
@@ -143,7 +143,14 @@ below are for an STM32F4 radio.
 | `CONFIG_P25_TRUNK` | = P25 | P25 trunked: the codec of its systems and channels (`docs/spec/p25-codeplug.md` 3), the control channel's signaling decoded, its control channel hunted and held, voice channel grants for the chosen talk groups followed, and where the system allows transmit: registration, affiliation, voice requests and transmit on the granted channel (`docs/spec/p25-trunking.md`). The radio core runs it on a trunked channel. Host tested, and run on a radio against a control channel the SDR bench plays, not on a live system. Needs P25 |
 | `CONFIG_NXDN` | = DMR | NXDN conventional voice at 4800 and 9600 bit/s (`docs/spec/nxdn.md`): the frame codec, receive, the call layer and its engine, and the air interface under them. The radio core's NXDN mode (the VFO's mode tile, a temporary mode change, the debug link), RAM settings, the home screen; NXDN conventional channels in the codeplug (`docs/spec/nxdn-codeplug.md`); voice through the DMR side's vocoder path. Needs `DMR`. With P25 on and no lending vocoder it shares P25's engine memory |
 | `CONFIG_NXDN_SCRAMBLER` | = NXDN | 15-bit NXDN Scrambler for conventional voice calls. Needs `NXDN`. |
-| `CONFIG_AIR_RAW` | n | diagnostics: debug link commands that open an air interface session and move raw symbols and tap samples, for bench tests (`docs/spec/debuglink.md`). Needs P25 or NXDN (an air-framed mode) and DEBUGLINK |
+| `CONFIG_M17` | = DMR (n in `commercial`; n where receive isn't written; a board turns parts off to fit, in its `config.mk`) | M17 ([m17.md](spec/m17.md)): stream voice in Codec 2, encoded and decoded in the tree ([codec2.md](spec/codec2.md)), packet data and the BER test on the air interface (`docs/spec/air-interface.md`), and the M17 channel mode. Builds `core/m17` and, through `CONFIG_CODEC2`, `core/codec2`; turns on `CONFIG_AIR`. Needs `DMR` (the air provider and the PCM audio are the board's DMR glue) and a board with `board_t.air` whose receive works for M17: a board whose provider has no receive path (no symbol records and no receive tap for the soft modem) lists it in `BOARD_NOT_WRITTEN` ([feature-matrix.md](feature-matrix.md)) |
+| `CONFIG_M17_PACKET` | = M17 | M17 packet mode: SMS sent and received, the other data types received and counted ([m17.md](spec/m17.md)). Needs `M17` |
+| `CONFIG_M17_BERT` | = M17 | the M17 bit error rate test mode: BERT frames sent and counted on receive ([m17.md](spec/m17.md)). Needs `M17` |
+| `CONFIG_M17_SIG` | = M17 | M17 stream signatures: ECDSA P-256 signing on transmit and verification on receive ([m17.md](spec/m17.md), [p256.md](spec/p256.md)). Turns on `CONFIG_CRYPTO_P256` and `CONFIG_CRYPTO_HMAC`. Needs `M17`. On in `amateur`: a signature proves who sent, it hides nothing |
+| `CONFIG_M17_SCRAMBLER` | = M17 (n in `amateur`) | the M17 scrambler: a stream's frames (voice, and the data of a 1600 bit/s stream) encrypted with the channel's scrambler key; packet mode has no encryption ([m17.md](spec/m17.md) 6). Needs `M17` |
+| `CONFIG_M17_AES` | = M17 (n in `amateur`) | M17 AES encryption: AES-CTR with the channel's key and nonces from the random pool ([m17.md](spec/m17.md)). Turns on `CONFIG_CRYPTO_AES`, `CONFIG_ENTROPY` and `CONFIG_CRYPTO_HMAC`. Needs `M17` |
+| `CONFIG_HEARD_LIST` | = M17 | the list of stations heard (`core/radio/radio_heard.c`); M17 is its only source so far. Needs `M17` |
+| `CONFIG_AIR_RAW` | n | diagnostics: debug link commands that open an air interface session and move raw symbols and tap samples, for bench tests (`docs/spec/debuglink.md`). Needs P25, NXDN or M17 (an air-framed mode) and DEBUGLINK |
 | `CONFIG_SFR` | = DMR (n where the modem can't) | single frequency repeater: MMDVM SFR (the hotspot, duplex with RX = TX) and Standalone SFR (the repeater and user roles of a channel, `docs/spec/sfr.md`) |
 | `CONFIG_SFR_CWID` | = SFR | the standalone SFR repeater's periodic CW ID: the callsign from the radio name in Morse, in FM on the channel (`sfr.md` 4). Off: the setting isn't offered |
 | `CONFIG_SFR_DUALPATH_RX` | = SFR | the SFR user receive mode "Dual-path RX": a voice frame whose FEC failed is taken from the other copy of the call. Off: the mode isn't offered |
@@ -202,10 +209,27 @@ below are for an STM32F4 radio.
 
 Derived (not set by hand): `CONFIG_DMR_DATA_CORE`, the shared packet data / CSBK code, on when any data feature is;
 `CONFIG_DMR_AIR_QUEUE`, the data service's TX queue (`docs/spec/dmr-data.md` 12.6), on with `CONFIG_DMR_IP_GATEWAY` or
-`CONFIG_ZONE_SHARE`. `CONFIG_AIR` (the air interface) is on with `CONFIG_P25` or `CONFIG_NXDN`; `CONFIG_IMBE` and `CONFIG_MBE`
-(the full-rate voice decoder, the MBE core) follow `CONFIG_P25`; a command line or a board's `config.mk` that sets one stops the build. `CONFIG_ZONE_SHARE_MODES`: zone sharing carries channels of a kind and their systems
-(`docs/spec/zone-share.md` 4.2), on with `CONFIG_ZONE_SHARE` and `CONFIG_P25`, `CONFIG_NXDN` or `CONFIG_DMR_TRUNK`. `CONFIG_LANG_ANY`
+`CONFIG_ZONE_SHARE`. `CONFIG_AIR` (the air interface) is on with `CONFIG_P25`, `CONFIG_NXDN` or `CONFIG_M17`; `CONFIG_IMBE` and `CONFIG_MBE`
+(the full-rate voice decoder, the MBE core) follow `CONFIG_P25`; a command line or a board's `config.mk` that sets one stops the build.
+`CONFIG_ZONE_SHARE_MODES`: zone sharing carries channels of a kind and their systems
+(`docs/spec/zone-share.md` 4.2), on with `CONFIG_ZONE_SHARE` and `CONFIG_P25`, `CONFIG_NXDN`, `CONFIG_M17` or `CONFIG_DMR_TRUNK`. `CONFIG_LANG_ANY`
 (`core/config.h`): on when any `CONFIG_LANG_*` is, the translation lookup and the fonts' Latin-1 glyphs.
+`CONFIG_DSP`, the signal helpers the voice codecs share (`core/dsp`: the FFT, sine and cosine, 2^x and log2, integer
+helpers), is on with `CONFIG_MBE` or `CONFIG_CODEC2`; set by hand, it stops the build too.
+
+The M17 switches (and, for the AES, `DMR_AES`) derive the rest the same way ([m17.md](spec/m17.md)):
+
+| Derived | On with | What it builds |
+|---|---|---|
+| `CONFIG_CODEC2` | `M17` | the Codec 2 vocoder, 3200 and 1600 bit/s (`core/codec2`, [codec2.md](spec/codec2.md)) |
+| `CONFIG_CRYPTO_AES` | `M17_AES` or `DMR_AES` | AES-128/192/256 and CTR (`core/crypto`), the one AES in the tree: M17's and DMR AES's |
+| `CONFIG_CRYPTO_P256` | `M17_SIG` | ECDSA P-256 sign and verify, RFC 6979 nonces (`core/crypto`, [p256.md](spec/p256.md)) |
+| `CONFIG_ENTROPY` | `M17_AES` | the random pool AES nonces come from: an HMAC_DRBG seeded from the SoC's generator where `hal_system_t.entropy` has one, else from timing jitter, received noise and the chip's unique ID (`core/crypto`) |
+| `CONFIG_CRYPTO_HMAC` | `CRYPTO_P256` or `ENTROPY` | HMAC-SHA-256 and HMAC_DRBG (`core/crypto`), on SHA-256 (`core/support/sha256.c`, built on its own when `CONFIG_SUPPORT_INFO` is off) |
+| `CONFIG_CRYPTO` | any of the four above | the `core/crypto` directory; make only, no C default in `core/config.h` |
+
+`print-config` lists only the switches a build may set, so ci can turn each one on and off; the derived ones are
+read with `make BOARD=<b> print-vars VARS="CONFIG_AIR CONFIG_CODEC2 CONFIG_CRYPTO"`.
 
 ## Values
 
@@ -249,6 +273,36 @@ make BOARD=<id> print-not-written       # what is not written yet
 [feature-matrix.md](feature-matrix.md) shows the result for every radio ("Built by default on each radio") and its
 notes give the reasons; a radio's hardware spec (`hardware-<id>.md`) holds the facts behind them. The switches off on
 most boards are `CONFIG_AUDIO_PROBE` (a bench diagnostic) and the ones that need a part the radio lacks.
+
+### Room to grow
+
+Every default image keeps at least **3 KB of flash** and **1.5 KB of linked RAM** free, so a fix or a small feature
+still fits without a trade.
+
+| Term | Meaning |
+|---|---|
+| Flash free | the app region (`FLASH` in the build's memory usage lines) minus its used size |
+| Linked RAM free | the main RAM region (`RAM` in those lines) minus its used size, as the linker prints them (`--print-memory-usage`): the region's Region Size minus Used Size. The RTOS heap and the task stacks are inside the used part |
+
+Run-time heap headroom is a separate figure: the least free heap since boot, `tasks.heap_min_free` on the debug link
+([debuglink.md](spec/debuglink.md) 3.7). A board can trade one for the other (a smaller heap leaves more linked RAM
+free) when that figure shows room. Every build prints both regions at its link; `tools/ci.sh`'s size report has the flash
+figure of each configuration, its logs both.
+
+A board whose default misses either figure turns features off in its `config.mk` (`CONFIG_X ?= n`, never
+`BOARD_UNSUPPORTED`: the hardware can), each with a comment starting `flash:` or `RAM:` and the bytes measured. A
+mode's spec gives the order its parts go in. M17 ([m17.md](spec/m17.md) 16):
+
+| Short of | Order |
+|---|---|
+| Flash | `M17_SIG`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT`, `HEARD_LIST`, `M17_PACKET`, then `M17` itself |
+| RAM | `M17_PACKET`, `HEARD_LIST`, `M17_AES`, then `M17` itself |
+
+When even the mode alone misses the rule, the board gets `CONFIG_M17 ?= n` with the reason, and the project lead picks
+another trade or keeps it off ([feature-matrix.md](feature-matrix.md#m17-trades) has the measured candidates). The
+maximal configuration need not keep the margin, but it must link: a board that can't fit every switch leaves the
+largest out of it (`MAXIMAL_SKIP`, or `MAXIMAL_VARS` for a switch that is on by default) with a `flash:` or `RAM:`
+comment.
 
 ## Adding a feature
 
