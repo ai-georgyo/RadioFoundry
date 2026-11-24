@@ -62,6 +62,28 @@ enum {
 	BOARD_HW_COUNT
 };
 
+// The factory copy (board_t.factory_copy; core/storage/factory_copy.h, docs/spec/settings-store.md 4.2): the maker's
+// data in one factory range of the flash map (hal_flash_map_t.factory), which the core copies, once and verified, into
+// a record sector of the board's, and reads from there when the range itself no longer holds it
+typedef struct {
+	uint8_t range;		// the index in hal_flash_map_t.factory: the range copied (at most FACTORY_COPY_MAX bytes)
+	// The record's sector (aligned): clear of every area and every factory range of the map, and where no CPS
+	// address maps, so that nothing but the factory copy writes it
+	uint32_t record_addr;
+	// True when the range's bytes b (n of them) pass every integrity rule the board knows of the maker's data: they
+	// are the maker's, undamaged. Else *why (1-0xEF, the board's own numbering) and *off (an offset in b) name the
+	// first rule that failed. The board's stricter rules for its own use of a field never fail it. Pure: no flash, no
+	// RTOS, no state
+	bool (*check)(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off);
+	// The restore (settings-store.md 4.2): refused while busy() is true (the board transmits, ...); changed() after a
+	// restore job wrote, only raising a request the board takes on its own task. Either may be NULL
+	bool (*busy)(void);
+	void (*changed)(void);
+	// The board's RAM of the range's size: the bytes in use after the load (the range's, or the record's when the
+	// range fails check), all 0xFF when there are none
+	uint8_t *table;
+} factory_copy_cfg_t;
+
 // One band's power level names, where a board's levels give different powers per band (board_t.power_bands)
 typedef struct {
 	uint32_t lo_hz, hi_hz;		// the transmit frequencies it covers
@@ -169,6 +191,10 @@ typedef struct {
 	const hal_hwopt_t *hwopts;
 	uint8_t hwopt_count;
 #endif
+	// Optional: a verified copy of the maker's data in one factory range of the flash map, kept by the core in a
+	// record sector of the board's (factory_copy_cfg_t above; CONFIG_FACTORY_COPY builds). NULL: none. The last field,
+	// so that no other field moves
+	const factory_copy_cfg_t *factory_copy;
 } board_t;
 
 extern const board_t board;
