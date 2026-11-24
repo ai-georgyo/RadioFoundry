@@ -1176,8 +1176,9 @@ state ok and every integrity rule. At each start, after the codeplug and before 
 and the record twice each. The table in use is the window when it passes the reader, else the record when it holds an
 ok copy (shown `src=record`), and none when both pass and differ (`why=conflict`: compare both CRCs with the backup).
 The record is written once, by the firmware, when the region is claimed, the window passes and the sector is blank;
-nothing else writes it, and nothing of this writes the window. The radio takes the table in use at its init and parses
-it; a later change of it (only a restore will make one) is a request its task takes at its next status poll, never
+nothing else writes it but the restore (below), the one path that writes the window. The radio takes the table in use
+at its init and parses it; a later change of it (only a restore makes one) is a request its task takes at its next
+status poll, never
 under a transmission, followed by a receive set-up. The view's `cal_table` and `cal_rec` (15) show the outcome, and the
 log a line, `cal: maker table ok src=window crc=0x... rec=... fields=0x...`, or why none is used. A build without
 `CONFIG_FACTORY_COPY` reads the window alone (`cal_rec=off`). If the window held another radio's valid table at the
@@ -1188,8 +1189,13 @@ the first start of such a firmware. Nothing receives or transmits on the table y
 part 1 after the claim replaced the table with the PC's bytes, and installing such a build again ends the protection.
 The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF): the reader
 refuses it, nothing is copied from it (`cal_table=blank src=none`), and the record stays blank. The owner's
-whole-chip backup still holds the table. The firmware's restore path for it is not written yet: until then nothing
-writes the window, and the kept rewrite keeps whatever it holds, blank bytes included. A codeplug restore of the
+whole-chip backup still holds the table. The firmware's one path back is the factory copy's restore, debug link
+STORAGE ops 4 and 5 ([settings-store.md](settings-store.md) 4.2): the backup's 512 bytes loaded, checked against the
+reader (13.1) and against the window and the record (a valid table there that differs is refused), then the window
+written through the kept rewrite, read back, and the record written. The board refuses it while a transmission is up
+or a table a restore wrote is not taken yet, and shows the result as `cal_rec`'s `restore=` (15). The owner's tool
+that drives the ops is not in the tree yet; until a restore runs, the kept rewrite keeps whatever the window holds,
+blank bytes included. A codeplug restore of the
 backup does not bring the table back either: the CPS tools and the web flasher's Restore send none of its bytes (the
 web flasher names the range in its log). Compare before relying on it:
 the CPS read of the codeplug regions (`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and
@@ -1419,7 +1425,7 @@ diagnostics page shows the bring-up readings.
 | `gps_baud` | the rate the module answered at; 0: not heard, or built without GPS |
 | `adc_restarts` | overrun recoveries of the ADC scan; 0 is expected |
 | `cal_table` (`board2`) | the maker's table as taken at start (10.3, 13.1): the window's state `unread` / `blank` / `zero` / `refused` / `ok`; `src=` the table in use, `window` / `record` / `none`; `crc=` the CRC-32 of the window's 512 bytes (Python's `zlib.crc32`; 0 when unread), the figure to compare with the backup's 0x1000-0x11FF; `why=` the window's first failed rule (the reader's names), `read` / `unstable` when unread, `conflict` when window and record are both valid and differ; `off=` the byte it failed at; `fields=` the field groups of the table in use that passed (`CS7000P_MK_F_*`, 0 with none in use); `bat=` its battery byte. `cal_table=blank src=none crc=0x... why=blank off=0x000 fields=0x0000 bat=0x00` on a radio whose table was lost |
-| `cal_rec` (`board2`) | the copy's record at 0x01B000: `unread` / `blank` / `ok` / `bad` / `newer` / `other` ([settings-store.md](settings-store.md) 4.2), `off` in a build without `CONFIG_FACTORY_COPY`; `crc=` of its 512 bytes (`-` when it holds none of ours); `wrote=` 1 when this start wrote it, 2 when it tried and failed (tried again at the next start), else 0; `restore=none` (no restore at this start) |
+| `cal_rec` (`board2`) | the copy's record at 0x01B000: `unread` / `blank` / `ok` / `bad` / `newer` / `other` ([settings-store.md](settings-store.md) 4.2), `off` in a build without `CONFIG_FACTORY_COPY`; `crc=` of its 512 bytes (`-` when it holds none of ours); `wrote=` 1 when this start wrote it, 2 when it tried and failed (tried again at the next start), else 0; `restore=` the last restore's result now: `none` (no restore at this start), `pending` while its job runs, `ok` or the reason's name (`window_differs`, `flash`, ...; settings-store.md 4.2). The record's state and CRC are the table in use's, taken at the status poll after a restore's job |
 
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
 through STORAGE READ (and an ok record's bytes with `cal_rec`'s). It never transmits or writes.

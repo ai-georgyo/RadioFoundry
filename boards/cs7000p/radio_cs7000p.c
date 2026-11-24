@@ -230,13 +230,17 @@ static void cal_take(void)
 			     (s.source == FACTORY_COPY_SRC_RECORD ? s.rec_crc : 0u);
 	(void)cs7000p_maker_parse(any ? cal_raw : NULL, crc, CS7000P_APC_FLOOR, &maker);
 	cal_st = s;
+#if CONFIG_FACTORY_COPY
+	factory_copy_taken();	// cal_raw is read: a restore may write it again from here on
+#endif
 #if CONFIG_DEBUGLINK
 	cal_log(&s);
 #endif
 }
 
 #if CONFIG_FACTORY_COPY
-// The restore (settings-store.md 4.2) is refused while a transmission is up or a table it wrote is not taken yet
+// The restore (settings-store.md 4.2) is refused while a transmission is up or a table it wrote is not taken yet (and,
+// once the owner's transmit arm exists, while it is not off)
 static bool cal_busy(void)
 {
 	return tx_on || dmr_armed || cal_req;
@@ -1047,7 +1051,8 @@ void cs7000p_cal_table_line(char *buf, uint8_t len)
 }
 
 // The copy's record: its state, the CRC-32 of its bytes (- when it holds none of ours), whether this start wrote it
-// (2: tried and failed, tried again at the next start), the last restore's result (none: no restore at this start)
+// (2: tried and failed, tried again at the next start), the last restore's result now (none: no restore at this
+// start; pending while its job runs; the record's fields are the table in use's, taken after the job)
 void cs7000p_cal_rec_line(char *buf, uint8_t len)
 {
 	const bool ours = cal_st.rec == FACTORY_COPY_REC_OK || cal_st.rec == FACTORY_COPY_REC_BAD;
@@ -1058,7 +1063,12 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len)
 		crc[0] = '-';
 		crc[1] = '\0';
 	}
-	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=none", cal_rec_name(cal_st.rec), crc, cal_st.wrote);
+#if CONFIG_FACTORY_COPY
+	const char *restore = factory_copy_result_name(factory_copy_result());
+#else
+	const char *restore = "none";
+#endif
+	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=%s", cal_rec_name(cal_st.rec), crc, cal_st.wrote, restore);
 }
 #endif
 

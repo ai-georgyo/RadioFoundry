@@ -28,6 +28,7 @@
 #include "storage/storage.h"
 #include "storage/factory_copy.h"
 #include "debuglink/dlog.h"
+#include "debuglink/dl_frame.h"
 #include "sim/sim_flash.h"
 #include "radio/tx_limit.h"
 #include "radio/pa_keyup.h"
@@ -809,6 +810,59 @@ static void test_table_request(void)
 }
 #endif
 
+#if CONFIG_FACTORY_COPY
+// The one restore path on this board, as the owner's tool drives it (STORAGE ops 4 and 5, then the housekeeping task's
+// job): refused while a transmission is up; the window written, the record after it; the view's restore= while the
+// job is pending and after; the table in use taken at the status poll, a receive set-up after it
+static void test_restore(void)
+{
+	radio_status_t st;
+	uint8_t req[2u + FACTORY_COPY_LOAD_CHUNK], out[FACTORY_COPY_OP_OUT];
+	size_t n = 0;
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=none"));
+	for (uint32_t at = 0; at < N; at += FACTORY_COPY_LOAD_CHUNK) {
+		uint32_t k = N - at < FACTORY_COPY_LOAD_CHUNK ? N - at : FACTORY_COPY_LOAD_CHUNK;
+		req[0] = (uint8_t)at;
+		req[1] = (uint8_t)(at >> 8);
+		memcpy(req + 2, table_a + at, k);
+		CHECK(factory_copy_load_op(&cs7000p_factory_copy, req, (uint16_t)(2u + k), out, &n) == DL_ST_OK);
+	}
+	uint32_t blank = storage_crc32(0, &sim_flash_data[WIN], N), a = crc(table_a);
+	uint8_t r5[10] = { (uint8_t)N, (uint8_t)(N >> 8), (uint8_t)a, (uint8_t)(a >> 8), (uint8_t)(a >> 16),
+			   (uint8_t)(a >> 24), (uint8_t)blank, (uint8_t)(blank >> 8), (uint8_t)(blank >> 16),
+			   (uint8_t)(blank >> 24) };
+	// Not while a transmission is up
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	CHECK(factory_copy_restore_op(&cs7000p_factory_copy, r5, sizeof(r5), out, &n) == DL_ST_REFUSED);
+	CHECK(out[0] == FACTORY_COPY_RS_BUSY);
+	cs7000p_radio.tx_off();
+	CHECK(factory_copy_restore_op(&cs7000p_factory_copy, r5, sizeof(r5), out, &n) == DL_ST_OK && out[0] == 0);
+	cs7000p_cal_rec_line(rline, sizeof(rline));
+	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=pending"));
+	storage_job_poll();
+	CHECK(memcmp(&sim_flash_data[WIN], table_a, N) == 0 && cs7000p_factory_copy.busy());
+	// The table in use moves at the radio task's status poll, not before
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	cs7000p_cal_rec_line(rline, sizeof(rline));
+	CHECK(strstr(tline, "cal_table=blank src=none") == tline);
+	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=ok"));
+	int retunes = modem.retunes;
+	cs7000p_radio.status(&st);
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	cs7000p_cal_rec_line(rline, sizeof(rline));
+	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", a,
+		      CS7000P_MK_F_ALL));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=ok", a));
+	CHECK(!cs7000p_factory_copy.busy() && modem.retunes == retunes + 1);
+	// Taken: the next restore is checked at once (the window holds a valid table now: another one is refused)
+	req[0] = req[1] = 0;
+	memcpy(req + 2, table_b, 8);
+	CHECK(factory_copy_load_op(&cs7000p_factory_copy, req, 10, out, &n) == DL_ST_OK);
+}
+#endif
+
 // The receive side, as a run of set-ups: FM wide and narrow, DMR, across the receive VCO switch, a sleep and a
 // wake-up, the status polls. Its hardware writes hashed, and the readings
 static uint32_t rx_run(int16_t *dbm)
@@ -865,6 +919,7 @@ int main(void)
 	test_table_sources();
 #if CONFIG_FACTORY_COPY
 	test_table_request();
+	test_restore();
 #endif
 	test_table_rx_unchanged();
 	sim_flash_free();
