@@ -4,10 +4,10 @@
 // VERSION, INFO_CHIP, READ_MEM) and the open-firmware CPS reads (docs/spec/open-firmware-cps.md 2.1 and 3: area 1 the
 // SPI flash, 5 the MCU flash, 9 the radio info, 10 the flash security registers). Read only, apart from the CPS
 // codeplug writes restore uses (X 1-3), which the radio limits to the codeplug areas, HWOPT SET for a hardware
-// option an install learned (origversion.js), and REBOOT into the processor's own bootloader for an install through
-// it (dfuse.js).
+// option an install learned (origversion.js), REBOOT into the processor's own bootloader for an install through
+// it (dfuse.js), and the factory copy's restore (STORAGE ops 4 and 5, restore.js), which the radio checks itself.
 
-import { be32, concat, le32, sleep, u16be, u16le, u32le, toHex } from "./bytes.js";
+import { be32, concat, crc32, le32, sleep, u16be, u16le, u32le, toHex } from "./bytes.js";
 import { wire, note } from "../diag.js";
 import { serialApi, usbSerialNeeded, UsbSerialPort } from "./usbserial.js";
 import { usbSerialChip } from "./adapter.js";
@@ -58,6 +58,12 @@ export function restartOutcome(status, data = new Uint8Array(0)) {
 export const restartRequest = (token) => concat(new Uint8Array([REBOOT_BOOTLOADER]), le32(token));
 // STORAGE INFO's flags byte, after the three ranges (debuglink.md 3.13)
 const STORAGE_CLAIM_FIRST = 0x01;
+// FACTORY_INFO's states by number (debuglink.md 3.13), as rfoundry_debug.py names them; FACTORY_LOAD's bytes a request
+// (the op, its offset u16 and the bytes in the radio's 64-byte request)
+export const FACTORY_SOURCES = ["none", "window", "record"];
+export const FACTORY_WINDOW = ["unread", "blank", "zero", "refused", "ok"];
+export const FACTORY_RECORD = ["unread", "blank", "ok", "bad", "newer", "other"];
+export const FACTORY_CHUNK = 56;
 
 export class LinkError extends Error {}
 
@@ -511,6 +517,50 @@ export class Link {
 			if (i?.region === "ours") return true;
 		}
 		return false;
+	}
+
+	// STORAGE READ (op 1): size bytes of the memory chip at addr, in 1000-byte pieces. The radio answers only inside the
+	// ranges INFO lists or a factory range of its flash map, else LinkError status 7
+	async storageRead(addr, size) {
+		const out = new Uint8Array(size);
+		for (let done = 0; done < size;) {
+			const n = Math.min(1000, size - done);
+			const r = await this.request(CMD.STORAGE, concat(new Uint8Array([1]), le32(addr + done), new Uint8Array([n & 0xFF, n >> 8])));
+			if (r.length !== 4 + n || u32le(r, 0) !== addr + done) throw new LinkError(`STORAGE READ answer does not match 0x${(addr + done).toString(16)}`);
+			out.set(r.subarray(4), done);
+			done += n;
+		}
+		return out;
+	}
+
+	// STORAGE FACTORY_INFO (op 3, debuglink.md 3.13): the board's factory copy ({addr, size, source, window, why, off,
+	// windowCrc, record, recordCrc, result, loaded, wrote}, the states by name, result by number), null when the board
+	// keeps none. Throws LinkError: status 3 until the copy's load ran at this start, 4 in a build without it, 2 or 1
+	// from a firmware older than the op
+	async factoryInfo() {
+		const r = await this.request(CMD.STORAGE, new Uint8Array([3]));
+		if (!r.length || r[0] === 0) return null;
+		if (r.length < 25) throw new LinkError(`FACTORY_INFO answer of ${r.length} bytes, 25 expected`);
+		const name = (names, v) => names[v] ?? String(v);
+		return { addr: u32le(r, 1), size: u16le(r, 5), source: name(FACTORY_SOURCES, r[7]), window: name(FACTORY_WINDOW, r[8]),
+			why: r[9], off: u16le(r, 10), windowCrc: u32le(r, 12), record: name(FACTORY_RECORD, r[16]), recordCrc: u32le(r, 17),
+			result: r[21], loaded: u16le(r, 22), wrote: r[24] };
+	}
+
+	// STORAGE FACTORY_LOAD (op 4) in FACTORY_CHUNK pieces, then FACTORY_RESTORE (op 5) with the bytes' CRC-32 and the
+	// CRC-32 of the window as this page read it (never the one FACTORY_INFO reports: the handshake says the host
+	// compared what it read, settings-store.md 4.2). {reason, why, off} when the radio posted the restore's job (poll
+	// factoryInfo's result); throws LinkError when it refused (status 7, data: reason u8, why u8, off u16) or was busy
+	// (status 3)
+	async factoryRestore(bytes, windowCrc) {
+		for (let at = 0; at < bytes.length; at += FACTORY_CHUNK) {
+			const part = bytes.subarray(at, at + FACTORY_CHUNK);
+			const r = await this.request(CMD.STORAGE, concat(new Uint8Array([4, at & 0xFF, at >> 8]), part));
+			if (r.length < 2 || u16le(r, 0) !== at + part.length) throw new LinkError(`FACTORY_LOAD: the radio holds ${r.length < 2 ? "?" : u16le(r, 0)} bytes after offset ${at}`);
+		}
+		const n = bytes.length;
+		const r = await this.request(CMD.STORAGE, concat(new Uint8Array([5, n & 0xFF, n >> 8]), le32(crc32(bytes)), le32(windowCrc)));
+		return { reason: r[0] ?? 0, why: r[1] ?? 0, off: r.length >= 4 ? u16le(r, 2) : 0 };
 	}
 
 	// READ_MEM (debuglink.md 3.10) in 1000-byte pieces: internal flash, the stock bootloader included
