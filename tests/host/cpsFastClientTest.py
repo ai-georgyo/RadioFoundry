@@ -5,6 +5,8 @@
 DM-1701 flash): INFO, a read that matches the CPS's, delta reads from a cache, staged and direct writes of only the
 changed blocks, bytes outside the regions kept, the command line, and the bytes on the wire against the CPS's. Run by
 `make -C tests/host`."""
+import contextlib
+import io
 import os
 import sys
 import subprocess
@@ -82,6 +84,34 @@ def main():
         back = link.read_image([(0x7000, 0x8000)])
         check(n == 1 and back[0x7400] == 0x5A and back[0x7540:0x7550] == b"Fast boot line 1", "partial block merged")
         check(not link.verify(edit2, regions), "verify")
+
+        # A protected region inside a block (a board's [[flash.protect]] data entry; the simulated map keeps nothing,
+        # so only the client keeps it): the block goes with the radio's bytes there, so one that differs only inside
+        # the region isn't written, and verify leaves the region out
+        prot = [{"mem": "data", "start": 0x1000, "end": 0x1200, "what": "test (x.md 2.1)"}]
+        held = bytes(link.read_image([(0x1000, 0x2000)])[0x1000:0x1200])
+        edit3 = bytearray(edit2)
+        edit3[0x1000:0x1200] = bytes(b ^ 0x33 for b in held)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            n, _ = link.write_image(edit3, regions, protect=prot)
+        check(n == 0 and "0x1000-0x1200" in err.getvalue(), f"a block differing only in a protected region: {n} written")
+        edit3[0x1300] ^= 0xFF
+        with contextlib.redirect_stderr(io.StringIO()):
+            n, _ = link.write_image(edit3, regions, protect=prot)
+        back = link.read_image([(0x1000, 0x2000)])
+        check(n == 1 and bytes(back[0x1000:0x1200]) == held and back[0x1300] == edit3[0x1300],
+              "the block written around the protected region")
+        check(not link.verify(edit3, regions, cps_client.kept_ranges(prot)) and link.verify(edit3, regions),
+              "verify leaves the protected region out")
+        edit3[0x1000:0x1200] = held                         # the radio's own bytes there: nothing to say
+        edit3[0x1301] ^= 0xFF
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            n, _ = link.write_image(edit3, regions, protect=prot)
+        check(n == 1 and err.getvalue() == "", f"the radio's own bytes in the region: no line ({err.getvalue()!r})")
+        edit2[0x1301] = edit3[0x1301]
+        edit2[0x1300] = edit3[0x1300]
         link.close()
 
         # The command line: verify, a write from a file, a read with a cache

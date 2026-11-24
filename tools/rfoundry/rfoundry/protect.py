@@ -11,9 +11,18 @@ memory and an offset range in it:
     nand      the SPI NAND's main area, from 0 (2 KB pages without their spare bytes)
     secreg    the SPI NOR flash's security registers, 256 bytes each from register 1 at 0
 
-A write that overlaps one is refused before anything is erased (check). A restore that puts a whole memory back keeps
-the radio's own bytes there and writes around them (carve). A whole-chip erase is refused on a memory with any
-protected region (check_whole). site/static/js/flasher/protect.js is the same check for the web flasher.
+An entry is a byte range no tool changes. What a tool does with a write that overlaps one depends on how it writes:
+
+    a direct writer (it erases the chip itself, with no journal: rfoundry's plans, the stub tools, serialflash)
+        works by whole erase units: every unit an entry touches is refused (check) or left out of a restore
+        (carved_units), an entry off the unit boundaries widened to them (widen). A cut erase there would lose the bytes
+    a writer through the firmware's CPS shim (cps_client.py, codeplug_port.py)
+        writes the sector, but sends no byte of a range (carve_bytes): the shim merges only the bytes a tool sends into
+        the sector it read from the flash, so the radio's bytes stay, and the firmware keeps them anyway where its
+        flash map lists the range (docs/spec/settings-store.md 4.1)
+
+A whole-chip erase is refused on a memory with any protected region (check_whole). site/static/js/flasher/protect.js
+is the same check for the web flasher.
 """
 
 MEMS = ("progmem", "data", "nand", "secreg")
@@ -74,9 +83,9 @@ def check_whole(protect, mem, action="erase the whole"):
                              % (action, NAMES[mem], "; ".join(describe(p) for p in hit)), hit)
 
 
-def carve(protect, mem, start, end):
-    """[start, end) without the protected regions of mem: [(lo, hi)] in order, the pieces a restore writes. The radio's
-    own bytes stay in the gaps."""
+def carve_bytes(protect, mem, start, end):
+    """[start, end) without the protected regions of mem, byte exact: [(lo, hi)] in order, the pieces a writer through
+    the firmware sends. The radio's own bytes stay in the gaps."""
     pieces, at = [], start
     for p in sorted(overlapping(protect, mem, start, end), key=lambda p: p["start"]):
         if p["start"] > at:
@@ -87,7 +96,15 @@ def carve(protect, mem, start, end):
     return pieces
 
 
+def widen(protect, mem, unit):
+    """The entries of mem with each range widened to whole units of unit bytes (start down, end up): what a direct
+    writer, which erases unit by unit, must leave alone. An entry on the unit boundaries stays as it is."""
+    return [dict(p, start=p["start"] - p["start"] % unit, end=-(-p["end"] // unit) * unit)
+            for p in entries(protect) if p["mem"] == _mem(mem)]
+
+
 def carved_units(protect, mem, start, end, unit):
-    """The unit-aligned addresses in [start, end) that carve() leaves, for a writer that works unit by unit (a 4 KB
-    sector). Protected regions are on erase boundaries (tools/boards.py check), so a unit is either in or out whole."""
-    return [a for lo, hi in carve(protect, mem, start, end) for a in range(lo, hi, unit)]
+    """The unit-aligned addresses in [start, end) that no protected region touches, for a writer that erases unit by
+    unit (a 4 KB sector): an entry off the unit boundaries (a range the firmware keeps inside a sector) leaves its
+    units out whole, never cut midway."""
+    return [a for lo, hi in carve_bytes(widen(protect, mem, unit), mem, start, end) for a in range(lo, hi, unit)]
