@@ -327,14 +327,56 @@ class CpsWrites(unittest.TestCase):
                              "two boards with the same data entries: no note")
             self.assertEqual(cc.protect_for({"radio_type": 11, "model": "C-1"}), ([RECORDS], None), "by model name")
             self.assertEqual(cc.protect_for({"radio_type": 11, "model": "?"}), ([], None), "none")
+            # The board VERSION names: that board's alone, no note; one the registry doesn't know: the radio type
+            fake["b"].debuglink_names = ["B-1"]
+            self.assertEqual(cc.protect_for({"radio_type": 7, "board": "B-1"}), ([sec], None), "VERSION: b only")
+            self.assertEqual(cc.protect_for({"radio_type": 7, "board": "Z-9"})[0], [TABLE, RECORDS, sec])
+            self.assertEqual(cc.protect_for({"radio_type": 7, "board": None})[0], [TABLE, RECORDS, sec])
         finally:
             cc.rfoundryboards.BOARDS = saved
+        # The registry: an MD-380 and a CS7000 M17 PLUS both report radio type 7; the MD-380's VERSION board gives
+        # no data range (the CS7000's maker's table is not an MD-380's)
+        md380 = boards.get("md380")
+        got, note = cc.protect_for({"radio_type": 7, "model": "MD-380", "board": md380.debuglink_names[0]})
+        self.assertEqual(([p for p in got if p["mem"] == "data"], note), ([], None))
+        self.assertEqual(cc.kept_ranges(got), [])
         # The registry: each board reporting a radio type has its entries kept by a write to that type
         for t in {t for b in saved.values() for t in b.cps_radio_types}:
             got, _ = cc.protect_for({"radio_type": t})
             for b in saved.values():
                 if t in b.cps_radio_types:
                     self.assertTrue(all(p in got for p in b.protect), (t, b.id))
+
+    def test_version_board(self):
+        """Cps.version_board: a debug link VERSION frame on the CPS port, its board= value; None from a radio that
+        answers no debug link frame (another firmware), the stray bytes it sent thrown away"""
+        cc = self.cps_client
+        dbg = cc.rfoundry_debug_module()
+
+        class Port:
+            def __init__(self, answer):
+                self.answer, self.out, self.sent = answer, b"", b""
+
+            def write(self, b):
+                self.sent += b
+                if b[:2] == bytes([dbg.SOF1, dbg.SOF2]):
+                    self.out += self.answer(b[3])
+                else:
+                    self.out += b"-"
+
+            def read(self, n, timeout):
+                r, self.out = self.out[:n], self.out[n:]
+                return r
+
+        def version(seq):
+            return b"junk" + dbg.frame(dbg.VERSION | 0x80, seq, b"\0proto=1\nboard=MD-380\nfeatures=x\n")
+        port = Port(version)
+        self.assertEqual(cc.Cps(port).version_board(), "MD-380")
+        self.assertEqual(port.out, b"")
+        self.assertEqual(cc.Cps(Port(lambda seq: version(seq ^ 1))).version_board(0.1), None, "another request's")
+        port = Port(lambda seq: b"-")
+        self.assertEqual(cc.Cps(port).version_board(0.1), None)
+        self.assertEqual(port.out, b"", "what came is thrown away")
 
     def test_registry_boards_as_before(self):
         """Every board's data entries that the CPS wire can reach are on 4 KB boundaries, unless its flash map keeps

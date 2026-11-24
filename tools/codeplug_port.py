@@ -432,7 +432,7 @@ def cps_write_dfu(sess, open_cps, dfu_path, label, before_name, offset=0, floor=
         return targets, img
     cps = open_cps()
     try:
-        info = cps.info()
+        info = _cps().radio_info(cps)
         sess.say("   CPS shim: radio type %d, git %s, build %s" % (info["radio_type"], info["git"], info["build"]))
         before = cps.read_image(regions, image=bytearray(b"\xff" * len(img)), block=block, progress=progress)
         with open(sess.path(before_name), "wb") as f:
@@ -440,7 +440,8 @@ def cps_write_dfu(sess, open_cps, dfu_path, label, before_name, offset=0, floor=
         sess.say("   saved what was there as %s%s" % (before_name, " (file offset = address - 0x%06X)" % offset
                                                        if offset else ""))
         # The board's protected regions: write_image sends none of their bytes (the radio keeps its own there), so
-        # a sector that differs only inside one isn't written. Every board reporting the radio type counts
+        # a sector that differs only inside one isn't written. The board VERSION names; every board reporting the
+        # radio type when it names none the registry knows
         protect, note = _cps().protect_for(info)
         if note:
             sess.say("   " + note)
