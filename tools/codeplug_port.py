@@ -439,10 +439,15 @@ def cps_write_dfu(sess, open_cps, dfu_path, label, before_name, offset=0, floor=
             f.write(before)
         sess.say("   saved what was there as %s%s" % (before_name, " (file offset = address - 0x%06X)" % offset
                                                        if offset else ""))
-        jobs = _cps().plan_write(img, regions, before)
+        # The board's protected regions: write_image sends none of their bytes (the radio keeps its own there), so
+        # a sector that differs only inside one isn't written. Every board reporting the radio type counts
+        protect, note = _cps().protect_for(info)
+        if note:
+            sess.say("   " + note)
+        keep = _cps().kept_ranges(protect, offset)
+        jobs = [j for j in _cps().plan_write(img, regions, before, keep) if _cps().job_sends(j, keep)]
         sess.say("   writing %d sectors ..." % len(jobs))
-        board = _cps().rfoundryboards.from_debuglink_name(info.get("model"))	# its protected regions, checked first
-        cps.write_image(img, regions, reboot=reboot, block=block, progress=progress, base=before, protect=board)
+        cps.write_image(img, regions, reboot=reboot, block=block, progress=progress, base=before, protect=protect)
     except PortError:
         raise
     except Exception as e:

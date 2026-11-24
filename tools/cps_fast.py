@@ -13,7 +13,10 @@ CODEPLUG command, in 4 KB blocks, blank blocks skipped, only blocks whose CRC-32
 Image files are the ones tools/cps_client.py keeps (file offset = image offset = the STM32 wire address). Regions
 (--regions) as cps_client.py's: radio (default), qdmr, codeplug, all. Whole blocks travel: a write keeps the radio's
 bytes of a block outside the regions (it reads such a block first), and its codeplug settings area unless the file
-holds a valid one (cps_client.area_state). Transport as cps_client.py: --port (the radio's USB
+holds a valid one (cps_client.area_state). It keeps the board's protected data flash regions the same way (board.toml
+[[flash.protect]], the board from --board or the radio's VERSION): a block holding one is read first and sent with
+the radio's bytes there, so a block that differs only inside one is not written, and verify leaves them out. Transport
+as cps_client.py: --port (the radio's USB
 serial port or a programming cable), $RFOUNDRY_PORT, the only 1FC9:0094 device, or --exec "tests/host/cpsSim --populate".
 A radio without the protocol (CONFIG_CPS_FAST off, older firmware) answers unavailable or unknown: use
 cps_client.py.
@@ -285,36 +288,47 @@ class FastLink:
         self.moved = moved
         return img
 
-    def plan_write(self, img, regions):
+    def plan_write(self, img, regions, keep=()):
         """[(addr, block)] of what a write sends: each block the regions touch, img's bytes inside the regions over the
-        radio's outside them, where its CRC-32 differs from the radio's"""
+        radio's outside them and inside keep (image addresses of the protected regions, cps_client.kept_ranges), where
+        its CRC-32 differs from the radio's. self.held: {addr: the radio's block} of the blocks holding a range of keep"""
         addrs = blocks_of(regions)
         sums = self.sums(addrs)
         jobs = []
+        self.held = {}
         area = cps_client.SETTINGS_AREA[0]
         for a in addrs:
             if a == area and (cps_client.area_state(img[a:a + BLOCK]) != "valid" or
                               (not sums[a][1] and cps_client.area_state(self.read_block(a)) == "newer")):
                 continue        # the radio keeps its settings area (codeplug-settings.md 4)
-            if covers(regions, a):
+            held = [(s, e) for s, e in keep if s < a + BLOCK and a < e]
+            if covers(regions, a) and not held:
                 want = bytes(img[a:a + BLOCK])
             else:
                 have = BLANK if sums[a][1] else self.read_block(a)
+                if held:
+                    self.held[a] = have
                 merged = bytearray(have)
                 for s, e in regions:
                     lo, hi = max(s, a), min(e, a + BLOCK)
-                    if lo < hi:
-                        merged[lo - a:hi - a] = img[lo:hi]
+                    for p0, p1 in cps_client.outside(lo, hi, held):
+                        merged[p0 - a:p1 - a] = img[p0:p1]
                 want = bytes(merged)
             if crc32(want) != sums[a][0]:
                 jobs.append((a, want))
         return jobs
 
-    def write_image(self, img, regions, staged=None, progress=None):
-        """Write the blocks that differ. staged None: staged when the radio has a staging area big enough. Returns
-        (blocks written, stream bytes)"""
+    def write_image(self, img, regions, staged=None, progress=None, protect=None):
+        """Write the blocks that differ. staged None: staged when the radio has a staging area big enough. protect:
+        the board's protected regions, sent as the radio holds them (plan_write); a line on stderr names each one img
+        holds other bytes for that are not blank. Returns (blocks written, stream bytes)"""
         info = self.info()
-        jobs = self.plan_write(img, regions)
+        jobs = self.plan_write(img, regions, cps_client.kept_ranges(protect, info["base"]))
+        radio = bytearray(img)          # the radio's bytes where plan_write read them: the notes' base
+        for a, have in self.held.items():
+            radio[a:a + BLOCK] = have
+        for line in cps_client.kept_notes(protect, img, regions, info["base"], radio):
+            print(line, file=sys.stderr)
         if not jobs:
             return 0, 0
         if staged is None:
@@ -332,8 +346,9 @@ class FastLink:
         self.commit(timeout=10.0 + 2.0 * len(jobs))
         return len(jobs), sent
 
-    def verify(self, img, regions):
-        """Block addresses whose bytes inside the regions differ from img (the VFO A record aside)"""
+    def verify(self, img, regions, keep=()):
+        """Block addresses whose bytes inside the regions differ from img (the VFO A record and the ranges in keep,
+        image addresses of the protected regions, aside)"""
         bad = []
         sums = self.sums(blocks_of(regions))
         area = cps_client.SETTINGS_AREA[0]
@@ -346,7 +361,7 @@ class FastLink:
                 continue        # a write leaves the radio's settings area, so verify does too
             for s, e in regions:
                 lo, hi = max(s, a), min(e, a + BLOCK)
-                if lo < hi and not cps_client.same_but_vfo(got[lo - a:hi - a], want[lo - a:hi - a], lo):
+                if lo < hi and not cps_client.same_but_vfo(got[lo - a:hi - a], want[lo - a:hi - a], lo, keep):
                     bad.append(a)
                     break
         return bad
@@ -361,11 +376,24 @@ def open_link(port=None, exec_cmd=None, timeout=2.0):
     return FastLink(cps_client.SerialTransport(port), timeout)
 
 
+def board_of(link, board_id=None):
+    """The radio's board (its protected regions): board_id, else the one VERSION names; None when it names none
+    the registry knows"""
+    if board_id:
+        return cps_client.rfoundryboards.get(board_id)
+    st, d = link.request(None, b"", cmd=rfoundry_debug.VERSION)
+    if st != 0:
+        raise FastError(f"VERSION: {rfoundry_debug.STATUS.get(st, st)}", st)
+    return cps_client.rfoundryboards.from_debuglink_name(rfoundry_debug.parse_kv(d.decode("ascii", "replace"))
+                                                         .get("board", ""))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port")
     ap.add_argument("--exec", dest="exec_cmd", help="command speaking the protocol on stdin / stdout (tests)")
     ap.add_argument("--regions", choices=sorted(cps_client.REGIONS), default="radio")
+    ap.add_argument("--board", help="the radio's board id, for its protected regions (default: from VERSION)")
     ap.add_argument("--quiet", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("info")
@@ -399,10 +427,11 @@ def main(argv=None):
                   f"{time.monotonic() - t0:.1f} s")
         elif a.cmd == "write":
             n, sent = link.write_image(cps_client.load_image(a.image), regions, staged=False if a.direct else None,
-                                       progress=progress)
+                                       progress=progress, protect=board_of(link, a.board))
             print(f"wrote {a.image}: {n} block(s), {sent} stream bytes, {time.monotonic() - t0:.1f} s")
         elif a.cmd == "verify":
-            bad = link.verify(cps_client.load_image(a.image), regions)
+            keep = cps_client.kept_ranges(board_of(link, a.board), link.info()["base"])
+            bad = link.verify(cps_client.load_image(a.image), regions, keep)
             for addr in bad[:20]:
                 print(f"block {addr:#08x} differs")
             print("match" if not bad else f"{len(bad)} block(s) differ")

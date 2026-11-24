@@ -3,6 +3,8 @@
 # Copyright (c) 2026 The RadioFoundry Authors
 """tools/cps_client.py against cpsSim (the CPS shim on a simulated DM-1701 flash): info, a qdmr-region read, an edited
 write with save-and-reboot, read back, verify, and the flash dump checked byte for byte. Run by `make -C tests/host`."""
+import contextlib
+import io
 import os
 import shlex
 import sys
@@ -187,6 +189,33 @@ def main():
         cps.write_image(before, regions, reboot=False, base=edit)
         img = cps.read_image(regions)
         check(not cps_client.compare(before, img, regions), "base write undone")
+
+        # A protected region inside a sector (a board's [[flash.protect]] data entry; the simulated map keeps
+        # nothing, so only the client keeps it): the sector is written, no byte of the region is sent, the radio's
+        # stay, and one line on stderr names it
+        prot = [{"mem": "data", "start": 0x1000, "end": 0x1200, "what": "test (x.md 2.1)"}]
+        held = bytes(img[0x1000:0x1200])
+        keep_img = bytearray(img)
+        keep_img[0x1000:0x1200] = bytes(b ^ 0x33 for b in held)
+        keep_img[0x1300] ^= 0xFF
+        sent = []
+        def record(b):
+            if b[:2] == b"X\x02":
+                a, n = int.from_bytes(b[2:6], "big"), int.from_bytes(b[6:8], "big")
+                sent.extend(range(a, a + n))
+            real_write(b)
+        cps.t.write = record
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cps.write_image(keep_img, regions, reboot=False, base=bytes(img), protect=prot)
+        cps.t.write = real_write
+        now = cps.read_image(regions)
+        check(sent and not any(0x1000 <= a < 0x1200 for a in sent) and set(range(0x1200, 0x2000)) <= set(sent),
+              "a protected region: none of its bytes sent, the rest of the sector sent")
+        check(bytes(now[0x1000:0x1200]) == held and now[0x1300] == keep_img[0x1300], "the radio keeps its bytes there")
+        check(len(err.getvalue().splitlines()) == 1 and "0x1000-0x1200" in err.getvalue(), f"the line {err.getvalue()!r}")
+        cps.write_image(img, regions, reboot=False, base=bytes(now))
+        check(not cps_client.compare(img, cps.read_image(regions), regions), "protected region case undone")
 
         # Edit: rename channel 1, set the quick-key slots (the side key assignment); write with save-and-reboot;
         # read back
