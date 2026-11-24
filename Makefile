@@ -125,6 +125,21 @@ endif
 ifeq ($(CONFIG_MBE),y)
 CORE_DIRS += core/mbe
 endif
+ifeq ($(CONFIG_DSP),y)
+CORE_DIRS += core/dsp
+endif
+# M17: the mode (core/m17), its vocoder (core/codec2) and the generic ciphers its signatures and encryption use
+# (core/crypto, whose AES DMR AES uses too), each directory with its switch. A file there that belongs to a sub-feature
+# guards itself (#if)
+ifeq ($(CONFIG_M17),y)
+CORE_DIRS += core/m17
+endif
+ifeq ($(CONFIG_CODEC2),y)
+CORE_DIRS += core/codec2
+endif
+ifeq ($(CONFIG_CRYPTO),y)
+CORE_DIRS += core/crypto
+endif
 ifeq ($(CONFIG_POSITION),y)
 CORE_DIRS += core/position
 endif
@@ -156,6 +171,10 @@ endif
 # interface only
 ifeq ($(CONFIG_DMR)$(CONFIG_AIR),yn)
 APP_SRC += core/fec/rx_seen.c
+endif
+# M17: SHA-256 under HMAC-SHA-256 (core/crypto), kept in core/support, which is globbed with the support info only
+ifeq ($(CONFIG_CRYPTO_HMAC)$(CONFIG_SUPPORT_INFO),yn)
+APP_SRC += core/support/sha256.c
 endif
 # The fast codeplug protocol (core/cps is globbed with CPS_OPENFW): only with its own switch
 ifneq ($(CONFIG_CPS_FAST),y)
@@ -208,6 +227,10 @@ APP_SRC := $(filter-out core/crash/crash_trace.c,$(APP_SRC))
 ifeq ($(CONFIG_FAULT_TRACE),y)
 APP_SRC += core/crash/crash_trace.c
 endif
+# The secret work count (crash_secret.c) serves both: the fault trace alone needs it too
+ifeq ($(CONFIG_FAULT_TRACE)$(CONFIG_CRASH_LOG),yn)
+APP_SRC += core/crash/crash_secret.c
+endif
 # Zone sharing over DMR data: the record, the sender and the offers (its codeplug side is core/codeplug/zone_import.c)
 ifeq ($(CONFIG_ZONE_SHARE),y)
 APP_SRC += core/dmr/zoneShare.c core/dmr/zoneShareSvc.c
@@ -234,6 +257,7 @@ NET_SRC-$(CONFIG_MDNS) += core/net/net.c core/net/net_services.c core/net/mdns.c
 NET_SRC-$(CONFIG_TFTP) += core/net/net.c core/net/net_services.c core/net/tftp.c core/net/tftp_codeplug.c
 NET_SRC-$(CONFIG_TFTP_IDDB) += core/net/tftp_iddb.c
 NET_SRC-$(CONFIG_NET_USRP) += core/net/net.c core/usbaudio/usrp_net.c core/usbaudio/usrp.c
+NET_SRC-$(CONFIG_NET_M17) += core/net/net.c core/net/m17_net.c
 APP_SRC += $(sort $(NET_SRC-y))
 # The PCM stream shared between the radio's users, a host audio session (USRP) and APRS receive
 MUX_SRC-$(CONFIG_NET_USRP) += core/usbaudio/audio_mux.c core/usbaudio/pcm_slip.c
@@ -382,6 +406,10 @@ ABOUT_MORE :=
 ifeq ($(CONFIG_IMBE),y)
 ABOUT_MORE += core/mbe/THIRD_PARTY
 endif
+# M17: Codec 2's list, once its tables are in the tree
+ifeq ($(CONFIG_CODEC2),y)
+ABOUT_MORE += $(wildcard core/codec2/THIRD_PARTY)
+endif
 $(shell python3 tools/gen_about.py AUTHORS platform/$(PLATFORM)/THIRD_PARTY $(BUILD)/gen/rfoundry_about.h $(ABOUT_MORE) | grep -q changed \
 	&& rm -f $(ABOUT_OBJ))
 # The language tables (tools/i18n.py, core/ui/lang/*.po) and the text keys every file that includes i18n.h needs
@@ -435,6 +463,8 @@ endif
 # unrolling and scheduling pay for their flash. LTO keeps each function's level
 OPT_HOT ?= -O2
 HOT_SRC := core/dmr/fec/dmrFec.c core/dmr/fec/dmrSoftBptc.c
+# M17: P-256's field and point arithmetic, which must sign within the signature tail (docs/spec/p256.md 11)
+HOT_SRC += core/crypto/p256.c
 $(filter $(HOT_SRC:%.c=$(BUILD)/%.o),$(APP_OBJ)): CFLAGS_APP += $(OPT_HOT)
 
 $(filter %.o,$(APP_SRC:%.c=$(BUILD)/%.o)): $(BUILD)/%.o: %.c

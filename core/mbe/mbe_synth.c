@@ -5,12 +5,12 @@
 // (mbe_mem_t); 32x32 -> 64 bit products go through core/dsp/fxp.h. Reference: TIA-102.BABA.
 #include <string.h>
 #include "mbe.h"
-#include "mbe_dsp.h"
+#include "../dsp/dsp.h"
 #include "../dsp/fxp.h"
 
 #define N MBE_FRAME_LEN
 #define SEG 40
-_Static_assert(MBE_BUF_WORDS == 2 * MBE_FFT_N, "the noise FFT works in place on 2 * MBE_FFT_N words");
+_Static_assert(MBE_BUF_WORDS == 2 * DSP_FFT_N, "the noise FFT works in place on 2 * DSP_FFT_N words");
 _Static_assert(N % SEG == 0, "segments");
 
 // gains, log2 in Q11
@@ -40,11 +40,11 @@ void mbe_enhance(int16_t *out, const int16_t *a, int L, uint32_t w0)
 		if (a[l] > amax)
 			amax = a[l];
 	for (int l = 0; l < L; l++) {
-		int32_t m = mbe_exp2_q11(a[l] - amax + 12 * 2048);	// Q12, at most 2^12
+		int32_t m = dsp_exp2_q11(a[l] - amax + 12 * 2048);	// Q12, at most 2^12
 		int32_t m2 = m * m;					// Q24
 
 		R0 += m2;
-		R1 += fxp_mulshr(m2, mbe_cos(w0 * (uint32_t)(l + 1)), 15);
+		R1 += fxp_mulshr(m2, dsp_cos(w0 * (uint32_t)(l + 1)), 15);
 	}
 	for (int l = 0; l < L; l++)
 		out[l] = a[l];
@@ -53,7 +53,7 @@ void mbe_enhance(int16_t *out, const int16_t *a, int L, uint32_t w0)
 	if (R0 <= 0 || D2 <= (R00 >> 30))
 		return;
 	{
-		int32_t lden = mbe_log2_q11(w0) - 32 * 2048 + LOG2_2PI + mbe_log2_q11_64((uint64_t)R0) + mbe_log2_q11_64((uint64_t)D2);
+		int32_t lden = dsp_log2_q11(w0) - 32 * 2048 + LOG2_2PI + dsp_log2_q11_64((uint64_t)R0) + dsp_log2_q11_64((uint64_t)D2);
 		int32_t base = 24 * 2048 + LOG2_096PI - lden, lg, rh, rl;
 
 		r0r1 = fxp_mul64(R0, R1) >> 15;
@@ -66,22 +66,22 @@ void mbe_enhance(int16_t *out, const int16_t *a, int L, uint32_t w0)
 			if (a[l] == MBE_A_SILENT)
 				continue;
 			if (ENH_SKIP * (l + 1) > L) {
-				int32_t c = mbe_cos(w0 * (uint32_t)(l + 1)), lx;
+				int32_t c = dsp_cos(w0 * (uint32_t)(l + 1)), lx;
 				int64_t num = s2 - 2 * (int64_t)(((uint64_t)fxp_mul64(rh, c) << 16) + (uint64_t)(int64_t)(rl * c));
 
 				if (num < 1)
 					num = 1;
-				lx = mbe_log2_q11_64((uint64_t)num) + base;
+				lx = dsp_log2_q11_64((uint64_t)num) + base;
 				lw = ((a[l] - amax) >> 1) + fxp_mulshr(lx, ENH_EXP, 11);
 				lw = fxp_clamp(lw, ENH_LO, ENH_HI);
 			}
 			out[l] = (int16_t)fxp_clamp(a[l] + lw, -32767, 32767);
-			m = mbe_exp2_q11(out[l] - amax + 12 * 2048);
+			m = dsp_exp2_q11(out[l] - amax + 12 * 2048);
 			R0p = fxp_mac64(R0p, m, m);
 		}
 		if (R0p <= 0)
 			return;
-		lg = (mbe_log2_q11_64((uint64_t)R0) - mbe_log2_q11_64((uint64_t)R0p)) >> 1;
+		lg = (dsp_log2_q11_64((uint64_t)R0) - dsp_log2_q11_64((uint64_t)R0p)) >> 1;
 		for (int l = 0; l < L; l++)
 			if (a[l] != MBE_A_SILENT)
 				out[l] = (int16_t)fxp_clamp(out[l] + lg, -32767, 32767);
@@ -98,9 +98,9 @@ static void set_phases(mbe_frame_t *f, uint32_t seed)
 
 	for (int l = 0; l < L; l++)
 		uv += f->v[l] != 1;
-	mbe_rand(&rng);
+	dsp_rand(&rng);
 	for (int l = 1; l <= L; l++) {
-		int32_t r = (int16_t)(mbe_rand(&rng) >> 16);	// a turn is 2^16
+		int32_t r = (int16_t)(dsp_rand(&rng) >> 16);	// a turn is 2^16
 
 		f->th[l - 1] = 4 * l <= L ? 0 : (uint16_t)(r * uv / L);
 	}
@@ -113,7 +113,7 @@ static void set_phases(mbe_frame_t *f, uint32_t seed)
 // to 112 x 160 a frame), so it is written for a core without a wide multiply (fxp.h). The product (a >> 8) cos is
 // fxp_mulshr's (a >> 8) cos >> 15 in every case: where both knots are at most OSC_NARROW, a >> 8 stays within one of
 // them (da rounds toward minus infinity: never past the upper knot, at most one under the lower) and the product is
-// under 65535 * 32767 < 2^31, one 32-bit multiply; above, fxp_mulshr16's two. The phase carries mbe_cos's rounding
+// under 65535 * 32767 < 2^31, one 32-bit multiply; above, fxp_mulshr16's two. The phase carries dsp_cos's rounding
 // half step from the start, so the table index is its top 10 bits. Speech's harmonics are mostly under OSC_NARROW
 // (4,096 in PCM units). Only worth the extra branch and loop body where fxp_mulshr16 is the two-multiply halves
 // version (FXP_HALVES): on Arm it is already one SMMULR, so the split bought nothing and cost flash for no gain
@@ -131,7 +131,7 @@ static void osc(int32_t *acc, uint32_t ph, uint32_t inc, uint32_t dinc, const in
 				a += da;
 				ph += inc;
 				inc += dinc;
-				*o += ((a >> 8) * mbe_cos_idx(ph >> 22)) >> 15;
+				*o += ((a >> 8) * dsp_cos_idx(ph >> 22)) >> 15;
 			}
 		} else
 #endif
@@ -140,14 +140,14 @@ static void osc(int32_t *acc, uint32_t ph, uint32_t inc, uint32_t dinc, const in
 				a += da;
 				ph += inc;
 				inc += dinc;
-				*o += fxp_mulshr16(a >> 8, mbe_cos_idx(ph >> 22), 15);
+				*o += fxp_mulshr16(a >> 8, dsp_cos_idx(ph >> 22), 15);
 			}
 		}
 	}
 }
 
 // log2 amplitude (Q11) to linear, Q4, at most 2^20
-static int32_t amp_lin(int32_t a) { int32_t v = mbe_exp2_q11(a + (QA << 11)); return v > (1 << 20) ? (1 << 20) : v; }
+static int32_t amp_lin(int32_t a) { int32_t v = dsp_exp2_q11(a + (QA << 11)); return v > (1 << 20) ? (1 << 20) : v; }
 static inline int32_t shq(int32_t v, int qs) { return qs >= QA ? v >> (qs - QA) : v * (1 << (QA - qs)); }
 
 // The fade across a pitch jump (a frame that is not continuous): the old harmonics' and the new ones' amplitude at
@@ -171,8 +171,8 @@ static void synth(const mbe_mem_t *m, const mbe_frame_t *f, int16_t *pcm)
 	// frame's end, its spectrum set band by band to the unvoiced harmonics' amplitudes (voiced bands zeroed), back to
 	// time and overlap-added. Seeded per frame, so a frame that changes (a bit error) doesn't shift the noise after it.
 	rng = (s->rng += 0x9E3779B9u) | 1u;
-	mbe_rand(&rng);
-	mbe_rand(&rng);
+	dsp_rand(&rng);
+	dsp_rand(&rng);
 	for (int l = 0; l < L1; l++)
 		if (f->v[l] != 1)
 			any = 1;
@@ -187,23 +187,23 @@ static void synth(const mbe_mem_t *m, const mbe_frame_t *f, int16_t *pcm)
 		qs = fxp_clamp((15 * 2048 - (lmax + G_NOISE)) >> 11, 0, 12);	// spectrum built 2^qs times larger, for low levels
 		for (int n = 0; n < N; n++) {
 			// Hann window of 320: (1 - cos(pi n / 160)) / 2, Q15
-			int32_t w = (32768 - mbe_cos_i((uint32_t)n * 13421773u)) >> 1;	// half a turn over 160 samples
+			int32_t w = (32768 - dsp_cos_i((uint32_t)n * 13421773u)) >> 1;	// half a turn over 160 samples
 
 			if (w > 32767)
 				w = 32767;
-			buf[n] = ((int32_t)mbe_rand(&rng) >> 20) * w >> 15;
-			buf[2 * N - 1 - n] = ((int32_t)mbe_rand(&rng) >> 20) * w >> 15;
+			buf[n] = ((int32_t)dsp_rand(&rng) >> 20) * w >> 15;
+			buf[2 * N - 1 - n] = ((int32_t)dsp_rand(&rng) >> 20) * w >> 15;
 		}
-		memset(buf + 2 * N, 0, (2 * MBE_FFT_N - 2 * N) * sizeof buf[0]);
-		mbe_rfft(buf);
+		memset(buf + 2 * N, 0, (2 * DSP_FFT_N - 2 * N) * sizeof buf[0]);
+		dsp_rfft(buf);
 		buf[0] = buf[1] = 0;
 		for (int l = 1; l <= L1; l++) {
 			int lo, hi;
 
 			if (f->v[l - 1] == 1) {
 				hi = (int)(((uint32_t)(2 * l + 1) * bwq + 65535u) >> 16);
-				if (hi > MBE_FFT_N)
-					hi = MBE_FFT_N;
+				if (hi > DSP_FFT_N)
+					hi = DSP_FFT_N;
 				for (; done < hi; done++)
 					buf[2 * done] = buf[2 * done + 1] = 0;
 				continue;
@@ -212,12 +212,12 @@ static void synth(const mbe_mem_t *m, const mbe_frame_t *f, int16_t *pcm)
 			hi = (int)(((uint32_t)(2 * l + 1) * bwq + 65535u) >> 16);
 			if (lo < 1)
 				lo = 1;
-			if (hi > MBE_FFT_N)
-				hi = MBE_FFT_N;
+			if (hi > DSP_FFT_N)
+				hi = DSP_FFT_N;
 			if (hi <= lo)
 				continue;
 			{
-				int32_t la = f->a[l - 1] + G_NOISE - (mbe_log2_q11((uint32_t)(hi - lo)) >> 1) - 1024 + (qs << 11);
+				int32_t la = f->a[l - 1] + G_NOISE - (dsp_log2_q11((uint32_t)(hi - lo)) >> 1) - 1024 + (qs << 11);
 				int64_t e = 0;
 				int32_t lr, g;
 
@@ -226,8 +226,8 @@ static void synth(const mbe_mem_t *m, const mbe_frame_t *f, int16_t *pcm)
 				for (int b = lo; b < hi; b++)
 					e = fxp_mac64(fxp_mac64(e, buf[2 * b], buf[2 * b]), buf[2 * b + 1], buf[2 * b + 1]);
 				// the gain that takes the band's rms (2^lr) to the amplitude's (2^la)
-				lr = (mbe_log2_q11_64((uint64_t)e + 1) - mbe_log2_q11((uint32_t)(hi - lo))) >> 1;
-				g = mbe_exp2_q11(fxp_clamp(la + LOG2_BN - lr + 15 * 2048, 0, 30 * 2048));
+				lr = (dsp_log2_q11_64((uint64_t)e + 1) - dsp_log2_q11((uint32_t)(hi - lo))) >> 1;
+				g = dsp_exp2_q11(fxp_clamp(la + LOG2_BN - lr + 15 * 2048, 0, 30 * 2048));
 				for (int b = lo; b < hi; b++) {
 					buf[2 * b] = fxp_mulshr(buf[2 * b], g, 15);
 					buf[2 * b + 1] = fxp_mulshr(buf[2 * b + 1], g, 15);
@@ -235,9 +235,9 @@ static void synth(const mbe_mem_t *m, const mbe_frame_t *f, int16_t *pcm)
 				done = hi;
 			}
 		}
-		for (; done < MBE_FFT_N; done++)
+		for (; done < DSP_FFT_N; done++)
 			buf[2 * done] = buf[2 * done + 1] = 0;
-		mbe_irfft(buf);
+		dsp_irfft(buf);
 	} else {
 		memset(buf, 0, 2 * N * sizeof buf[0]);
 	}

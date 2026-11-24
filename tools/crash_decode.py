@@ -25,7 +25,8 @@ ADDR2LINE = {1: "arm-none-eabi-addr2line", 2: "csky-elf-addr2line"}
 CODE = {1: [(0x08000000, 0x08100000)], 2: [(0x03000000, 0x04000000)]}  # flash (CK803S: XIP; RAM code isn't known here)
 KINDS = {1: "Fault", 2: "Stack overflow", 3: "Out of memory", 4: "Assert", 5: "Hang", 6: "Stall"}
 FLAGS = [(0x01, "in an interrupt handler"), (0x02, "build had local changes"), (0x04, "stack copied"),
-         (0x08, "seen"), (0x10, "sent")]
+         (0x08, "seen"), (0x10, "sent"), (0x20, "during secret work: r and stack zeroed")]
+F_SECRET = 0x20  # crash-log.md 1.4: the capture zeroed r[] and stack[], so their zeros are not data
 CK803_VECTORS = {1: "misaligned access", 2: "access error", 3: "divide by zero", 4: "illegal instruction",
                  7: "breakpoint", 8: "unrecoverable error"}
 # CFSR (the Cortex-M4's configurable fault status): MemManage, BusFault and UsageFault bits
@@ -144,7 +145,10 @@ def describe(rep, elf=None, addr2line=None):
     build = f"{rep['build']:08x}" if rep["build"] else "unknown"
     lines.append(f"  build {build}; flags: " + (", ".join(n for b, n in FLAGS if rep["flags"] & b) or "none"))
     lines.append(f"  pc {rep['pc']:08x}  lr {rep['lr']:08x}  sp {rep['sp']:08x}  psr {rep['psr']:08x}")
-    lines.append("  r0-r3 " + " ".join(f"{w:08x}" for w in rep["r"][:4]))
+    if rep["flags"] & F_SECRET:
+        lines.append("  r0-r3 (zeroed: secret work)")
+    else:
+        lines.append("  r0-r3 " + " ".join(f"{w:08x}" for w in rep["r"][:4]))
     st = rep["status"]
     if arch == 1:
         # MMFAR and BFAR mean something only with MMARVALID / BFARVALID set; otherwise they hold old contents
@@ -224,6 +228,20 @@ def self_test():
         assert want in text, (want, text)
     text = describe(read_report(hang.replace("crash.flags=0x5", "crash.flags=0x4").replace("crash.task=", "crash.task=host").encode()))
     assert "Hang on" in text and "no watchdog feed for 3000 ms" in text and "task host" in text, text
+    # A record made during secret work (crash_secret_scrub): its zeros are not shown as registers
+    scrub = view.replace("crash.flags=0x5", "crash.flags=0x24")
+    scrub = "\n".join(ln if not ln.startswith(("crash.r", "crash.stack=")) else ln.split("=")[0] + "=" +
+                      ("0x0" if ln.startswith("crash.r") else ",".join(["0"] * 16)) for ln in scrub.split("\n"))
+    r = read_report(scrub.encode())
+    assert r["flags"] == 0x24 and r["r"] == [0] * 14 and r["returns"] == [], r
+    text = describe(r)
+    for want in ("flags: stack copied, during secret work: r and stack zeroed", "r0-r3 (zeroed: secret work)"):
+        assert want in text, (want, text)
+    assert "r0-r3 00000000" not in text, text
+    pkt_s = bytearray(pkt)
+    pkt_s[5] = 0x24
+    text = describe(read_report(bytes(pkt_s)))
+    assert "r0-r3 (zeroed: secret work)" in text and "during secret work" in text, text
 
     for bad in (b"OC\x01", b"XX" + bytes(80), b"crash.built=1\ncrash.valid=0\n", b"not hex at all",
                 pkt[:-1], b"OC\x02" + bytes(80)):

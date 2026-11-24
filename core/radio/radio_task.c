@@ -38,6 +38,10 @@
 #if CONFIG_AIR_RAW
 #include "debuglink/debuglink_air.h"
 #endif
+#if CONFIG_ENTROPY
+#include "crypto/entropy.h"
+#include "crypto/entropy_boot.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -73,6 +77,13 @@ static radio_p25_settings_t pending_p25;	// radio_req_p25_settings -> the radio 
 #endif
 #if CONFIG_NXDN
 static radio_nxdn_settings_t pending_nxdn;	// radio_req_nxdn_settings -> the radio task, under view_lock
+#endif
+#if CONFIG_M17
+static radio_m17_settings_t pending_m17;	// radio_req_m17_settings -> the radio task, under view_lock
+static bool m17_pending RFOUNDRY_COLD_RAM;	// ... and not taken yet (radio_m17_settings_next; tasks only)
+static volatile uint8_t m17_bench;	// RADIO_M17_BENCH_* of the latest signature bench
+static uint8_t m17_bench_tries;		// ... ticks left to wait for the voice path's scratch (radio task)
+#define M17_BENCH_TRIES		50u
 #endif
 #if CONFIG_AIR_RAW
 static volatile bool bench_held, bench_keyed;	// published sm.air_bench, sm.bench_keyed
@@ -256,6 +267,61 @@ static void satellite_run(uint32_t now_ms)
 #endif
 
 
+#if CONFIG_M17
+// M17's requests: what came with them copied in under the lock, then the mode's module (radio_m17.h)
+static void m17_request(const radio_req_t *req)
+{
+	if (req->type == RREQ_M17_SET) {
+		// Taken and in force under the lock: radio_m17_settings_next never reads the settings between the two
+		xSemaphoreTake(view_lock, portMAX_DELAY);
+		radio_m17_set_settings(&pending_m17);
+		m17_pending = false;
+		xSemaphoreGive(view_lock);
+		radio_sm_request(&sm, req, hal_millis());
+	}
+#if CONFIG_M17_PACKET
+	else if (req->type == RREQ_M17_SMS) {
+		radio_m17_sms_send(0, NULL);	// the text radio_req_m17_sms staged
+	}
+#endif
+#if CONFIG_M17_BERT
+	else if (req->type == RREQ_M17_BERT) {
+		if (req->arg == RADIO_REQ_M17_BERT_MODE_OFF || req->arg == RADIO_REQ_M17_BERT_MODE_ON) {
+			radio_m17_bert_mode(req->arg == RADIO_REQ_M17_BERT_MODE_ON);
+		} else if (req->arg == RADIO_REQ_M17_BERT_TX_OFF || req->arg == RADIO_REQ_M17_BERT_TX_ON) {
+			radio_m17_bert_tx(req->arg == RADIO_REQ_M17_BERT_TX_ON);
+		} else if (req->arg == RADIO_REQ_M17_BERT_RESET) {
+			radio_m17_bert_reset();
+		}
+	}
+#endif
+	else if (req->type == RREQ_M17_BENCH) {
+		if (req->arg == RADIO_REQ_M17_BENCH_SIG) {
+			m17_bench = RADIO_M17_BENCH_RUNNING;
+			m17_bench_tries = M17_BENCH_TRIES;
+		} else {
+			radio_m17_bench_codec((uint8_t)req->arg2, (uint8_t)(req->arg2 >> 8));
+		}
+	}
+}
+
+// The signature bench, tried each tick until the voice path lends its scratch (it lends at its next block)
+static void m17_bench_tick(void)
+{
+	bool ok;
+	if (m17_bench_tries == 0) {
+		return;
+	}
+	if (radio_m17_bench_sig(&ok)) {
+		m17_bench_tries = 0;
+		m17_bench = ok ? RADIO_M17_BENCH_OK : RADIO_M17_BENCH_FAILED;
+	} else if (--m17_bench_tries == 0 || !radio_m17_running()) {
+		m17_bench_tries = 0;
+		m17_bench = RADIO_M17_BENCH_REFUSED;
+	}
+}
+#endif
+
 static void radio_task(void *arg)
 {
 	(void)arg;
@@ -298,6 +364,11 @@ static void radio_task(void *arg)
 					radio_nxdn_set_settings(&n);
 					radio_sm_request(&sm, &req, hal_millis());
 #endif
+#if CONFIG_M17
+				} else if (req.type == RREQ_M17_SET || req.type == RREQ_M17_SMS ||
+					   req.type == RREQ_M17_BERT || req.type == RREQ_M17_BENCH) {
+					m17_request(&req);
+#endif
 				} else if (req.type == RREQ_SETTINGS) {
 					apply_pending_settings();
 				}
@@ -316,7 +387,20 @@ static void radio_task(void *arg)
 		}
 		TickType_t now = xTaskGetTickCount();
 		if (woken || (int32_t)(now - next_tick) >= 0) {
-			radio_sm_tick(&sm, hal_millis());
+			uint32_t t0 = hal_millis();
+			radio_sm_tick(&sm, t0);
+#if CONFIG_M17
+			m17_bench_tick();
+#endif
+#if CONFIG_ENTROPY
+			entropy_boot_poll(hal_millis());	// the nonce counter's boot count: rebased, or the next one stored
+#endif
+			// A tick that did long work (M17's curve work: a signature, one key of a verification, the key
+			// check, up to about 200 ms) lets the lower tasks run before the next: the queue is past due by then,
+			// so the receive below would not block (docs/spec/watchdog.md 4)
+			if (hal_millis() - t0 >= RADIO_TICK_MS) {
+				vTaskDelay(1);
+			}
 			next_tick += tick_period;
 			if (woken || (int32_t)(now - next_tick) >= 0) {
 				next_tick = now + tick_period;	// a wake's tick counts as the next one
@@ -327,6 +411,13 @@ static void radio_task(void *arg)
 		#endif
 		if ((int32_t)(now - next_poll) >= 0) {
 			radio_sm_poll(&sm, hal_millis());
+#if CONFIG_ENTROPY
+			// The receiver's level and noise as the poll read them, and the microsecond after it:
+			// uncredited, a dB-step reading nobody can vouch for, but no other start-up hears the same
+			// (crypto.md 8.1)
+			uint32_t heard = (uint32_t)(uint16_t)sm.view.rssi_dbm << 16 | (uint32_t)sm.view.noise << 8;
+			entropy_mix_u32(heard ^ hal_micros(), 0u);
+#endif
 #if CONFIG_HOTSPOT
 			radio_hs_watch(&sm, hal_millis());
 #endif
@@ -369,6 +460,9 @@ void radio_core_start(void)
 #endif
 #if CONFIG_POSITION
 	position_set_lock(copy_lock, copy_unlock);
+#endif
+#if CONFIG_M17
+	radio_m17_set_lock(copy_lock, copy_unlock);	// the SMS inbox: short copies (CONFIG_M17 implies POSITION)
 #endif
 #if CONFIG_DMR_DATA_CORE
 	dmrDataServiceSetLock(data_lock, data_unlock);
@@ -719,6 +813,60 @@ void radio_req_nxdn_settings(const radio_nxdn_settings_t *s)
 	pending_nxdn = *s;
 	xSemaphoreGive(view_lock);
 	post(RREQ_NXDN_SET, 0, pdMS_TO_TICKS(50));
+}
+#endif
+
+#if CONFIG_M17
+void radio_req_m17_settings(const radio_m17_settings_t *s)
+{
+	if (view_lock == NULL) {
+		return;
+	}
+	xSemaphoreTake(view_lock, portMAX_DELAY);
+	pending_m17 = *s;
+	m17_pending = true;
+	xSemaphoreGive(view_lock);
+	post(RREQ_M17_SET, 0, pdMS_TO_TICKS(50));
+}
+
+void radio_m17_settings_next(radio_m17_settings_t *out)
+{
+	if (view_lock == NULL) {
+		radio_m17_settings(out);
+		return;
+	}
+	xSemaphoreTake(view_lock, portMAX_DELAY);
+	if (m17_pending) {
+		*out = pending_m17;
+	} else {
+		radio_m17_settings(out);
+	}
+	xSemaphoreGive(view_lock);
+}
+#if CONFIG_M17_PACKET
+bool radio_req_m17_sms(uint64_t dst, const char *utf8)
+{
+	if (requests == NULL || !radio_m17_sms_stage(dst, utf8)) {
+		return false;
+	}
+	radio_req_t req = { .type = RREQ_M17_SMS };
+	send(&req, pdMS_TO_TICKS(50));	// lost with a full queue: the staged text waits for the next request
+	return true;
+}
+#endif
+#if CONFIG_M17_BERT
+void radio_req_m17_bert(uint8_t cmd) { post(RREQ_M17_BERT, cmd, pdMS_TO_TICKS(50)); }
+#endif
+void radio_req_m17_bench(uint8_t what, uint8_t phase, uint8_t mode)
+{
+	if (what == RADIO_REQ_M17_BENCH_SIG) {
+		m17_bench = RADIO_M17_BENCH_RUNNING;	// at once, so a reader never sees the last run's outcome
+	}
+	post_pair(RREQ_M17_BENCH, what, (uint32_t)phase | ((uint32_t)mode << 8), pdMS_TO_TICKS(50));
+}
+uint8_t radio_m17_bench_result(void)
+{
+	return m17_bench;
 }
 #endif
 

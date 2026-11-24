@@ -13,60 +13,16 @@
 #if CONFIG_IMBE
 #include "p25/p25Voice.h"
 #endif
+#include "radio/radio_p25_mem.h"	// p25_mem_t
+#include "radio/radio_air_mem.h"
+#include "radio/radio_air_modes.h"
 #if CONFIG_P25_TRUNK
 #include "hal_time.h"
-#include "p25/p25_follow.h"
-
-// A trunked channel's follower (docs/spec/p25-trunking.md 7) and what it runs on. The provider's task hands it units
-// and calls, the radio task ticks it and carries out its retunes; the two never run it at once (enter_* below)
-typedef struct {
-	p25_follow_t f;
-	p25_follow_cfg_t cfg;
-	p25_follow_cc_t cc[P25_CP_CTL_MAX];
-	p25_follow_iden_t iden[P25_FOLLOW_IDENS];
-	// The last retune the follower asked (its tune hook, from either task): want moves past done until the radio
-	// task has carried it out
-	volatile uint8_t want, done;
-	uint8_t what;
-	uint32_t hz, id;
-	bool owed;			// the receiver is on the new frequency, the follower not told yet
-	volatile uint8_t in_prov, in_radio;	// which task is inside the follower
-	// The inbound burst the follower asked last (its send hook, from either task), as want / done above
-	volatile uint8_t burst_want, burst_done;
-	uint32_t burst_hz;
-	uint8_t burst[P25_TSBK_BYTES];
-	// PTT and the end of our transmission, for the follower at the radio task's next turn inside it
-	bool ptt, talk_end;
-	uint8_t ptt_seq, ptt_done;
-	bool nogo_kept;			// this system's control channels are in nogo_hz
-} p25_trunk_t;
-_Static_assert(P25_CP_IDEN_MAX == P25_FOLLOW_IDENS, "one identifier plan size");
-_Static_assert(RADIO_P25_TRUNK_HUNT == P25_FOLLOW_HUNT && RADIO_P25_TRUNK_CONTROL == P25_FOLLOW_CONTROL &&
-	       RADIO_P25_TRUNK_VOICE == P25_FOLLOW_VOICE, "the view's trunking states are the follower's");
 #endif
-
-// What runs while P25 is on: the engine and, with the decoder, the voice path's queue and decoder memory. On a
-// trunked channel the follower too, and its set-up as the codeplug gives it, read before the voice path starts
-typedef struct {
-	p25_engine_t eng;
-#if CONFIG_P25_TRUNK
-	p25_trunk_t trunk;
-	union {
-#if CONFIG_IMBE
-		p25_voice_mem_t voice;
-#endif
-		p25_trunk_cfg_t load;
-	};
-#elif CONFIG_IMBE
-	p25_voice_mem_t voice;
-#endif
-} p25_mem_t;
 
 #ifdef HAL_VOCODER_LEND_BYTES
 // The platform's DMR vocoder lends its memory while P25 runs (hal_vocoder_t.lend): no copy here
 _Static_assert(sizeof(p25_mem_t) <= HAL_VOCODER_LEND_BYTES, "P25 does not fit the memory the vocoder lends");
-#else
-static p25_mem_t own_mem;
 #endif
 
 #if CONFIG_IMBE
@@ -153,6 +109,7 @@ void radio_p25_init(const hal_audio_t *audio)
 {
 	set = defaults;
 	mem = NULL;
+	radio_air_mem_put(RADIO_MODE_P25);	// nothing runs from here: a block held before is free
 	nogo_n = 0;
 	nogo_full = false;
 #if CONFIG_IMBE
@@ -255,19 +212,23 @@ bool radio_p25_take(channel_t *ch)
 	return true;
 }
 
+// The block P25 runs in (radio_air_mem.h): the vocoder's loan where the platform's lends, else the shared arena
 static p25_mem_t *mem_get(void)
 {
+	p25_mem_t *m = radio_air_mem_get(RADIO_MODE_P25, sizeof(p25_mem_t));
+
 #ifdef HAL_VOCODER_LEND_BYTES
-	size_t len = 0;
-	void *m = board.vocoder != NULL && board.vocoder->lend != NULL ? board.vocoder->lend(&len) : NULL;
-	if (m == NULL || len < sizeof(p25_mem_t) || ((uintptr_t)m & 7u) != 0) {
-		return NULL;
-	}
-	stats.mem_lent++;
-	return m;
-#else
-	return &own_mem;
+	if (m != NULL && radio_air_mem_lent(RADIO_MODE_P25))
+		stats.mem_lent++;
 #endif
+	return m;
+}
+
+// The block goes back: from every path that started with mem_get and stops (or never ran)
+static void mem_put(void)
+{
+	mem = NULL;
+	radio_air_mem_put(RADIO_MODE_P25);
 }
 
 #if CONFIG_P25_TRUNK
@@ -602,7 +563,7 @@ bool radio_p25_begin(const channel_t *ch, uint16_t number, uint32_t own_id)
 	stats.begins++;
 	mem = mem_get();
 	if (mem == NULL || board.air == NULL || p25_engine_fit(board.air) == 0) {
-		mem = NULL;
+		mem_put();
 		stats.begin_fails++;
 		return false;
 	}
@@ -615,7 +576,7 @@ bool radio_p25_begin(const channel_t *ch, uint16_t number, uint32_t own_id)
 		// before that starts
 		if (!p25_trunk_load(number, ch, &mem->load)) {
 			trunk = false;
-			mem = NULL;
+			mem_put();
 			stats.begin_fails++;
 			return false;
 		}
@@ -658,7 +619,7 @@ bool radio_p25_begin(const channel_t *ch, uint16_t number, uint32_t own_id)
 #if CONFIG_IMBE
 		p25VoiceEnd();
 #endif
-		mem = NULL;
+		mem_put();
 		stats.begin_fails++;
 		return false;
 	}
@@ -722,7 +683,7 @@ void radio_p25_end(void)
 #if CONFIG_IMBE
 	p25VoiceEnd();
 #endif
-	mem = NULL;			// the memory goes back (a lending vocoder rebuilds its state at its next call)
+	mem_put();			// the memory goes back (a lending vocoder rebuilds its state at its next call)
 }
 
 bool radio_p25_running(void)
@@ -905,14 +866,6 @@ const radio_air_ops_t radio_p25_air = {
 	radio_p25_tx_state, radio_p25_tx_clear,
 };
 
-#ifndef HAL_VOCODER_LEND_BYTES
-void *radio_p25_idle_mem(size_t *len)
-{
-	*len = sizeof(own_mem);
-	return mem == NULL ? &own_mem : NULL;
-}
-#endif
-
 void radio_p25_stats(radio_p25_stats_t *out)
 {
 	*out = stats;
@@ -922,5 +875,65 @@ void radio_p25_reset_stats(void)
 {
 	memset(&stats, 0, sizeof(stats));
 }
+
+// ── The radio core's row (radio_air_modes.h): radio_sm.c runs P25 through it ──
+static bool row_poll(radio_view_t *v)
+{
+	return radio_p25_poll(&v->p25);
+}
+
+static bool row_rx(const radio_view_t *v)
+{
+	return (v->p25.flags & RADIO_P25_RX) != 0;
+}
+
+// A call of the channel's NAC: only a late entry waits (the header gives the talk group), its link control not in
+// while src is 0; played; or decided against (another talk group, encrypted)
+static uint8_t row_heard(const radio_view_t *v)
+{
+	const radio_p25_view_t *n = &v->p25;
+
+	if ((n->flags & RADIO_P25_RX) == 0)
+		return RADIO_AIR_HEARD_NONE;
+	if ((n->flags & RADIO_P25_PLAYED) != 0)
+		return RADIO_AIR_HEARD_PLAYED;
+	return (n->flags & (RADIO_P25_ENC | RADIO_P25_LATE)) == RADIO_P25_LATE && n->src == 0 ? RADIO_AIR_HEARD_PENDING :
+		RADIO_AIR_HEARD_OTHER;
+}
+
+static bool row_played(const radio_view_t *v)
+{
+	return (v->p25.flags & RADIO_P25_PLAYED) != 0;
+}
+
+static void row_view_off(radio_view_t *v)
+{
+	v->p25.flags = 0;
+	v->p25.tx = AIR_TX_IDLE;
+	v->p25.trunk = RADIO_P25_TRUNK_OFF;
+}
+
+const radio_air_mode_t radio_p25_mode = {
+	.mode = RADIO_MODE_P25,
+	.key = "p25",
+	.name = "P25",
+	.features = RADIO_P25_FEATURES,
+	.fits = radio_p25_fits,
+	.take = radio_p25_take,
+	.receives = NULL,		// every NAC at the one rate: what fits() says
+	.begin = radio_p25_begin,
+	.end = radio_p25_end,
+	.running = radio_p25_running,
+	.retuned = radio_p25_retuned,
+	.apply = radio_p25_apply,
+	.poll = row_poll,
+	.rx = row_rx,
+	.heard = row_heard,
+	.played = row_played,
+	.view_off = row_view_off,
+	.tx_deny = NULL,
+	.auto_tx = NULL,
+	.ops = &radio_p25_air,
+};
 
 #endif	// CONFIG_P25

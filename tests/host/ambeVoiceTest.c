@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// DMR voice glue (core/dmr/ambe/ambeVoice.c) against a fake audio driver and a fake vocoder
+// DMR voice glue (core/dmr/ambe/ambeVoice.c) against a fake audio driver and a fake vocoder; the call stack's task
+// running between the callback's loads.
+//
+// The file under test is included, as p25VoiceTest does p25Voice.c: the load-order checks run the call stack inside
+// the callback's loads, and the checks read its queue.
 #include <stdio.h>
 #include <string.h>
 
-#include "dmr/ambe/ambeVoice.h"
+// Each load the file under test makes calls load_seen first (the inner name is not expanded again: the builtin)
+static void load_seen(const volatile void *p);
+#define __atomic_load_n(p, o) (load_seen(p), __atomic_load_n(p, o))
+#include "../../core/dmr/ambe/ambeVoice.c"
+#undef __atomic_load_n
 #include "dmr/ambe/ambeFec.h"
 #include "vocoder/ambe2_flags.h"
 
@@ -28,8 +36,9 @@ static void fake_speaker(bool on) { speaker_on = on; speaker_calls++; }
 static const hal_audio_t audio = { .start = fake_start, .stop = fake_stop, .speaker_pcm = fake_speaker };
 
 // Vocoder: encode copies the low bit of the first 49 samples; decode writes the bits into samples 0..48 and a frame
-// marker into sample 159
+// marker into sample 159 (dec_marker: the decoded peak)
 static int resets, decodes;
+static int16_t dec_marker = 1000;
 static bool fake_present(void) { return true; }
 static void fake_reset(void) { resets++; }
 static void fake_encode(const int16_t pcm[VOCODER_FRAME_SAMPLES], uint8_t bits[VOCODER_BITS])
@@ -43,7 +52,7 @@ static void fake_decode(const uint8_t bits[VOCODER_BITS], int16_t pcm[VOCODER_FR
 	memset(pcm, 0, VOCODER_FRAME_SAMPLES * sizeof(int16_t));
 	for (int i = 0; i < VOCODER_BITS; i++)
 		pcm[i] = bits[i];
-	pcm[159] = 1000;
+	pcm[159] = dec_marker;
 }
 static const hal_vocoder_t vocoder = { fake_present, fake_reset, fake_encode, fake_decode, NULL, NULL, NULL, NULL, NULL };
 
@@ -89,7 +98,7 @@ static void block(void)
 
 static bool spkIs(const uint8_t bits[49])
 {
-	if (spk[159] != 1000)
+	if (spk[159] != dec_marker)
 		return false;
 	for (int i = 0; i < 49; i++)
 		if (spk[i] != bits[i])
@@ -102,6 +111,50 @@ static bool spkSilent(void)
 	for (int i = 0; i < 160; i++)
 		if (spk[i] != 0)
 			return false;
+	return true;
+}
+
+// n blocks; how many were not silent
+static int play(int n)
+{
+	int heard = 0;
+	for (int i = 0; i < n; i++) {
+		block();
+		heard += !spkSilent();
+	}
+	return heard;
+}
+
+// n frames of a call (frame numbers from first)
+static void frames(int first, int n)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	uint8_t bits[49], frame[9];
+	for (int i = 0; i < n; i++) {
+		makeFrame(first + i, bits, frame);
+		s->frame(frame, s->ctx);
+	}
+}
+
+// The stream runs, whatever call is open ends and plays out: the next check starts with nothing queued and the route
+// off
+static void settle(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	ambeVoiceStart();
+	s->end(s->ctx);
+	play(AMBE_VOICE_QUEUE + 2);
+	CHECK(!speaker_on && rx_tail == rx_head, "the voice path did not settle");
+}
+
+// A beep in the mixer while mixing is set
+static bool mixing;
+static bool mix(int16_t *out)
+{
+	if (!mixing)
+		return false;
+	for (int i = 0; i < 160; i++)
+		out[i] = 3000;
 	return true;
 }
 
@@ -725,6 +778,243 @@ static void testRouteTakeover(void)
 	starts = stops = 0;
 }
 
+// ── The call stack's task between two of the callback's loads ──
+// Armed, load_seen counts the callback's loads of the call counters and the queue head, and runs race_fn (the
+// sink's hooks) just before the race_at-th: whatever order the callback reads them in, the call stack can run
+// between any two
+static bool race_armed;
+static int race_at, race_loads;
+static void (*race_fn)(void);
+
+static void load_seen(const volatile void *p)
+{
+	if (!race_armed || (p != &rx_seq && p != &rx_end_seq && p != &rx_head))
+		return;
+	if (++race_loads == race_at) {
+		race_armed = false;
+		race_fn();
+	}
+}
+
+// One block with fn run before its at-th load; true when it is not silent
+static bool race_block(int at, void (*fn)(void))
+{
+	race_fn = fn;
+	race_at = at;
+	race_loads = 0;
+	race_armed = true;
+	block();
+	CHECK(!race_armed, "the callback made %d loads, not %d", race_loads, at);
+	race_armed = false;
+	return !spkSilent();
+}
+
+// A new call of three frames, start to end
+static void race_new_call(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	s->begin(NULL, s->ctx);
+	frames(20, 3);
+	s->end(s->ctx);
+}
+
+// The playing call's last frame, then its end
+static void race_last_frame(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	frames(30, 1);
+	s->end(s->ctx);
+}
+
+static void testLoadOrder(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	ambe_voice_stats_t st;
+
+	for (int at = 1; at <= 3; at++) {
+		// A new call starts while the callback reads: its frames are its own, not the last call's
+		settle();
+		ambeVoiceResetStats();
+		s->begin(NULL, s->ctx);
+		frames(0, AMBE_VOICE_PRIME);
+		s->end(s->ctx);
+		play(AMBE_VOICE_PRIME + 1);
+		CHECK(!speaker_on, "load %d: the first call did not end", at);
+		int heard = race_block(at, race_new_call);
+		heard += play(AMBE_VOICE_PRIME + 2);
+		ambeVoiceGetStats(&st);
+		CHECK(heard > 0 && st.rx_frames == 2 * AMBE_VOICE_PRIME && st.rx_calls == 2,
+		      "load %d: a call started between the loads lost its frames: heard %d, frames %u, calls %u", at,
+		      heard, st.rx_frames, st.rx_calls);
+		CHECK(!speaker_on && rx_tail == rx_head, "load %d: the second call did not end", at);
+
+		// The playing call's last frame and its end come while the callback reads: the frame still plays
+		settle();
+		ambeVoiceResetStats();
+		s->begin(NULL, s->ctx);
+		frames(0, AMBE_VOICE_PRIME);
+		play(AMBE_VOICE_PRIME);
+		CHECK(speaker_on && rx_tail == rx_head, "load %d: the call is not playing with its queue empty", at);
+		heard = race_block(at, race_last_frame);
+		heard += play(3);
+		ambeVoiceGetStats(&st);
+		CHECK(st.rx_frames == AMBE_VOICE_PRIME + 1 && heard > 0,
+		      "load %d: the frame before an end read with it did not play: frames %u, heard %d", at,
+		      st.rx_frames, heard);
+		CHECK(!speaker_on && rx_tail == rx_head, "load %d: the call did not end", at);
+	}
+	settle();
+}
+
+// A transmission while a call plays: the queue is played out (as silence) meanwhile, a frame a block, so it leaves no
+// backlog. One longer than the queue: nothing received before it is heard after it. A short one: the frames it covered
+// are gone, and the call goes on with the next. Either way the call, still on air, goes on with its new frames
+static void testTxDuringCall(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	const dmr_voice_source_t *src = ambeVoiceSource();
+	uint8_t frame[9];
+	ambe_voice_stats_t st;
+
+	settle();
+	ambeVoiceResetStats();
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_QUEUE);
+	CHECK(play(1) == 1 && speaker_on, "the call does not play");
+	int d0 = decodes;
+	src->begin(src->ctx);
+	CHECK(play(AMBE_VOICE_QUEUE + 2) == 0, "the call was heard during the transmission");
+	CHECK(rx_tail == rx_head, "frames from before the transmission still queued at its end");
+	while (src->next(frame, src->ctx))
+		;
+	src->end(src->ctx);
+	CHECK(play(AMBE_VOICE_QUEUE) == 0 && decodes == d0, "frames from before the transmission played after it");
+	frames(40, 1);
+	block();
+	uint8_t bits[49];
+	makeFrame(40, bits, frame);
+	CHECK(spkIs(bits) && speaker_on, "the call's next frame did not play after the transmission");
+	ambeVoiceGetStats(&st);
+	CHECK(st.rx_frames == AMBE_VOICE_QUEUE + 1 && st.rx_calls == 1, "frames %u, calls %u", st.rx_frames, st.rx_calls);
+
+	// Two blocks of transmission with the queue full: frame 0 before it, 1 and 2 silent in it, 3 next
+	settle();
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_QUEUE);
+	CHECK(play(1) == 1, "the call does not play");
+	src->begin(src->ctx);
+	CHECK(play(2) == 0, "the call was heard during the short transmission");
+	while (src->next(frame, src->ctx))
+		;
+	src->end(src->ctx);
+	block();
+	makeFrame(3, bits, frame);
+	CHECK(spkIs(bits) && speaker_on, "after a short transmission the call did not go on with the frame after it");
+	CHECK((uint8_t)(rx_head - rx_tail) == AMBE_VOICE_QUEUE - 4, "a short transmission left %u frames queued, not %u",
+	      (unsigned)(uint8_t)(rx_head - rx_tail), AMBE_VOICE_QUEUE - 4);
+	settle();
+}
+
+// The speaker route as calls start: a beep that ends in the block where a call is first seen, and a playing call cut
+// off by one that ends before it plays, leave it off
+static void testRouteAtNewCall(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+
+	settle();
+	ambeVoiceSetMixer(mix);
+	mixing = true;
+	CHECK(play(1) == 1 && speaker_on, "the mixer is not heard");
+	s->begin(NULL, s->ctx);
+	mixing = false;
+	CHECK(play(1) == 0 && !speaker_on, "the route stayed on after a beep that ended as a call started");
+	s->end(s->ctx);
+	block();
+	CHECK(!speaker_on, "the route came on for an empty call");
+	// A beep that goes on while a call starts keeps the route, and its end turns it off
+	mixing = true;
+	block();
+	s->begin(NULL, s->ctx);
+	CHECK(play(1) == 1 && speaker_on, "the route went off under a beep as a call started");
+	mixing = false;
+	CHECK(play(1) == 0 && !speaker_on, "the route stayed on after the beep");
+	s->end(s->ctx);
+	ambeVoiceSetMixer(NULL);
+	// A playing call cut off by a new one that ends before it plays
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_PRIME);
+	CHECK(play(2) == 2 && speaker_on, "the call does not play");
+	s->begin(NULL, s->ctx);
+	CHECK(play(1) == 0 && !speaker_on, "the route stayed on after the call was cut off");
+	s->end(s->ctx);
+	CHECK(play(1) == 0 && !speaker_on, "the route came on for the empty call");
+	// Cut off by one still priming: the route is off until the new call plays, then on again
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_PRIME);
+	CHECK(play(1) == 1 && speaker_on, "the call after does not play");
+	s->begin(NULL, s->ctx);
+	frames(10, AMBE_VOICE_PRIME - 1);
+	CHECK(play(1) == 0 && !speaker_on, "a call cut off by one still priming kept the route");
+	frames(10 + AMBE_VOICE_PRIME - 1, 1);
+	s->end(s->ctx);
+	CHECK(play(AMBE_VOICE_PRIME) == AMBE_VOICE_PRIME && speaker_on, "the next call did not turn the route on");
+	settle();
+	// A playing call cut off by a new one while a beep plays: the route stays on through the block, not off and on
+	// again under the beep (the amplifier and mute pins, and a platform's PCM queue, would see both), and the beep's
+	// end turns it off
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_PRIME);
+	CHECK(play(2) == 2 && speaker_on, "the call does not play");
+	ambeVoiceSetMixer(mix);
+	mixing = true;
+	block();
+	int calls = speaker_calls;
+	s->begin(NULL, s->ctx);
+	block();
+	CHECK(speaker_on && speaker_calls == calls, "the route toggled under a beep as a new call cut one off (%d calls)",
+	      speaker_calls - calls);
+	mixing = false;
+	block();
+	CHECK(!speaker_on, "the route stayed on after the beep");
+	s->end(s->ctx);
+	ambeVoiceSetMixer(NULL);
+	settle();
+}
+
+// The peak is the latest call's that played: a call that is seen but never plays leaves it
+static void testPeak(void)
+{
+	const dmr_voice_sink_t *s = ambeVoiceSink();
+	ambe_voice_stats_t st;
+
+	settle();
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_PRIME);
+	s->end(s->ctx);
+	play(AMBE_VOICE_PRIME + 1);
+	ambeVoiceGetStats(&st);
+	CHECK(st.rx_peak == 1000, "the peak of a call: %u", st.rx_peak);
+	s->begin(NULL, s->ctx);
+	s->end(s->ctx);
+	play(2);
+	ambeVoiceGetStats(&st);
+	CHECK(st.rx_peak == 1000, "an empty call changed the peak: %u", st.rx_peak);
+	// A call not primed yet: the peak stays the last call's until it plays, then is its own
+	s->begin(NULL, s->ctx);
+	frames(0, AMBE_VOICE_PRIME - 1);
+	play(2);
+	ambeVoiceGetStats(&st);
+	CHECK(st.rx_peak == 1000, "a call not playing yet changed the peak: %u", st.rx_peak);
+	dec_marker = 500;
+	frames(AMBE_VOICE_PRIME - 1, 1);
+	s->end(s->ctx);
+	play(AMBE_VOICE_PRIME + 1);
+	ambeVoiceGetStats(&st);
+	CHECK(st.rx_peak == 500, "the peak was not reset as the call played: %u", st.rx_peak);
+	dec_marker = 1000;
+	settle();
+}
+
 int main(void)
 {
 	ambeVoiceInit(&audio, &vocoder);
@@ -737,6 +1027,10 @@ int main(void)
 	testEncodeOptions();
 	testTxTone();
 	testRepeats();
+	testLoadOrder();
+	testTxDuringCall();
+	testRouteAtNewCall();
+	testPeak();
 #if CONFIG_VOICE_CAPTURE
 	testCapture();
 #endif

@@ -72,7 +72,7 @@ int lrrpBuildTriggeredStartResponse(const uint8_t *requestId, int requestIdLengt
 int lrrpBuildTriggeredReport(const uint8_t *requestId, int requestIdLength, uint8_t wanted, const lrrpPosition_t *position, uint8_t *out);
 int lrrpBuildTriggeredStopResponse(const uint8_t *requestId, int requestIdLength, uint8_t *out);
 
-// Great circle distance in meters (equirectangular, fine for a few km)
+// Great circle distance in meters (position_range, docs/spec/position.md 9)
 uint32_t lrrpDistanceMeters(const dmrDataLocation_t *a, const dmrDataLocation_t *b);
 
 // A position in 1e-7 degree as LRRP and the UDT location carry it. Unknown: speed and course 0xFFFF, utcHms

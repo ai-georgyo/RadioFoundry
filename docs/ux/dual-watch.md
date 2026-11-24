@@ -63,7 +63,7 @@ Two panes of the same size, A over B: neither channel is second class. Each pane
 |---|---|
 | Tag | The letter in a box as tall as the pane; under the letter, an arrow (▶) on the selected pane only |
 | 1 | Channel number and name (the VFO: its frequency); at the right, the PTT pill (selected pane) or TX |
-| 2 | What PTT talks to (DMR: "TG 3100 USA"), or the frequency (FM); the VFO: "VFO" and its mode ("VFO FM", "VFO P25"). While a call comes in, the caller (without one: "FM signal", "AM signal", "P25 call", "NXDN call"), and the RX pill at the right |
+| 2 | What PTT talks to (DMR: "TG 3100 USA"), or the frequency (FM); the VFO: "VFO" and its mode ("VFO FM", "VFO P25", "VFO M17"). While a call comes in, the caller (without one: "FM signal", "AM signal", "P25 call", "NXDN call", "M17 call"; an M17 caller is its callsign), and the RX pill at the right |
 | 3 | Frequency, timeslot and color code, or tone and width; in AM "Air Band AM" (where there is room) |
 | 4 | The zone (where there is room: B may be in another zone than A). Where row 3 has room, the zone sits at its right instead |
 

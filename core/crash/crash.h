@@ -64,6 +64,9 @@ bool crash_valid(const crash_record_t *r);
 void crash_seal(crash_record_t *r, const crash_record_t *prev);
 // The CRC again after a change (the flags)
 void crash_reseal(crash_record_t *r);
+// A record made during secret work (crash_secret.h, crash_secret.c): every saved general register and stack word
+// zeroed, pc, lr, sp and the status words kept, CRASH_F_SECRET set. crash_commit applies it while crash_secret is not 0
+void crash_secret_scrub(crash_record_t *r);
 // The commit hash's first 8 hex digits as a number; *dirty when the build had local changes. 0 when unknown
 uint32_t crash_build_id(const char *version, bool *dirty);
 

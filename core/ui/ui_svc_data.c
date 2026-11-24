@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The ui_svc.h calls for text messages, call alert and radio check, on the DMR data service's API
-// (core/dmr/dmr_data_api.h, safe from any task). Its events are polled (dmr_data_serial) and handed to the UI as
-// ui_notify events, which become banners. Built only with the data core; otherwise the weak stubs stay.
+// The ui_svc.h calls for text messages (the DMR message provider, ui_msg_dmr), call alert and radio check, on the DMR
+// data service's API (core/dmr/dmr_data_api.h, safe from any task). Its events are polled (dmr_data_serial) and handed
+// to the UI as ui_notify events, which become banners. Built only with the data core; otherwise the weak stubs stay.
 #include "config.h"
 
 #if CONFIG_DMR_DATA_CORE
@@ -11,8 +11,6 @@
 #include "dmr/dmr_data_api.h"
 #include "codeplug/codeplug.h"
 #include "hal_time.h"
-
-static dmrDataMessage_t inbox_message;	// shared by the UI task; too big for its stack
 
 uint32_t ui_svc_feat_data(void)
 {
@@ -30,25 +28,31 @@ static void contact_name(uint32_t id, bool group, char *out, size_t len)
 	}
 }
 
-uint16_t ui_svc_msg_count(void)
+#if CONFIG_DMR_SMS
+// The DMR inbox as a message provider (ui_svc_msg.c). Its text is the display's already: the data service keeps a
+// message's text as Latin-1 bytes, which the fonts draw
+_Static_assert(DMR_DATA_INBOX_SIZE <= UI_MSG_INDEX_MAX, "a DMR inbox index fits a message reference");
+
+static dmrDataMessage_t inbox_message;	// shared by the UI task; too big for its stack
+
+static uint16_t dmr_msg_count(void)
 {
 	int n = sms_inbox_count();
 	return (uint16_t)(n < 0 ? 0 : n);
 }
 
-uint16_t ui_svc_msg_unread(void)
+static uint16_t dmr_msg_unread(void)
 {
 	int n = sms_inbox_unread();
 	return (uint16_t)(n < 0 ? 0 : n);
 }
 
-bool ui_svc_msg_get(uint16_t i, ui_msg_t *out)
+static bool dmr_msg_get(uint16_t i, ui_msg_t *out)
 {
 	if (!sms_inbox_get(i, &inbox_message))
 		return false;
 	memset(out, 0, sizeof *out);
-	out->src = inbox_message.src;
-	out->group = inbox_message.group;
+	ui_addr_set_dmr(&out->peer, inbox_message.src, false);	// the sender (a talkgroup message still has one)
 	out->unread = inbox_message.unread;
 	out->age_ms = hal_millis() - inbox_message.receivedAt;
 	contact_name(inbox_message.src, false, out->name, sizeof out->name);
@@ -57,27 +61,35 @@ bool ui_svc_msg_get(uint16_t i, ui_msg_t *out)
 	return true;
 }
 
-void ui_svc_msg_read(uint16_t i)
+static void dmr_msg_read(uint16_t i)
 {
 	sms_inbox_mark_read(i);
 }
 
-bool ui_svc_msg_delete(uint16_t i)
+static bool dmr_msg_delete(uint16_t i)
 {
 	return sms_inbox_delete(i);
 }
 
-bool ui_svc_msg_send(uint32_t dst, bool group, const char *text)
+static bool dmr_msg_send(const ui_msg_to_t *to, const char *text)
 {
 	// A message to a person asks for the acknowledgment ("Delivered") where its format has one; a group message
 	// can't. The format (ETSI IP text, ETSI short data or TMS) is the radio's setting (dmrDataSettings_t smsFormat)
-	return sms_send(dst, group, text, !group, DMR_SMS_FORMAT_DEFAULT);
+	bool group = ui_addr_group(&to->to);
+	return sms_send(to->to.id, group, text, !group, DMR_SMS_FORMAT_DEFAULT);
 }
 
-bool ui_svc_msg_reply(uint16_t i, const char *text)
+static bool dmr_msg_reply(uint16_t i, const char *text)
 {
 	return sms_inbox_get(i, &inbox_message) && sms_send(inbox_message.src, false, text, true, (dmr_sms_format_t)inbox_message.format);
 }
+
+const ui_msg_provider_t ui_msg_dmr = {
+	.net = UI_NET_DMR, .caps = UI_MSG_CAP_STATION, .text_max = UI_MSG_TEXT_MAX, .new_row = TR_NONE,
+	.count = dmr_msg_count, .unread = dmr_msg_unread, .get = dmr_msg_get, .read = dmr_msg_read,
+	.del = dmr_msg_delete, .send = dmr_msg_send, .reply = dmr_msg_reply,
+};
+#endif
 
 static uint32_t check_sent_ms;
 
@@ -120,17 +132,19 @@ void ui_svc_poll(void)
 	seen = d.serial;
 	ui_event_t ev;
 	memset(&ev, 0, sizeof ev);
-	ev.id = d.id;
+	ui_addr_set_dmr(&ev.from, d.id, false);
 	switch (d.kind) {
+#if CONFIG_DMR_SMS
 	case DMR_DATA_EV_SMS_RECEIVED: {
 		ui_msg_t m;
 		ev.kind = UI_EV_MESSAGE;
-		ev.index = 0;	// the newest
-		if (ui_svc_msg_get(0, &m)) {
+		ev.index = 0;	// the newest in the DMR inbox
+		if (dmr_msg_get(0, &m)) {
 			strncpy(ev.text, m.text, sizeof ev.text - 1);
 		}
 		break;
 	}
+#endif
 	case DMR_DATA_EV_SMS_SENT:
 	case DMR_DATA_EV_SMS_FAILED:
 		ev.kind = UI_EV_MESSAGE_SENT;

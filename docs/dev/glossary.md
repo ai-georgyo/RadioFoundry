@@ -142,6 +142,9 @@ Protocol, hardware and firmware terms of the specs and developer docs. Terms the
 | <a id="t-afsk"></a>AFSK | Audio frequency shift keying: data as two audio tones on an FM carrier. APRS at 1200 baud uses it. |
 | <a id="t-dhcp"></a>DHCP | Dynamic Host Configuration Protocol: how a device gets its IP address on a network. |
 | <a id="t-ip"></a>IP | Internet Protocol: the addressing and packet layer of networks. |
+| <a id="t-lich"></a>LICH | Link information channel: a sixth of the LSF in every M17 stream frame, so a station that joins late can rebuild it. [More](../spec/m17.md) |
+| <a id="t-lsf"></a>LSF | Link setup frame: the 30 bytes at the start of an M17 transmission with its destination, source, type, META and CRC. [More](../spec/m17.md) |
+| <a id="t-meta"></a>META | The 14-byte field of the M17 LSF: text, a GNSS position, an extended callsign or, with AES, the nonce. [More](../spec/m17.md) |
 | <a id="t-ncm"></a>NCM (CDC-NCM) | Network control model: the USB class that makes the radio appear as a network adapter. |
 | <a id="t-ppp"></a>PPP | Point-to-point protocol: IP over a serial link. [More](../spec/ppp.md) |
 | <a id="t-tcp"></a>TCP | Transmission Control Protocol: IP connections with ordered, guaranteed delivery. |

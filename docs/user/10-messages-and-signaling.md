@@ -3,7 +3,8 @@
 # Messages, Call Alert and Radio Check
 
 DMR text messages, call alert and radio check work on DMR channels. APRS text messages can also be sent over FM on
-builds with an AFSK transmit path. The [Radio reference](23-radios.md) says which radios have each path verified.
+builds with an AFSK transmit path, and M17 messages on M17 channels ([M17 messages](#m17-messages)). The [Radio
+reference](23-radios.md) says which radios have each path verified.
 None of them needs the codec. DMR sending needs a DMR channel you may transmit on and your DMR ID; APRS sending
 needs a valid callsign in **Settings > My radio**, an amateur APRS frequency and a board with AFSK transmit.
 
@@ -43,7 +44,7 @@ to that callsign.
 <img src="../ux/screens/160x120i5/message_long.png" width="200" alt="A long message: the Full message row, and its whole text">
 <img src="../ux/screens/160x120i5/message_read.png" width="200" alt="">
 
-The radio keeps DMR and APRS messages in memory. They are lost when the radio turns off.
+The radio keeps DMR, APRS and M17 messages in memory. They are lost when the radio turns off.
 
 ## Sending a message
 
@@ -88,6 +89,28 @@ text plus coordinates exceeds 67 characters. The position is part of the message
 The APRS destination is a callsign, not a DMR ID. A new outgoing message replaces one still awaiting an acknowledgment.
 Sending is refused if the callsign or text is invalid or the APRS RF path is unavailable. **Tools > APRS** shows the
 configured frequency and any blocking reason. Received APRS messages appear in Messages; replies go over APRS.
+
+### M17 messages
+
+On a radio that runs M17 with its packet mode ([feature matrix](../feature-matrix.md)), M17 messages (SMS) arrive in
+**Messages** with the others, with the sender's callsign.
+
+1. Open **Messages > New M17 message**, or **Message** in a station's actions (Recent, **Heard**, a caller).
+2. Select **To callsign** and enter the callsign. Pick a preset or **Write...** and press **OK** to send.
+
+- Send from an M17 channel or the VFO in M17: elsewhere the row says **Send from an M17 channel**.
+- The radio waits for a clear channel, then sends. **Sent to ...** means it went out: M17 has no delivery report.
+  **Not sent to ...** means it found no clear channel within 10 s, it was cut short three times, or you left the
+  channel first.
+- M17 messages are never encrypted. A channel set to encrypt (**Priv** on Home) doesn't send them: its message rows
+  are dimmed and say **Privacy on: messages can't be encrypted**. Turn **Privacy** off, or send from another channel.
+- The radio keeps M17 messages sent to you, to everyone, or to the callsign or group the channel calls, not those
+  between two other stations.
+- A reply to an M17 message goes over M17.
+- The radio keeps the last 4 M17 messages, received and sent. A message longer than 143 bytes is cut and ends with
+  "[Cut: too long for this radio]".
+
+More on M17: [M17](24-m17.md).
 
 ## Message formats
 

@@ -9,6 +9,9 @@
 #if CONFIG_DUAL_WATCH
 #include <string.h>
 #include "ui_nav.h"
+#if CONFIG_M17
+#include "ui_m17.h"
+#endif
 #include "ui_svc.h"
 #include "fmt.h"
 #include "font.h"
@@ -178,8 +181,9 @@ static uint8_t shown_mode(const channel_t *c)
 {
 	if (!codeplug_kind_built(c->kind) || c->kind == CODEPLUG_KIND_DMR_TRUNK)
 		return c->mode;
-	// The other kinds a build runs: P25 (trunked too) and NXDN
-	return c->kind == CODEPLUG_KIND_NXDN ? RADIO_MODE_NXDN : RADIO_MODE_P25;
+	// The other kinds a build runs: P25 (trunked too), NXDN and M17
+	return c->kind == CODEPLUG_KIND_NXDN ? RADIO_MODE_NXDN : c->kind == CODEPLUG_KIND_M17 ? RADIO_MODE_M17 :
+		RADIO_MODE_P25;
 }
 
 static void pane_fill(uint8_t i)
@@ -218,7 +222,7 @@ static void pane_fill(uint8_t i)
 	p->mode = shown_mode(&ch);
 	p->am = p->mode == RADIO_MODE_FM && radio_am_channel(&ch);	// as the receiver hears it (Home's mode word)
 	p->rx_hz = ch.rx_hz;
-	if (p->mode == RADIO_MODE_P25 || p->mode == RADIO_MODE_NXDN)
+	if (p->mode == RADIO_MODE_P25 || p->mode == RADIO_MODE_NXDN || p->mode == RADIO_MODE_M17)
 		return;	// no tone or slot: the engine's own squelch (the channel's settings say which)
 	sbuf_t b;
 	sb_init(&b, p->detail, sizeof p->detail);
@@ -233,15 +237,13 @@ static void pane_fill(uint8_t i)
 		if (s->valid && s->target_id) {
 			ui_target_t t;
 			memset(&t, 0, sizeof t);
-			t.id = s->target_id;
-			t.group = !s->target_private;
+			ui_addr_set_dmr(&t.addr, s->target_id, !s->target_private);
 			strcpy(t.name, s->target_name);
 			ui_sb_target(p->target, sizeof p->target, &t);
 		} else if (talk && codeplug_contact(talk, &c)) {
 			ui_target_t t;
 			memset(&t, 0, sizeof t);
-			t.id = c.id;
-			t.group = c.type != CONTACT_PRIVATE;
+			ui_addr_set_dmr(&t.addr, c.id, c.type != CONTACT_PRIVATE);
 			strcpy(t.name, c.name);
 			ui_sb_target(p->target, sizeof p->target, &t);
 		}
@@ -414,6 +416,13 @@ const radio_view_t *ui_dual_view(const radio_view_t *v)
 	mixed = *v;
 	snap_put(d->sel, &mixed);
 	return &mixed;
+}
+
+// Which VFO (0 or 1) the selected channel is when it is one: ui_dual_view's mixed view keeps the tuned one's
+// vfo_index, which the rest of the UI reads as the VFO in use
+uint8_t ui_dual_sel_vfo(void)
+{
+	return (uint8_t)ref[dual()->sel].pos;
 }
 
 // Ask the radio for the watch as ref[] and sel say; false (and a toast saying what to do) when it can't
@@ -829,6 +838,10 @@ static const char *signal_word(const ui_dual_pane_t *p, bool dmr)
 		return TR(DUAL_VALUE_P25_CALL, "P25 call");
 	if (p->mode == RADIO_MODE_NXDN)
 		return TR(DUAL_VALUE_NXDN_CALL, "NXDN call");
+#if CONFIG_M17
+	if (p->mode == RADIO_MODE_M17)
+		return TR(CALL_VALUE_M17_CALL, "M17 call");	// before its callsign is known
+#endif
 	return p->am ? TR(DUAL_VALUE_AM_SIGNAL, "AM signal") : TR(DUAL_VALUE_FM_SIGNAL, "FM signal");
 }
 
@@ -840,7 +853,8 @@ static void caller_text(char *out, size_t len, const ui_dual_pane_t *p, bool dmr
 	sbuf_t b;
 	sb_init(&b, out, len);
 	if (!dmr || (!src && !dst)) {
-		sb_str(&b, signal_word(p, dmr));
+		// an M17 caller's callsign (ui_dual_tick), else what it is: another mode's pane may hold a DMR name left over
+		sb_str(&b, p->mode == RADIO_MODE_M17 && name[0] ? name : signal_word(p, dmr));
 		return;
 	}
 	sb_str(&b, TEXT_ALT_OPEN);
@@ -1129,6 +1143,14 @@ __attribute__((noinline)) bool ui_dual_tick(const radio_view_t *v, uint32_t now)
 			x->dst = v->dmr.call.dst;
 			x->group = v->dmr.call.group;
 			strncpy(x->src_name, v->dmr.call.src_name, sizeof x->src_name - 1);
+#endif
+#if CONFIG_M17
+			if (shown_mode(&v->ch) == RADIO_MODE_M17) {	// the caller's callsign once its LSF is in
+				sbuf_t nb;
+				sb_init(&nb, x->src_name, sizeof x->src_name);
+				if (v->m17.flags & RADIO_M17_LSF)
+					ui_sb_m17(&nb, v->m17.orig);
+			}
 #endif
 		}
 	}

@@ -35,3 +35,21 @@ SPDX-License-Identifier = "MIT"
 path = ["site/static/vendor/tom-select/tom-select.complete.min.js", "site/static/vendor/tom-select/tom-select.default.css"]
 SPDX-FileCopyrightText = "2013-2026 Tom Select contributors"
 SPDX-License-Identifier = "Apache-2.0"
+
+# Codec 2's quantizer tables: the file is ours and MIT; its LSP levels are values from the Codec 2 reference
+# implementation (LGPL 2.1), taken by decision of the RadioFoundry maintainer (2026-11-22), not under a separate grant
+# from the Codec 2 authors; no code was taken (core/codec2/THIRD_PARTY, docs/CLEANROOM.md)
+[[annotations]]
+path = ["core/codec2/c2_tab.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "LSP quantizer level values: the Codec 2 authors"
+SPDX-License-Identifier = "MIT"
+
+# The encoder's tables: the file is ours and MIT; its pitch estimator low-pass taps are values from the Codec 2
+# reference implementation (LGPL 2.1), taken by decision of the RadioFoundry maintainer (2026-11-22), not under a
+# separate grant from the Codec 2 authors; no code was taken (core/codec2/THIRD_PARTY, docs/CLEANROOM.md)
+[[annotations]]
+path = ["core/codec2/c2_enc_tab.c"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Pitch estimator low-pass tap values: the Codec 2 authors"
+SPDX-License-Identifier = "MIT"

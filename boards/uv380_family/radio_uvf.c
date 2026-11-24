@@ -636,7 +636,7 @@ static const stm32_hrc_dmr_board_t dmr_board = {
 	.air_tap = true,
 	// P25 and NXDN checked on air both ways on a radio of the family (hardware-dm1701.md, Air interface): the same
 	// chips and code on every one
-	.air_verified = true,
+	.air_verified = AIR_VERIFY_P25 | AIR_VERIFY_NXDN,
 #endif
 	// rf_to_rx() puts the AT1846S on the RX frequency after every burst and rf_key() back on TX for the next, so the
 	// slots between hear the repeater's outbound on a split channel too

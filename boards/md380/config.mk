@@ -70,3 +70,14 @@ BOARD_NOT_WRITTEN += P25	# receive isn't written (hardware-md380.md 4.11)
 BOARD_NOT_WRITTEN += P25_TRUNK	# needs P25
 BOARD_NOT_WRITTEN += NXDN	# receive isn't written (hardware-md380.md 4.11)
 BOARD_NOT_WRITTEN += NXDN_SCRAMBLER	# needs NXDN
+# M17 runs on the air interface too, and its receive has NXDN's gap: the soft modem needs a receive tap
+# (board.baseband), and the HR_C5000 gives the MCU no discriminator copy to read (docs/spec/air-interface.md 6,
+# hardware-md380.md 4.11). Off until receive is written
+BOARD_NOT_WRITTEN += M17	# receive isn't written: no receive tap for the soft modem (docs/spec/air-interface.md 6)
+BOARD_NOT_WRITTEN += M17_PACKET	# needs M17
+BOARD_NOT_WRITTEN += M17_BERT	# needs M17
+BOARD_NOT_WRITTEN += M17_SIG	# needs M17
+BOARD_NOT_WRITTEN += M17_SCRAMBLER	# needs M17
+BOARD_NOT_WRITTEN += M17_AES	# needs M17
+BOARD_NOT_WRITTEN += HEARD_LIST	# needs M17, its only source so far
+BOARD_NOT_WRITTEN += NET_M17	# needs M17

@@ -13,6 +13,7 @@
 #include "sim/ui_sim.h"
 #include "ui/ui_app.h"
 #include "ui/ui_screens.h"
+#include "ui/ui_svc.h"
 #include "ui/gfx.h"
 #include "ui/i18n.h"
 #include "ui/gfx.h"
@@ -914,6 +915,14 @@ static const flow_t flows[] = {
 	{ "S the group's row as it was", "", "ok 7", "screen=settings shows=Talk_&_listen", 2, false },
 #if CONFIG_DMR && CONFIG_DMR_PRIVACY
 	{ "S Privacy opens", "ok 7", "4", "screen=group shows=Key_type", 1, false },
+#elif CONFIG_M17_SIG
+	// DMR privacy compiled out, M17 signatures built (uiFlowTestPrivacyM17): the group opens on M17's rows alone where
+	// the radio signs M17 calls, and is dimmed as without privacy where none of them shows
+	{ "S Privacy without DMR privacy: M17's rows", "m17 m17caps:sig ok 7", "4",
+	  "screen=group shows=Sign_M17_calls hides=DMR_key", 1, false },
+	{ "S Privacy without DMR privacy: no M17 row", "ok 7", "4", "screen=settings toast=Privacy:_not_in_this_build", 1,
+	  false },
+	{ "S Privacy without DMR privacy: Location keeps key 5", "ok 7", "5", "screen=group", 1, false },
 #else
 	// Privacy compiled out (uiFlowTestNoColor): Settings > Privacy is dimmed and OK says why instead of opening it
 	{ "S Privacy compiled out: its key", "ok 7", "4", "screen=settings toast=Privacy:_not_in_this_build", 1, false },
@@ -1077,6 +1086,8 @@ static const flow_t flows[] = {
 	  "screen=message shows=Newer", 1, false },
 	{ "A new DMR message does not change an open APRS reply", "aprs:message ok 2 ok msg:9991234,Newer wait:9000", "ok",
 	  "sent=1 aprs_to=Q4WAB-9 text=OK", 1, false },
+	{ "A newer APRS message does not change what a DMR banner opens", "msg:9991234,Meet wait:500 aprs:message", "ctx",
+	  "screen=message shows=Meet hides=Hello_APRS", 1, false },
 	{ "A not in this build", "aprs:off", "ok 6 8 2", "toast=APRS:_not aprs_auto=0", 4, false },
 	// The crash log and its report (docs/spec/crash-log.md): Settings > Advanced > Crash log, after the restart
 	{ "C crash log from Advanced", "crash:on", "ok 7 up ok down down down " ADV_BELOW_DIAG "down ok", "screen=crash shows=Fault_3 shows=Crash_Log crash_seen=1",
@@ -1521,6 +1532,457 @@ static const flow_t flows_s[] = {
 	{ "S the side key unlocks", "lockkey", "lockkey", "locked=0", 1, false },
 };
 
+#if CONFIG_M17
+// M17 (docs/ux/m17.md 19.2): every new screen opens (screen=<name>), then Home, calls, Quick settings, the picker, the
+// channel editor, Settings, Recent, messages and dual watch. "m17" makes this a radio that runs M17, "m17caps:" its
+// parts; dlmode:m17 switches the channel on view to M17 for now (the radio's M17 settings), chkind:3,m17 makes it a
+// stored M17 channel. Press counts against the rows as they are
+#define M17	"m17 dlmode:m17 m17call:W1AW "
+// A stored M17 channel set to encrypt (the scrambler, its key on file), on a radio that sends SMS
+#define M17_ENC_SMS	"m17 m17caps:sms,enc m17call:W1AW chkind:3,m17 m17enc:scr16 "
+#define M17_MYRADIO	"ok 7 0 down down "	// Settings > My radio > M17 callsign
+// Dual watch on A, switched to M17 for now with a destination for now (N0CALL), and B an FM channel
+#define M17_DUAL	"m17 dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend ok 3 ok quick 7 "
+// Tools > M17 BER test: next to last, Heard last where it is built
+#if CONFIG_HEARD_LIST
+#define M17_BERT_OPEN	"ok 6 up up ok"
+#else
+#define M17_BERT_OPEN	"ok 6 up ok"
+#endif
+#define M17_PRIVACY	"ok 7 4 down down "	// Settings > Privacy > Sign M17 calls, below the DMR privacy rows
+#if CONFIG_NET_M17
+// M17 reflector. Tools > M17 reflector, above the BER test (which a radio without the "bert" part hides) and
+// the heard list; the entries typed on the keypad: "M17-M17 C", 192.0.2.1, port 17001
+#if CONFIG_HEARD_LIST
+#define M17_REFL_OPEN	"ok 6 up up ok"
+#else
+#define M17_REFL_OPEN	"ok 6 up ok"
+#endif
+#define REFL_NAME	"ok 6 long:1 long:7 1 6 long:1 long:7 0 2 2 2 ok "
+#define REFL_ADDR	"down ok long:1 long:9 long:2 1 1 1 long:0 1 1 1 long:2 1 1 1 long:1 ok "
+#define REFL_TYPED	"m17 m17call:W1AW " M17_REFL_OPEN " " REFL_NAME REFL_ADDR
+#endif
+// 53 characters on the keypad ("ADAD..."): one more than the call text holds
+#define CALL_TEXT_53	"2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2"
+// Six stations heard: with two more the heard list (RADIO_HEARD_MAX) is full
+#define HEARD_SIX	"m17rx:A1A,ALL m17rxend m17rx:A2A,ALL m17rxend m17rx:A3A,ALL m17rxend m17rx:A4A,ALL m17rxend " \
+	"m17rx:A5A,ALL m17rxend m17rx:A6A,ALL m17rxend "
+// The channel editor on a new channel from the current one in M17, on its Mode row
+#define M17_EDIT	M17 "ok 5 ok down down ok "	// Mode: DMR to M17
+static const flow_t flows_m17[] = {
+	// --- New screens ---
+#if CONFIG_NET_M17
+	// M17 reflector. The reflector's page: what to link to typed in, the link's states, refusals (each flow
+	// starts unlinked with nothing remembered)
+	{ "M17 reflector opens", "m17", M17_REFL_OPEN,
+	  "screen=m17-reflector shows=Not_linked shows=Not_set m17net=off", 5, false },
+	{ "M17 reflector: name and module", "m17 " M17_REFL_OPEN, REFL_NAME, "screen=m17-reflector shows=M17-M17_C", 13,
+	  false },
+	{ "M17 reflector: no module", "m17 " M17_REFL_OPEN, "ok 6 long:1 long:7 ok", "screen=callsign m17net=off", 5,
+	  false },
+	{ "M17 reflector: address", "m17 " M17_REFL_OPEN, REFL_ADDR, "screen=m17-reflector shows=192.0.2.1", 18, false },
+	{ "M17 reflector: no address", "m17 " M17_REFL_OPEN, "down ok long:1 long:2 long:7 1 1 1 long:0 ok",
+	  "screen=callsign", 10, false },
+	{ "M17 reflector: loopback refused", "m17 " M17_REFL_OPEN,
+	  "down ok long:1 long:2 long:7 1 1 1 long:0 1 1 1 long:0 1 1 1 long:1 ok", "screen=callsign", 18, false },
+	{ "M17 reflector: port", "m17 " M17_REFL_OPEN, "down down ok back back back back back long:1 long:7 long:0 long:0 "
+	  "long:1 ok", "screen=m17-reflector shows=17001", 15, false },
+	{ "M17 reflector: port 0 refused", "m17 " M17_REFL_OPEN, "down down ok back back back back back long:0 ok",
+	  "screen=callsign", 10, false },
+	{ "M17 reflector: listen only", "m17 " M17_REFL_OPEN, "down down down ok", "shows=On", 4, false },
+	{ "M17 reflector: link", REFL_TYPED, "down down down ok",
+	  "toast=Linking... m17net=connecting m17netsent=CONN shows=Connecting_to_M17-M17_C shows=Unlink", 5, false },
+	{ "M17 reflector: listen-only link", REFL_TYPED "down down ok", "down ok", "m17net=connecting m17netsent=LSTN",
+	  2, false },
+	{ "M17 reflector: linked", REFL_TYPED "down down down ok", "m17net:ackn",
+	  "m17net=linked shows=Linked_to_M17-M17_C shows=Unlink", 0, false },
+	{ "M17 reflector: refused", REFL_TYPED "down down down ok", "m17net:nack",
+	  "m17net=off shows=Refused_by_the_reflector shows=Link", 0, false },
+	{ "M17 reflector: closed by the reflector", REFL_TYPED "down down down ok m17net:ackn", "m17net:disc",
+	  "m17net=wait shows=Closed_by_the_reflector", 0, false },
+	{ "M17 reflector: unlink", REFL_TYPED "down down down ok m17net:ackn", "ok",
+	  "toast=Unlinked m17net=unlinking m17netsent=DISC", 1, false },
+	{ "M17 reflector: unlinked", REFL_TYPED "down down down ok m17net:ackn ok", "m17net:disc",
+	  "m17net=off shows=Not_linked", 0, false },
+	{ "M17 reflector: kept for the next time", REFL_TYPED "down down down ok m17net:ackn ok m17net:disc back",
+	  "ok", "screen=m17-reflector shows=M17-M17_C", 1, false },
+	// No host link (or serial mode): the link waits for it, nothing sent; it links once the host link is up
+	{ "M17 reflector: waiting for the network", REFL_TYPED "m17net:down", "down down down ok",
+	  "m17net=wait m17netsent=none shows=Waiting_for_the_network shows=Unlink", 5, false },
+	{ "M17 reflector: the network back", REFL_TYPED "m17net:down down down down ok", "m17net:up",
+	  "m17net=connecting m17netsent=CONN shows=Connecting_to_M17-M17_C", 0, false },
+	{ "M17 reflector: no callsign", "m17 " M17_REFL_OPEN " " REFL_NAME REFL_ADDR, "down down down ok",
+	  "toast=No_M17_callsign_set m17net=off", 4, false },
+	{ "M17 reflector: nothing typed", "m17 m17call:W1AW " M17_REFL_OPEN, "down down down down ok",
+	  "m17net=off screen=m17-reflector", 5, false },
+#endif
+	{ "M17 call details: none heard", "m17 dlmode:m17", "push:call-details",
+	  "screen=call-details shows=No_M17_call_heard_yet", 0, false },
+	{ "M17 call details opens", M17 "m17rx:N0CALL,ALL m17rxend", "ctx 3", "screen=call-details shows=N0CALL", 2,
+	  false },
+	{ "M17 call details: an older call", M17 "m17rx:N0CALL,ALL m17rxend m17rx:K1ABC,ALL m17rxend", "ok 3 down ctx 3",
+	  "screen=actions toast=Details_kept_for_the_last_call_only", 5, false },
+	{ "M17 callsign entry opens", "m17", M17_MYRADIO "ok", "screen=callsign shows=0/9", 6, false },
+	{ "M17 call text entry opens", "m17", M17_MYRADIO "down ok", "screen=call-text shows=0/52", 7, false },
+#if CONFIG_M17_BERT
+	{ "M17 BER test opens", "m17 m17caps:bert dlmode:m17", M17_BERT_OPEN,
+	  "screen=m17-bert shows=Searching", 5, false },
+	{ "M17 BER test off M17", "m17 m17caps:bert", M17_BERT_OPEN,
+	  "screen=m17-bert shows=M17_channel hides=Searching", 5, false },
+	{ "M17 BER test counts", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN,
+	  "m17bert:98304,12,lock", "shows=Locked shows=BER_0.012%", 0, false },
+	{ "M17 BER test reset", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN " "
+	  "m17bert:98304,12,lock", "ok", "toast=Counts_reset shows=Searching", 1, false },
+	{ "M17 BER test gives the mode back", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN,
+	  "long:back", "screen=home m17bertmode=0", 1, false },
+	// ... and takes it again when the page is back on top (a pop runs no enter): else PTT sends a voice call
+	{ "M17 BER test: the mode again after Quick settings", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN " quick",
+	  "back", "screen=m17-bert m17bertmode=1", 1, false },
+	{ "M17 BER test: the mode again once on M17", "m17 m17caps:bert " M17_BERT_OPEN, "dlmode:m17",
+	  "screen=m17-bert m17bertmode=1 shows=Searching", 0, false },
+	// Counters of many digits: the short form keeps the whole bit count (the line's alternates never cut)
+	{ "M17 BER test: large counts", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN, "m17bert:1234567,1234,lock",
+	  "shows=1234567 shows=1234", 0, false },
+	{ "M17 BER test: the largest counts", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN,
+	  "m17bert:4294967295,4294967,lost", "shows=4294967295 shows=4294967", 0, false },
+	// PTT on the page sends BERT frames: no call of ours in Recent (the picker's rows would offer it)
+	{ "M17 BER test: its frames are no call", "m17 m17caps:bert dlmode:m17 m17call:W1AW " M17_BERT_OPEN
+	  " pttdown wait:500 pttup long:back", "ok 3", "hides=W1AW hides=All_call", 2, false },
+#endif
+// The signature rows' flows count their way down from the DMR privacy rows (uiFlowTestPrivacyM17 has none: its own flows
+// open the group)
+#if CONFIG_M17_SIG && CONFIG_DMR && CONFIG_DMR_PRIVACY
+	{ "M17 signing key opens", "m17 m17caps:sig m17sk m17call:W1AW", M17_PRIVACY "down ok",
+	  "screen=m17-key shows=Fingerprint shows=W1AW", 7, false },
+	{ "M17 signing key: none", "m17 m17caps:sig", M17_PRIVACY "down ok", "screen=m17-key shows=No_signing_key.", 7,
+	  false },
+	{ "M17 signing key: damaged", "m17 m17caps:sig m17sk:bad", M17_PRIVACY "down ok",
+	  "screen=m17-key shows=The_key_doesn't_match", 7, false },
+	{ "M17 station keys opens", "m17 m17caps:sig m17key:N0CALL", M17_PRIVACY "down down ok",
+	  "screen=m17-keys shows=N0CALL", 8, false },
+	{ "M17 station keys: empty", "m17 m17caps:sig", M17_PRIVACY "down down ok",
+	  "screen=m17-keys shows=No_station_keys", 8, false },
+	{ "M17 station key", "m17 m17caps:sig m17key:N0CALL", M17_PRIVACY "down down ok ok",
+	  "screen=m17-key shows=Fingerprint", 9, false },
+	// The list's count is read once per change of the keys: one written since is in it
+	{ "M17 station keys: a key added", "m17 m17caps:sig m17key:N0CALL " M17_PRIVACY "down down ok back",
+	  "m17key:K1ABC ok", "screen=m17-keys shows=N0CALL shows=K1ABC", 1, false },
+#endif
+#if CONFIG_HEARD_LIST
+	{ "M17 heard list", M17 "m17rx:N0CALL,ALL m17rxend", "ok 6 up ok",
+	  "screen=heard shows=N0CALL", 4, false },
+	{ "M17 heard station", M17 "m17rx:N0CALL,ALL m17rxend ok 6 up ok", "ok",
+	  "screen=heard-station shows=N0CALL shows=M17", 1, false },
+	// The page keeps its station while others are heard (the rows move at every reception); # and PTT go to it
+	{ "M17 heard station keeps its station", M17 "m17rx:N0CALL,ALL m17rxend m17rx:VE3ABC,ALL m17rxend ok 6 up ok "
+	  "down ok", "m17rx:K1ABC,ALL m17rxend", "screen=heard-station shows=N0CALL hides=VE3ABC hides=K1ABC", 0, false },
+	{ "M17 heard station: # for its station", M17 "m17rx:N0CALL,ALL m17rxend m17rx:VE3ABC,ALL m17rxend ok 6 up ok "
+	  "down ok m17rx:K1ABC,ALL m17rxend", "ctx", "screen=actions shows=Talk_to_N0CALL", 1, false },
+	// ... with the list full: its row moves and the oldest station goes
+	{ "M17 heard station keeps its station, list full", M17 HEARD_SIX "m17rx:N0CALL,ALL m17rxend "
+	  "m17rx:VE3ABC,ALL m17rxend ok 6 up ok down ok", "m17rx:K1ABC,ALL m17rxend",
+	  "screen=heard-station shows=N0CALL hides=VE3ABC", 0, false },
+	// ... and once it has left the list it says so, and # offers nothing
+	{ "M17 heard station gone", M17 "m17rx:N0CALL,ALL m17rxend ok 6 up ok ok",
+	  HEARD_SIX "m17rx:VE3ABC,ALL m17rxend m17rx:K1ABC,ALL m17rxend ctx",
+	  "screen=heard-station shows=N0CALL shows=No_longer_in_list", 1, false },
+	{ "M17 heard list: none", "m17", "ok 6 up ok",
+	  "screen=heard shows=No_stations_heard_yet", 4, false },
+#endif
+	// --- Home and calls ---
+	{ "M17 channel shows its mode", M17, "",
+	  "mode=m17 screen=home shows=M17 shows=All_call shows=CAN0 shows=3200 hides=No_tone hides=SQ5", 0, false },
+	{ "M17 home: no callsign", "m17 dlmode:m17", "", "shows=No_M17_callsign", 0, false },
+	{ "M17 PTT without a callsign", "m17 dlmode:m17", "pttdown", "tx=0 shows=No_M17_callsign_set shows=OK_set_callsign",
+	  1, false },
+	{ "M17 PTT: callsign not valid", "m17 dlmode:m17 m17call:bad", "pttdown",
+	  "tx=0 shows=M17_callsign_not_valid shows=OK_set_callsign", 1, false },
+	{ "M17 callsign from the refusal", "m17 dlmode:m17 pttdown pttup", "ok 9 long:1 2 9 ok",
+	  "screen=home toast=M17_callsign_saved shows=W1AW", 6, true },
+	// ... only a moment after it: OK is the menu again once the refusal is long gone
+	{ "M17 refusal's OK times out", "m17 dlmode:m17 pttdown pttup wait:6000", "ok", "screen=hub", 1, false },
+	{ "M17 callsign prefilled from the radio name", "m17 m17name", M17_MYRADIO "ok ok",
+	  "toast=M17_callsign_saved", 7, true },
+	{ "M17 callsign: no letter first", "m17", M17_MYRADIO "ok 1 ok",
+	  "screen=callsign toast=Start_with_a_letter_or_digit", 8, false },
+	{ "M17 callsign: tenth character", "m17", M17_MYRADIO "ok 2 3 2 3 2 3 2 3 2 3",
+	  "screen=callsign toast=That's_the_most_it_can_hold", 16, false },
+	{ "M17 callsign cleared", "m17 m17call:W1AW", M17_MYRADIO "ok back back back back ok",
+	  "toast=M17_callsign_cleared", 11, true },
+	{ "M17 home: the caller", M17, "m17rx:N0CALL,ALL", "screen=home shows=N0CALL shows=All_call", 0, false },
+	{ "M17 home: to you", M17, "m17rx:N0CALL,W1AW", "shows=N0CALL shows=To_you", 0, false },
+	{ "M17 home: via a reflector", M17, "m17rx:N0CALL,M17-M17_C,r=M17-M17_C", "shows=via_M17-M17_C", 0, false },
+	{ "M17 home: via a repeater", M17, "m17rx:W1RPT,ALL,o=N0CALL", "shows=N0CALL shows=via_W1RPT", 0, false },
+	{ "M17 home: text", M17, "m17rx:N0CALL,ALL,t=Hello_from_Lisbon", "shows=\"Hello_from_Lisbon\"", 0, false },
+	{ "M17 home: position", M17 "gps:fix", "m17rx:N0CALL,ALL,g=38.72,-9.14", "shows=km", 0, false },
+	{ "M17 home: signed, running", M17, "m17rx:N0CALL,ALL,s", "shows=Signed", 0, false },
+	{ "M17 encrypted, no key", M17, "m17rx:N0CALL,ALL,e", "shows=Encrypted:_not_played", 0, false },
+	{ "M17 scrambled, no key", M17, "m17rx:N0CALL,ALL,x", "shows=Scrambled:_not_played", 0, false },
+	{ "M17 privacy played", M17 "m17enc:scr16", "m17rx:N0CALL,ALL,p", "shows=Priv hides=not_played", 0, false },
+	{ "M17 other CAN", M17, "m17rx:N0CALL,ALL,can=3", "shows=Other_CAN:_not_played shows=CAN3", 0, false },
+	{ "M17 before the LSF", M17, "m17rx:N0CALL,ALL,l", "shows=M17_call shows=late", 0, false },
+	{ "M17 data stream", M17, "m17rx:N0CALL,ALL,d", "shows=Data_only:_no_voice", 0, false },
+	{ "M17 last call on Home", M17 "m17rx:N0CALL,ALL", "m17rxend", "screen=home shows=N0CALL", 0, false },
+	{ "M17 TX screen", M17, "pttdown", "tx=1 shows=TALKING shows=From_W1AW shows=CAN0", 1, false },
+	{ "M17 PTT: encryption not built", "m17 m17call:W1AW chkind:3,m17 m17enc:aes128", "pttdown",
+	  "tx=0 shows=Encrypt shows=Turn_privacy_off", 1, false },
+#if CONFIG_M17_SIG
+	{ "M17 signature OK after the call", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s", "m17rxend:ok",
+	  "banner=none", 0, false },
+	{ "M17 signature failed", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s", "m17rxend:bad",
+	  "banner=Signature_check_failed", 0, false },
+	{ "M17 signature failed: # details", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s m17rxend:bad",
+	  "ctx", "screen=call-details shows=Signature_check_failed", 1, false },
+	{ "M17 signer differs", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s", "m17rxend:by=W1AW",
+	  "banner=Signed_by_another_station", 0, false },
+	{ "M17 signature: no key", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s m17rxend:nokey", "ctx 3",
+	  "banner=none screen=call-details shows=Signed:_no_key_to_check", 2, false },
+	{ "M17 signature: joined late", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s m17rxend:late",
+	  "ctx 3", "screen=call-details shows=Not_checked:_joined_late", 2, false },
+	{ "M17 call details: signed", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s m17rxend:ok", "ctx 3",
+	  "screen=call-details shows=From:_N0CALL shows=Signature_OK", 2, false },
+	{ "M17 unsigned, key on file", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17key:N0CALL", "m17rx:N0CALL,ALL",
+	  "shows=Not_signed", 0, false },
+	{ "M17 unsigned, no key", "m17 m17caps:sig dlmode:m17 m17call:W1AW", "m17rx:N0CALL,ALL",
+	  "hides=Not_signed hides=Signed", 0, false },
+	{ "M17 TX: signing tail", "m17 m17caps:sig m17sk m17sign dlmode:m17 m17call:W1AW", "pttdown pttup",
+	  "shows=SIGNING", 1, false },
+	{ "M17 PTT: signing key damaged", "m17 m17caps:sig m17sk:bad m17sign dlmode:m17 m17call:W1AW", "pttdown",
+	  "tx=0 shows=Signing_key_damaged", 1, false },
+	{ "M17 PTT: signing on, no key", "m17 m17caps:sig m17sign dlmode:m17 m17call:W1AW", "pttdown",
+	  "tx=0 shows=Signing_on,_no_key", 1, false },
+#endif
+#if CONFIG_M17_SCRAMBLER || CONFIG_M17_AES
+	{ "M17 PTT: privacy on, no key", "m17 m17caps:enc m17call:W1AW chkind:3,m17 m17enc:aes128 m17nokey", "pttdown",
+	  "tx=0 shows=Privacy_on,_no_key shows=Turn_privacy_off:_*_6", 1, false },
+	{ "M17 quick privacy without a key", "m17 m17caps:enc dlmode:m17", "quick 6",
+	  "toast=No_key:_set_one_in_the_editor", 2, false },
+	{ "M17 quick privacy off on a stored channel", "m17 m17caps:enc m17call:W1AW chkind:3,m17 m17enc:scr16", "quick 6",
+	  "toast=Privacy_off writes=1", 2, true },
+#endif
+	// --- Quick settings ---
+	{ "M17 quick tiles", "m17 dlmode:m17", "quick", "screen=quick shows=CAN shows=3200 shows=Rate", 1, false },
+	// On a channel switched to M17 a change for now (the radio's settings alone); Back on Home, or another channel,
+	// puts back where they start from (Talk & listen's CAN and voice, the CAN's squelch, All call)
+	{ "M17 quick CAN", "m17 dlmode:m17", "quick 3 3 ok", "toast=CAN_3_for_now temporary=1 m17set=0,0,0,0 "
+	  "m17ram=3,3,0,0,ALL", 4, false },
+	{ "M17 quick CAN undone", "m17 dlmode:m17 quick 3 3 ok back", "back",
+	  "toast=Changes_undone temporary=0 m17set=0,0,0,0 m17ram=0,0,0,0,ALL", 1, false },
+	{ "M17 quick rate undone", "m17 dlmode:m17 quick 2 back", "back", "toast=Changes_undone m17ram=0,0,0,0,ALL", 1,
+	  false },
+	{ "M17 changes end with the channel", "m17 dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend ok 3 ok quick 3 3 ok "
+	  "quick 5 back", "down up dlmode:m17", "talk=ALL shows=CAN0 hides=DMon m17ram=0,0,0,0,ALL", 2, false },
+	{ "M17 talk to on a channel undone", M17 "m17rx:N0CALL,ALL m17rxend ok 3 ok", "back",
+	  "toast=Changes_undone temporary=0 m17ram=0,0,0,0,ALL", 1, false },
+	// In the VFO the CAN and rate are its own (Talk & listen's); its destination is for now
+	{ "M17 VFO quick CAN is its own", "m17 ok 4 up ok dlmode:m17", "quick 3 3 ok", "m17set=3,0,0,0 m17ram=3,3,0,0,ALL",
+	  4, false },
+	{ "M17 VFO destination undone", "m17 m17call:W1AW ok 4 up ok dlmode:m17 m17rx:N0CALL,ALL m17rxend ok 3 ok",
+	  "back", "toast=Changes_undone talk=ALL m17ram=0,0,0,0,ALL", 1, false },
+	{ "M17 VFO destination ends with the VFO", "m17 m17call:W1AW ok 4 up ok dlmode:m17 m17rx:N0CALL,ALL m17rxend "
+	  "ok 3 ok", "ok 4 ok", "vfo=0 m17ram=0,0,0,0,ALL", 3, false },
+	{ "M17 quick rate", "m17 dlmode:m17", "quick 2", "toast=Rate_1600_for_now", 2, false },
+	{ "M17 quick digital monitor", "m17 dlmode:m17", "quick 5 back", "toast=Digital_monitor_on shows=DMon", 3, false },
+	{ "M17 quick privacy not built", "m17 dlmode:m17", "quick 6", "toast=Encryption:_not_in_this_build", 2, false },
+#if CONFIG_NXDN
+	{ "S VFO mode: NXDN to M17", "nxdn m17 ok 4 up ok quick 4 back quick 4 back", "quick 4", "toast=VFO:_M17 mode=m17",
+	  2, false },
+	{ "S VFO mode: M17 back to FM", "nxdn m17 ok 4 up ok quick 4 back quick 4 back quick 4 back", "quick 4",
+	  "toast=VFO:_FM mode=fm", 2, false },
+#endif
+	{ "M17 quick CAN on a stored channel", "m17 chkind:3,m17", "quick 3", "toast=Set_it_in_the_channel_editor", 2,
+	  false },
+	// --- Recent and actions ---
+	{ "M17 in Recent", M17 "m17rx:N0CALL,ALL m17rxend", "ok 3", "screen=recent shows=N0CALL shows=All_call", 2,
+	  false },
+	{ "M17 Recent: talk to", M17 "m17rx:N0CALL,ALL m17rxend", "ok 3 ok",
+	  "talk=N0CALL temporary=1 toast=Talking_to_N0CALL", 3, false },
+	{ "M17 Recent: actions", M17 "m17rx:N0CALL,ALL m17rxend", "ok 3 ctx",
+	  "screen=actions shows=Talk_to_N0CALL shows=Call_details", 3, false },
+	{ "M17 save as contact dimmed", M17 "m17rx:N0CALL,ALL m17rxend", "ok 3 ctx 5",
+	  "toast=Contacts:_DMR_IDs_only", 4, false },
+	{ "M17 talk back to the last caller", M17 "m17rx:N0CALL,ALL m17rxend", "ctx 1", "talk=N0CALL temporary=1", 2,
+	  false },
+	{ "M17 talk to on a stored channel: hold OK", "m17 chkind:3,m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend",
+	  "ok 3 ok", "toast=Hold_OK_to_set_it", 3, false },
+	{ "M17 talk to on a stored channel: held", "m17 chkind:3,m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend",
+	  "ok 3 long:ok", "talk=N0CALL toast=Default_now:_N0CALL writes=1", 3, true },
+#if CONFIG_M17_SIG
+	{ "M17 Recent: failed signature row", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s m17rxend:bad",
+	  "ok 3", "shows=Sig_failed", 2, false },
+#endif
+#if CONFIG_M17_SIG && CONFIG_M17_PACKET
+	// A message from the same station after its call: Messages has it; the call's row keeps its verdict
+	{ "M17 Recent: a message keeps the failed row", "m17 m17caps:sig,sms dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s "
+	  "m17rxend:bad m17pkt:N0CALL,5 wait:2000", "ok 3", "shows=Sig_failed", 2, false },
+#endif
+#if CONFIG_M17_PACKET
+	// --- Messages ---
+	{ "M17 message banner", "m17 m17caps:sms dlmode:m17 m17call:W1AW", "m17msg:N0CALL,Meet_at_the_lot",
+	  "banner=Message_from_N0CALL", 0, false },
+	{ "M17 message opens from the banner", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL,Hi", "ctx",
+	  "screen=message shows=From_N0CALL", 1, false },
+	{ "M17 message reply", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL,Hi ctx", "ok",
+	  "sent=1 toast=Sending_to_N0CALL text=OK", 1, false },
+	// (the replies dimmed, the focus starts on Call: up to the reply)
+	{ "M17 message reply off M17", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL,Hi dlmode:dmr ctx", "up ok",
+	  "focus=Reply_\"On_my_way\" sent=0 toast=Send_from_an_M17_channel", 2, false },
+	{ "M17 message sent", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL,Hi ctx ok", "m17sent:ok",
+	  "banner=Sent_to_N0CALL", 0, false },
+	{ "M17 message not sent", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL,Hi ctx ok", "m17sent:busy",
+	  "banner=Not_sent_to_N0CALL shows=Channel_busy", 0, false },
+	{ "M17 canned reply to the last caller", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend",
+	  "ctx 2 down ok", "sent=1 toast=Sending_to_N0CALL", 4, false },
+	{ "M17 new message", "m17 m17caps:sms dlmode:m17 m17call:W1AW", "ok 2 up ok", "screen=compose shows=To_callsign", 4,
+	  false },
+	{ "M17 compose: callsign", "m17 m17caps:sms dlmode:m17 m17call:W1AW ok 2 up ok", "ok", "screen=callsign", 1, false },
+	{ "M17 compose: typed and sent", "m17 m17caps:sms dlmode:m17 m17call:W1AW ok 2 up ok ok 6 6 long:0 2 2 2 wait:1100 2 5 5 5 wait:1100 5 5 5 ok",
+	  "down ok", "sent=1 toast=Sending_to_N0CALL", 2, false },
+	{ "Messages mixes DMR and M17, newest first",
+	  "m17 m17caps:sms dlmode:m17 m17call:W1AW msg:9991234,Ol\xe1_DMR wait:9000 m17msg:N0CALL,Ol\xc3\xa1_M17 wait:9000",
+	  "ok 2", "screen=messages focus=N0CALL shows=Ol\xe1_M17 shows=Ol\xe1_DMR", 2, false },
+	// A channel set to encrypt sends no message (packet mode has no encryption, and the radio never sends it in the
+	// clear): every way to one says so up front, never "Couldn't send: try again"
+	{ "M17 new message on an encrypting channel", M17_ENC_SMS, "ok 2 up ok",
+	  "screen=messages sent=0 toast=Privacy_on", 4, false },
+	{ "M17 reply on an encrypting channel", M17_ENC_SMS "m17msg:N0CALL,Hi ctx", "up ok",
+	  "focus=Reply_\"On_my_way\" sent=0 toast=Privacy_on", 2, false },
+	{ "M17 message action on an encrypting channel", M17_ENC_SMS "m17rx:N0CALL,ALL m17rxend", "ctx 2",
+	  "screen=actions sent=0 toast=Privacy_on", 2, false },
+	// ... and one written before the channel was set to encrypt (a codeplug write): the reason, not "try again"
+	{ "M17 message written, then privacy on", "m17 m17caps:sms,enc m17call:W1AW chkind:3,m17 ok 2 up ok ok 6 6 long:0 "
+	  "2 2 2 wait:1100 2 5 5 5 wait:1100 5 5 5 ok m17enc:scr16", "down ok", "sent=0 toast=Privacy_on", 2, false },
+#endif
+};
+
+// DM-1701 key map: the talk target picker on long #, two lines of the last call
+static const flow_t flows_m17_k[] = {
+	{ "M17 picker", M17 "m17rx:N0CALL,ALL m17rxend", "long:ctx",
+	  "screen=picker shows=All_call shows=N0CALL shows=Type_a_callsign...", 1, false },
+	{ "M17 picker: talk to a heard station", M17 "m17rx:N0CALL,ALL m17rxend", "long:ctx down ok",
+	  "screen=home talk=N0CALL temporary=1", 3, false },
+	{ "M17 picker: typed and kept", M17, "long:ctx down ok 9 long:1 2 9 ok", "talk=W1AW", 8, false },
+	{ "M17 destination: ALL refused", M17, "long:ctx down ok 2 5 5 5 wait:1100 5 5 5 ok",
+	  "screen=callsign toast=For_everyone,_pick_All_call", 11, false },
+	// Back on Home undoes the destination picked for now: the channel back to its mode, the settings to All call
+	{ "M17 changes undone", M17 "m17rx:N0CALL,ALL m17rxend long:ctx down ok", "back",
+	  "temporary=0 m17ram=0,0,0,0,ALL", 1, false },
+	{ "M17 VFO picker destination undone", "m17 m17call:W1AW ok 4 up ok dlmode:m17 m17rx:N0CALL,ALL m17rxend "
+	  "long:ctx down ok", "back", "talk=ALL temporary=0", 1, false },
+#if CONFIG_NET_M17
+	// M17 reflector. Linked: the reflector's services as destinations
+	{ "M17 picker: the reflector's rows", M17 "m17net:link", "long:ctx",
+	  "screen=picker shows=ECHO shows=INFO shows=All_call", 1, false },
+	{ "M17 picker: talk to ECHO", M17 "m17net:link", "long:ctx down ok", "screen=home talk=ECHO", 3, false },
+	// Home's place line where it has one (the zone line)
+	{ "M17 reflector: Home's place line", "m17 dlmode:m17 m17call:W1AW m17net:link", "",
+	  "screen=home shows=Linked_M17-M17_C m17net=linked", 0, false },
+	{ "M17 reflector: not on Home off M17", "m17 m17call:W1AW m17net:link", "", "screen=home hides=Linked", 0, false },
+	{ "M17 reflector: Home unlinked", "m17 dlmode:m17 m17call:W1AW", "", "screen=home hides=Linked", 0, false },
+	{ "M17 picker: no reflector rows unlinked", M17, "long:ctx", "screen=picker hides=ECHO hides=INFO", 1, false },
+#endif
+#if CONFIG_M17_BERT
+	// The BER test takes its mode again when the picker over it closes
+	{ "M17 BER test: the mode again after the picker", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN " long:ctx",
+	  "back", "screen=m17-bert m17bertmode=1", 1, false },
+#endif
+#if CONFIG_P25
+	{ "P25 picker says DMR and M17", "p25 dlmode:p25 m17", "long:ctx", "toast=Talk_target:_DMR_and_M17_only", 1,
+	  false },
+#endif
+	{ "M17 last call: two lines", M17 "m17rx:N0CALL,W1AW", "m17rxend", "shows=N0CALL shows=To_you", 0, false },
+#if CONFIG_M17_SIG
+	{ "M17 signature OK on Home", "m17 m17caps:sig dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s", "m17rxend:ok",
+	  "shows=Sig_OK banner=none", 0, false },
+#endif
+#if CONFIG_M17_PACKET
+	{ "M17 message cut", "m17 m17caps:sms dlmode:m17 m17call:W1AW m17msg:N0CALL," LONG_TEXT "_and_more_words_past_"
+	  "the_end_of_what_the_radio_keeps_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ctx",
+	  "ok down down down down down down down down down down down down", "screen=message-read shows=[Cut:", 13, false },
+#endif
+	// --- The channel editor ---
+#if CONFIG_NXDN
+	{ "E Mode: NXDN to M17", "nxdn m17 ok 5 ok down down", "ok ok",
+	  "focus=Mode shows=M17 shows=CAN hides=Color_code hides=TX_contact", 2, false },
+#endif
+	{ "M17 CAN typed", M17_EDIT "down", "ok 1 2 ok", "focus=CAN shows=12", 4, false },
+	{ "M17 CAN Any", M17_EDIT "down", "ok down ok", "focus=CAN shows=Any/0", 3, false },
+	{ "M17 rate 1600", M17_EDIT "down down", "ok", "focus=Rate shows=1600", 1, false },
+	{ "M17 destination picked", M17_EDIT "m17rx:N0CALL,ALL m17rxend down down down down down down down",
+	  "ok down ok", "focus=Destination shows=N0CALL", 3, false },
+	{ "M17 destination typed", M17_EDIT "down down down down down down down", "ok down ok 9 long:1 2 9 ok",
+	  "focus=Destination shows=W1AW", 8, false },
+	{ "M17 channel saved", M17_EDIT "down", "ok 1 2 ok long:ok", "writes=1", 5, true },
+	{ "stored M17 channel as FM: Save asks", "m17 chkind:3,m17 ok 5 ok down down ok", "long:ok",
+	  "screen=discard shows=Save_as_FM?", 1, false },
+#if CONFIG_M17_SCRAMBLER || CONFIG_M17_AES
+	{ "M17 encryption: no key", "m17 m17caps:enc dlmode:m17 m17call:W1AW ok 5 ok down down ok down down down down down down down down", "ok", "toast=No_key:_set_one_in_the_editor", 1, false },
+#endif
+	// --- Settings ---
+	{ "Find finds the M17 settings", "m17 m17caps:sig,bert", "6 1 7", "screen=find shows=M17_CAN shows=M17_voice", 3, false },
+	{ "M17 voice setting", "m17", "ok 7 3 up up up up up ok", "focus=M17_voice m17set=0,1,0,0", 9, false },
+	{ "M17 CAN setting", "m17", "ok 7 3 up up up up up up ok 5 ok", "focus=M17_CAN m17set=5,0,0,0", 12, false },
+	{ "Send in M17 calls", "m17", "ok 7 5 down down down down ok", "focus=Send_in_M17_calls m17set=0,0,0,1", 8, true },
+	{ "M17 call text", "m17", M17_MYRADIO "down ok 4 4 3 3 ok", "toast=Call_text_saved m17text=HE", 12, true },
+	// ... and the entry opens on it again
+	{ "M17 call text shown again", "m17 " M17_MYRADIO "down ok 4 4 3 3 ok", "ok",
+	  "screen=call-text shows=HE shows=2/52", 1, false },
+	// 52 characters (M17_TEXT_MAX), a 53rd refused; all 52 kept
+	{ "M17 call text: the most it holds", "m17", M17_MYRADIO "down ok " CALL_TEXT_53 " ok",
+	  "toast=Call_text_saved m17text=ADADADADADADADADADADADADADADADADADADADADADADADADADAD", 61, true },
+	// A text another tool stored in UTF-8 (m17-codeplug.md 3): the value as the display's text, and OK on the entry
+	// with nothing typed keeps it as stored (the entry holds its ASCII part only)
+	{ "M17 call text in UTF-8", "m17 m17text:caf\xc3\xa9", M17_MYRADIO "down", "focus=M17_call_text shows=caf\xe9",
+	  6, false },
+	{ "M17 call text in UTF-8 kept", "m17 m17text:caf\xc3\xa9", M17_MYRADIO "down ok ok",
+	  "toast=Call_text_saved m17text=caf\xc3\xa9", 8, false },
+	// ... its control bytes never read as text alternates' marks
+	{ "M17 call text: control bytes", "m17 m17text:a\x1d" "b\x1e" "c\x1f", M17_MYRADIO "down",
+	  "shows=abc", 6, false },
+#if CONFIG_M17_SIG && CONFIG_DMR && CONFIG_DMR_PRIVACY
+	{ "Sign M17 calls without a key", "m17 m17caps:sig", M17_PRIVACY "ok",
+	  "toast=No_signing_key:_add_one_in_the_editor", 6, false },
+	{ "Privacy rows say DMR with M17 signing", "m17 m17caps:sig", "ok 7 4", "shows=DMR_key_type", 3, false },
+#endif
+	// --- Dual watch ---
+	{ "Dual watch: A on M17", "m17 chkind:3,m17 m17call:W1AW quick 7", "m17rx:N0CALL,ALL", "shows=N0CALL shows=RX",
+	  0, false },
+	{ "Dual watch: M17 before the LSF", "m17 chkind:3,m17 m17call:W1AW quick 7", "m17rx:N0CALL,ALL,l",
+	  "shows=M17_call", 0, false },
+	// The receiver looking at the other channel is no leaving of this one: a destination for now on A lasts
+	{ "Dual watch: an M17 destination for now lasts", "m17 dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL m17rxend ok 3 ok "
+	  "quick 7", "tune:b tune:a", "dual=1 mode=m17 talk=N0CALL m17ram=0,0,0,0,N0CALL", 0, false },
+	// The settings are one copy, with the channel the changes for now were made on: B switched to M17 for now ends A's
+	// (they would follow B), and so does A selected again while on them. B's own last where the watch ends on B; B off
+	// them (FM) keeps A's, as A is still watched
+	{ "Dual watch: B to M17 ends A's M17 changes", M17_DUAL "ctx 1", "dlmode:m17 wait:1000 quick 7",
+	  "dual=0 mode=m17 toast=Dual_watch_off:_on_B m17ram=0,0,0,0,ALL", 2, false },
+	{ "Dual watch: A selected ends B's M17 changes", M17_DUAL "ctx 1 dlmode:m17 wait:1000 quick 3 3 ok back", "ctx 1",
+	  "dual=1 sel=A mode=m17 m17ram=0,0,0,0,ALL", 2, false },
+	{ "Dual watch: B's M17 changes last", M17_DUAL "ctx 1 dlmode:m17 wait:1000", "quick 3 3 ok back quick 7",
+	  "dual=0 mode=m17 m17ram=3,3,0,0,ALL", 7, false },
+	{ "Dual watch: A's M17 changes last over FM on B", M17_DUAL, "ctx 1 ctx 1 quick 7",
+	  "dual=0 mode=m17 toast=Dual_watch_off:_on_A m17ram=0,0,0,0,N0CALL", 6, false },
+	// ... and over a setting changed on B, which stops the watch for a moment (the radio retunes to B for it)
+	{ "Dual watch: A's M17 changes last over a setting on B", M17_DUAL "ctx 1", "quick 8 back wait:1000 ctx 1 quick 7",
+	  "dual=0 mode=m17 toast=Dual_watch_off:_on_A m17ram=0,0,0,0,N0CALL", 9, false },
+	// The VFO on both: B the second VFO, switched to M17, is another place than A's, the first
+	{ "Dual watch: VFO B to M17 ends VFO A's M17 changes", "m17 m17call:W1AW ok 4 up ok dlmode:m17 m17rx:N0CALL,ALL "
+	  "m17rxend ok 3 ok quick 7 ctx 1 vfokey", "dlmode:m17 wait:1000 quick 7",
+	  "dual=0 vfo=1 bvfo=1 mode=m17 m17ram=0,0,0,0,ALL", 2, false },
+	// ... and A selected again while the receiver is on B: still A's (the view of A keeps the tuned VFO's index)
+	{ "Dual watch: VFO A's M17 changes last with the receiver on VFO B", "m17 m17call:W1AW ok 4 up ok dlmode:m17 "
+	  "m17rx:N0CALL,ALL m17rxend ok 3 ok quick 7 ctx 1 vfokey", "ctx 1 tune:b wait:500 quick 7",
+	  "dual=0 vfo=1 sel=A mode=m17 m17ram=0,0,0,0,N0CALL", 4, false },
+#if CONFIG_P25
+	// another mode's pane says what it hears, not a DMR caller's name the view still holds
+	{ "Dual watch: a P25 call after a DMR one", "m17 p25 chkind:3,p25 up down quick 7 tune:a call:9999999,91,g,Joe_Smith",
+	  "fmrx", "shows=P25_call hides=Joe_Smith", 0, false },
+#endif
+};
+
+#endif
+
 static void run_flow(const flow_t *f, const sim_geom_t *g, sim_map_t map, const char *mapname)
 {
 	char err[300];
@@ -1584,11 +2046,13 @@ static int n_nodes;
 
 #define WORLD	"msg:9991234,Meet_at_the_north_lot call:9995678,3100,g wait:11000 "
 
+static const char *crawl_setup = "";	// the radio the crawl runs on: a token list ahead of WORLD
+
 static bool replay(const sim_geom_t *g, sim_map_t map, const char *path, ui_app_status_t *st)
 {
-	char err[300], buf[200];
+	char err[300], buf[300];
 	sim_reset(g, map);
-	snprintf(buf, sizeof buf, WORLD "%s", path);
+	snprintf(buf, sizeof buf, "%s " WORLD "%s", crawl_setup, path);
 	if (!sim_run(buf, err, sizeof err))
 		return false;
 	ui_app_status(st);
@@ -1883,6 +2347,49 @@ static void t3_other_checks(void)
 // from ours, beside the longest call there is, kept whole. No position of ours, or none of the station's: the row is
 // the call and its age, as before.
 // EP: our position none / fixed x the station's none / valid (QJ4XYZ has none)
+#if CONFIG_M17 && CONFIG_LANG_ES
+// A signed M17 call coming in, in Spanish, whose words are longer than English's: the signature's line is the whole
+// long form where it fits, else the short form, never the long one cut (the call screen keeps the translation with
+// its alternates, not a copy cut to a buffer)
+static void m17_sig_lang_checks(void)
+{
+	static const char *const lng = "Firmada: se comprueba al final";	// es.po CALL_VALUE_SIG_PENDING
+	char err[300];
+	for (int g = 0; g < sim_geom_count; g++) {
+		sim_reset(&sim_geoms[g], SIM_MAP_K);
+		if (!sim_run("ok 7 2 up ok down ok long:back m17 dlmode:m17 m17call:W1AW m17rx:N0CALL,ALL,s "
+			     "expect:shows=N0CALL", err, sizeof err)) {
+			printf("FAIL M17 signature line in Spanish [%s]: %s\n", sim_geoms[g].name, err);
+			fails++;
+			continue;
+		}
+		bool fits = gfx_text_width(ui_layout.small, lng) <= gfx_width();
+		if (!sim_run(fits ? "expect:shows=Firmada:_se_comprueba_al_final" :
+			     "expect:shows=Firmada expect:hides=Firmada:", err, sizeof err)) {
+			printf("FAIL M17 signature line in Spanish [%s]: %s\n", sim_geoms[g].name, err);
+			fails++;
+		}
+	}
+}
+#endif
+
+#if CONFIG_M17
+// At boot the UI hands the radio Talk & listen's M17 CAN and voice back to back (ui_app_init), each a change of one
+// field, before the radio task's turn: the second starts from the first (radio_m17_settings_next), not from the
+// settings still in force, so the CAN isn't lost
+static void m17_settings_boot_checks(void)
+{
+	char err[300];
+	sim_reset(sim_geom_find("160x120i5"), SIM_MAP_K);
+	ui_svc_setting_set(UI_SET_M17_CAN, 5);
+	ui_svc_setting_set(UI_SET_M17_VOICE, 1);
+	if (!sim_run("expect:m17ram=0,0,0,0,ALL reboot expect:m17ram=5,5,1,0,ALL", err, sizeof err)) {
+		printf("FAIL M17 settings at boot: %s\n", err);
+		fails++;
+	}
+}
+#endif
+
 static void heard_checks(void)
 {
 	static const struct { const char *name, *setup; bool range; } cases[] = {
@@ -2365,6 +2872,15 @@ int main(void)
 		run_flow(&flows_f[i], gf, SIM_MAP_F, "F few keys");
 	for (size_t i = 0; i < sizeof flows_s / sizeof flows_s[0]; i++)
 		run_flow(&flows_s[i], sim_geom_find("128x64"), SIM_MAP_S, "S side keys");
+#if CONFIG_M17
+	for (size_t r = 0; r < sizeof runs / sizeof runs[0]; r++) {
+		const sim_geom_t *g = sim_geom_find(runs[r].geom);
+		for (size_t i = 0; i < sizeof flows_m17 / sizeof flows_m17[0]; i++)
+			run_flow(&flows_m17[i], g, runs[r].map, runs[r].name);
+	}
+	for (size_t i = 0; i < sizeof flows_m17_k / sizeof flows_m17_k[0]; i++)
+		run_flow(&flows_m17_k[i], sim_geom_find("160x120i5"), SIM_MAP_K, "K DM-1701");
+#endif
 	printf("# %d flows run\n", flows_run);
 	about_checks();
 	call_screen_checks();
@@ -2372,6 +2888,12 @@ int main(void)
 	t3_other_checks();
 #endif
 	heard_checks();
+#if CONFIG_M17
+	m17_settings_boot_checks();
+#endif
+#if CONFIG_M17 && CONFIG_LANG_ES
+	m17_sig_lang_checks();
+#endif
 	station_checks();
 	vfo_split_dmr_checks();
 	no_battery_checks();
@@ -2388,6 +2910,16 @@ int main(void)
 	crawl(sim_geom_find("128x64"), SIM_MAP_M, "M GD-77");
 	crawl(gf, SIM_MAP_F, "F few keys");
 	crawl(sim_geom_find("128x64"), SIM_MAP_P, "P MD-9600 panel");
+#if CONFIG_M17
+	// Again on an M17 channel of a radio that runs all of M17 (docs/ux/m17.md 19.2): its screens and states
+	crawl_setup = "m17 m17caps:sig,enc,sms,bert m17call:W1AW m17sk m17key:N0CALL dlmode:m17 m17rx:N0CALL,ALL,s "
+		"m17rxend:ok m17msg:N0CALL,Hi";
+	crawl(sim_geom_find("160x120i5"), SIM_MAP_K, "K DM-1701 M17");
+	crawl(sim_geom_find("128x64"), SIM_MAP_M, "M GD-77 M17");
+	crawl(gf, SIM_MAP_F, "F few keys M17");
+	crawl(sim_geom_find("128x64"), SIM_MAP_P, "P MD-9600 panel M17");
+	crawl_setup = "";
+#endif
 
 	printf(fails ? "# FAILED uiFlowTest: %d\n" : "# PASSED uiFlowTest\n", fails);
 	return fails != 0;

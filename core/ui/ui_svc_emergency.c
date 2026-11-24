@@ -57,7 +57,7 @@ void ui_svc_emergency_poll(void)
 	ui_event_t ev;
 	memset(&ev, 0, sizeof ev);
 	ev.kind = UI_EV_EMERGENCY;
-	ev.id = a.src;
+	ui_addr_set_dmr(&ev.from, a.src, false);
 	ev.ok = a.kind == DMR_EMERGENCY_ALERT_ALARM;	// an alarm (else a voice call)
 	contact_t c;
 	if (codeplug_contact_find(a.src, false, &c)) {

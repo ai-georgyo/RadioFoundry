@@ -3,9 +3,12 @@
 # DM-32UV feature defaults (config/features.mk lists them all). 880 KB of code space before the codec slot, so RAM is
 # the limit: 211,456 B below the codec's RAM window (boards/dm32/memory.ld, docs/spec/hardware-dm32.md 17.1), the
 # RTOS heap's 33 KB among them (freertos_board.h). Every feature the radio has hardware and glue for is on, and the
-# image (P25, P25 trunking and NXDN among them) keeps about 920 B of it free: a feature that needs more RAM cuts some first, or shrinks the heap if
-# tasks.heap_min_free shows room (tests/hil/test_task_stacks.py). The codec's encoder and decoder share one state block
-# (platform/hrc7000/vocoder.c), which P25 borrows while it runs
+# image (P25, P25 trunking, NXDN and M17 with every part among them, and its reflector client) keeps 6,072 B of it
+# linked free, more than the 1.5 KB every default image keeps (docs/build-config.md, board defaults; 7,296 B without
+# the reflector client, 10,280 B without M17, measured 2026-11-23). Linked free is what the linker leaves of the RAM
+# region; the heap's own headroom at run time is tasks.heap_min_free. A feature that needs more RAM cuts some first,
+# or shrinks the heap if tasks.heap_min_free shows room (tests/hil/test_task_stacks.py). The codec's encoder and
+# decoder share one state block (platform/hrc7000/vocoder.c), which P25 borrows while it runs
 # The host link runs on the programming cable's UART0; USB, PPP and TCP_CONNS follow the platform
 # (platform/hrc7000/config.mk)
 # The 240x320 panel at full resolution in 16 colors (display_dm32.c, board.mk). The 16x32 font is the large class's
@@ -31,9 +34,16 @@ MCU_DEFS += -DGFX_FB_BYTES=$(DM32_FB_BYTES)u
 # VOX reads the microphone level through hal_power_t.mic_level, which this board doesn't have yet
 CONFIG_VOX ?= n
 # The platform's three TCP connections; a fourth costs about 1.4 KB of main RAM. ci's maximal configuration has
-# every switch but USB and USB_NETWORK (platform/hrc7000/config.mk), and NAND_STORAGE (below), and keeps about
-# 520 B free
+# every switch but USB and USB_NETWORK (platform/hrc7000/config.mk), NAND_STORAGE (below) and M17 (below), and keeps
+# 9,888 B linked free (2026-11-23)
 BOARD_UNSUPPORTED += NAND_STORAGE	# the data flash is SPI NOR, GD25Q128 class (docs/spec/hardware-dm32.md 10)
+# flash: with every M17 part ci's maximal image is 68,856 B over the code space (2026-11-23). It leaves them out in
+# M17's flash trade order (docs/spec/m17.md, the memory section), and then the mode itself: M17 alone, with its
+# screens (docs/ux/m17.md), their text in the four languages and its debug link sections, is still 28,324 B over
+# (2026-11-23). They are on by default, so they go through MAXIMAL_VARS; the default image
+# keeps them all
+MAXIMAL_VARS := CONFIG_M17_SIG=n CONFIG_M17_AES=n CONFIG_M17_SCRAMBLER=n CONFIG_M17_BERT=n CONFIG_HEARD_LIST=n \
+	CONFIG_M17_PACKET=n CONFIG_M17=n
 # What the hardware can do but this radio's driver or glue doesn't yet (docs/build-config.md, "Unsupported, not
 # written, unconfirmed"): off by default, and off in ci's maximal configuration too
 BOARD_NOT_WRITTEN += VOX	# no hal_power_t.mic_level hook yet

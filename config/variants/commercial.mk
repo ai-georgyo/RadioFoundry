@@ -12,3 +12,5 @@ CONFIG_HOTSPOT ?= n
 CONFIG_APRS ?= n
 # Satellite tracking is an amateur-radio feature
 CONFIG_SATELLITE_TLE ?= n
+# M17 is an amateur digital voice mode; its packet data, BER test, signatures, encryption and heard list go with it
+CONFIG_M17 ?= n

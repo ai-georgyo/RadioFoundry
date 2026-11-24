@@ -15,12 +15,21 @@
     rfoundry_debug.py wake                           backlight on without a key event
     rfoundry_debug.py ptt --seconds S                key PTT for S seconds (at most 10; the firmware also times out)
     rfoundry_debug.py radio OP [ARG...]              channel +1, pos 3, zone 0, vfo on, freq MHZ, power lowest|LEVEL|+1, copy-vfo, ...
-    rfoundry_debug.py radio mode fm|dmr|p25|nxdn     the channel's mode for now (the VFO's own in the VFO)
+    rfoundry_debug.py radio mode fm|dmr|p25|nxdn|m17 the channel's mode for now (the VFO's own in the VFO)
     rfoundry_debug.py radio p25 [nac=N] [tg=N|unit=N] [rx_tgid=N] [talkaround=auto|on|off] [unit_id=N]
                                                 the P25 settings (CONFIG_P25; RAM only, view section p25)
     rfoundry_debug.py radio nxdn [rate=9600|4800] [ran=N] [rx_ran=N] [tx_ran=N] [rx_gid=N] [tg=N|unit=N]
                                  [unit_id=N] [emergency=0|1]
                                                 the NXDN settings (CONFIG_NXDN; RAM only, view section nxdn)
+    rfoundry_debug.py m17 [show]                     the M17 sections (CONFIG_M17): the call, counters, voice, heard list
+    rfoundry_debug.py m17 set [can=N] [tx_can=N] [squelch=can|any|addressed] [mode=3200|1600] [dst=CALL|ALL|HEX12]
+                                                the M17 settings (RAM only; RADIO op 44 sub 0)
+    rfoundry_debug.py m17 bert on|off|reset          the BERT run sent on its own (CONFIG_M17_BERT; transmits)
+    rfoundry_debug.py m17 bermode on|off             the BER test mode: PTT sends BERT, the counters count
+    rfoundry_debug.py m17 sms DST TEXT...            an SMS (CONFIG_M17_PACKET; transmits once the channel is free)
+    rfoundry_debug.py m17 bench sig                  sign and verify the m17.md 7.5 vector (CONFIG_M17_SIG; no RF)
+    rfoundry_debug.py m17 bench codec off|enc|dec [3200|1600]   the codec bench's phase (no RF)
+    rfoundry_debug.py m17 time [now|clear|UNIX]      the time from this host (signature timestamps; RAM only)
     rfoundry_debug.py volume [N|knob]                print the speaker volume; N (0 mutes, 0..16) sets it, knob gives the knob back
     rfoundry_debug.py log [--follow]                 the firmware's dlog() ring
     rfoundry_debug.py chip                           chip ID, flash size, UID, option bytes (RDP, write protection)
@@ -47,7 +56,7 @@
                                                 music MS HZ AMP [le]
     rfoundry_debug.py air status|close|restart|abort  the air interface on the bench (CONFIG_AIR_RAW; debuglink.md 3.28)
     rfoundry_debug.py air tap --seconds S --out F.raw [--bits 8|16]   the receive tap's samples
-    rfoundry_debug.py air open --profile p25 [--dev HZ] [--hard-only]  a session on the board's provider
+    rfoundry_debug.py air open --profile p25|nxdn...|m17|m17-bert [--dev HZ] [--hard-only]  a session on the provider
     rfoundry_debug.py air rx --seconds S --out F.jsonl                 its receive chunks
     rfoundry_debug.py air tx --syms F [--max-ms MS]                    send the file's symbols (the radio core keys)
     rfoundry_debug.py split view                     the split duplex view (role, epoch, offset, buffers, underruns, CACH)
@@ -105,12 +114,37 @@ AIR_TX_LAST = 0x01
 AIR_FIT = {0x1: "rx", 0x2: "tx", 0x4: "soft", 0x8: "shape_approx", 0x10: "dev_approx", 0x20: "rate_doubled",
            0x40: "needs_sync", 0x80: "tdma", 0x100: "full_duplex", 0x8000: "untested"}
 AIR_CHUNK_FLAGS = {0x1: "gap", 0x2: "free_run", 0x4: "slot", 0x8: "no_signal"}
-# Profiles by name (hal_air.h air_profile_t). p25: conventional P25 Phase 1 C4FM (core/p25/p25_rx.c)
+# Profiles by name (hal_air.h air_profile_t). p25: conventional P25 Phase 1 C4FM (core/p25/p25_rx.c). A profile with
+# sync_any_syms, flags (AIR_PROFILE_*) or verify (AIR_VERIFY_*) goes in OPEN's 19-byte header, any other in the 15-byte
+# one (verify AIR_VERIFY_ALL, no flags, sync_any 0: debuglink.md 3.28)
+AIR_VERIFY_ALL = 0xFF
+AIR_PROFILE_SYNC_GRID = 0x01
+AIR_VERIFY_M17 = 0x04
+AIR_SYNC_START_ONLY = 0x01
+# m17 / m17-bert: core/m17/m17_rx.c's profile (its sync ids, so a record's sync_id is the engine's), the self-test
+# checks every value against that file. A request carries 64 bytes, so OPEN's long header takes 3 of its 6 patterns
+# (debuglink.md 3.28): m17 the start of a voice or packet transmission (preamble + LSF), stream and packet frames;
+# m17-bert the start of a BERT run and its frames
+M17_PROFILE = {"sym_rate": 4800, "levels": 4, "shape": 0, "shape_param": 50, "dev_outer_hz": 2400, "timing": 0,
+               "bw": 0, "slot_syms": 0, "sync_every_syms": 0, "idle": 0x77, "sync_any_syms": 192,
+               "flags": AIR_PROFILE_SYNC_GRID, "verify": AIR_VERIFY_M17}
+M17_SYNCS = {
+    "pre_lsf": {"id": 0, "nsyms": 24, "max_errs": 1, "flags": AIR_SYNC_START_ONLY, "frame_at": 16,
+                "syms": bytes([0x77, 0x77, 0x77, 0x77, 0x55, 0xF7])},
+    "pre_bert": {"id": 1, "nsyms": 24, "max_errs": 1, "flags": AIR_SYNC_START_ONLY, "frame_at": 16,
+                 "syms": bytes([0xDD, 0xDD, 0xDD, 0xDD, 0xDF, 0x55])},
+    "stream": {"id": 2, "nsyms": 8, "max_errs": 1, "flags": 0, "frame_at": 0, "syms": bytes([0xFF, 0x5D])},
+    "packet": {"id": 3, "nsyms": 8, "max_errs": 1, "flags": 0, "frame_at": 0, "syms": bytes([0x75, 0xFF])},
+    "lsf": {"id": 4, "nsyms": 8, "max_errs": 1, "flags": 0, "frame_at": 0, "syms": bytes([0x55, 0xF7])},
+    "bert": {"id": 5, "nsyms": 8, "max_errs": 1, "flags": 0, "frame_at": 0, "syms": bytes([0xDF, 0x55])},
+}
 AIR_PROFILES = {
     "p25": {"sym_rate": 4800, "levels": 4, "shape": 1, "shape_param": 20, "dev_outer_hz": 1800, "timing": 0, "bw": 0,
             "slot_syms": 0, "sync_every_syms": 864, "idle": 0x5F,
             "syncs": [{"id": 0, "nsyms": 24, "max_errs": 4, "flags": 0, "frame_at": 0,
                        "syms": bytes([0x55, 0x75, 0xF5, 0xFF, 0x77, 0xFF])}]},
+    "m17": dict(M17_PROFILE, syncs=[M17_SYNCS[k] for k in ("pre_lsf", "stream", "packet")]),
+    "m17-bert": dict(M17_PROFILE, syncs=[M17_SYNCS[k] for k in ("pre_bert", "bert")]),
 }
 CRASH_TESTS = {"trap": 1, "assert": 2, "hang": 3, "stall": 4}
 CRASH_TOKEN = 0x48535243            # 'CRSH'
@@ -203,7 +237,8 @@ PRESS, LONG, REPEAT, DOWN, UP = range(5)
 VIEW_SECTIONS = ["core", "channel", "dmr", "dmr_call", "dmr_stats", "hotspot", "link", "features", "dmr_data",
                  "storage", "dmr_ext", "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
                  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc", "net_link", "cps", "board", "audio", "t3",
-                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn"]
+                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn", "m17", "m17_stats",
+                 "m17_data", "m17_voice", "heard", "m17net"]
 
 OP_CHANNEL_STEP, OP_ZONE_POS, OP_ZONE, OP_VFO, OP_VFO_SET, OP_VFO_STEP, OP_POWER, OP_SQUELCH, OP_BANDWIDTH, \
     OP_TONE, OP_MONITOR, OP_CLEAR_TEMP, OP_REPLY_CANCEL, OP_HOTSPOT_EXIT, OP_DMR_TARGET, OP_DMR_CONTACT, \
@@ -228,8 +263,16 @@ OP_PA_KEYUP = 37
 OP_VFO_SFR = 38
 OP_P25 = 42
 OP_NXDN = 43
+OP_M17 = 44
+# Its sub-ops (debuglink.md 3.8, core/debuglink/debuglink.h DL_M17_*)
+M17_SETTINGS, M17_BERT_RUN, M17_SMS, M17_BENCH_SIG, M17_BENCH_CODEC, M17_BER_MODE, M17_TIME = range(7)
+M17_SQUELCH = {"can": 0, "any": 1, "addressed": 2}
+M17_BERT_RUN_CMDS = {"off": 0, "on": 1, "reset": 2}
+M17_BENCH_PHASES = {"off": 0, "enc": 1, "dec": 2}
+M17_SMS_MAX = REQ_MAX - 2 - 6       # the text one request carries: op, sub-op, destination
+M17_SECTIONS = ["m17", "m17_stats", "m17_data", "m17_voice", "heard"]
 P25_TALKAROUND = {"auto": 0, "on": 1, "off": 2}
-CHANNEL_MODES = {"fm": 0, "dmr": 1, "p25": 2, "nxdn": 3}
+CHANNEL_MODES = {"fm": 0, "dmr": 1, "p25": 2, "nxdn": 3, "m17": 4}
 # The VFO's SFR role names (sfrRole_t, docs/spec/sfr.md 4): off, user, user of an ERDM repeater, repeater, ERDM style
 SFR_ROLES = {"off": 0, "user": 1, "user-erdm": 2, "rpt": 3, "rpt-erdm": 4}
 OP_PA_SWEEP = 39
@@ -335,10 +378,67 @@ def find_cables():
 
 
 # Commands (and their ops) that only read: everything else restarts the radio or changes it
+# M17 addresses (docs/spec/m17.md 10): 48 bits, a callsign in base 40, broadcast all ones, extended above the standard
+M17_BROADCAST = 0xFFFFFFFFFFFF
+M17_STD_MAX = 0xEE6B27FFFFFF
+M17_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/."
+
+
+def m17_addr(text):
+    """An M17 address from a callsign (1-9 of A-Z 0-9 - / . and space, upper-cased), ALL (broadcast) or 12 hex digits
+    (any address, an extended one among them); an int is taken as it is. ValueError for anything else or zero"""
+    if isinstance(text, int):
+        v = text
+    else:
+        t = text.strip().upper()
+        if t == "ALL":
+            return M17_BROADCAST
+        if len(t) == 12 and all(c in "0123456789ABCDEF" for c in t):
+            v = int(t, 16)
+        elif 0 < len(t) <= 9 and all(c in M17_CHARS for c in t):
+            v = 0
+            for c in reversed(t):
+                v = v * 40 + M17_CHARS.index(c)
+        else:
+            raise ValueError(f"not an M17 address: {text!r} (a callsign of up to 9 characters, ALL, or 12 hex digits)")
+    if not 0 < v <= M17_BROADCAST:
+        raise ValueError(f"not an M17 address: {text!r}")
+    return v
+
+
+def m17_addr_text(v):
+    """An address as the firmware's view shows it: the callsign, ALL, 12 hex digits for an extended one, - for none"""
+    if v == M17_BROADCAST:
+        return "ALL"
+    if v == 0:
+        return "-"
+    if v > M17_STD_MAX:
+        return f"{v:012X}"
+    out = ""
+    while v:
+        out += M17_CHARS[v % 40]
+        v //= 40
+    return out
+
+
+def heard_entry(text):
+    """A heard section record (`heard.<i>`, debuglink.md: mode from to count rssi_dbm age_s flags, seven words) as a
+    dict; an address's spaces come back from the '_' the record writes them as (`M17-M17_C` is `M17-M17 C`). None
+    for anything that isn't seven words"""
+    f = (text or "").split()
+    if len(f) != 7:
+        return None
+    try:
+        return {"mode": f[0], "from": f[1].replace("_", " "), "to": f[2].replace("_", " "), "count": int(f[3]),
+                "rssi_dbm": int(f[4]), "age_s": int(f[5]), "flags": int(f[6], 16)}
+    except ValueError:
+        return None
+
+
 READ_ONLY = {"hwopt": None, "support": None, "reg": None, "ping": None, "version": None, "diag": None, "view": None, "screenshot": None, "log": None, "chip": None,
              "dump": None, "peek": None, "iddb": None, "crash": ("show",), "watchdog": ("show",), "rx2": ("info",),
              "air": ("status", "tap", "rx"), "storage": ("info", "dump"), "split": ("view",),
-             "aprobe": ("status", "reg", "samples", "ram", "watch")}
+             "aprobe": ("status", "reg", "samples", "ram", "watch"), "m17": ("show",)}
 
 
 def changes_radio(a):
@@ -535,7 +635,7 @@ class DebugLink:
         flags, blocks = r[0], struct.unpack_from("<I", r, 1)[0]
         lp, lr, lm, rp, rr, rm = struct.unpack_from("<6H", r, 5)
         return {"ours": bool(flags & 1), "running": bool(flags & 2), "no_pcm": bool(flags & 4), "blocks": blocks,
-                "voice": "dmr" if flags & 8 else "p25" if flags & 16 else None,
+                "voice": "dmr" if flags & 8 else "p25" if flags & 16 else "m17" if flags & 32 else None,
                 "left": {"peak": lp, "rms": lr, "peak_max": lm}, "right": {"peak": rp, "rms": rr, "peak_max": rm}}
 
     def probe_reg(self, page, reg, value=None):
@@ -757,12 +857,7 @@ class DebugLink:
 
     def air_open(self, prof, soft=True):
         """A session on the board's provider: {fit (names), tx_chunk_syms, tx_queue_depth}"""
-        b = struct.pack("<HBBBHBBHHBB", prof["sym_rate"], prof["levels"], prof["shape"], prof["shape_param"],
-                        prof["dev_outer_hz"], prof["timing"], prof["bw"], prof["slot_syms"], prof["sync_every_syms"],
-                        prof["idle"], len(prof["syncs"]))
-        for y in prof["syncs"]:
-            b += struct.pack("<BBBBb", y["id"], y["nsyms"], y["max_errs"], y["flags"], y["frame_at"]) + \
-                y["syms"].ljust(6, b"\0")
+        b = self.air_profile_bytes(prof)
         try:
             r = self.request(AIR, bytes([AIR_OP_OPEN, AIR_OPEN_SOFT if soft else 0]) + b)[1]
         except DebugLinkError as e:
@@ -772,6 +867,20 @@ class DebugLink:
             raise
         fit, chunk, depth = struct.unpack_from("<IHB", r)
         return {"fit": self._fit_names(fit), "tx_chunk_syms": chunk, "tx_queue_depth": depth}
+
+    @staticmethod
+    def air_profile_bytes(prof):
+        """OPEN's profile: the 15-byte header, or the 19-byte one when the profile has sync_any_syms, flags or verify"""
+        b = struct.pack("<HBBBHBBHHBB", prof["sym_rate"], prof["levels"], prof["shape"], prof["shape_param"],
+                        prof["dev_outer_hz"], prof["timing"], prof["bw"], prof["slot_syms"], prof["sync_every_syms"],
+                        prof["idle"], len(prof["syncs"]))
+        if any(k in prof for k in ("sync_any_syms", "flags", "verify")):
+            b += struct.pack("<HBB", prof.get("sync_any_syms", 0), prof.get("flags", 0),
+                             prof.get("verify", AIR_VERIFY_ALL))
+        for y in prof["syncs"]:
+            b += struct.pack("<BBBBb", y["id"], y["nsyms"], y["max_errs"], y["flags"], y["frame_at"]) + \
+                y["syms"].ljust(6, b"\0")
+        return b
 
     @staticmethod
     def _fit_names(fit):
@@ -1340,7 +1449,7 @@ class DebugLink:
         self.radio(OP_VOLUME, bytes([VOLUME_KNOB if step == "knob" else int(step)]))
 
     def dmr_fields(self, mode=None, cc=None, ts=None):
-        """Mode ("fm" / "dmr" / "p25" / "nxdn"), color code 0..15 and timeslot 1 / 2, each None to keep it. On a channel these
+        """Mode ("fm" / "dmr" / "p25" / "nxdn" / "m17"), color code 0..15 and timeslot 1 / 2, each None to keep it. On a channel these
         are temporary changes, in the VFO the VFO's own settings (RADIO op 31). A mode the build lacks raises
         DebugLinkError "unavailable"."""
         m = 0xFF if mode is None else CHANNEL_MODES[mode]
@@ -1394,6 +1503,58 @@ class DebugLink:
                "emergency": v["nxdn.tx_emergency"] == "1"}
         cur.update(kw)
         self.nxdn_settings(**cur)
+
+    # ── M17 (RADIO op 44, debuglink.md 3.8): sub-op, then its arguments ──
+    def m17(self, sub, args=b""):
+        self.radio(OP_M17, bytes([sub]) + bytes(args))
+
+    def m17_settings(self, can=0, tx_can=0, squelch="can", mode1600=False, dst="ALL"):
+        """The M17 settings (RAM only, the m17 section's m17.set.*): the CAN received and sent (0..15), the squelch
+        (can|any|addressed or 0..2), Codec 2 1600 + data (else 3200), what PTT calls (m17_addr: ALL broadcast)."""
+        sq = M17_SQUELCH[squelch] if isinstance(squelch, str) else int(squelch)
+        if not (0 <= can <= 15 and 0 <= tx_can <= 15 and 0 <= sq <= 2):
+            raise ValueError("m17_settings: CANs 0..15, squelch can|any|addressed")
+        self.m17(M17_SETTINGS, bytes([can, tx_can, sq, 1 if mode1600 else 0]) + m17_addr(dst).to_bytes(6, "big"))
+
+    def m17_settings_update(self, **kw):
+        """m17_settings with the settings in force (the m17 section) changed only where kw says."""
+        v = self.view(["m17"])
+        if v.get("m17.built") != "1":
+            raise DebugLinkError("unavailable")
+        cur = {"can": int(v["m17.set.can"]), "tx_can": int(v["m17.set.tx_can"]),
+               "squelch": int(v["m17.set.squelch"]), "mode1600": v["m17.set.mode1600"] == "1",
+               "dst": m17_addr(v["m17.set.dst"])}
+        cur.update(kw)
+        self.m17_settings(**cur)
+
+    def m17_bert_run(self, cmd):
+        """The BERT run the radio sends on its own (it transmits until off or the TX time-out): on|off|reset."""
+        self.m17(M17_BERT_RUN, bytes([M17_BERT_RUN_CMDS[cmd] if isinstance(cmd, str) else int(cmd)]))
+
+    def m17_ber_mode(self, on):
+        """The BER test mode: PTT sends BERT, the receiver's m17b.* count."""
+        self.m17(M17_BER_MODE, bytes([1 if on else 0]))
+
+    def m17_sms(self, dst, text):
+        """An SMS to dst (m17_addr), UTF-8, at most M17_SMS_MAX bytes here. Raises busy while the one before waits."""
+        b = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+        if not 0 < len(b) <= M17_SMS_MAX or 0 in b:
+            raise ValueError(f"m17_sms: 1..{M17_SMS_MAX} bytes of UTF-8, no NUL")
+        self.m17(M17_SMS, m17_addr(dst).to_bytes(6, "big") + b)
+
+    def m17_bench_sig(self):
+        """The signature bench (no RF): m17.bench.ok, m17.sign_us and m17.verify_us in the m17_stats section."""
+        self.m17(M17_BENCH_SIG)
+
+    def m17_bench_codec(self, phase, mode1600=False):
+        """The codec bench's phase off|enc|dec (or 0..2) in a mode (no RF): m17v.enc_us_* / dec_us_*."""
+        ph = M17_BENCH_PHASES[phase] if isinstance(phase, str) else int(phase)
+        self.m17(M17_BENCH_CODEC, bytes([ph, 1 if mode1600 else 0]))
+
+    def m17_time(self, unix_s=None):
+        """The time from this host (UTC_SRC_HOST, aged on the radio), RAM only; None: now, 0: forget it."""
+        t = int(time.time()) if unix_s is None else int(unix_s)
+        self.m17(M17_TIME, struct.pack("<I", t))
 
     def vfo_sfr(self, role, inbound_ts=1, framing=0, hang=0):
         """The VFO's SFR role (RADIO op 38; sfr.md 4), saved with the VFO: role a SFR_ROLES name or 0..4, the inbound
@@ -1909,6 +2070,64 @@ def cmd_key(link, a):
     return 0
 
 
+def cmd_m17(link, a):
+    """m17 show|set|bert|bermode|sms|bench|time (RADIO op 44; the m17 sections)"""
+    op, args = a.op, a.args
+
+    def usage(text):
+        raise SystemExit("m17 " + text)
+    if op == "set":
+        kw = {}
+        for x in args:
+            k, _, val = x.partition("=")
+            if k in ("can", "tx_can") and val.isdigit():
+                kw[k] = int(val)
+            elif k == "squelch" and val in M17_SQUELCH:
+                kw[k] = val
+            elif k == "mode" and val in ("3200", "1600"):
+                kw["mode1600"] = val == "1600"
+            elif k == "dst" and val:
+                kw[k] = val
+            else:
+                usage("set [can=N] [tx_can=N] [squelch=can|any|addressed] [mode=3200|1600] [dst=CALL|ALL|HEX12]")
+        link.m17_settings_update(**kw)
+    elif op == "bert":
+        if len(args) != 1 or args[0] not in M17_BERT_RUN_CMDS:
+            usage("bert on|off|reset")
+        link.m17_bert_run(args[0])
+    elif op == "bermode":
+        if len(args) != 1 or args[0] not in ("on", "off"):
+            usage("bermode on|off")
+        link.m17_ber_mode(args[0] == "on")
+    elif op == "sms":
+        if len(args) < 2:
+            usage("sms DST TEXT...")
+        link.m17_sms(args[0], " ".join(args[1:]))
+    elif op == "bench":
+        if args == ["sig"]:
+            link.m17_bench_sig()
+        elif len(args) in (2, 3) and args[0] == "codec" and args[1] in M17_BENCH_PHASES and \
+                (len(args) == 2 or args[2] in ("3200", "1600")):
+            link.m17_bench_codec(args[1], len(args) == 3 and args[2] == "1600")
+        else:
+            usage("bench sig | bench codec off|enc|dec [3200|1600]")
+    elif op == "time":
+        if not args or args == ["now"]:
+            link.m17_time()
+        elif args == ["clear"]:
+            link.m17_time(0)
+        elif len(args) == 1 and args[0].isdigit():
+            link.m17_time(int(args[0]))
+        else:
+            usage("time [now|clear|UNIX]")
+    if op == "show" or op in ("set", "time"):
+        sections = M17_SECTIONS if op == "show" else ["m17", "m17_stats"]
+        for k, v in link.view(sections).items():
+            if op == "show" or k.startswith(("m17.set.", "time.")):
+                print(f"{k}={v}")
+    return 0
+
+
 def cmd_volume(link, a):
     """volume [N|knob]: set, then print the volume.* lines of the features view (source, step, percent sent)."""
     if a.value is not None:
@@ -1989,7 +2208,7 @@ def cmd_radio(link, a):
         link.vibrate(args[0] if args else "message")
     elif op == "copy-vfo":            # the channel's settings into the VFO, and open it
         link.vfo_copy()
-    elif op == "mode":                # mode fm|dmr|p25|nxdn (the VFO's own in the VFO, else temporary)
+    elif op == "mode":                # mode fm|dmr|p25|nxdn|m17 (the VFO's own in the VFO, else temporary)
         if not args or args[0] not in CHANNEL_MODES:
             raise SystemExit("mode " + "|".join(CHANNEL_MODES))
         link.dmr_fields(mode=args[0])
@@ -2771,6 +2990,106 @@ def cmd_reboot(link, a):
     return 0
 
 
+def m17_firmware_profile():
+    """core/m17/m17_rx.c's profile as {field: value} and its syncs by id, read from the source; None outside the tree"""
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        src = open(os.path.join(root, "core", "m17", "m17_rx.c")).read()
+        ids = open(os.path.join(root, "core", "m17", "m17_engine_int.h")).read()
+    except OSError:
+        return None
+    sid = re.search(r"enum\s*\{\s*(M17_SID_\w+(?:\s*,\s*M17_SID_\w+)*)\s*\}", ids).group(1)
+    sid = {n.strip(): i for i, n in enumerate(sid.split(","))}
+    body = src[src.index("const air_mode_t m17_air_mode"):]
+    body = body[:body.index(".frame_syms")]
+    consts = {"M17_SYM_RATE": 4800, "AIR_SHAPE_RRC": 0, "AIR_TIMING_CONTINUOUS": 0, "RADIO_BW_12K5": 0,
+              "M17_FRAME_SYMS": 192, "M17_PREAMBLE_LSF": 0x77, "AIR_PROFILE_SYNC_GRID": AIR_PROFILE_SYNC_GRID,
+              "AIR_VERIFY_M17": AIR_VERIFY_M17, "AIR_SYNC_START_ONLY": AIR_SYNC_START_ONLY}
+    head = body[:body.index(".sync = {")]
+    prof = {k: consts[v] if v in consts else int(v, 0) for k, v in re.findall(r"\.(\w+)\s*=\s*(\w+)", head)
+            if k != "name"}
+    syncs = {}
+    for m in re.finditer(r"\{\s*\.id = (M17_SID_\w+),(.*?)\.syms = \{([^}]*)\}", body, re.S):
+        f = dict(re.findall(r"\.(\w+)\s*=\s*(-?\w+)", m.group(2)))
+        syncs[sid[m.group(1)]] = {"id": sid[m.group(1)], "nsyms": int(f["nsyms"]), "max_errs": int(f["max_errs"]),
+                                 "flags": consts.get(f.get("flags"), 0), "frame_at": int(f.get("frame_at", 0)),
+                                 "syms": bytes(int(x, 0) for x in m.group(3).split(",") if x.strip())}
+    return prof, syncs
+
+
+def m17_self_test(check):
+    """The m17 profiles against the firmware's, OPEN's 19-byte header, the op 44 requests and the address helpers"""
+    for name in ("m17", "m17-bert"):
+        b = DebugLink.air_profile_bytes(AIR_PROFILES[name])
+        n = len(AIR_PROFILES[name]["syncs"])
+        check(len(b) == 19 + 11 * n and 2 + len(b) <= REQ_MAX, f"air open --profile {name}: 19-byte header, "
+              f"{n} syncs, {2 + len(b)} of {REQ_MAX} request bytes")
+        check(struct.unpack_from("<HBB", b, 15) == (192, AIR_PROFILE_SYNC_GRID, AIR_VERIFY_M17) and b[14] == n,
+              f"{name}: sync_any_syms 192, SYNC_GRID, AIR_VERIFY_M17 after nsyncs")
+    print("air open --profile m17 header:", DebugLink.air_profile_bytes(AIR_PROFILES["m17"])[:19].hex(" "))
+    fw = m17_firmware_profile()
+    if fw is None:
+        print("skip m17 profile against core/m17/m17_rx.c: not in the source tree")
+    else:
+        prof, syncs = fw
+        check(all(prof.get(k, 0) == v for k, v in M17_PROFILE.items()) and prof.get("nsyncs") == 6,
+              "m17 profile header = core/m17/m17_rx.c's")
+        check(len(syncs) == 6 and all(syncs.get(y["id"]) == y for y in M17_SYNCS.values()),
+              "m17 sync patterns = core/m17/m17_rx.c's six")
+    check(m17_addr("AB1CD") == 0x9FDD51 and m17_addr("n0call") == 0x00004B13D106 and m17_addr("ALL") == M17_BROADCAST
+          and m17_addr("EE6B28000000") == 0xEE6B28000000, "m17 addresses: m17.md 10 and 11's values")
+    check(all(m17_addr_text(m17_addr(t)) == t for t in ("AB1CD", "N0CALL", "M17-REF A", "ALL", "EE6B28000001", ".")),
+          "m17 address text round trip")
+    h = heard_entry("m17 N0CALL M17-M17_C 3 -80 12 0x03")
+    check(h == {"mode": "m17", "from": "N0CALL", "to": "M17-M17 C", "count": 3, "rssi_dbm": -80, "age_s": 12,
+                "flags": 3} and m17_addr(h["to"]) == m17_addr("M17-M17 C"), "heard record: a space in an address as _")
+    check(heard_entry("dmr 3100001 - 1 0 3600 0x00")["from"] == "3100001" and
+          heard_entry("m17 N0CALL M17-M17 C 3 -80 12 0x03") is None and heard_entry(None) is None,
+          "heard record: seven words or none")
+    for bad in ("", "TOOLONGCALL", "AB_CD", "000000000000", 0, 1 << 48):
+        try:
+            m17_addr(bad)
+            check(False, f"m17_addr({bad!r}) refused")
+        except ValueError:
+            pass
+
+    class Sent(DebugLink):
+        """Records the requests instead of sending them; the view answers with fixed settings"""
+
+        def __init__(self):
+            self.sent = []
+
+        def request(self, cmd, payload=b""):
+            self.sent.append((cmd, bytes(payload)))
+            return 0, b""
+
+        def view(self, sections=None):
+            return {"m17.built": "1", "m17.set.can": "3", "m17.set.tx_can": "4", "m17.set.squelch": "1",
+                    "m17.set.mode1600": "1", "m17.set.dst": "M17-REF A"}
+
+    r = Sent()
+    r.m17_settings(can=1, tx_can=2, squelch="addressed", mode1600=True, dst="AB1CD")
+    r.m17_settings_update(can=7)
+    r.m17_bert_run("reset")
+    r.m17_ber_mode(True)
+    r.m17_sms("ALL", "hé")
+    r.m17_bench_sig()
+    r.m17_bench_codec("dec", True)
+    r.m17_time(1700000000)
+    want = [bytes([OP_M17, 0, 1, 2, 2, 1, 0, 0, 0, 0x9F, 0xDD, 0x51]),
+            bytes([OP_M17, 0, 7, 4, 1, 1]) + m17_addr("M17-REF A").to_bytes(6, "big"),
+            bytes([OP_M17, 1, 2]), bytes([OP_M17, 5, 1]), bytes([OP_M17, 2]) + b"\xff" * 6 + "hé".encode(),
+            bytes([OP_M17, 3]), bytes([OP_M17, 4, 2, 1]), bytes([OP_M17, 6]) + struct.pack("<I", 1700000000)]
+    check([c for c, _ in r.sent] == [RADIO] * len(want) and [p for _, p in r.sent] == want,
+          "op 44: each sub-op's request as debuglink.md 3.8 lays it out")
+    try:
+        r.m17_sms("ALL", "x" * (M17_SMS_MAX + 1))
+        check(False, "m17_sms: a text longer than a request refused")
+    except ValueError:
+        pass
+
+
 def self_test():
     """The packed screenshot reader against a simulated radio (the firmware's side is tests/host/debuglinkTest)."""
     stubtool = stubtool_module()
@@ -2896,6 +3215,7 @@ def self_test():
         g["find_ports"], g["find_cables"], g["find_network_radios"] = saved[:3]
         if saved[3] is not None:
             os.environ["RFOUNDRY_PORT"] = saved[3]
+    m17_self_test(check)
     print("rfoundry_debug self-test:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 
@@ -2954,6 +3274,12 @@ def main(argv=None):
                                   "usb-settings", "ppp", "vibrate", "mode", "cc", "ts", "sfr", "copy-vfo", "voice-test", "dtmf",
                                   "tx-limit", "tx-drive", "pa-keyup", "pa-sweep", "pa-keyrun", "p25", "nxdn"])
     p.add_argument("args", nargs="*")
+    p = sub.add_parser("m17", help="M17 (CONFIG_M17; RADIO op 44, docs/spec/debuglink.md 3.8): show the sections, the "
+                       "settings, the BERT run and the BER test mode, an SMS, the benches, the host's time")
+    p.add_argument("op", nargs="?", default="show", choices=["show", "set", "bert", "bermode", "sms", "bench", "time"])
+    p.add_argument("args", nargs="*", help="set: can=N tx_can=N squelch=can|any|addressed mode=3200|1600 "
+                   "dst=CALL|ALL|HEX12; bert: on|off|reset; bermode: on|off; sms: DST TEXT...; bench: sig | codec "
+                   "off|enc|dec [3200|1600]; time: now|clear|UNIX")
     p = sub.add_parser("data", help="DMR data: sms, call alert, radio check, settings, inbox")
     p.add_argument("op", choices=["sms", "alert", "check", "settings", "inbox", "read", "emergency", "em-settings",
                                   "ip-settings", "ip-send", "tx-spacing"])
@@ -3088,6 +3414,8 @@ def main(argv=None):
                 return cmd_radio(link, a)
             elif a.cmd == "volume":
                 return cmd_volume(link, a)
+            elif a.cmd == "m17":
+                return cmd_m17(link, a)
             elif a.cmd == "data":
                 return cmd_data(link, a)
             elif a.cmd == "aprs":

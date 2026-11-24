@@ -409,6 +409,21 @@ on a talkgroup: the name (`SELECT`, text entry, `SELECT`), `NAV_DOWN`, the ID (`
 
 ---
 
+## 28. M17
+
+An M17 channel, or the VFO in M17 ([m17.md](m17.md)). The destination is M17's talk target. On a stored M17 channel
+a station becomes the channel's destination with a hold of `SELECT` (the radio keeps no temporary one there).
+
+| Task | K | M | V | F | Budget |
+|---|---|---|---|---|---|
+| Set the M17 callsign from the PTT refusal ("W1AW") | 6 (`SELECT`, `9`, long `1`, `2`, `9`, `SELECT`) | 6 | n/a until the mic keypad | 4+n | 6 |
+| Talk back to the last M17 caller | 2 (`CONTEXT`, `1`) then PTT | 2 | 2 | 2 | 2 |
+| Talk to a station heard earlier | 3 (long `CONTEXT`, `NAV_DOWN`, `SELECT`) | 3 | 3 | 3+n | 3 |
+| Check who signed the last call | 2 (`CONTEXT`, `3`) | 2 | 2 | 2+n | 2 |
+| Canned M17 SMS reply to the last caller | 4 (`CONTEXT`, `2`, `NAV_DOWN`, `SELECT`) | 4 | 4 | 5 | 4 |
+
+---
+
 ## Summary
 
 | Task | K | Budget met? |
@@ -438,6 +453,7 @@ on a talkgroup: the name (`SELECT`, text entry, `SELECT`), `NAV_DOWN`, the ID (`
 | New channel from current | 5+n | yes |
 | Move a channel in a zone | 5 | yes |
 | Copy here, saved unchanged | 6 | yes |
+| M17: callsign from the refusal / talk back / heard station / signer / canned SMS | 6 / 2 / 3 / 2 / 4 | yes |
 | Add a channel to a zone (typed number) | 8 | yes |
 | Copy / delete a zone | 5+n / 7+n | yes |
 | TS / CC | 3 / 4 | yes |

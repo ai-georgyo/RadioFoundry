@@ -167,9 +167,11 @@ void radio_p25_reset_stats(void);
 
 // The transmit side above as radio_sm.c drives every air-framed mode
 extern const radio_air_ops_t radio_p25_air;
-#ifndef HAL_VOCODER_LEND_BYTES
-// The memory P25 runs in while it doesn't (another air mode runs in it, one at a time): NULL while P25 runs
-void *radio_p25_idle_mem(size_t *len);
+// What P25 adds to the feature string where it fits (its row's features, build_modes_now): the trunked kind with it
+#if CONFIG_P25_TRUNK
+#define RADIO_P25_FEATURES	"P25,P25_TRUNK,"
+#else
+#define RADIO_P25_FEATURES	"P25,"
 #endif
 #endif
 

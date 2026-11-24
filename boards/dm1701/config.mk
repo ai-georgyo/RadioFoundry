@@ -18,6 +18,36 @@ MAXIMAL_VARS := LTO=1
 # default, so that the maximal build keeps satellite tracking and still fits the app region; Chinese stays out too
 # (its glyph table does not fit beside the rest)
 MAXIMAL_SKIP := NET_PPP APRS_IGATE LANG_FR LANG_ZH LANG_DEFAULT_ZH
+# M17 (docs/spec/m17.md, the memory section): off by default here, and its parts with it, in the trade orders. With
+# its screens (docs/ux/m17.md) and its debug link sections (docs/spec/debuglink.md) the mode alone takes 46,204 B of
+# flash and 1,104 B of RAM (measured 2026-11-23, each part on top of it)
+# flash: M17 alone is 13,536 B over the app region, and 20,892 B over with its packets and heard list (DMR AES, on by
+# default, takes 4,656 B of the room). The design's
+# fallback: off until the owner names a trade; docs/feature-matrix.md, "M17 trades", has the measured
+# candidates
+CONFIG_M17 ?= n
+# The M17 reflector client (NET_M17) stays off with M17. On top of M17 with its packets and heard list,
+# SATELLITE_TLE=n and LANG_ES=n it takes 9,120 B of flash and 1,272 B of RAM: 27,720 B and 1,188 B stay free, under the
+# 1.5 KB of RAM a default keeps (2026-11-23)
+CONFIG_NET_M17 ?= n
+# flash: P-256 signatures take about 19.1 KB (an STM32 radio's figure)
+CONFIG_M17_SIG ?= n
+# flash: AES and the random pool take about 2.6 KB (an STM32 radio's figure; the cipher itself is DMR AES's too)
+CONFIG_M17_AES ?= n
+# flash: the scrambler takes 1,352 B
+CONFIG_M17_SCRAMBLER ?= n
+# flash: the BER test takes 3,188 B
+CONFIG_M17_BERT ?= n
+# flash: the maximal build keeps satellite tracking and the rest. It turns every switch on, M17 among them, though M17
+# is off by default here until the owner names a trade (above). So it leaves out the M17 parts this radio leaves out,
+# and M17 itself through MAXIMAL_VARS: with the mode alone (its packets and heard list too) the maximal image is
+# 51,448 B over the app region (2026-11-23). An STM32 radio with more room builds M17 with every part in its maximal
+# configuration
+MAXIMAL_SKIP += M17_SIG M17_AES M17_SCRAMBLER M17_BERT
+MAXIMAL_VARS += CONFIG_M17=n
+# flash: the web pages stored without gzip are about 19 KB larger. With M17 off (the default) that image fits, so ci
+# builds it; beside M17 alone it is 33,000 B over the app region (2026-11-23): turning M17 on by default here also needs
+# BOARD_REQUIRED += NET_HTTP_GZIP, measured again
 
 # What the radio's hardware can't do, one switch per line with the reason (tools/boards.py checks there is one;
 # docs/build-config.md, "Unsupported, not written, unconfirmed"): ci's maximal configuration leaves these off

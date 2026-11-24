@@ -27,6 +27,7 @@
 #include "audio_pcm.h"
 #if CONFIG_AIR
 #include "modem/hrc7000/hrc7000_air.h"
+#include "air/air_verify.h"
 #endif
 #include "hal_time.h"
 #include "FreeRTOS.h"
@@ -580,8 +581,9 @@ HRC_FLASHFUNC static void air_event(const air_event_t *ev, void *ctx)
 HRC_FLASHFUNC static uint32_t air_fit(const air_profile_t *p)
 {
 	uint32_t f = air_softmodem_rx_fit(p, &hrc_baseband) | hrc7000_air_tx_fit(p);
-	// Untested until the board says its receive and transmit were checked on air (modem-hrc7000.md 10.4)
-	return f != 0 && (brd == NULL || !brd->air_verified) ? f | AIR_FIT_UNTESTED : f;
+	// Untested until the board says its receive and transmit were checked on air with the profile (modem-hrc7000.md
+	// 10.4)
+	return air_fit_verify(f, brd != NULL ? brd->air_verified : 0, p);
 }
 
 // Rule 1 (hal_air.h): in DMR the speaker carries only the codec's PCM, and the session keeps FM playback off. Rule 2:

@@ -902,7 +902,9 @@ engine restarts the receiver (5.1). Host test: `tests/host/hrc6000AirTest.c`. Th
 | transmit deviation outside 1050-2400 Hz (C4FM: of the target below) by more than a tenth | DEV_APPROX |
 | TDMA, 1200 symbols/s, 3 levels | none |
 
-The board adds UNTESTED until its `stm32_hrc_dmr_board_t.air_verified` is set.
+The board adds UNTESTED unless its verified set, `stm32_hrc_dmr_board_t.air_verified`, has the profile's
+`AIR_VERIFY_*` bit (`air_profile_t.verify`): a mask of the profiles checked on air on the board
+([air-interface.md](air-interface.md) 4).
 
 ### 10.2 Receive
 

@@ -187,6 +187,32 @@ does not transmit.
 **Show scrambler seeds** reveals the stored values. File exports omit the keys by default. Zone shares omit them
 as well.
 
+### M17
+
+Pick **M17** in the channel form's **Mode**. Using them on the radio: [M17](24-m17.md). A radio without M17 keeps
+them and shows the mode as not in this build. The codeplug format is in [M17 in the codeplug](../spec/m17-codeplug.md).
+
+**M17 channel:**
+
+| Field | Meaning |
+|---|---|
+| CAN | Channel access number, 0-15 |
+| Receive every CAN | On: play calls on every CAN. Off: only the channel's |
+| Voice | 3200 bit/s, or 1600 bit/s + data |
+| Destination | A callsign, a reflector module or a command such as `ECHO`. **All call** (blank) calls every station |
+| Encryption, Key | Off, Scrambler or AES, with a key of the channel's **System**. Not offered for a radio whose firmware leaves them out (the Amateur variant) |
+
+**Radio tab:** **M17 callsign** (blank: the radio name, when it is a callsign), **Call text** (sent with every call,
+up to 52 ASCII characters), **Send position in calls** and **Sign calls**.
+
+**M17 system** (Systems tab, type M17): its **Traffic keys** (a scrambler seed of 1 to 3 bytes, or an AES key of 16,
+24 or 32 bytes, in hex), its **Signing key** and its **Station keys**. **Generate** makes a signing key; **Copy public
+key** copies the public key to give to other stations, and the **Fingerprint** under it is the one the radio shows.
+Keep the signing key secret: anyone who has it can sign as you. **Station keys** are other stations' public keys
+(callsign and key in hex), which the radio checks their signed calls with. Like other keys, the signing key and the
+traffic keys stay out of a saved file unless you include keys, and out of zone shares. Encryption is for services
+that allow it; most countries prohibit it on amateur bands. Signing hides nothing.
+
 **P25 Trunking system** (Systems tab, type P25 Trunking). A new system is listen only: set **Transmit** to register and
 transmit.
 
@@ -245,8 +271,8 @@ shortened. Saving as qdmr YAML lists what qdmr's format can't hold: SFR settings
 and locations, which are rounded to 6-character grid locators (about 5 km). The Tools page converts between qdmr YAML
 and codeplug files too, and converts an original firmware codeplug to either.
 
-Systems, channel modes (Tier III, P25, NXDN) and **Accept Invalid CRC** go into the qdmr file in a `radioFoundry`
-block. qdmr opens the file and ignores the block, and never writes one: save from the Codeplug Editor to keep the block.
+Systems, channel modes (Tier III, P25, NXDN, M17) and **Accept Invalid CRC** go into the qdmr file in a `radioFoundry`
+block. qdmr's own M17 channels are left out when a qdmr file is opened. qdmr opens the file and ignores the block, and never writes one: save from the Codeplug Editor to keep the block.
 Opening a file with the block replaces the codeplug's systems too. Opening a file without one, such as any file qdmr
 wrote, keeps the systems. Keys are never saved in the file: when the file is opened again in a codeplug that has the
 same system, the system keeps its key; anywhere else, enter the key again on the **Systems** tab. The block's keys are

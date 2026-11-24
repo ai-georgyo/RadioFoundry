@@ -398,12 +398,12 @@ uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *a, uint16_t len)
 	case DL_OP_DMR_FIELDS:
 		// mode (0xFF = keep, else radio_mode_t), color code (0xFF = keep), timeslot (0 = keep): on a channel they are
 		// temporary changes, in the VFO the VFO's own settings. The radio core refuses what it can't do
-		if (len < 3 || (a[0] != 0xFF && a[0] > RADIO_MODE_NXDN) || (a[1] != 0xFF && a[1] > 15) || a[2] > 2) {
+		if (len < 3 || (a[0] != 0xFF && a[0] > RADIO_MODE_M17) || (a[1] != 0xFF && a[1] > 15) || a[2] > 2) {
 			return DL_ST_BAD_ARG;
 		}
 #if CONFIG_DMR || CONFIG_P25
 		if ((a[0] == RADIO_MODE_DMR && !CONFIG_DMR) || (a[0] == RADIO_MODE_P25 && !CONFIG_P25) ||
-		    (a[0] == RADIO_MODE_NXDN && !CONFIG_NXDN) ||
+		    (a[0] == RADIO_MODE_NXDN && !CONFIG_NXDN) || (a[0] == RADIO_MODE_M17 && !CONFIG_M17) ||
 		    ((a[1] != 0xFF || a[2] != 0) && !CONFIG_DMR)) {
 			return DL_ST_UNAVAILABLE;
 		}

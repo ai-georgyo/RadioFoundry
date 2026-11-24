@@ -80,7 +80,7 @@ spec = "docs/spec/radio-features.md"
 switch = "P25"
 spec = "docs/spec/p25.md"
 source = ["core/p25", "core/radio/radio_p25.c", "core/radio/radio_p25.h", "core/air", "core/fec", "core/mbe",
-          "hal/hal_air.h", "hal/hal_baseband.h"]
+          "core/dsp", "hal/hal_air.h", "hal/hal_baseband.h"]
 
 [feature.p25_trunk]
 switch = "P25_TRUNK"
@@ -97,6 +97,69 @@ source = ["core/nxdn", "core/air", "core/fec", "core/radio/radio_nxdn.c", "core/
 switch = "NXDN_SCRAMBLER"
 spec = "docs/spec/nxdn.md"
 source = ["core/nxdn/nxdn_scramble.c", "core/nxdn/nxdn_call.c", "core/nxdn/nxdn_engine.c"]
+
+# M17 (tests/hil/test_m17.py) brings Codec 2 (derived switch CODEC2) and the air interface. The sources are the files
+# that build each part or test its switch, the debug link's sections the tests read, and the bench tool
+[feature.m17]
+switch = "M17"
+spec = "docs/spec/m17.md"
+source = ["core/m17", "core/codec2", "core/dsp", "core/air", "core/fec", "core/radio/radio_m17.c",
+          "core/radio/radio_m17.h", "core/radio/radio_m17_mem.h", "core/radio/radio_air_modes.c",
+          "core/radio/radio_air_mem.c", "core/radio/radio_air.h", "core/position/position_utc.c",
+          "core/debuglink/debuglink_view_m17.c", "hal/hal_air.h", "docs/spec/codec2.md", "docs/spec/m17-codeplug.md",
+          "tools/bench/m17", "tools/bench/m17tool.py"]
+
+# M17 packet mode: SMS sent and received, other data types received and counted
+[feature.m17_packet]
+switch = "M17_PACKET"
+spec = "docs/spec/m17.md"
+source = ["core/m17/m17_packet.c", "core/m17/m17_engine.c", "core/m17/m17_rx.c", "core/m17/m17_tx.c",
+          "core/radio/radio_m17.c", "core/radio/radio_task.c", "core/debuglink/debuglink_view_m17.c"]
+
+# the M17 bit error rate test mode
+[feature.m17_bert]
+switch = "M17_BERT"
+spec = "docs/spec/m17.md"
+source = ["core/m17/m17_bert.c", "core/m17/m17_engine.c", "core/m17/m17_rx.c", "core/m17/m17_tx.c",
+          "core/radio/radio_m17.c", "core/radio/radio_task.c", "core/debuglink/debuglink_view_m17.c"]
+
+# M17 stream signatures, ECDSA P-256 (derived switches CRYPTO_P256, CRYPTO_HMAC)
+[feature.m17_sig]
+switch = "M17_SIG"
+spec = "docs/spec/m17.md"
+source = ["core/m17/m17_sig.c", "core/m17/m17_engine.c", "core/m17/m17_tx.c", "core/crypto/p256.c",
+          "core/crypto/p256_tab.c", "core/crypto/hmac_sha256.c", "core/crash/crash_secret.c", "core/radio/radio_m17.c",
+          "core/debuglink/debuglink_view_m17.c", "docs/spec/p256.md"]
+
+# the M17 scrambler
+[feature.m17_scrambler]
+switch = "M17_SCRAMBLER"
+spec = "docs/spec/m17.md"
+source = ["core/m17/m17_crypt.c", "core/m17/m17_codeplug.c", "core/m17/m17_engine.c", "core/m17/m17_tx.c",
+          "core/debuglink/debuglink_view_m17.c", "tools/bench/m17"]
+
+# M17 AES encryption with nonces from the random pool (derived switches CRYPTO_AES, ENTROPY, CRYPTO_HMAC)
+[feature.m17_aes]
+switch = "M17_AES"
+spec = "docs/spec/m17.md"
+source = ["core/m17/m17_crypt.c", "core/m17/m17_codeplug.c", "core/m17/m17_engine.c", "core/m17/m17_tx.c",
+          "core/crypto/aes.c", "core/crypto/entropy.c", "core/crypto/entropy_boot.c", "core/crypto/hmac_sha256.c",
+          "core/radio/radio_m17.c", "core/debuglink/debuglink_view_m17.c", "tools/bench/m17", "docs/spec/crypto.md"]
+
+# the list of stations heard, M17 its only source so far
+[feature.heard_list]
+switch = "HEARD_LIST"
+spec = "docs/spec/radio-features.md"
+source = ["core/radio/radio_heard.c", "core/radio/radio_heard.h", "core/radio/radio_m17.c",
+          "core/debuglink/debuglink_view_m17.c"]
+
+# The M17 reflector client over the USB network or PPP (tests/hil/test_m17_reflector.py; its link test is opt-in: the
+# tester names the reflector)
+[feature.m17_reflector]
+switch = "NET_M17"
+spec = "docs/spec/m17-ip.md"
+source = ["core/net/m17_net.c", "core/net/m17_net.h", "core/net/net.c", "core/radio/radio_m17.c",
+          "core/radio/radio_sm.c", "core/ui/ui_m17.c", "core/debuglink/debuglink_view_m17.c"]
 
 [feature.dmr_voice]
 switch = "DMR"

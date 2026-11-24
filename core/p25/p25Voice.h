@@ -11,7 +11,8 @@
  *      decoder as bad: it repeats the last good frame, then mutes.
  *  TX: while a transmission is on (p25VoiceTx) the audio block callback encodes each mic block with the full-rate
  *      encoder and queues the frame; the engine's tx_voice hook takes them one at a time. With none ready the hook
- *      says so and the engine sends silence (its tx_filler). The speaker is silent meanwhile.
+ *      says so and the engine sends silence (its tx_filler). The speaker is silent and its route off meanwhile, and
+ *      what is received is dropped: a call still on air afterwards primes again.
  *
  * Threading: p25VoiceBegin, p25VoicePoll, p25VoiceTx and p25VoiceEnd run in the radio core's task, the hooks in the
  * provider's task, the decoder and the encoder only in the audio callback. Each queue is single producer / single

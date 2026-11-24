@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "config.h"
+#include "hal_air.h"
 #include "hal_dmr_modem.h"
 #include "modem/hrc7000/hrc7000.h"
 #include "dmr_rfburst.h"
@@ -32,9 +33,9 @@ typedef struct {
 	// The RF is back on the receive frequency after every burst, so a transmission can listen between its bursts on
 	// a split channel too (the modem's tx_listen_split)
 	bool listen_split;
-	// The air interface provider (hrc_air) has been checked on air on this board, receive and transmit: its fits lose
-	// AIR_FIT_UNTESTED
-	bool air_verified;
+	// The profiles the air interface provider (hrc_air) has been checked with on air on this board, receive and
+	// transmit, as AIR_VERIFY_* bits (air_profile_t.verify): fits for them lose AIR_FIT_UNTESTED (core/air/air_verify.h)
+	uint8_t air_verified;
 } hrc_dmr_board_t;
 
 #if CONFIG_DMR

@@ -41,6 +41,7 @@ typedef struct {
 #endif
 #include "radio/radio_p25.h"
 #include "radio/radio_nxdn.h"
+#include "radio/radio_m17.h"
 
 typedef enum {
 	RS_IDLE,	// receiving, squelch closed
@@ -58,7 +59,14 @@ typedef enum {
 // key in band: HWOPT while a hardware option still needs a person's answer (board_hwopt_pending, hal_hwopt.h),
 // otherwise REFUSED. BENCH: the debug link's air interface bench holds the modem (CONFIG_AIR_RAW). TRUNK: a trunked
 // channel gave no voice channel (RADIO_TRUNK_WHY_* in radio_p25_view_t.twhy or radio_t3_brief_t.why says why). AIR_NO_TX: the board's air interface receives this
-// mode's profile but can't transmit it (NXDN at a rate the provider only receives)
+// mode's profile but can't transmit it (NXDN at a rate the provider only receives).
+// M17's own (radio_m17_tx_deny, docs/spec/m17.md, the radio core), after the shared ones: NO_CALLSIGN no M17 callsign,
+// CALLSIGN_BAD the stored one is not a standard address, ENC_NOT_BUILT the channel encrypts with what this build lacks
+// (never sent in the clear instead), ENC_NO_KEY its traffic key is missing, ENC_NOT_READY no AES nonce could be
+// promised new (entropy_nonce), SIG_NO_KEY Sign M17 calls is on without a usable signing key, SIG_KEY_BAD the key
+// check found d * G != Q. Linked to a reflector (CONFIG_NET_M17, docs/spec/m17-ip.md 7): NET_ENC the channel encrypts
+// (the network path sends in the clear only), NET_LOST the link went while PTT was held (the transmission ended; never
+// put on the air instead). The order is the debug link's (deny_key): append only
 typedef enum {
 	TXDENY_NONE, TXDENY_RX_ONLY, TXDENY_BAND, TXDENY_TIMEOUT, TXDENY_NO_FREQ, TXDENY_MODE,
 	TXDENY_NO_CODEC, TXDENY_NO_DMR, TXDENY_BUSY, TXDENY_NO_REPEATER, TXDENY_REJECTED, TXDENY_HOTSPOT, TXDENY_NO_ID,
@@ -66,6 +74,10 @@ typedef enum {
 	TXDENY_CEASED,	// the system stopped the over (DMR reverse channel)
 	TXDENY_BENCH, TXDENY_TRUNK, TXDENY_AIR_NO_TX, TXDENY_AES_KEY,
 	TXDENY_AES_WAIT,	// AES: the MI reservation is not saved yet (dmrAesSeq_t)
+	// M17
+	TXDENY_NO_CALLSIGN, TXDENY_CALLSIGN_BAD, TXDENY_ENC_NOT_BUILT, TXDENY_ENC_NO_KEY, TXDENY_ENC_NOT_READY,
+	TXDENY_SIG_NO_KEY, TXDENY_SIG_KEY_BAD,
+	TXDENY_NET_ENC, TXDENY_NET_LOST,
 } tx_deny_t;
 
 // Busy channel lockout (FM): CARRIER refuses PTT while anything is heard on the channel; WRONG_TONE only while a
@@ -525,6 +537,9 @@ typedef struct {
 #if CONFIG_NXDN
 	radio_nxdn_view_t nxdn;	// NXDN conventional (docs/spec/nxdn.md 6): the same
 #endif
+#if CONFIG_M17
+	radio_m17_view_t m17;	// M17 (docs/spec/m17.md, the radio core): the same, the signature state, what PTT sends
+#endif
 #if CONFIG_DMR_TRUNK
 	radio_t3_brief_t t3;
 #endif
@@ -636,6 +651,33 @@ void radio_req_p25_settings(const radio_p25_settings_t *s);
 #if CONFIG_NXDN
 // The NXDN settings (RAM only, radio_nxdn.h): the same
 void radio_req_nxdn_settings(const radio_nxdn_settings_t *s);
+#endif
+#if CONFIG_M17
+// The M17 settings (radio_m17.h): the same
+void radio_req_m17_settings(const radio_m17_settings_t *s);
+// The M17 settings as the radio task will have them: the latest request's while it waits, else those in force. Any
+// task. A change to one field reads these, not radio_m17_settings: two changes before the radio task's turn would
+// otherwise post one copy of the settings each, the second without the first
+void radio_m17_settings_next(radio_m17_settings_t *out);
+#if CONFIG_M17_PACKET
+// An SMS to dst (radio_m17_sms_send, in the radio task): text copied now. False when the one before is still on its
+// way to the radio task; the outcome shows in radio_m17_sms_result
+bool radio_req_m17_sms(uint64_t dst, const char *utf8);
+#endif
+#if CONFIG_M17_BERT
+// The BER test (radio_m17_bert_mode, _tx, _reset in the radio task): RADIO_REQ_M17_BERT_*
+enum { RADIO_REQ_M17_BERT_MODE_OFF, RADIO_REQ_M17_BERT_MODE_ON, RADIO_REQ_M17_BERT_TX_OFF, RADIO_REQ_M17_BERT_TX_ON,
+       RADIO_REQ_M17_BERT_RESET };
+void radio_req_m17_bert(uint8_t cmd);
+#endif
+// The benches (debug link op 44, no RF): the signature bench (radio_m17_bench_sig, tried again for a few ticks while
+// the voice path's scratch is busy) or the codec bench's phase in mode (radio_m17_bench_codec)
+enum { RADIO_REQ_M17_BENCH_SIG, RADIO_REQ_M17_BENCH_CODEC };
+void radio_req_m17_bench(uint8_t what, uint8_t phase, uint8_t mode);
+// The signature bench's latest outcome: RADIO_M17_BENCH_* (any task)
+enum { RADIO_M17_BENCH_NONE, RADIO_M17_BENCH_RUNNING, RADIO_M17_BENCH_OK, RADIO_M17_BENCH_FAILED,
+       RADIO_M17_BENCH_REFUSED };
+uint8_t radio_m17_bench_result(void);
 #endif
 #if CONFIG_DMR
 void radio_req_reply_cancel(void);		// BACK on Home: end the DMR reply window

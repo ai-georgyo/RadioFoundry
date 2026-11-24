@@ -2,7 +2,11 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // SHA-256 from FIPS 180-4 sections 4.1.2, 4.2.2, 5.1.1, 5.3.3 and 6.2
 #include <string.h>
+#include "config.h"
 #include "support/sha256.h"
+#if CONFIG_CRYPTO_HMAC
+#include "crypto/crypto_wipe.h"
+#endif
 
 static const uint32_t K[64] = {
 	0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
@@ -54,6 +58,11 @@ static void compress(uint32_t h[8], const uint8_t *p)
 	h[5] += f;
 	h[6] += g;
 	h[7] += k;
+#if CONFIG_CRYPTO_HMAC
+	// HMAC (core/crypto/hmac_sha256.c) hashes key blocks through here, and the schedule runs backward to its block:
+	// it doesn't stay on the stack (docs/spec/crypto.md, secrets)
+	crypto_wipe(w, sizeof w);
+#endif
 }
 
 void sha256_init(sha256_t *s)

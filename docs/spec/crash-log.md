@@ -142,6 +142,25 @@ runs in main SRAM only, so the words and the record survive it.
 The debug link's view section `reset` (23) shows it with or without a record: `reset.cause`, `reset.flags` (the chip's
 register as read, 0 without one), `reset.uptime_ms`, `reset.warm`.
 
+### 1.4 Secret work
+
+The record and the fault trace keep the registers at the fault (all of r0-r13 on the HR_C7000; r0-r3, r12 and
+EXC_RETURN on an STM32) and the 16 words at the stack pointer, and both leave the radio: on the debug link, in the
+report over the air, on the host UART. A fault while a key or a signing nonce sits in a register or on the stack
+would put it there. Code that holds a secret outside its wiped memory brackets that work with `crash_secret_enter()`
+and `crash_secret_leave()` (`core/crash/crash_secret.h`): P-256 signing and the key check, the reads of a signing key
+and of a traffic key into the engine, the AES nonce draw (`core/radio/radio_m17.c`); in the M17 engine the key's copy
+into it and, in the air provider's task, each frame's encryption and decryption (`core/m17/m17_engine.c`,
+`m17_tx.c`).
+
+| Item | Value |
+|---|---|
+| The count | `crash_secret` (`core/crash/crash_secret.c`, built with the crash log or the fault trace), a nesting count: enter adds 1, leave takes it away, a few instructions. The increment is plain, so it is safe only under one condition: a task that preempts another and never waits inside its bracket (the air provider's over the radio task) leaves the count as it found it, so the two can't lose an update; a compiler barrier on each side keeps the secret's first load after the count and its last use before it |
+| While it is not 0 | `crash_commit` zeroes every saved general register (`r[]`) and every stack word (`stack[]`) after it copied them, keeps `pc`, `lr`, `sp`, `psr` and `status`, and sets flag bit 5 (`CRASH_F_SECRET`). One pure function does it (`crash_secret_scrub`). The fault trace line prints `r0`-`r13` as zeros; `v`, `pc`, `psr`, `lr` and `sp` stay |
+| Every way in | the fault entries of both platforms, the hang and stall checks, an assertion, a stack overflow, out of heap: all end in `crash_commit` |
+| What stays | where it happened and why. A key does not reach `pc`, `lr`, `sp` or a status word |
+| Without the crash log and the fault trace | nothing is recorded; enter and leave are empty |
+
 ## 2. Platforms
 
 ### 2.1 STM32F4
@@ -210,7 +229,7 @@ the task snapshot) reads as no record.
 | 4 | version u16, size u16 | 2, 256 |
 | 8 | arch u8 | 1 Cortex-M4, 2 CK803S |
 | 9 | kind u8 | section 1 |
-| 10 | flags u8 | bit 0 in an interrupt handler, 1 the build had local changes, 2 `stack` is valid, 3 seen (shown or dismissed), 4 sent |
+| 10 | flags u8 | bit 0 in an interrupt handler, 1 the build had local changes, 2 `stack` is valid, 3 seen (shown or dismissed), 4 sent, 5 during secret work: `r` and `stack` are zeros (1.4) |
 | 11 | count u8 | crashes in a row of this build nobody looked at: 1 the first; counts up while the record before is unseen and from the same build, saturates at 255 |
 | 12 | cause u32 | section 1 |
 | 16 | pc, lr, sp, psr u32 | where; the return address; the stack pointer before the exception; CM4 the stacked xPSR, CK803 EPSR |
@@ -252,7 +271,8 @@ valid record at start-up, before the tasks start; `crash_mark()` sets the seen a
 
 76 to 124 bytes. `tools/crash_decode.py` reads it (as received, as hex, or the debug link's crash view) and, with
 the build's ELF, names the functions at `pc`, `lr` and the return addresses through addr2line. The stack words are
-only candidates: a code address left on the stack by an earlier call looks the same as a live return address.
+only candidates: a code address left on the stack by an earlier call looks the same as a live return address. A
+record with flag bit 5 (secret work, 1.4) names the flag and shows `r0-r3` as zeroed rather than as values.
 
 ## 5. Sending the report
 
@@ -330,6 +350,9 @@ after each bench watchdog reset the cause is `watchdog` (or `warm`) with the run
 before the watchdog resets, with the UI and radio tasks in its snapshot and at least one of them waiting;
 (`test_crash_stall_kept`) CRASH TEST stall keeps a stall record with `host` in the snapshot, and the radio answers
 again.
+`tests/host/crashSecretTest.c`: the count nests; the scrub of a filled record zeroes `r` and `stack` and keeps every
+other byte; `crash_commit` scrubs only while the count is not 0; the fault trace line prints zeros for `r0`-`r13`
+then, with a good CRC, and the registers otherwise.
 `tests/host/crashCaptureTest.c`: `crash_capture.c` on a stand-in RTOS; every way in (a fault record, a stack
 overflow, out of heap, an assertion inside the capture) calls `board_rf_safe` first, with interrupts off, before the
 store and the restart; the snapshot's order, the running and idle tasks left out, names cut, the count of the rest. A board with a first stage tests that it drives the transmitter pins off (`boards/<id>/tests/`).

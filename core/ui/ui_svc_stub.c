@@ -41,7 +41,7 @@ WEAK bool ui_svc_vox(bool on) { (void)on; return false; }
 WEAK bool ui_svc_save_channel(void) { return false; }
 WEAK void ui_svc_next_aes_key(channel_t *ch) { (void)ch; }
 WEAK bool ui_svc_write_channel(uint16_t number, const channel_t *ch, uint16_t from) { (void)number; (void)ch; (void)from; return false; }
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 WEAK bool ui_svc_write_channel_air(uint16_t number, const channel_t *ch, uint16_t from, const ui_air_conv_t *conv)
 {
 	(void)conv;
@@ -55,6 +55,13 @@ WEAK bool ui_svc_zone_edit(const zone_op_t *op) { (void)op; return false; }
 WEAK void ui_svc_zone_poll(void) { }
 WEAK bool ui_svc_zone_pending(void) { return false; }
 WEAK bool ui_svc_save_talk_target(uint32_t id, bool private_call) { (void)id; (void)private_call; return false; }
+#if CONFIG_M17
+WEAK uint8_t ui_svc_m17_caps(void) { return 0; }
+WEAK bool ui_svc_m17_talk_to(const uint8_t dst[M17_ADDR_BYTES], uint8_t life) { (void)dst; (void)life; return false; }
+WEAK bool ui_svc_m17_wide_set(const m17_wide_t *w) { (void)w; return false; }
+WEAK bool ui_svc_m17_write_block(const uint8_t *dst, bool enc_off) { (void)dst; (void)enc_off; return false; }
+WEAK void ui_svc_m17_poll(void) { }
+#endif
 
 WEAK bool ui_svc_scan(bool on) { (void)on; return false; }
 WEAK bool ui_svc_roam(uint8_t cmd) { (void)cmd; return false; }
@@ -92,13 +99,7 @@ WEAK uint8_t ui_svc_home_key(uint8_t action, uint8_t gesture, bool home) { (void
 WEAK bool ui_svc_key_offered(uint8_t id, int32_t value) { (void)id; (void)value; return false; }
 WEAK void ui_svc_apply(uint8_t id, int32_t value) { (void)id; (void)value; }
 
-WEAK uint16_t ui_svc_msg_count(void) { return 0; }
-WEAK uint16_t ui_svc_msg_unread(void) { return 0; }
-WEAK bool ui_svc_msg_get(uint16_t i, ui_msg_t *out) { (void)i; (void)out; return false; }
-WEAK void ui_svc_msg_read(uint16_t i) { (void)i; }
-WEAK bool ui_svc_msg_delete(uint16_t i) { (void)i; return false; }
-WEAK bool ui_svc_msg_send(uint32_t dst, bool group, const char *text) { (void)dst; (void)group; (void)text; return false; }
-WEAK bool ui_svc_msg_reply(uint16_t i, const char *text) { (void)i; (void)text; return false; }
+// The messages (ui_svc_msg_*) are the UI's own: ui_svc_msg.c, over the providers built
 WEAK bool ui_svc_radio_check(uint32_t id) { (void)id; return false; }
 WEAK bool ui_svc_call_alert(uint32_t id) { (void)id; return false; }
 WEAK uint8_t ui_svc_ars_state(void) { return UI_ARS_OFF; }

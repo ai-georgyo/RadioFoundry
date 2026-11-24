@@ -5,6 +5,7 @@
 #if CONFIG_APRS
 #include "ui_svc_aprs.h"
 #include "aprs/aprs_fmt.h"
+#include "position/position_geo.h"
 #include "ui_svc.h"
 #include "board.h"
 #include "storage/storage.h"
@@ -105,8 +106,7 @@ bool ui_svc_aprs_range(const aprs_station_t *s, uint32_t *m, uint16_t *deg)
 	if (!s->has_pos || !position_now(&lat, &lon, &err_m, &dmr_gps, hal_millis())) {
 		return false;
 	}
-	*m = aprs_distance_m(lat, lon, s->lat, s->lon);
-	*deg = aprs_bearing_deg(lat, lon, s->lat, s->lon);
+	position_range(lat, lon, s->lat, s->lon, m, deg);
 	return true;
 }
 #endif

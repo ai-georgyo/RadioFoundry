@@ -234,7 +234,8 @@ static keystream can't undo an MI-based scheme, so such a call plays only throug
 
 ### 5.1 AES-256 with a message indicator
 
-The scheme behind PI headers with algorithm ID 0x25, as other radios send it (`CONFIG_DMR_AES`, `core/dmr/dmrAes.c`).
+The scheme behind PI headers with algorithm ID 0x25, as other radios send it (`CONFIG_DMR_AES`, `core/dmr/dmrAes.c`,
+on the tree's one AES, `core/crypto/aes.c`, [crypto.md](crypto.md) 2).
 Measured on air with the SDR bench and checked against a reference decoder used as a black box;
 `tests/host/dmrAesTest.c` decrypts a captured test call with it.
 
@@ -366,6 +367,25 @@ the encoder gets the generated tone instead of the microphone, after the mic gai
   went on air is not played in the next one. `busy` is false while no transmission runs.
 * The tone's amplitude is fixed (`TONE_AMP_Q15`). It is not checked on air, nor how other makes of radio play a tone
   frame.
+
+### 6.2 Playing a call
+
+The same file plays what the call stack hears. NXDN uses it too, through the same sink and source.
+
+| What | Behavior |
+|---|---|
+| Queue | the call stack's voice sink FEC-decodes each frame into a queue (`AMBE_VOICE_QUEUE`, 8 frames). The audio callback takes one per 20 ms block and decodes it |
+| Start | playback starts once a burst (`AMBE_VOICE_PRIME`, 3 frames) is queued. A call that ends with fewer plays what it has; one that ends with none plays nothing |
+| Bad frames | a frame with an uncorrectable C0, a lost frame and an underrun repeat the last good frame up to `AMBE_VOICE_REPEAT` (3) times, then play silence |
+| A new call | drops what is left of the last one. A call cut off this way stops playing, and the speaker route goes off until the new call plays |
+| The end | what is queued plays out, then the speaker route goes off |
+| Speaker route | on while a call plays or a beep is mixed in. A beep that ends in the block where a call starts turns it off |
+| Transmitting | the queue still plays out, one frame a block, as silence (section 6), so a transmission leaves no backlog: after it the call goes on with the frame it would have played anyway. After one longer than the queue (160 ms), nothing received before it is heard. A call playing meanwhile, silent, keeps the speaker route on |
+| Peak | `rx_peak` (`voice.rx_peak`) is the largest decoded sample of the latest call that played. A call that never plays leaves it |
+
+The sink writes a call's start, then its frames, then its end. The audio callback reads them in the reverse order (the
+end, the queue's head, the start), so a call that starts or ends between two of its reads loses no frame. Host tests:
+`tests/host/ambeVoiceTest.c`.
 
 ## 7. Observing it
 

@@ -49,6 +49,9 @@ bool stm32_stub_image_ok(const uint8_t *img, uint32_t len);
 // 32 s) and a feed. The stub feeds it from then on; RadioFoundry refuses a stub that doesn't
 void stm32_watchdog_stretch(void);
 
+// CONFIG_ENTROPY (rng.c): up to n bytes from the RNG peripheral, 0 on a seed or clock fault (hal_system_t.entropy)
+size_t stm32_rng_read(uint8_t *buf, size_t n);
+
 // Enable the clock of a GPIO port by its base address
 void stm32_gpio_clock(GPIO_TypeDef *port);
 

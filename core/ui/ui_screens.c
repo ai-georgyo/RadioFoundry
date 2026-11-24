@@ -15,6 +15,11 @@
 #if CONFIG_DMR_TRUNK
 #include "dmr/trunk/t3_ms.h"	// the engine's states, for the trunked status words
 #endif
+#if CONFIG_M17
+#include "ui_m17.h"
+#include "m17/m17_engine.h"	// the transmit phases and why a call isn't played
+#include "position/position_geo.h"
+#endif
 
 ui_layout_t ui_layout;
 static const font_t *font_largest;	// the large text setting's font (large_font)
@@ -1021,6 +1026,10 @@ static void home_entry_text(const ui_state_t *s, char *buf, size_t len)
 static void draw_talk_dmr(const radio_view_t *v, bool label_first);
 static void draw_chips_dmr(const radio_view_t *v, const ui_state_t *s);
 #endif
+#if CONFIG_M17
+static void draw_talk_m17(const radio_view_t *v, sbuf_t *b, color_t *c);
+static void draw_chips_m17(const radio_view_t *v);
+#endif
 
 static void draw_place(const radio_view_t *v, const ui_state_t *s)
 {
@@ -1051,6 +1060,15 @@ static void draw_place(const radio_view_t *v, const ui_state_t *s)
 		}
 		int rw = gfx_text_width(L->small, right);
 		const char *left = v->vfo ? "VFO" : v->zone_name;
+		bool linked = false;
+#if CONFIG_NET_M17
+		// Linked to a reflector on an M17 channel: where the zone was, "Linked M17-M17 C" (UX 22)
+		char refl[32];
+		if (v->ch.mode == RADIO_MODE_M17 && ui_m17_refl_place(refl, sizeof refl)) {
+			left = refl;
+			linked = true;
+		}
+#endif
 		if (v->vfo && v->ch.mode == RADIO_MODE_DMR && !v->ch.rx_only && v->ch.tx_hz != v->ch.rx_hz) {
 			// A split VFO on DMR: the talk row names the target, so the TX frequency goes here (FM's talk row
 			// already shows it). A frequency is never cut short: the step gives way, then "VFO"
@@ -1066,7 +1084,7 @@ static void draw_place(const radio_view_t *v, const ui_state_t *s)
 		if (rw)
 			gfx_text(L->small, w - rw, L->zone_y, right, ui_col.dim);
 		gfx_text_fit(L->small, left, w - rw - L->small->w, fit, sizeof fit);
-		gfx_text(L->small, 0, L->zone_y, fit, v->vfo ? ui_col.warn : ui_col.fg);
+		gfx_text(L->small, 0, L->zone_y, fit, v->vfo && !linked ? ui_col.warn : ui_col.fg);
 	}
 
 	int y = L->channel_y;
@@ -1187,6 +1205,10 @@ static void draw_talk(const radio_view_t *v, bool label_first)
 			sb_str(&b, "TG ");
 		sb_u32(&b, v->nxdn.talk, 1);
 #endif
+#if CONFIG_M17
+	} else if (v->ch.mode == RADIO_MODE_M17) {
+		draw_talk_m17(v, &b, &c);	// the destination, or "No M17 callsign"
+#endif
 	} else {
 		// " MHz" goes before the frequency is cut (font.h alternates)
 		sb_str(&b, TEXT_ALT_OPEN);
@@ -1256,6 +1278,12 @@ static void draw_chips(const radio_view_t *v, const ui_state_t *s)
 #endif
 		return;
 	}
+#if CONFIG_M17
+	if (v->ch.mode == RADIO_MODE_M17) {
+		draw_chips_m17(v);
+		return;
+	}
+#endif
 	if (v->ch.mode == RADIO_MODE_NXDN) {
 		// The same for NXDN: the power, the RAN sent and the rate
 		if (pw_temp)
@@ -1400,6 +1428,34 @@ static const char *deny_reason(const radio_view_t *v, char *buf, size_t len)
 	case TXDENY_REFUSED: sb_str(&b, TR(DENY_WHY_RADIO_REFUSED, "Radio refused to send")); break;
 	case TXDENY_BENCH: sb_str(&b, TR(DENY_WHY_AIR_BENCH, "Air bench: PTT off")); break;
 	case TXDENY_AIR_NO_TX: sb_str(&b, TR(DENY_WHY_AIR_NO_TX, "This mode: receive only")); break;
+#if CONFIG_M17
+	case TXDENY_NO_CALLSIGN: sb_str(&b, TR(DENY_WHY_NO_CALLSIGN, "No M17 callsign set")); break;
+	case TXDENY_CALLSIGN_BAD: sb_str(&b, TR(DENY_WHY_CALLSIGN_INVALID, "M17 callsign not valid")); break;
+	case TXDENY_ENC_NOT_BUILT:
+		sb_str(&b, TR(DENY_WHY_ENC_NOT_IN_BUILD, TEXT_ALT_OPEN "Encrypted channel: not in this build" TEXT_ALT_NEXT
+			"Encryption not built" TEXT_ALT_CLOSE));
+		break;
+#if CONFIG_M17_SCRAMBLER || CONFIG_M17_AES
+	case TXDENY_ENC_NO_KEY: sb_str(&b, TR(DENY_WHY_ENC_NO_KEY, "Privacy on, no key")); break;
+#endif
+#if CONFIG_M17_AES
+	case TXDENY_ENC_NOT_READY:
+		sb_str(&b, TR(DENY_WHY_ENC_NOT_READY, TEXT_ALT_OPEN "Encryption not ready: try again" TEXT_ALT_NEXT
+			"Not ready: retry" TEXT_ALT_CLOSE));
+		break;
+#endif
+#if CONFIG_M17_SIG	// a build without signatures sends unsigned (m17.md 17.3)
+	case TXDENY_SIG_NO_KEY: sb_str(&b, TR(DENY_WHY_NO_SIGNING_KEY, "Signing on, no key")); break;
+	case TXDENY_SIG_KEY_BAD: sb_str(&b, TR(DENY_WHY_KEY_DAMAGED, "Signing key damaged")); break;
+#endif
+#if CONFIG_NET_M17
+	case TXDENY_NET_ENC:
+		sb_str(&b, TR(DENY_WHY_NET_ENCRYPTED, TEXT_ALT_OPEN "Encrypted: not to the reflector" TEXT_ALT_NEXT
+			"Encrypted: no reflector" TEXT_ALT_CLOSE));
+		break;
+	case TXDENY_NET_LOST: sb_str(&b, TR(DENY_WHY_NET_LINK_LOST, "Reflector link lost")); break;
+#endif
+#endif
 #if CONFIG_P25_TRUNK || CONFIG_DMR_TRUNK
 	case TXDENY_TRUNK:
 		switch (trunk_why(v)) {
@@ -1449,6 +1505,25 @@ static const char *deny_action(const radio_view_t *v)
 	case TXDENY_HWOPT: return hwopt_action();
 	case TXDENY_REFUSED: return TR(DENY_FIX_RELEASE_AND_RETRY, "Release PTT, try again");
 	case TXDENY_BENCH: return TR(DENY_FIX_END_BENCH_ON_PC, "End the bench on the PC");
+#if CONFIG_M17
+	case TXDENY_NO_CALLSIGN:
+	case TXDENY_CALLSIGN_BAD: return TR(DENY_FIX_SET_CALLSIGN, "OK set callsign");	// OK opens the entry (ui_app.c)
+	case TXDENY_ENC_NOT_BUILT:
+	case TXDENY_ENC_NO_KEY: return TR(DENY_FIX_PRIVACY_OFF, "Turn privacy off: * 6");
+#if CONFIG_M17_AES
+	case TXDENY_ENC_NOT_READY: return TR(DENY_FIX_WAIT_RETRY, "Wait a moment, then PTT");
+#endif
+#if CONFIG_M17_SIG
+	case TXDENY_SIG_NO_KEY:
+		return TR(DENY_FIX_SIGNING_OFF, TEXT_ALT_OPEN "Turn signing off or add a key" TEXT_ALT_NEXT
+			"Signing off or add key" TEXT_ALT_CLOSE);
+	case TXDENY_SIG_KEY_BAD: return TR(DENY_FIX_REWRITE_KEY, "Write the key again");
+#endif
+#if CONFIG_NET_M17
+	case TXDENY_NET_ENC: return TR(DENY_FIX_PRIVACY_OFF, "Turn privacy off: * 6");	// (or unlink: the air encrypts)
+	case TXDENY_NET_LOST: return TR(DENY_FIX_RELEASE_PTT, "Release PTT to talk again");
+#endif
+#endif
 #if CONFIG_P25_TRUNK || CONFIG_DMR_TRUNK
 	case TXDENY_TRUNK:
 		if (trunk_why(v) == RADIO_TRUNK_WHY_OTHER_SYS || trunk_why(v) == RADIO_TRUNK_WHY_UNMAPPED)
@@ -1489,6 +1564,40 @@ bool ui_sb_gw_caller(sbuf_t *b, uint32_t src)
 #endif
 	return false;
 }
+
+// --- The call screen's lines (draw_call): each mode's builder fills them from the view, in its own order ---
+enum {
+	CALL_L_END,
+	CALL_L_SUB,	// TX: the line under the state word, medium (DMR: the target with its name)
+	CALL_L_FREQ,	// TX in the VFO: its TX frequency (TX color)
+	CALL_L_DETAIL,	// slot, codes and chips (dim; warn in an emergency)
+	CALL_L_TIME,	// TX: the time, and the time-out
+	CALL_L_WHERE,	// why it isn't played (warn), else where the call goes (the title)
+	CALL_L_POS,	// the caller's position: how far and which way, else where
+	CALL_L_TEXT,	// the caller's text (a talker alias) in quotes, up to two lines
+	CALL_L_METER,	// the signal in dBm and its meter, where a whole row is left
+	CALL_L_WHY,	// why it isn't played (warn), nothing when it is
+	CALL_L_VIA,	// RX: who relayed it ("via M17-M17 C"), in freq's buffer (TX only otherwise)
+	CALL_L_SIG,	// RX: the signature's state (sig); warn with sig_warn, else dim
+};
+typedef struct {
+	bool tx, played, emergency, late;
+	char title[40];		// RX: where the call goes ("TG 91 World", "Private to you"); TX: the target
+	char caller[24];	// RX: who (large); TX: the state word ("TALKING", "WAITING")
+	char sub[48];		// CALL_L_SUB, or ""; RX: CALL_L_TEXT's text where the view holds none (M17's, converted)
+	char freq[20];		// CALL_L_FREQ, or ""
+	char detail[48];	// CALL_L_DETAIL, or ""
+	char time[20];		// CALL_L_TIME, or "": "1092:15 sur 1092:15" at most (a 16-bit time-out), and its NUL
+	char pos[24];		// CALL_L_POS, or ""
+	const char *why;	// CALL_L_WHERE: why it isn't played (a translation), NULL: it is
+	const char *text;	// CALL_L_TEXT (the view's), NULL: none
+	const char *sig;	// CALL_L_SIG: the signature's state (a translation, with its alternates), NULL: none
+	const char *hint;	// the hint row
+	int16_t dbm;		// CALL_L_METER
+	uint8_t text_keep;	// the rows CALL_L_TEXT leaves below it
+	bool sig_warn;		// CALL_L_SIG in the warning color
+	const uint8_t *order;	// the lines top down, CALL_L_END after the last (the builder's own table)
+} ui_call_t;
 
 // --- DMR (docs/ux/wireframes: Home DMR, Receiving, Transmitting) ---
 #if CONFIG_DMR
@@ -1657,15 +1766,6 @@ static void sb_call_dst(sbuf_t *b, const radio_dmr_call_t *c)
 		else
 			sb_u32(b, c->dst, 1);
 	}
-}
-
-static bool dmr_call_screen(const radio_view_t *v)
-{
-	if (v->aprs_tx || v->ch.mode != RADIO_MODE_DMR || !v->dmr.active || v->hotspot)
-		return false;
-	if (v->state == RS_TX)
-		return !sending_data(v);	// data has no talk target to show: Home stays, its activity line says so
-	return v->state == RS_RX && (v->dmr.state == RDMR_RX || v->dmr.state == RDMR_RX_OTHER);
 }
 
 // Talk target line on Home: an arrow and "TG 201 Main Ops", or an inverted return arrow and "TG 9 (8s)" in warn color
@@ -1963,100 +2063,21 @@ static void draw_last_heard(const radio_view_t *v, const ui_state_t *s, int y)
 	gfx_text(sm, 0, y, fit, ui_col.fg);
 }
 
-// One text line of the call screens, if it still fits above the hint row; returns the next y
-static int call_line(const font_t *f, int y, const char *text, color_t c)
+// Receiving: the caller ID, slot and chips under the caller, the alias, the position, then why the call isn't heard or
+// where it goes, the signal. Transmitting: the target, the VFO's TX frequency, slot and chips, the time
+static void call_dmr_rx(const radio_view_t *v, const ui_state_t *s, ui_call_t *c)
 {
-	char fit[48];
-	if (y + f->h > ui_layout.hint_y)
-		return y;
-	gfx_text_fit(f, text, gfx_width(), fit, sizeof fit);
-	gfx_text(f, 0, y, fit, c);
-	return y + f->h;
-}
-
-// Receiving and Transmitting: the call takes the screen below the status strip
-static void draw_dmr_call(const radio_view_t *v, const ui_state_t *s)
-{
-	const ui_layout_t *L = &ui_layout;
+	static const uint8_t order[] = { CALL_L_DETAIL, CALL_L_TEXT, CALL_L_POS, CALL_L_WHERE, CALL_L_METER, CALL_L_END };
 	const radio_dmr_view_t *d = &v->dmr;
-	int w = gfx_width();
-	char buf[48], title[40];
 	sbuf_t b;
-
-	sb_init(&b, title, sizeof title);
-	if (v->state == RS_TX && d->target_private && d->target_id != 0xFFFFFFu) {
-		// A private call says so where a group call has its "TG": "Private 9991234", else "Private"
-		sb_str(&b, TEXT_ALT_OPEN);
-		sb_str(&b, TR(CALL_BODY_PRIVATE_ID, "Private "));
-		sb_u32(&b, d->target_id, 1);
-		sb_str(&b, TEXT_ALT_NEXT);
-		sb_str(&b, TR(VALUE_PRIVATE, "Private"));
-		sb_str(&b, TEXT_ALT_CLOSE);
-	} else if (v->state == RS_TX) {
-		sb_target(&b, d->target_id, d->target_private, "");
-	} else {
-		sb_call_dst(&b, &d->call);
-	}
-	gfx_clear(ui_col.bg);
-	int y = ui_draw_top(v, s, NULL, title) + 1;
-
-	if (v->state == RS_TX) {
-		const char *word = TR(STATE_TALKING, "TALKING");
-		switch (d->state) {
-		case RDMR_TX_WAIT: word = d->rmo && !d->repeater_up ? TR(CALL_STATE_WAKING_RPT, "WAKING RPT") :
-			TR(CALL_STATE_WAITING, "WAITING"); break;
-		// the channel is ours: the talk permit sounds now
-		case RDMR_TX_PERMIT: word = TR(CALL_STATE_ADMITTED, "ADMITTED"); break;
-		case RDMR_TX_ENDING: word = TR(CALL_STATE_ENDING, "ENDING"); break;
-		default: break;
-		}
-		const font_t *big = gfx_text_width(L->large, word) <= w ? L->large : L->medium;
-		gfx_text_fit(big, word, w, buf, sizeof buf);	// a translation too wide even for the medium font
-		gfx_text(big, 0, y, buf, ui_col.tx);
-		y += big->h + 2;
-		// The target with its name, else its short form: a talkgroup's number, a private contact's name
-		sb_init(&b, buf, sizeof buf);
-		sb_target_alts(&b, d->target_id, d->target_private, d->target_name, "");
-		y = call_line(L->medium, y, buf, ui_col.fg);
-		if (v->vfo) {	// a channel has its name in the codeplug; the VFO has only its TX frequency
-			sb_init(&b, buf, sizeof buf);
-			sb_str(&b, "TX ");
-			sb_freq(&b, v->ch.tx_hz);
-			sb_str(&b, " MHz");
-			y = call_line(L->small, y, buf, ui_col.tx);
-		}
-		sb_init(&b, buf, sizeof buf);
-		sb_str(&b, "TS");
-		sb_u32(&b, d->ts, 1);
-		sb_str(&b, " CC");
-		sb_u32(&b, d->cc, 1);
-		sb_str(&b, d->target_private ? TR(CALL_BODY_TO_PRIVATE, " Private") : TR(CALL_BODY_TO_GROUP, " Group"));
-		if (d->rmo)
-			sb_str(&b, " RPT");
-		if (d->privacy)
-			sb_str(&b, " ENC");
-		y = call_line(L->small, y, buf, ui_col.dim);
-		sb_init(&b, buf, sizeof buf);
-		sb_mmss(&b, v->tx_elapsed_ms / 1000u);
-		if (v->tot_s) {
-			sb_str(&b, TR(PART_OF, " of "));	// the time-out
-			sb_mmss(&b, v->tot_s);
-		}
-		call_line(L->small, y, buf, ui_col.fg);
-		ui_draw_hint(d->state == RDMR_TX_ENDING ? TR(CALL_HINT_FINISHING, "Finishing the call") :
-			TR(CALL_HINT_RELEASE_PTT, "Release PTT to stop"), false);
-		return;
-	}
-
-	// Receiving: the caller large, then ID, alias, talkgroup, signal
-	sb_init(&b, buf, sizeof buf);
+	c->played = d->state == RDMR_RX;
+	c->emergency = d->call.emergency;
+	c->late = d->late_entry;
+	sb_init(&b, c->title, sizeof c->title);
+	sb_call_dst(&b, &d->call);
+	sb_init(&b, c->caller, sizeof c->caller);
 	sb_caller(&b, &d->call);
-	const font_t *big = gfx_text_width(L->large, buf) <= w ? L->large : L->medium;
-	char fit[40];
-	gfx_text_fit(big, buf, w, fit, sizeof fit);
-	gfx_text(big, 0, y, fit, d->call.emergency ? ui_col.warn : (d->state == RDMR_RX ? ui_col.fg : ui_col.dim));
-	y += big->h;
-	sb_init(&b, buf, sizeof buf);
+	sb_init(&b, c->detail, sizeof c->detail);
 	if (d->call.src_name[0] != '\0') {
 		sb_u32(&b, d->call.src, 1);
 		sb_chr(&b, ' ');
@@ -2073,21 +2094,10 @@ static void draw_dmr_call(const radio_view_t *v, const ui_state_t *s)
 		sb_str(&b, " ENC");	// privacy marker (played only with the key, never after a PI header)
 	if (d->call.emergency)
 		sb_str(&b, TR(CALL_CHIP_EMERGENCY, " EMERGENCY"));
-	y = call_line(L->small, y, buf, d->call.emergency ? ui_col.warn : ui_col.dim);
-	if (d->alias[0] != '\0' && s->alias_show) {
-		// The talker alias in quotes, on two lines when it needs them and they fit above the signal line
-		char lines[2][64];
-		sb_init(&b, buf, sizeof buf);
-		sb_chr(&b, '"');
-		sb_str(&b, d->alias);
-		sb_chr(&b, '"');
-		int room = (L->hint_y - y) / L->small->h - 2;	// the talkgroup and signal lines stay
-		int n = wrap_lines(L->small, buf, w, room >= 2 ? 2 : 1, lines, false);
-		for (int i = 0; i < n; i++)
-			y = call_line(L->small, y, lines[i], ui_col.fg);
-	}
+	c->text = d->alias[0] != '\0' && s->alias_show ? d->alias : NULL;
+	c->text_keep = 2;	// the line where it goes and the signal stay
 	if (d->call.gps_valid) {	// the caller's ETSI GPS Info: how far and which way, else where
-		sb_init(&b, buf, sizeof buf);
+		sb_init(&b, c->pos, sizeof c->pos);
 		if (d->call.gps_range) {
 			sb_range(&b, d->call.gps_dist_m, d->call.gps_bearing);
 		} else {
@@ -2095,33 +2105,530 @@ static void draw_dmr_call(const radio_view_t *v, const ui_state_t *s)
 			sb_chr(&b, ' ');
 			sb_degrees(&b, d->call.gps_lon);
 		}
-		y = call_line(L->small, y, buf, ui_col.fg);
 	}
-	// Then why it isn't heard, or where the call goes ("TG 91 World")
-	const char *why = d->state == RDMR_RX_OTHER ? (d->call.encrypted ?
+	c->why = d->state == RDMR_RX_OTHER ? (d->call.encrypted ?
 		TR(CALL_WHY_ENCRYPTED, "Encrypted: not played") :
 		TR(CALL_WHY_OTHER_TG, "Other TG: not played")) : !d->codec ? TR(WHY_NO_CODEC, "No codec: voice off") :
 			NULL;
-	if (why != NULL) {
-		y = call_line(L->small, y, why, ui_col.warn);
+	c->dbm = d->rssi_dbm != 0 ? d->rssi_dbm : v->rssi_dbm;
+	c->hint = d->state == RDMR_RX_OTHER ? TR(CALL_HINT_MON_DMON, "MON: digital monitor") :
+		TR(HINT_PTT_REPLIES, "PTT replies");
+	c->order = order;
+}
+
+static void call_dmr_tx(const radio_view_t *v, ui_call_t *c)
+{
+	static const uint8_t order[] = { CALL_L_SUB, CALL_L_FREQ, CALL_L_DETAIL, CALL_L_TIME, CALL_L_END };
+	const radio_dmr_view_t *d = &v->dmr;
+	sbuf_t b;
+	c->tx = true;
+	sb_init(&b, c->title, sizeof c->title);
+	if (d->target_private && d->target_id != 0xFFFFFFu) {
+		// A private call says so where a group call has its "TG": "Private 9991234", else "Private"
+		sb_str(&b, TEXT_ALT_OPEN);
+		sb_str(&b, TR(CALL_BODY_PRIVATE_ID, "Private "));
+		sb_u32(&b, d->target_id, 1);
+		sb_str(&b, TEXT_ALT_NEXT);
+		sb_str(&b, TR(VALUE_PRIVATE, "Private"));
+		sb_str(&b, TEXT_ALT_CLOSE);
 	} else {
-		sb_init(&b, buf, sizeof buf);
-		sb_call_dst(&b, &d->call);
-		y = call_line(L->small, y, buf, ui_col.fg);
+		sb_target(&b, d->target_id, d->target_private, "");
 	}
-	if (y + L->small->h <= L->hint_y) {
-		int16_t dbm = d->rssi_dbm != 0 ? d->rssi_dbm : v->rssi_dbm;
-		sb_init(&b, buf, sizeof buf);
-		sb_i32(&b, dbm);
-		sb_str(&b, " dBm");
-		int tw = gfx_text_width(L->small, buf);
-		gfx_text(L->small, w - tw, y, buf, ui_col.fg);
-		draw_meter(0, y + L->small->h / 4, w - tw - L->small->w, L->small->h / 2, dbm);
+	const char *word = TR(STATE_TALKING, "TALKING");
+	switch (d->state) {
+	case RDMR_TX_WAIT: word = d->rmo && !d->repeater_up ? TR(CALL_STATE_WAKING_RPT, "WAKING RPT") :
+		TR(CALL_STATE_WAITING, "WAITING"); break;
+	// the channel is ours: the talk permit sounds now
+	case RDMR_TX_PERMIT: word = TR(CALL_STATE_ADMITTED, "ADMITTED"); break;
+	case RDMR_TX_ENDING: word = TR(CALL_STATE_ENDING, "ENDING"); break;
+	default: break;
 	}
-	ui_draw_hint(d->state == RDMR_RX_OTHER ? TR(CALL_HINT_MON_DMON, "MON: digital monitor") :
-		TR(HINT_PTT_REPLIES, "PTT replies"), false);
+	str_copy(c->caller, sizeof c->caller, word);
+	// The target with its name, else its short form: a talkgroup's number, a private contact's name
+	sb_init(&b, c->sub, sizeof c->sub);
+	sb_target_alts(&b, d->target_id, d->target_private, d->target_name, "");
+	if (v->vfo) {	// a channel has its name in the codeplug; the VFO has only its TX frequency
+		sb_init(&b, c->freq, sizeof c->freq);
+		sb_str(&b, "TX ");
+		sb_freq(&b, v->ch.tx_hz);
+		sb_str(&b, " MHz");
+	}
+	sb_init(&b, c->detail, sizeof c->detail);
+	sb_str(&b, "TS");
+	sb_u32(&b, d->ts, 1);
+	sb_str(&b, " CC");
+	sb_u32(&b, d->cc, 1);
+	sb_str(&b, d->target_private ? TR(CALL_BODY_TO_PRIVATE, " Private") : TR(CALL_BODY_TO_GROUP, " Group"));
+	if (d->rmo)
+		sb_str(&b, " RPT");
+	if (d->privacy)
+		sb_str(&b, " ENC");
+	sb_init(&b, c->time, sizeof c->time);
+	sb_mmss(&b, v->tx_elapsed_ms / 1000u);
+	if (v->tot_s) {
+		sb_str(&b, TR(PART_OF, " of "));	// the time-out
+		sb_mmss(&b, v->tot_s);
+	}
+	c->hint = d->state == RDMR_TX_ENDING ? TR(CALL_HINT_FINISHING, "Finishing the call") :
+		TR(CALL_HINT_RELEASE_PTT, "Release PTT to stop");
+	c->order = order;
+}
+
+// DMR's call screen: a voice call heard or ours going out on a DMR channel (not data, not the hotspot's)
+static bool call_from_dmr(const radio_view_t *v, const ui_state_t *s, ui_call_t *c)
+{
+	if (v->aprs_tx || v->ch.mode != RADIO_MODE_DMR || !v->dmr.active || v->hotspot)
+		return false;
+	if (v->state == RS_TX) {
+		if (sending_data(v))
+			return false;	// data has no talk target to show: Home stays, its activity line says so
+		call_dmr_tx(v, c);
+		return true;
+	}
+	if (v->state != RS_RX || (v->dmr.state != RDMR_RX && v->dmr.state != RDMR_RX_OTHER))
+		return false;
+	call_dmr_rx(v, s, c);
+	return true;
 }
 #endif
+
+#if CONFIG_M17
+// --- M17 (docs/ux/m17.md 3-5): Home's lines and the call screen from radio_view_t.m17 ---
+
+void ui_sb_m17(sbuf_t *b, const uint8_t a[M17_ADDR_BYTES])
+{
+	char call[M17_ADDR_TEXT];
+	uint8_t kind = m17_addr_text(m17_addr_get(a), call);
+	if (kind == M17_ADDR_KIND_BROADCAST) {
+		sb_str(b, TR(VALUE_ALL_CALL, "All call"));
+		return;
+	}
+	if (kind != M17_ADDR_KIND_STD)
+		sb_chr(b, '#');		// an extended or reserved address: no callsign, its 12 hex digits (m17.md 13)
+	sb_str(b, call);
+}
+
+static bool m17_addr_set(const uint8_t a[M17_ADDR_BYTES])
+{
+	return m17_addr_get(a) != 0;
+}
+
+// The verdicts come with signatures built only: without them a signed call ends as "no key" (m17.md 17.4)
+tr_id_t ui_m17_sig_word(uint8_t sig, bool *warn)
+{
+	*warn = sig != RADIO_M17_SIG_VALID;
+#if CONFIG_M17_SIG
+	switch (sig) {
+	case RADIO_M17_SIG_VALID:
+		return TRN(CALL_VALUE_SIG_OK, TEXT_ALT_OPEN "Signature OK" TEXT_ALT_NEXT "Sig OK" TEXT_ALT_CLOSE);
+	case RADIO_M17_SIG_INVALID:
+		return TRN(CALL_VALUE_SIG_FAILED, TEXT_ALT_OPEN "Signature check failed" TEXT_ALT_NEXT "Sig failed"
+			TEXT_ALT_CLOSE);
+	case RADIO_M17_SIG_UNSIGNED_KNOWN:
+		return TRN(CALL_VALUE_UNSIGNED, "Not signed");
+	case RADIO_M17_SIG_OLD:
+		return TRN(CALL_VALUE_SIG_OLD, TEXT_ALT_OPEN "Signature OK, but old" TEXT_ALT_NEXT "Old" TEXT_ALT_CLOSE);
+	case RADIO_M17_SIG_REPLAY:
+		return TRN(CALL_VALUE_SIG_REPLAY, TEXT_ALT_OPEN "Repeat of an earlier call" TEXT_ALT_NEXT "Repeat"
+			TEXT_ALT_CLOSE);
+	case RADIO_M17_SIG_SIGNER_DIFFERS:	// a short form too: a Recent row's value has the room of a word
+		return TRN(CALL_VALUE_SIG_OTHER, TEXT_ALT_OPEN "Signed by another station" TEXT_ALT_NEXT "Other signer"
+			TEXT_ALT_CLOSE);
+	default:
+		break;
+	}
+#endif
+	return TR_NONE;
+}
+
+// The shortest form of a text with alternates (font.h), for a short word beside other text: a level past the last
+// is the last
+static void m17_short(const char *t, char *out, size_t cap)
+{
+	bool more;
+	gfx_text_alt(t, 7, out, cap, &more);
+}
+
+// The talk line: what PTT calls, or why it can't (docs/ux/m17.md 3.1)
+static void draw_talk_m17(const radio_view_t *v, sbuf_t *b, color_t *c)
+{
+	const radio_m17_view_t *m = &v->m17;
+	if ((m->flags & (RADIO_M17_NO_CALL | RADIO_M17_CALL_BAD)) != 0) {
+		sb_str(b, TR(HOME_STATE_NO_M17_CALLSIGN, "No M17 callsign"));
+		*c = ui_col.warn;
+		return;
+	}
+	ui_sb_m17(b, m->talk);
+}
+
+// Chips: power, CAN, rate, digital monitor, privacy, signing, our callsign; each whole or not at all (3.2)
+static void draw_chips_m17(const radio_view_t *v)
+{
+	const font_t *f = ui_layout.small;
+	const radio_m17_view_t *m = &v->m17;
+	int w = gfx_width(), x = 0, y = ui_layout.chips_y;
+	char buf[24];
+	sbuf_t b;
+	bool pw_temp = v->power != channel_power(v);
+	if (pw_temp)
+		x = gfx_text(f, x, y, GLYPH_DOT, ui_col.warn);
+	x = gfx_text(f, x, y, ui_power_name(v->power, v->ch.tx_hz), pw_temp ? ui_col.warn : ui_col.fg) + f->w;
+	sb_init(&b, buf, sizeof buf);
+	sb_str(&b, "CAN");
+	sb_u32(&b, m->tx_can, 1);
+	sb_str(&b, (m->flags & RADIO_M17_TX_1600) ? " 1600" : " 3200");
+	if (x + gfx_text_width(f, buf) > w)
+		return;
+	x = gfx_text(f, x, y, buf, ui_col.fg) + f->w;
+	// The chips after them, each where it fits whole: digital monitor, privacy, signing, our callsign (dim)
+	const char *word[3] = { m->rx_can == M17_CAN_ANY ? TR(HOME_CHIP_DMON, "DMon") : NULL,
+		(m->flags & RADIO_M17_TX_ENC) ? TR(HOME_CHIP_PRIVACY, "Priv") : NULL,
+		(m->flags & RADIO_M17_TX_SIGN) ? TR(HOME_CHIP_SIGNED, "Sig") : NULL };
+	const color_t col[3] = { ui_col.warn, ui_col.priv, ui_col.fg };
+	for (int i = 0; i < 3; i++) {
+		if (word[i] != NULL && x + gfx_text_width(f, word[i]) <= w)
+			x = gfx_text(f, x, y, word[i], col[i]) + f->w;
+	}
+	sb_init(&b, buf, sizeof buf);
+	if (m17_addr_set(m->own))
+		ui_sb_m17(&b, m->own);
+	if (x + gfx_text_width(f, buf) <= w)
+		gfx_text(f, x, y, buf, ui_col.dim);
+}
+
+#if CONFIG_M17_SIG
+// A signer that isn't the originator, by its callsign ("By W1AW"): the details' (the last call)
+static void __attribute__((noinline)) m17_signer_word(char *out, size_t cap)
+{
+	radio_m17_details_t d;
+	sbuf_t b;
+	char by[16];
+	sb_init(&b, out, cap);
+	m17_short(TR(CALL_VALUE_SIG_BY, TEXT_ALT_OPEN "Signed by " TEXT_ALT_NEXT "By " TEXT_ALT_CLOSE), by, sizeof by);
+	sb_str(&b, by);
+	if (radio_m17_details(&d))
+		ui_sb_m17(&b, d.signer);
+}
+#endif
+
+// Idle activity: the last M17 call heard (3.3). Two lines where they fit: the originator and the signature's word,
+// then where it went and when; else one line, the word (a failure) or where and when on the right
+static void draw_last_heard_m17(const radio_view_t *v, const ui_state_t *s, int y)
+{
+	const font_t *sm = ui_layout.small;
+	const radio_m17_view_t *m = &v->m17;
+	int w = gfx_width();
+	char who[16], where[40], word[32], fit[40];
+	sbuf_t b;
+	if (m->end_ms == 0 || !m17_addr_set(m->orig) || (m->flags & RADIO_M17_PACKET) != 0) {
+		gfx_text(sm, 0, y + (ui_layout.activity_h - sm->h) / 2, TR(EMPTY_NO_CALLS_HEARD, "No calls heard yet"),
+			ui_col.dim);
+		return;
+	}
+	sb_init(&b, who, sizeof who);
+	ui_sb_m17(&b, m->orig);
+	bool warn;
+	tr_id_t sw = ui_m17_sig_word(m->sig, &warn);
+	word[0] = '\0';
+#if CONFIG_M17_SIG
+	if (m->sig == RADIO_M17_SIG_SIGNER_DIFFERS)
+		m17_signer_word(word, sizeof word);
+	else
+#endif
+	if (sw != TR_NONE)
+		m17_short(tr(sw), word, sizeof word);
+	sb_init(&b, where, sizeof where);
+	if ((m->flags & RADIO_M17_TO_US) != 0)
+		sb_str(&b, TR(CALL_VALUE_TO_YOU, "To you"));
+	else
+		ui_sb_m17(&b, m->dst);
+	sb_chr(&b, ' ');
+	sb_age(&b, s->now_ms - m->end_ms);
+	if (ui_layout.activity_h >= 2 * sm->h) {
+		int ww = word[0] ? gfx_text_width(sm, word) : 0;
+		if (ww)
+			gfx_text(sm, w - ww, y, word, warn ? ui_col.warn : ui_col.rx);
+		gfx_text_fit(sm, who, w - ww - (ww ? sm->w : 0), fit, sizeof fit);
+		gfx_text(sm, 0, y, fit, ui_col.fg);
+		gfx_text_fit(sm, where, w, fit, sizeof fit);
+		gfx_text(sm, 0, y + sm->h, fit, ui_col.dim);
+		return;
+	}
+	// One line: a failure's word takes the right part, else where and when
+	y += (ui_layout.activity_h - sm->h) / 2;
+	const char *right = warn && word[0] ? word : where;
+	gfx_text_fit(sm, right, w - 7 * sm->w, fit, sizeof fit);
+	int rw = gfx_text_width(sm, fit);
+	gfx_text(sm, w - rw, y, fit, right == word ? ui_col.warn : ui_col.dim);
+	gfx_text_fit(sm, who, w - rw - sm->w, fit, sizeof fit);
+	gfx_text(sm, 0, y, fit, ui_col.fg);
+}
+
+// The text META and the position of the call heard (radio_m17_details): its own copy here, read only when the view
+// says there is one. Not inlined: the details stay off the drawing's other frames
+static void __attribute__((noinline)) call_m17_details(const radio_m17_view_t *m, ui_call_t *c)
+{
+	radio_m17_details_t d;
+	if ((m->flags & (RADIO_M17_TEXT | RADIO_M17_GNSS)) == 0 || !radio_m17_details(&d))
+		return;
+	if ((m->flags & RADIO_M17_TEXT) && d.text[0] != '\0') {
+		// cut to what the line's buffer holds (Call Details shows it whole), with an ellipsis
+		if (!utf8_to_display(c->sub, sizeof c->sub - 1u, d.text, sizeof d.text))
+			strcat(c->sub, GLYPH_ELLIPSIS);
+		c->text = c->sub;
+	}
+	if ((m->flags & RADIO_M17_GNSS) && d.gnss) {
+		// how far and which way from our own fix, else where
+		ui_position_t me;
+		sbuf_t b;
+		sb_init(&b, c->pos, sizeof c->pos);
+		if (ui_svc_position(&me) && me.fix) {
+			uint32_t meters;
+			uint16_t bearing;
+			position_range(me.lat_e7, me.lon_e7, d.lat_e7, d.lon_e7, &meters, &bearing);
+			sb_range(&b, meters, bearing);
+		} else {
+			sb_degrees(&b, d.lat_e7);
+			sb_chr(&b, ' ');
+			sb_degrees(&b, d.lon_e7);
+		}
+	}
+}
+
+// Receiving (4.2): the originator, why it isn't played, the via, the signature, the text, the position, the detail
+// line, the signal
+static void call_m17_rx(const radio_view_t *v, ui_call_t *c)
+{
+	static const uint8_t order[] = { CALL_L_WHY, CALL_L_VIA, CALL_L_SIG, CALL_L_TEXT, CALL_L_POS, CALL_L_DETAIL,
+		CALL_L_METER, CALL_L_END };
+	const radio_m17_view_t *m = &v->m17;
+	sbuf_t b;
+	bool lsf = (m->flags & RADIO_M17_LSF) != 0;
+	c->played = (m->flags & RADIO_M17_PLAYED) != 0;
+	c->late = (m->flags & RADIO_M17_LATE) != 0;
+	if (lsf) {
+		sb_init(&b, c->title, sizeof c->title);
+		if (m->flags & RADIO_M17_TO_US)
+			sb_str(&b, TR(CALL_VALUE_TO_YOU, "To you"));
+		else
+			ui_sb_m17(&b, m->dst);
+		sb_init(&b, c->caller, sizeof c->caller);
+		ui_sb_m17(&b, m->orig);
+	} else {
+		str_copy(c->caller, sizeof c->caller, TR(CALL_VALUE_M17_CALL, "M17 call"));
+	}
+	if (!c->played) {
+		switch (m->why) {
+		case M17_WHY_ENC: c->why = TR(CALL_WHY_ENCRYPTED, "Encrypted: not played"); break;
+		case M17_WHY_SCR: c->why = TR(CALL_WHY_SCRAMBLED, "Scrambled: not played"); break;
+		case M17_WHY_CAN: c->why = TR(CALL_WHY_OTHER_CAN, "Other CAN: not played"); break;
+		case M17_WHY_DATA: c->why = TR(CALL_WHY_DATA_ONLY, "Data only: no voice"); break;
+		default: break;
+		}
+	}
+	if (lsf && m17_addr_set(m->via)) {
+		sb_init(&b, c->freq, sizeof c->freq);
+		sb_str(&b, TR(CALL_PART_VIA, "via "));
+		ui_sb_m17(&b, m->via);
+	}
+	tr_id_t sig = m->sig == RADIO_M17_SIG_RUNNING ? TRN(CALL_VALUE_SIG_PENDING, TEXT_ALT_OPEN
+		"Signed: checked at end" TEXT_ALT_NEXT "Signed" TEXT_ALT_CLOSE) : TR_NONE;
+#if CONFIG_M17_SIG
+	if (m->sig == RADIO_M17_SIG_CHECKING)
+		sig = TRN(CALL_VALUE_SIG_CHECKING, TEXT_ALT_OPEN "Checking signature" TEXT_ALT_NEXT "Checking"
+			TEXT_ALT_CLOSE);
+	if (m->sig == RADIO_M17_SIG_UNSIGNED_KNOWN) {	// a station whose key is on file: unsigned is worth saying
+		sig = TRN(CALL_VALUE_UNSIGNED, "Not signed");
+		c->sig_warn = true;
+	}
+#endif
+	if (sig != TR_NONE)
+		c->sig = tr(sig);	// whole: a copy would cut its alternates, call_line picks the one that fits
+	call_m17_details(m, c);
+	c->text_keep = 2;
+	sb_init(&b, c->detail, sizeof c->detail);
+	sb_str(&b, "CAN");
+	sb_u32(&b, m->can, 1);
+	sb_str(&b, (m->flags & RADIO_M17_1600) ? " 1600" : " 3200");
+	if ((m->flags & RADIO_M17_ENC) && c->played)
+		sb_str(&b, " Priv");
+	if (c->late)
+		sb_str(&b, TR(CALL_CHIP_LATE, " late"));
+	c->dbm = m->rssi_dbm != 0 ? m->rssi_dbm : v->rssi_dbm;
+	c->hint = TR(HINT_PTT_REPLIES, "PTT replies");
+	c->order = order;
+}
+
+// Transmitting (5): the destination, the state word (SIGNING through the tail), from us, the VFO's TX frequency, the
+// detail line, the time against the time-out in force
+static void call_m17_tx(const radio_view_t *v, ui_call_t *c)
+{
+	static const uint8_t order[] = { CALL_L_SUB, CALL_L_FREQ, CALL_L_DETAIL, CALL_L_TIME, CALL_L_END };
+	const radio_m17_view_t *m = &v->m17;
+	bool tail = m->tx_phase == M17_TXP_TAIL || m->tx_phase == M17_TXP_SIG;
+	sbuf_t b;
+	c->tx = true;
+	sb_init(&b, c->title, sizeof c->title);
+	ui_sb_m17(&b, m->talk);
+	str_copy(c->caller, sizeof c->caller, tail && (m->flags & RADIO_M17_TX_SIGN) ?
+		TR(CALL_STATE_SIGNING, "SIGNING") : TR(STATE_TALKING, "TALKING"));
+	sb_init(&b, c->sub, sizeof c->sub);
+	sb_str(&b, TR(MSG_BODY_FROM, "From "));
+	ui_sb_m17(&b, m->own);
+	if (v->vfo) {
+		sb_init(&b, c->freq, sizeof c->freq);
+		sb_str(&b, "TX ");
+		sb_freq(&b, v->ch.tx_hz);
+		sb_str(&b, " MHz");
+	}
+	sb_init(&b, c->detail, sizeof c->detail);
+	sb_str(&b, "CAN");
+	sb_u32(&b, m->tx_can, 1);
+	sb_str(&b, (m->flags & RADIO_M17_TX_1600) ? " 1600" : " 3200");
+	if (m->flags & RADIO_M17_TX_ENC)
+		sb_str(&b, " Priv");
+	if (m->flags & RADIO_M17_TX_SIGN)
+		sb_str(&b, " Sig");
+	sb_init(&b, c->time, sizeof c->time);
+	sb_mmss(&b, v->tx_elapsed_ms / 1000u);
+	if (m->tot_s) {
+		sb_str(&b, TR(PART_OF, " of "));
+		sb_mmss(&b, m->tot_s);
+	}
+	c->hint = tail ? TR(CALL_HINT_FINISHING, "Finishing the call") :
+		TR(CALL_HINT_RELEASE_PTT, "Release PTT to stop");
+	c->order = order;
+}
+
+// M17's call screen: a stream heard, or ours going out; not a packet or a BER test run (Home says SENDING)
+static bool call_from_m17(const radio_view_t *v, const ui_state_t *s, ui_call_t *c)
+{
+	(void)s;
+	const radio_m17_view_t *m = &v->m17;
+	if (v->ch.mode != RADIO_MODE_M17 || v->aprs_tx || (m->flags & (RADIO_M17_PACKET | RADIO_M17_BERT)) != 0)
+		return false;
+	if (v->state == RS_TX) {
+		if (v->tx_auto)
+			return false;
+		call_m17_tx(v, c);
+		return true;
+	}
+	if (v->state != RS_RX || (m->flags & RADIO_M17_RX) == 0)
+		return false;
+	call_m17_rx(v, c);
+	return true;
+}
+#endif
+
+// --- The call screen (shared by the modes that have one) ---
+
+// One text line of the call screens, if it still fits above the hint row; returns the next y
+static int call_line(const font_t *f, int y, const char *text, color_t c)
+{
+	char fit[48];
+	if (y + f->h > ui_layout.hint_y)
+		return y;
+	gfx_text_fit(f, text, gfx_width(), fit, sizeof fit);
+	gfx_text(f, 0, y, fit, c);
+	return y + f->h;
+}
+
+// Each built mode's builder: true when its mode has a call to show now, with c filled (c starts zeroed). P25 and NXDN
+// show their calls in Home's activity region
+static bool (*const call_builders[])(const radio_view_t *v, const ui_state_t *s, ui_call_t *c) = {
+#if CONFIG_DMR
+	call_from_dmr,
+#endif
+#if CONFIG_M17
+	call_from_m17,
+#endif
+	NULL
+};
+
+// Draw-time scratch of Home's layouts that never meet: the call screen and the dual watch panes. Each frame builds what
+// it draws and is done with it (ui_draw_home draws one of them). Static: too big for the UI task's stack
+static union {
+	ui_call_t call;		// the call being shown
+#if CONFIG_DUAL_WATCH
+	char dual_row3[80];	// dual watch: a pane's third row (dual_row3)
+#endif
+} home_scratch;
+
+static bool call_screen(const radio_view_t *v, const ui_state_t *s)
+{
+	for (uint8_t i = 0; call_builders[i] != NULL; i++) {
+		memset(&home_scratch.call, 0, sizeof home_scratch.call);
+		if (call_builders[i](v, s, &home_scratch.call))
+			return true;
+	}
+	return false;
+}
+
+// Receiving and Transmitting: the call takes the screen below the status strip. The title, then the caller (or the
+// state word) large, then the builder's lines top down while they fit above the hint row
+static void draw_call(const radio_view_t *v, const ui_state_t *s, const ui_call_t *c)
+{
+	const ui_layout_t *L = &ui_layout;
+	int w = gfx_width();
+	char buf[48];
+	sbuf_t b;
+
+	gfx_clear(ui_col.bg);
+	int y = ui_draw_top(v, s, NULL, c->title) + 1;
+	const font_t *big = gfx_text_width(L->large, c->caller) <= w ? L->large : L->medium;
+	gfx_text_fit(big, c->caller, w, buf, sizeof buf);	// a translation too wide even for the medium font
+	gfx_text(big, 0, y, buf, c->tx ? ui_col.tx : c->emergency ? ui_col.warn : c->played ? ui_col.fg : ui_col.dim);
+	y += big->h + (c->tx ? 2 : 0);
+	for (const uint8_t *k = c->order; *k != CALL_L_END; k++) {
+		const char *t = NULL;	// a line of text: its font and color
+		const font_t *f = L->small;
+		color_t col = ui_col.fg;
+		switch (*k) {
+		case CALL_L_SUB: t = c->sub; f = L->medium; break;
+		case CALL_L_FREQ: t = c->freq; col = ui_col.tx; break;
+		case CALL_L_DETAIL: t = c->detail; col = c->emergency ? ui_col.warn : ui_col.dim; break;
+		case CALL_L_TIME: t = c->time; break;
+		case CALL_L_POS: t = c->pos; break;
+		case CALL_L_WHERE:	// why it isn't heard, or where the call goes ("TG 91 World")
+			t = c->why != NULL ? c->why : c->title;
+			col = c->why != NULL ? ui_col.warn : ui_col.fg;
+			break;
+		case CALL_L_WHY: t = c->why; col = ui_col.warn; break;
+		case CALL_L_VIA: t = c->freq; break;
+		case CALL_L_SIG: t = c->sig; col = c->sig_warn ? ui_col.warn : ui_col.dim; break;
+		case CALL_L_TEXT:
+			if (c->text != NULL) {
+				// The text in quotes, on two lines when it needs them and they fit above the lines it keeps
+				char lines[2][64];
+				sb_init(&b, buf, sizeof buf);
+				sb_chr(&b, '"');
+				sb_str(&b, c->text);
+				sb_chr(&b, '"');
+				int room = (L->hint_y - y) / L->small->h - c->text_keep;
+				int n = wrap_lines(L->small, buf, w, room >= 2 ? 2 : 1, lines, false);
+				for (int i = 0; i < n; i++)
+					y = call_line(L->small, y, lines[i], ui_col.fg);
+			}
+			break;
+		case CALL_L_METER:	// the signal, where a whole row is left
+			if (y + L->small->h <= L->hint_y) {
+				sb_init(&b, buf, sizeof buf);
+				sb_i32(&b, c->dbm);
+				sb_str(&b, " dBm");
+				int tw = gfx_text_width(L->small, buf);
+				gfx_text(L->small, w - tw, y, buf, ui_col.fg);
+				draw_meter(0, y + L->small->h / 4, w - tw - L->small->w, L->small->h / 2, c->dbm);
+				y += L->small->h;
+			}
+			break;
+		default:
+			break;
+		}
+		if (t != NULL && t[0] != '\0')
+			y = call_line(f, y, t, col);
+	}
+	ui_draw_hint(c->hint, false);
+}
 
 #if CONFIG_AIR
 // A P25 or NXDN call coming in (air_call): whether one is heard now, and its fields
@@ -2308,6 +2815,12 @@ static void draw_activity(const radio_view_t *v, const ui_state_t *s)
 			break;
 		}
 #endif
+#if CONFIG_M17
+		if (v->ch.mode == RADIO_MODE_M17) {
+			draw_last_heard_m17(v, s, y);
+			break;
+		}
+#endif
 #if CONFIG_APRS_RX
 		{
 			aprs_view_t aprs_v;
@@ -2432,6 +2945,12 @@ static void draw_home_large(const radio_view_t *v, const ui_state_t *s)
 		}
 	} else
 #endif
+#if CONFIG_M17
+	if (v->ch.mode == RADIO_MODE_M17) {
+		sb_str(&b, GLYPH_ARROW);	// the destination: a callsign always fits (3.4)
+		ui_sb_m17(&b, v->m17.talk);
+	} else
+#endif
 	{
 		sb_str(&b, mode_word(v));
 		sb_chr(&b, ' ');
@@ -2452,14 +2971,14 @@ void ui_draw_home(const radio_view_t *v, const ui_state_t *s)
 #endif
 #if CONFIG_DMR
 	ui_st_dmr_off = s->dmr_off;
-	if (dmr_call_screen(v)) {
-		draw_dmr_call(v, s);
+#endif
+	if (call_screen(v, s)) {
+		draw_call(v, s, &home_scratch.call);
 		ui_draw_banner(s);
 		if (s->toast != NULL)
 			ui_draw_hint(s->toast, true);
 		return;
 	}
-#endif
 	gfx_clear(ui_col.bg);
 	ui_draw_top(v, s, NULL, NULL);
 	if (s->large_text) {
@@ -2575,7 +3094,7 @@ static const font_t *dual_name_font(const ui_state_t *s, int i, const font_t *nf
 // Row 3's text: a DMR channel's frequency then its chips, else the chips. At their widest (440.6125, CC12) they
 // overflow the narrowest row they share (240 px less a bezel inset, the big font), so the shorter forms give up the
 // gap, then the unit, never a digit: the end was cut there before ("CC1", #837)
-static char dual_r3[80];	// its three forms: static, the ui task's stack is tight
+// Its three forms go in home_scratch.dual_row3: static, the ui task's stack is tight
 
 static void dual_row3(const ui_dual_pane_t *p, char *buf, size_t len)
 {
@@ -2680,8 +3199,8 @@ static void dual_pane(const radio_view_t *v, const ui_state_t *s, int i, int y, 
 			need += gfx_text_width(dual_num_font(f), fit) + dual_num_font(f)->w / 2;
 		}
 		// Row 3 has room for it after the frequency and chips
-		dual_row3(p, dual_r3, sizeof dual_r3);
-		int room3 = w - x0 - gfx_text_width(ft->detail, dual_r3) - 2 * ft->detail->w;
+		dual_row3(p, home_scratch.dual_row3, sizeof home_scratch.dual_row3);
+		int room3 = w - x0 - gfx_text_width(ft->detail, home_scratch.dual_row3) - 2 * ft->detail->w;
 		pill3 = x0 + need > w - dual_pill_w(word) - sm->w / 2 - 1 && room3 >= dual_pill_w(word);
 	}
 	if ((tx || sel) && !pill3) {
@@ -2802,8 +3321,8 @@ static void dual_pane(const radio_view_t *v, const ui_state_t *s, int i, int y, 
 				 tx ? ui_col.tx : ui_col.fg);
 			r3 -= sm->w / 2 + 1;
 		}
-		dual_row3(p, dual_r3, sizeof dual_r3);
-		gfx_text_fit(df, dual_r3, r3 - x0, buf, sizeof buf);
+		dual_row3(p, home_scratch.dual_row3, sizeof home_scratch.dual_row3);
+		gfx_text_fit(df, home_scratch.dual_row3, r3 - x0, buf, sizeof buf);
 		int lx = gfx_text(df, x0, y3, buf, ui_col.dim);
 		if (ft->zone)
 			gfx_text(df, x0, y3 + df->h, p->zone, ui_col.dim);
@@ -3627,19 +4146,36 @@ void ui_draw_hotspot(const radio_view_t *v, const hotspot_view_t *h, const ui_st
 
 // --- Quick settings (3x3 grid, positions match the keypad; a numbered list on 128x64) ---
 
+// A table per mode; the positions keep their meaning across modes (information-architecture.md 5). P25 and NXDN use
+// FM's for now, as does a mode without a table of its own
+static const uint8_t quick_fm[UI_QUICK_TILES] = {
+	QT_POWER, QT_SQUELCH, QT_TONE, QT_MODE, QT_MONITOR, QT_VOX, QT_SCAN, QT_BANDWIDTH, QT_BRIGHTNESS,
+};
+static const uint8_t quick_dmr[UI_QUICK_TILES] = {
+	QT_POWER, QT_TIMESLOT, QT_CC, QT_MODE, QT_HEAR_ALL, QT_PRIVACY, QT_SCAN, QT_TALK_TO, QT_BRIGHTNESS,
+};
+#if CONFIG_M17
+// M17 (docs/ux/m17.md 9): 2 the rate, 3 the CAN (the access code, as DMR's color code), 5 every CAN, 6 privacy
+static const uint8_t quick_m17[UI_QUICK_TILES] = {
+	QT_POWER, QT_RATE, QT_CAN, QT_MODE, QT_HEAR_ALL, QT_PRIVACY, QT_SCAN, QT_TALK_TO, QT_BRIGHTNESS,
+};
+#endif
+static const uint8_t *const quick_tables[] = {
+	[RADIO_MODE_FM] = quick_fm, [RADIO_MODE_DMR] = quick_dmr, [RADIO_MODE_P25] = quick_fm,
+	[RADIO_MODE_NXDN] = quick_fm,
+#if CONFIG_M17
+	[RADIO_MODE_M17] = quick_m17,
+#endif
+};
+
 uint8_t ui_quick_kind(int pos, const radio_view_t *v)
 {
-	static const uint8_t fm[UI_QUICK_TILES] = {
-		QT_POWER, QT_SQUELCH, QT_TONE, QT_MODE, QT_MONITOR, QT_VOX, QT_SCAN, QT_BANDWIDTH, QT_BRIGHTNESS,
-	};
-	static const uint8_t dmr[UI_QUICK_TILES] = {
-		QT_POWER, QT_TIMESLOT, QT_CC, QT_MODE, QT_HEAR_ALL, QT_PRIVACY, QT_SCAN, QT_TALK_TO, QT_BRIGHTNESS,
-	};
 	if (pos < 0 || pos >= UI_QUICK_TILES)
 		return QT_POWER;
 	if (!v->vfo && pos == 3)
 		return QT_TO_VFO;	// a channel's tile 4 copies it to the VFO; the VFO's stays Mode
-	uint8_t kind = v->ch.mode == RADIO_MODE_DMR ? dmr[pos] : fm[pos];
+	const uint8_t *table = v->ch.mode < sizeof quick_tables / sizeof quick_tables[0] ? quick_tables[v->ch.mode] : NULL;
+	uint8_t kind = (table != NULL ? table : quick_fm)[pos];
 	if (v->vfo && (kind == QT_MONITOR || kind == QT_PRIVACY))
 		return QT_SPLIT;	// the VFO's TX frequency; Monitor stays on its key, privacy on channels
 	return kind;
@@ -3677,6 +4213,9 @@ bool ui_quick_tile(int tile, const radio_view_t *v, const ui_state_t *s, char *l
 		[QT_TO_VFO] = TRN(QUICK_LABEL_COPY_TO_VFO, TEXT_ALT_OPEN "Copy to VFO"
 			TEXT_ALT_NEXT "To VFO" TEXT_ALT_CLOSE),
 		[QT_SPLIT] = TRN(QUICK_LABEL_TX_FREQ, TEXT_ALT_OPEN "TX freq" TEXT_ALT_NEXT "TXFreq" TEXT_ALT_CLOSE),
+#if CONFIG_M17
+		[QT_RATE] = TRN(CHAN_LABEL_RATE, "Rate"), [QT_CAN] = TRX(QUICK_LABEL_CAN, "CAN"),
+#endif
 	};
 	uint8_t kind = ui_quick_kind(tile, v);
 	bool editing = s->quick_edit && s->quick_focus == tile;
@@ -3771,19 +4310,49 @@ bool ui_quick_tile(int tile, const radio_view_t *v, const ui_state_t *s, char *l
 		sb_str(&b, "CC");
 		sb_u32(&b, editing ? s->cc_edit : v->dmr.active ? v->dmr.cc : v->ch.color_code, 1);
 		return feat(UI_FEAT_COLOR_CODE);
-	case QT_HEAR_ALL:
-		sb_str(&b, s->hear_all ? TR(VALUE_ON, "On") : TR(VALUE_OFF, "Off"));
+	case QT_HEAR_ALL: {
+		bool on = s->hear_all;
+#if CONFIG_M17
+		if (v->ch.mode == RADIO_MODE_M17)
+			on = v->m17.rx_can == M17_CAN_ANY;	// every CAN heard
+#endif
+		sb_str(&b, on ? TR(VALUE_ON, "On") : TR(VALUE_OFF, "Off"));
 		return feat(UI_FEAT_HEAR_ALL);
+	}
 	case QT_PRIVACY:
+#if CONFIG_M17
+		if (v->ch.mode == RADIO_MODE_M17) {
+			// the channel's transmit encryption; the press says why it can't change (ui_app.c)
+			sb_str(&b, (v->m17.flags & RADIO_M17_TX_ENC) ? TR(VALUE_ON, "On") : TR(VALUE_OFF, "Off"));
+			return true;
+		}
+#endif
 		sb_str(&b, s->privacy ? TR(VALUE_ON, "On") : TR(VALUE_OFF, "Off"));
 		return feat(UI_FEAT_PRIVACY) && CONFIG_DMR_PRIVACY;
 	case QT_TALK_TO:
+#if CONFIG_M17
+		if (v->ch.mode == RADIO_MODE_M17) {
+			if (m17_addr_get(v->m17.talk) == M17_ADDR_BROADCAST)
+				sb_str(&b, TR(QUICK_VALUE_ALL, "All"));
+			else
+				ui_sb_m17(&b, v->m17.talk);
+			return true;
+		}
+#endif
 		if (v->dmr.target_private)
 			sb_u32(&b, v->dmr.target_id, 1);
 		else if (v->dmr.target_id == 0xFFFFFFu)
 			sb_str(&b, TR(QUICK_VALUE_ALL, "All"));
 		else
 			sb_u32(&b, v->dmr.target_id, 1);
+		return true;
+#endif
+#if CONFIG_M17
+	case QT_RATE:
+		sb_str(&b, (v->m17.flags & RADIO_M17_TX_1600) ? "1600" : "3200");
+		return true;
+	case QT_CAN:
+		sb_u32(&b, editing ? s->cc_edit : v->m17.tx_can, 1);	// the editor's value as the color code's
 		return true;
 #endif
 	default:

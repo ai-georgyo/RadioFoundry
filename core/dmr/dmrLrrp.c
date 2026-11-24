@@ -7,6 +7,7 @@
 #include <string.h>
 #include "dmr/dmrLrrp.h"
 #include "dmr/call/dmr_lc.h"
+#include "position/position_geo.h"
 
 // Document IDs: requests come with or without a constant data table (even / odd), the answers are sent without
 #define DOC_IMMEDIATE_RESPONSE		0x07
@@ -272,7 +273,7 @@ static int putRequestId(uint8_t *out, const uint8_t *requestId, int requestIdLen
 	return n + requestIdLength;
 }
 
-// A coordinate in 1e-7 degree, as dmr_gps_range takes it: minutes10000 / 600000 degree is minutes10000 * 50 / 3 in
+// A coordinate in 1e-7 degree, as position_range takes it: minutes10000 / 600000 degree is minutes10000 * 50 / 3 in
 // 1e-7, rounded half up
 static int32_t e7Of(uint8_t degrees, uint32_t minutes10000, bool positive)
 {
@@ -418,14 +419,13 @@ int lrrpBuildTriggeredStopResponse(const uint8_t *requestId, int requestIdLength
 
 uint32_t lrrpDistanceMeters(const dmrDataLocation_t *a, const dmrDataLocation_t *b)
 {
-	// dmr_gps_range's single-precision math: double cos and sqrt cost about 8 KB of flash (libm and the soft-float
+	// position_range's single-precision math: double cos and sqrt cost about 8 KB of flash (libm and the soft-float
 	// library) on a build without LTO to drop them
 	uint32_t meters;
-	uint16_t bearing;
 
-	dmr_gps_range(e7Of(a->latDegrees, a->latMinutes10000, a->north), e7Of(a->lonDegrees, a->lonMinutes10000, a->east),
-			e7Of(b->latDegrees, b->latMinutes10000, b->north), e7Of(b->lonDegrees, b->lonMinutes10000, b->east),
-			&meters, &bearing);
+	position_range(e7Of(a->latDegrees, a->latMinutes10000, a->north), e7Of(a->lonDegrees, a->lonMinutes10000, a->east),
+		       e7Of(b->latDegrees, b->latMinutes10000, b->north), e7Of(b->lonDegrees, b->lonMinutes10000, b->east),
+		       &meters, NULL);
 	return meters;
 }
 

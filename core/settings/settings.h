@@ -223,7 +223,7 @@ typedef struct {
 	uint8_t zone_jrn_kind;		// SETTINGS_ZONE_JRN_*
 	char lang[2];			// the radio's language, its ISO 639-1 code (i18n.h lang_value), "\0\0" = never picked: the build's default
 					// (was reserved8b: older records read English)
-	uint8_t cp_flags;		// SETTINGS_CP_* (was reserved8c: 0 = none, as before)
+	uint8_t cp_flags;		// SETTINGS_CP_* (was reserved8c: 0 = none, as before); M17's CAN and voice too
 	// Zone share: the zones imported last, so the same zone sent again updates its import instead of adding a copy
 	// (docs/spec/zone-share.md 5.4); key 0 = unused, the oldest replaced first
 	settings_zs_import_t zs_import[SETTINGS_ZS_IMPORTS];
@@ -245,7 +245,7 @@ typedef struct {
 	// SETTINGS_T3_KILLED set, no DMR at all until a factory reset
 	uint8_t t3_kill;
 	uint8_t satellite_index;	// reserved10[0]: selected TLE record; older records select the first
-	uint8_t reserved10[1];		// 0
+	uint8_t boot_count_hi;		// was reserved10[1]: the boot count's bits 16-23 (settings_boot_count)
 	// Signaling tones (core/radio/sigtone.h), appended at the end so a record written before reads them as 0:
 	// per event (start of a transmission, its end, a reception's end) where it sounds in DMR and in FM (sig_out_t).
 	// 0 = the default output, as an older record reads. The event's chain of steps is only in its codeplug record
@@ -253,7 +253,7 @@ typedef struct {
 	// copy 60 bytes
 	uint8_t sig_dmr[3];
 	uint8_t sig_fm[3];
-	uint8_t reserved11[2];		// 0
+	uint16_t boot_count_lo;		// was reserved11[2]: the boot count's bits 0-15 (settings_boot_count)
 	// DMR AES: the end of the MI positions reserved for our overs (dmrAesSeq_t, dmr-voice.md 5.1; appended: an older
 	// record reads 0, no position yet). A restart starts here, past every position sent
 	uint32_t aes_mi_res;
@@ -270,6 +270,13 @@ typedef struct {
 // 2); app.c keeps it equal to codeplug_acceptance(), which a codeplug written by a CPS or TFTP drops
 #define SETTINGS_CP_ACCEPTED		0x01u
 #define SETTINGS_CP_RX_EXT		0x02u	// receive past the band table is on (not about the codeplug: the free bit here)
+// cp_flags bits 2-6, free bits too: M17's CAN (0..15) and voice (1600 + data, else 3200) of the VFO and of a channel
+// switched to M17, and what a new M17 channel starts with (Settings > Talk & listen; docs/spec/m17.md 17.1). In spare
+// bits, not appended: settings_t has several static copies, and the radio with the least RAM has no 4 bytes a copy to
+// spare. 0 (an older record) = CAN 0, 3200 bit/s. Through settings_m17_can / settings_m17_1600 and the setter
+#define SETTINGS_CP_M17_CAN_SHIFT	2u
+#define SETTINGS_CP_M17_CAN		0x3Cu
+#define SETTINGS_CP_M17_1600		0x40u
 #define SETTINGS_T3_STUN		0x80u	// t3_stun: a stun is kept (bits 0-6 say on which system)
 #define SETTINGS_T3_KILLED		0x01u	// t3_kill: killed
 
@@ -280,6 +287,34 @@ typedef struct {
 #define SETTINGS_DUAL_VFO	1025u	// dual_b: 1025 the first VFO, 1026 the second
 #define SETTINGS_DUAL_ON	0x01u	// dual_state: it ran at power off, and comes back at power on
 #define SETTINGS_DUAL_B_SEL	0x02u	// ... with B selected: dual_b is then A's (the radio powers up on B)
+
+// The start-ups counted (core/crypto/entropy_boot.c, CONFIG_ENTROPY): the top of the random pool's nonce counter
+// (core/crypto/entropy.h), so a nonce never repeats on this radio. 24 bits in the three bytes page 1 had reserved
+// (boot_count_lo, boot_count_hi), so the record and its copies on task stacks don't grow for it and an older record
+// reads 0. Bumped once per start-up and saved before any nonce is drawn; never lowered (a factory reset keeps it); it
+// stops at SETTINGS_BOOT_COUNT_MAX
+#define SETTINGS_BOOT_COUNT_MAX	0xFFFFFFu
+static inline uint32_t settings_boot_count(const settings_t *s)
+{
+	return (uint32_t)s->boot_count_lo | ((uint32_t)s->boot_count_hi << 16);
+}
+static inline void settings_set_boot_count(settings_t *s, uint32_t v)
+{
+	v = v < SETTINGS_BOOT_COUNT_MAX ? v : SETTINGS_BOOT_COUNT_MAX;
+	s->boot_count_lo = (uint16_t)v;
+	s->boot_count_hi = (uint8_t)(v >> 16);
+}
+
+static inline uint8_t settings_m17_can(const settings_t *s)
+{
+	return (uint8_t)((s->cp_flags & SETTINGS_CP_M17_CAN) >> SETTINGS_CP_M17_CAN_SHIFT);
+}
+static inline bool settings_m17_1600(const settings_t *s) { return (s->cp_flags & SETTINGS_CP_M17_1600) != 0; }
+static inline void settings_set_m17(settings_t *s, uint8_t can, bool r1600)
+{
+	s->cp_flags = (uint8_t)((s->cp_flags & ~(SETTINGS_CP_M17_CAN | SETTINGS_CP_M17_1600)) |
+				((can << SETTINGS_CP_M17_CAN_SHIFT) & SETTINGS_CP_M17_CAN) | (r1600 ? SETTINGS_CP_M17_1600 : 0u));
+}
 
 // Zone shares are accepted unless the user turned them off: 0 (a record from before, or never set) and the old Ask
 // (1) both accept

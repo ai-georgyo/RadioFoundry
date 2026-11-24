@@ -42,7 +42,11 @@ static uint16_t mic_gain_q8 = 256;	// p25VoiceSetMicGain: the mic samples times 
 // Audio callback state
 static uint8_t cb_tx_gen;		// the transmission the encoder runs for (even: none)
 static uint8_t cb_seq;
-static bool cb_live, cb_primed, cb_playing, cb_speaker, cb_mixing;
+static bool cb_live, cb_playing, cb_speaker, cb_mixing;
+// The call's priming: a call that primes again after a transmission is the same call, counted once in rx_calls (one
+// state rather than a second flag, so the callback's statics take no more RAM)
+enum { PRIME_NEW, PRIME_AGAIN, PRIME_DONE };
+static uint8_t cb_primed;
 // The stream just (re)started: the speaker route is what its last user left, which may be a beep's own stream that
 // had it on. The first block sends cb_speaker whatever it was, or the route (and the board's amplifier) stays on
 static bool cb_speaker_unsent;
@@ -141,33 +145,53 @@ static void silence(int16_t *spk)
 	memset(spk, 0, AUDIO_BLOCK_SAMPLES * sizeof(int16_t));
 }
 
+// The call stops playing, the speaker route with it unless a beep holds it: the mixer's end turns it off then, and an
+// off here would toggle the amplifier under the beep within one block (the mixer turns it on again after rx_block)
+static void rx_stop_playing(void)
+{
+	if (cb_playing) {
+		cb_playing = false;
+		if (!cb_mixing) {
+			speaker(false);
+		}
+	}
+}
+
 static void rx_block(int16_t *spk)
 {
-	uint8_t seq = LOAD(rx_seq);
+	// The provider writes a call's start, then its frames, then its end; read in the reverse order, every frame
+	// counted here belongs to the call read (or an earlier one), and an end read has all of its call's frames in
+	uint8_t end_seq = LOAD(rx_end_seq), h = LOAD(rx_head), seq = LOAD(rx_seq);
+
 	if (seq != cb_seq) {
-		// A new call: the decoder starts over. The speaker route may be off (an end, a stop): sent again in any case
+		// A new call: the decoder starts over (what is left of the last call is dropped below). The speaker route
+		// may be off (an end, a stop): sent again when the call plays. Not while a beep holds it: the beep's end
+		// turns it off
+		rx_stop_playing();
 		cb_seq = seq;
 		cb_live = true;
-		cb_primed = cb_playing = cb_speaker = false;
+		cb_primed = PRIME_NEW;
+		if (!cb_mixing) {
+			cb_speaker = false;
+		}
 		cb_lead = 0;
 		cb_call_frames = 0;
-		stats.rx_peak = 0;
 		imbe_dec_init(&dec);
 	}
 	// Drop entries of earlier calls
-	uint8_t t = rx_tail, h = LOAD(rx_head);
+	uint8_t t = rx_tail;
 	while (t != h && mem->q[t & (P25_VOICE_QUEUE - 1)].seq != cb_seq) {
 		t++;
 	}
 	STORE(rx_tail, t);
 
-	bool ended = LOAD(rx_end_seq) == cb_seq;
+	bool ended = end_seq == cb_seq;
 	uint8_t queued = (uint8_t)(h - t);
 	if (!cb_live) {
 		silence(spk);
 		return;
 	}
-	if (!cb_primed) {
+	if (cb_primed != PRIME_DONE) {
 		if (queued < P25_VOICE_PRIME && !(ended && queued > 0)) {
 			if (ended) {
 				cb_live = false;	// a call that ended before playing anything
@@ -175,9 +199,14 @@ static void rx_block(int16_t *spk)
 			silence(spk);
 			return;
 		}
-		cb_primed = cb_playing = true;
+		cb_playing = true;
 		cb_lead = P25_VOICE_LEAD;
-		stats.rx_calls++;
+		if (cb_primed == PRIME_NEW) {
+			// Once a call: one that primes again after a transmission is the same call, its peak kept
+			stats.rx_calls++;
+			stats.rx_peak = 0;	// the latest call that played: one that never does leaves it
+		}
+		cb_primed = PRIME_DONE;
 		speaker(true);
 	}
 	if (cb_lead != 0) {
@@ -187,8 +216,8 @@ static void rx_block(int16_t *spk)
 	}
 	if (queued == 0) {
 		if (ended) {
-			cb_live = cb_playing = false;
-			speaker(false);
+			cb_live = false;
+			rx_stop_playing();
 			silence(spk);
 			return;
 		}
@@ -269,12 +298,18 @@ void p25VoiceAudioBlock(const int16_t *mic, int16_t *spk, void *ctx)
 			stats.tx_mic_peak = 0;
 			imbe_enc_init(&enc);
 		}
+		// What was received before is stale once the transmission ends: dropped, the speaker off meanwhile
+		rx_stop_playing();
+		STORE(rx_tail, LOAD(rx_head));
 		tx_block(g, mic);
 		silence(spk);
 	} else {
 		if ((cb_tx_gen & 1u) != 0) {
-			// The encoder used the decoder's prediction state: a call still coming in starts from none
+			// The encoder used the decoder's prediction state: a call still coming in primes again, from none
 			cb_tx_gen = g;
+			if (cb_primed == PRIME_DONE) {
+				cb_primed = PRIME_AGAIN;
+			}
 			imbe_dec_init(&dec);
 		}
 		rx_block(spk);
@@ -315,7 +350,8 @@ void p25VoiceBegin(p25_voice_mem_t *m)
 	tx_head = tx_tail = 0;
 	tx_gen = cb_tx_gen = 0;
 	cb_seq = 0;
-	cb_live = cb_primed = cb_playing = cb_speaker = cb_mixing = false;
+	cb_live = cb_playing = cb_speaker = cb_mixing = false;
+	cb_primed = PRIME_NEW;
 	dec.s = &m->st;
 	dec.p = &m->pr;
 	dec.mbe.s = &m->ms;

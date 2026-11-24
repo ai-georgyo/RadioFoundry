@@ -151,6 +151,7 @@ Ids are only appended and never reused. A kind and a system type that belong tog
 | 3 | P25 trunked | P25T | `CONFIG_P25_TRUNK` and a board whose air interface receives P25; receive, and transmit where the system allows it ([p25-trunking.md](p25-trunking.md) 5, 7) | [p25-codeplug.md](p25-codeplug.md) |
 | 4 | NXDN conventional | NXDN | `CONFIG_NXDN` and a board whose air interface carries NXDN (`radio_nxdn_fits`) | [nxdn-codeplug.md](nxdn-codeplug.md) |
 | 5 | Conventional DMR AES-256 | AES | `CONFIG_DMR_AES` | See below |
+| 6 | M17 | M17 | `CONFIG_M17` and a board whose air interface carries M17 (`radio_m17_fits`) | [m17-codeplug.md](m17-codeplug.md) |
 
 | System type | Name | Short | Built when | Spec |
 |---|---|---|---|---|
@@ -159,6 +160,7 @@ Ids are only appended and never reused. A kind and a system type that belong tog
 | 3 | P25 trunked system | P25T | `CONFIG_P25_TRUNK` | [p25-codeplug.md](p25-codeplug.md) |
 | 4 | NXDN conventional system | NXDN | `CONFIG_NXDN` | [nxdn-codeplug.md](nxdn-codeplug.md) |
 | 5 | Conventional DMR AES-256 | AES | `CONFIG_DMR_AES` | See below |
+| 6 | M17 system (traffic keys, signing key, station keys) | M17 | `CONFIG_M17`; as kind 6 | [m17-codeplug.md](m17-codeplug.md) |
 
 A conventional AES channel uses the normal DMR frequencies, contact, color code and timeslot. Its base record is receive-only.
 The type 5 system block starts with one identity byte. Provision each traffic key in the traffic-key family with its

@@ -46,10 +46,25 @@ byte, `AIR_SOFT_OUTER` (96) for a +3 symbol at the profile's deviation.
 | `dev_outer_hz` | deviation of the outer symbol; the inner one is a third of it |
 | `timing`, `slot_syms` | continuous, or TDMA with this many symbols per slot |
 | `bw` | channel bandwidth the mode wants |
-| `sync[]` | the fixed patterns the mode puts on air, most useful first: symbols, length (8 to 24), errors tolerated, where the frame starts relative to the pattern, whether it is only at the start of a transmission |
+| `sync[]` | the fixed patterns the mode puts on air, most useful first: symbols, length (8 to 24), errors tolerated, where the frame starts relative to the pattern, whether it is only at the start of a transmission, and the soft modem's gate words (below) |
 | `sync_every_syms` | the longest run of symbols between two 24-symbol patterns inside a transmission; 0 when none recurs |
 | `sync_any_syms` | the longest run between two patterns of any length (a mode whose recurring sync is shorter than 24 symbols); 0 = `sync_every_syms`. The soft modem holds its timing this long |
 | `idle` | four dibits a provider sends when a continuous transmission runs dry |
+| `flags` | `AIR_PROFILE_SYNC_GRID`: every sync of a transmission falls a whole number of `sync_any_syms` after the one before (frames of one length, a sync opening each). The soft modem's grid rule (6) follows it. Not for a mode whose units differ in length |
+| `verify` | the bit of a board's verified set (`AIR_VERIFY_P25`, `_NXDN`, `_M17`) that says this profile was checked on air on the board (4). Both NXDN rates share one bit. 0: never verified |
+
+Each pattern carries four 16-bit words, constants of its symbols that the soft modem's search gates read (6), so its
+state holds no per-pattern RAM:
+
+| Word | Bit j (j symbols back from the pattern's last) |
+|---|---|
+| `gate_up`, `gate_mask` | the step into symbol j from the one before it is up; it is a step of four levels or more |
+| `sign_val`, `sign_mask` | symbol j is positive; it is an outer symbol |
+
+`air_softmodem_sync_prep` computes them (`air_softmodem_profile_prep` for a whole profile). A mode's const profile
+writes them as literals and `airSoftmodemTest` checks them against the prep; a profile built at run time (the debug
+link's) calls the prep. 0 / 0 turns that gate off for the pattern: the same output, more CPU. P25 and NXDN have the
+step gate and no sign gate.
 
 ## 3. The provider (`hal_air_t`)
 
@@ -106,7 +121,13 @@ What every provider keeps while a session is open:
 | `AIR_FIT_NEEDS_SYNC` | receive starts only at a 24-symbol pattern: no late entry on shorter syncs |
 | `AIR_FIT_TDMA` | slot clock and per-slot keying |
 | `AIR_FIT_FULL_DUPLEX` | receives while it transmits |
-| `AIR_FIT_UNTESTED` | from register facts, never checked on air on this board |
+| `AIR_FIT_UNTESTED` | from register facts, never checked on air on this board with this profile |
+
+`AIR_FIT_UNTESTED` follows the board's verified set: the glue's `air_verified`, a mask of `AIR_VERIFY_*` bits that
+names the profiles checked on air on the board. A fit for a profile whose `verify` bit is not in the set says
+untested (`air_fit_verify`, `core/air/air_verify.h`); a profile with `verify` 0 always. The boards checked with P25 and
+NXDN have both bits; M17 is untested on every board until its bring-up record. The debug link's raw bench sends
+`AIR_VERIFY_ALL` in its short profile header (9): the board's set alone decides, as before the set had bits.
 
 A provider with a correlator of its own takes the first patterns of the profile it can use (24 symbols, all outer,
 not start-only). A provider that receives only while it sees such patterns compares `sync_every_syms` with what it
@@ -122,7 +143,7 @@ Receive:
 | Levels | with soft values, a least squares fit of the pattern's levels gives the signal's level and offset; a match that does not lie on a line is noise. The frame's symbols are sliced again with those levels |
 | Head | a mode with units of different lengths gives a head hook: it sees the first symbols behind a sync, confirms the unit (or says it is none: the search goes on, replaying what it held) and gives its length |
 | Frames | a frame is handed over whole, or in pieces when it is longer than the mode's buffer. A pattern may sit inside its frame (a negative start offset): the framer keeps history for it |
-| Coasting | a frame whose sync is missed is placed by counting, up to the mode's limit; then the mode is told the signal is lost |
+| Coasting | a frame whose sync is missed is placed by counting, up to the mode's limit; then the mode is told the signal is lost. Meanwhile a sync elsewhere is taken (the mode is told the signal is lost, while the framer stays locked); with `AIR_PROFILE_SYNC_GRID` only a START_ONLY pattern or one within 2 symbols of its place: a frame's random payload holds a chance 8-symbol sync about every fifth time |
 | Gaps | a chunk that says symbols were lost, or no signal, ends the lock |
 
 Transmit: the mode sends everything on air as symbols, its preamble and end marker included. The framer packs them
@@ -143,8 +164,9 @@ down to a hundredth of it).
 | Offset | a slow average of the input is taken off; it holds while a signal is locked |
 | Resampling | a polyphase interpolator (12 phases, 8 taps) to five samples per symbol |
 | Receive filter | an integrate and dump over one symbol for C4FM and square pulses, a shorter one otherwise |
-| Sync fit | the newest symbol-spaced samples are fitted to each pattern (level and offset, least squares). Where the error passes through a minimum under the limit, that sample is a symbol center; a parabola through the neighbors places it between samples |
-| Gate | the fit runs only where a pattern can be: per sample phase the modem keeps one bit per symbol (this sample was above the one a symbol before), and a pattern is fitted when the steps of four levels or more among its last 17 symbols are all there but one. Two missing steps put a fit over the limit whatever the rest does, so the gate changes no output; it removes the fit from all but a few percent of the samples of noise or data |
+| Sync fit | the newest symbol-spaced samples are fitted to each pattern (level and offset, least squares). Where the error passes through a minimum under the limit, that sample is a symbol center; a parabola through the neighbors places it between samples. A pattern's levels, sums and determinant are worked out from its symbols when it is fitted, never kept |
+| Gates | a pattern is fitted only where it can be. Per sample phase the modem keeps two bits per symbol back: this sample was above the one a symbol before (steps), and above zero (signs). Steps: a pattern's steps of four levels or more among its last 17 symbols must all be there (patterns up to 16 symbols) or all but one (longer). One missing costs 8 levels squared at least and two 10.7, whatever the level and offset, which puts the fit over the limit: the step gate changes no output. Signs: the signs of its outer symbols among its last 16 must be right but as many as can still pass the limit (1 for 8 to 12 symbols, 2 for 13 to 18, 3 for 19 to 24). A wrong one costs (3 - offset / level)^2, 2.25 levels squared at least: exact while the fitted offset is within 1.5 levels; in noise, at a tracked level far below the nominal with an offset left over, it can refuse a chance fit that would have passed. The gate words are the pattern's (2). On a peak being climbed, and for the sample before it, every allowed pattern is fitted |
+| Grid rule | with `AIR_PROFILE_SYNC_GRID`, while a lock holds, a pattern that is not `AIR_SYNC_START_ONLY` may start a candidate only where a sync is due: a whole number (one or more) of `sync_any_syms` after the sync that set the timing, 2 symbols either side, counted pattern end to pattern end (a grid profile's patterns end where a frame's sync does). START_ONLY patterns are taken anywhere (a new transmission); out of lock any is. Without the flag, any sync anywhere re-times the modem |
 | Output | symbols leave from the far end of a delay line 26 symbols long, sampled on the latest sync's timing and scaled by its level and offset, so a sync is sampled on the timing it gave |
 | Level | a tap of known scale starts at the profile's deviation. A tap of unknown scale follows the input's average magnitude until the first sync gives the level. The averages start fast and slow down; when a 16-sample average of the magnitude is off the slow one by half or double (a signal after an unmodulated carrier, which leaves the discriminator quiet), both start fast again |
 
@@ -152,8 +174,16 @@ Between syncs the timing, level and offset hold. Two crystal clocks do not move 
 a mode whose syncs recur gets every frame on fresh timing. Chunks say `AIR_CHUNK_FREE_RUN` when no sync was seen
 within the profile's spacing, and `AIR_CHUNK_GAP` after a hole in the samples (the modem starts over).
 
-Cost: 3.3 KB of code and about 370 bytes of state, which the provider places. No transmit half is written: a
-provider with a tap for receive only sends through its chip.
+Why the grid rule: an 8-symbol sync of outer symbols turns up in random 4-level payload at about (1/4)^8 per position,
+and near misses at a neighboring sample phase too. A modem that takes any sync re-times on them, which corrupts the
+rest of the frame and can slip a symbol: on M17-shaped random payload 18.6 % symbol errors without the rule, none in
+232,000 symbols with it, symbol clocks 300 ppm apart included (`airSoftmodemTest`). The same test moves one frame's
+sync off the grid: 1 symbol off it is taken, 4 off it is not, and the lock ends and takes the later syncs again. A 10-symbol sync with inner symbols (NXDN's FSW) is much rarer in
+payload; NXDN keeps taking any sync until it has its own on-air evidence for the flag.
+
+Cost: 3.6 KB of code on ARM (0.2 KB of it the gate words' prep, linked only with the debug link's bench) and 348
+bytes of state on the 32-bit targets, which the provider places. No transmit half is written: a provider with a tap
+for receive only sends through its chip.
 
 The work is per filtered sample, 24,000 a second at 4800 symbols, so that path decides the load. Its rules are in
 `core/dsp/fxp.h`, with the kernels the signal code shares (the interpolator's dot product, exact scaling in 32-bit
@@ -164,13 +194,20 @@ steps, 64-bit products for the voice codecs), each in plain C and with a core's 
 | No 64-bit product, no divide, no `%` on a ring index | a library call or a divide instruction per sample on a core without a long multiply |
 | `int` or `unsigned` counters and indexes | a narrower one costs an extend on every step on some cores |
 | The input history written twice, a filter's length apart | the interpolator reads its samples as one run, so a core with paired 16 x 16 multiply-accumulates takes them two at a time |
-| The fit behind the gate | it was nine tenths of the work |
+| The fit behind the gates | it was nine tenths of the work |
 
 Measured on the `hrc7000` platform (no paired multiplies, no long multiply without its HI/LO unit) with an 8 kHz
 tap and the P25 profile, receiving noise: 8.5 % of the CPU (`rx_load`), against 33 % with the fit at every sample,
 a 64-bit gain product and ring indexes by `%`. The HI/LO unit's multiply-accumulate would save one instruction in
 eight of the dot product and is not used: the context switch does not save HI and LO. Open: a provider that knows
 the channel is empty (`AIR_CHUNK_NO_SIGNAL`) could stop feeding the modem.
+
+M17's six patterns (four of 8 symbols) against P25's one, in `airSoftmodemTest`'s cost case on the host (8 kHz tap,
+unknown scale, the two modems taking the input in turns, the median of 9 runs): 0.95 x P25's cost on a call (the grid
+rule leaves only the START_ONLY patterns between syncs) and 1.25 x on noise in the test build (no optimization), 1.0 x
+and 1.3 x at `-Os`. Most of the difference on noise is the gate's per-sample test of six patterns, not the fits. With
+the step gate alone an 8-symbol pattern of outer symbols passes about half the samples, and the fit ran on nearly
+every one.
 
 ## 7. The session
 
@@ -192,12 +229,33 @@ In the radio core each mode on the air interface fills one table of these steps 
 release are one path for every mode. A mode whose session opened with `AIR_FIT_RX` and no `AIR_FIT_TX` refuses PTT
 before anything is queued: `tx_deny=air_no_tx` ("This mode: receive only").
 
+Each built mode is one row of `radio_air_modes[]` (`core/radio/radio_air_modes.h`): its names, its part of the
+feature string, whether the board carries it, its engine's start, stop and view, and its `radio_air_ops_t`. The
+radio state machine loops over the rows instead of testing each mode. What stays per mode is each one's own: its
+settings request, its start-up, P25 trunking and NXDN's need of the DMR vocoder. `radio_mode_key` and
+`radio_mode_name` give every mode's name (FM and DMR too) for the debug link and the network services.
+
+| Row member | Used for |
+|---|---|
+| `fits`, `take`, `receives` | the mode offered at all; a codeplug channel of its kind; what scan and dual watch visit |
+| `begin`, `end`, `running`, `retuned`, `apply`, `poll` | the engine on the channel, its settings, the view each tick |
+| `rx`, `heard`, `played`, `view_off` | a reception, what a scan stop hears, the green LED; the view once the engine stopped |
+| `ops` | the transmit steps above (`radio_air_ops_t`) |
+| `tx_deny` | the mode's own refusal before anything is queued, after the shared checks; it shows as PTT's `tx_deny`. NULL: none |
+| `auto_tx` | the mode's own transmissions: `ONCE` keys and lets go at once, `HOLD` stays keyed while the mode says so. Keyed as PTT keys (`tx_auto`), only where PTT would key; the TX time-out cuts both |
+
+Memory (`core/radio/radio_air_mem.h`): one mode runs at a time, so they share one block. Where the DMR vocoder lends
+its memory (`HAL_VOCODER_LEND_BYTES`), a mode whose codec is in the tree (P25) runs in the loan. Every other mode, and
+every mode without a lending vocoder, runs in one static arena sized for the largest built block. A second request
+fails until the first mode gives its block back.
+
 ## 8. Users
 
 | User | State |
 |---|---|
 | P25 Phase 1 conventional voice | written, host tested ([p25.md](p25.md)) |
 | NXDN conventional voice, 4800 and 9600 bit/s | written, host tested, in the radio core ([nxdn.md](nxdn.md) 6) |
+| M17 stream voice, packets, BERT | the engine written and host tested, through the soft modem too ([m17.md](m17.md) 14); the radio core not yet |
 | A DMR engine on symbols | not written. The interface carries TDMA (slot length, slot events, the slot clock, per-slot transmit chunks, syncs inside the burst); today's DMR runs on the modem chip's own layer 2 |
 | 2-level modes | carried (the dibit map, the soft modem's fit) |
 | AFSK (APRS) | not a symbol mode: its tones ride the audio band. The sample taps can feed a demodulator for it; nothing uses them for that yet |
@@ -205,7 +263,8 @@ before anything is queued: `tx_deny=air_no_tx` ("This mode: receive only").
 ## 9. Bench access
 
 `CONFIG_AIR_RAW` adds debug link commands that open a session and move raw symbols and tap samples, for bench tests
-([debuglink.md](debuglink.md)). Off by default. While the bench holds the modem, PTT is refused with
+([debuglink.md](debuglink.md) 3.28). The host sends the profile; a 19-byte header carries `sync_any_syms`, `flags`
+and `verify` too, and the soft modem's gate words are prepared on the radio. Off by default. While the bench holds the modem, PTT is refused with
 `tx_deny=bench` ("Air bench: PTT off").
 
 ## 10. Tests
@@ -213,8 +272,10 @@ before anything is queued: `tx_deny=air_no_tx` ("This mode: receive only").
 | Test | Covers |
 |---|---|
 | `tests/host/fecTest.c` | the shared codes against the standard's matrices |
-| `tests/host/airFramerTest.c` | sync search, levels, head hook, pieces, history, coasting, transmit packing |
-| `tests/host/airSoftmodemTest.c` | the soft modem on a modeled tap: every tap phase, 8 to 48 kHz, scale and offset errors, noise, other pulse shapes, a P25 call end to end; the same output with the gate and with every sample fitted |
+| `tests/host/airFramerTest.c` | sync search, levels, head hook, pieces, history, coasting, transmit packing; M17's geometry (a START_ONLY pattern at `frame_at` 16, 8-symbol syncs, a head hook that asks again at 192, a chance match replayed, a sync 1 symbol from two patterns) |
+| `tests/host/airSoftmodemTest.c` | the soft modem on a modeled tap: every tap phase, 8 to 48 kHz, scale and offset errors, noise, other pulse shapes, a P25 call end to end; the same output with the gates and with every sample fitted (P25, a two-pattern profile, M17, NXDN with the sign gate on as the bench prepares it); the grid rule's window; goldens: a CRC of every run's output for P25 and NXDN at both rates, recorded before the grid rule and the gates went in; each mode's gate literals against the prep; M17-shaped calls with and without the grid rule; inverted M17 (no frame of another kind gets through); M17's host cost against P25's |
+| `tests/host/hrc6000AirTest.c`, `hrc7000AirTest.c` | also the verified set on each provider's fit |
+| `tests/host/debuglinkAirTest.c` | the raw bench's OPEN profile: the 15- and 19-byte headers, every other length refused, the gates prepared |
 | `tests/host/fxpTest.c` | the shared fixed-point kernels against wide arithmetic |
 | `tests/host/p25EngineTest.c` | the session under two P25 engines on made-up providers |
 | `tests/host/nxdnEngineTest.c` | the session under two NXDN engines; an NXDN call through the soft modem at 2400 symbols/s |

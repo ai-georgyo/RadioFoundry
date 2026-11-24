@@ -157,6 +157,9 @@ const hal_system_t stm32_system = {
 #if CONFIG_SUPPORT_INFO
 	.image = image,
 #endif
+#if CONFIG_ENTROPY
+	.entropy = stm32_rng_read,		// rng.c
+#endif
 #if CONFIG_STUB_ENTRY
 	.stub_region = stm32_stub_region,	// stub_entry.c
 	.enter_stub = stm32_enter_stub,

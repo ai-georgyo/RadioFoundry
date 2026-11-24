@@ -8,6 +8,7 @@
 #include <string.h>
 #include "dmr/call/dmr_call.h"
 #include "dmr/call/dmr_lc.h"
+#include "position/position_geo.h"
 #include "dmr/sfr.h"
 #include "dmr/dmrData.h"
 #include "sim/dmr_sim_modem.h"
@@ -3241,25 +3242,29 @@ static void test_gps_lc(void)
 	      dmr_gps_err_code(19) == 1 && dmr_gps_err_code(20) == 2 && dmr_gps_err_code(1999) == 3 &&
 	      dmr_gps_err_code(200000) == 5 && dmr_gps_err_code(200001) == 6);
 	CHECK(dmr_gps_err_m(1) == 20 && dmr_gps_err_m(5) == 200000 && dmr_gps_err_m(6) == 0 && dmr_gps_err_m(7) == 0);
-	// Range and bearing: one degree east on the equator (111.2 km, 90), 0.1 degree north at 45 N (11.12 km, 0),
-	// south-west, and across the date line
+	// Range and bearing (position_range, the one helper every mode uses): one degree east on the equator (111.2 km,
+	// 90), 0.1 degree north at 45 N (11.12 km, 0), south-west, and across the date line
 	uint32_t m;
 	uint16_t b;
-	dmr_gps_range(0, 0, 0, 10000000, &m, &b);
+	position_range(0, 0, 0, 10000000, &m, &b);
 	CHECK(m > 111000 && m < 111400 && b == 90);
-	dmr_gps_range(450000000, -900000000, 451000000, -900000000, &m, &b);
+	position_range(450000000, -900000000, 451000000, -900000000, &m, &b);
 	CHECK(m > 11100 && m < 11140 && b == 0);
-	dmr_gps_range(337490000, -843880000, 336490000, -844880000, &m, &b);	// 0.1 S, 0.1 W at 33.7 N
+	position_range(337490000, -843880000, 336490000, -844880000, &m, &b);	// 0.1 S, 0.1 W at 33.7 N
 	CHECK(m > 14390 && m < 14540 && b >= 219 && b <= 221);	// 14.46 km, 219.8
-	dmr_gps_range(0, 1795000000, 0, -1795000000, &m, &b);
+	position_range(0, 1795000000, 0, -1795000000, &m, &b);
 	CHECK(m > 111000 && m < 111400 && b == 90);
-	dmr_gps_range(100, 100, 100, 100, &m, &b);
+	position_range(100, 100, 100, 100, &m, &b);
 	CHECK(m == 0 && b == 0);
-	// A latitude difference past 32 bits (no real position, but any int32 may arrive): converted whole, not cut
-	dmr_gps_range(INT32_MIN, 0, INT32_MAX, 0, &m, &b);
-	CHECK(m > 47750000 && m < 47766000 && b == 0);
-	dmr_gps_range(2000000000, 5, -2000000001, 0, &m, &b);
-	CHECK(m > 44470000 && m < 44486000 && b == 180);
+	// A latitude past a pole (no real position, but any int32 may arrive) is the pole: pole to pole is half the
+	// circumference (the flat earth helper this replaced measured 47,758 and 44,478 km here, beyond any two points),
+	// and the bearing between the poles is any; a latitude difference past 32 bits doesn't overflow
+	position_range(INT32_MIN, 0, INT32_MAX, 0, &m, &b);
+	CHECK(m > 20015037 && m < 20015137 && b < 360);
+	position_range(2000000000, 5, -2000000001, 0, &m, &b);
+	CHECK(m > 20015037 && m < 20015137 && b < 360);
+	position_range(INT32_MAX, INT32_MIN, INT32_MAX, INT32_MAX, &m, &b);	// the north pole twice
+	CHECK(m < 5 && b < 360);
 }
 
 // GPS Info on the air: a caller's position is collected per call (and kept with the last heard), ours rides in the

@@ -25,6 +25,7 @@
 #include "debuglink/dlog.h"
 #if CONFIG_AIR
 #include "modem/hrc_common/hrc6000_air.h"
+#include "air/air_verify.h"
 #endif
 #if defined(CONFIG_HOTSPOT_SPLIT) && CONFIG_HOTSPOT_SPLIT
 #include "modem/hrc_common/hrc6000_bs.h"
@@ -942,10 +943,7 @@ static const hrc_chip_t *air_chip(void)
 static uint32_t air_fit(const air_profile_t *p)
 {
 	uint32_t f = hrc6000_air_fit_tap(p, air_chip(), air_tap());
-	if (f != 0 && (hooks == NULL || !hooks->air_verified)) {
-		f |= AIR_FIT_UNTESTED;
-	}
-	return f;
+	return air_fit_verify(f, hooks != NULL ? hooks->air_verified : 0, p);
 }
 
 // The chip from the halted engine to a session or the tap: the engine's queues become their memory (locked after)

@@ -9,7 +9,7 @@
 // Symbols leave from the far end of the line, so a sync is sampled on the timing it gave.
 //
 // The cost is per filtered sample (24,000 a second at 4800 symbols), so that path is kept short (../dsp/fxp.h has
-// the rules and the kernels): the fit runs only where a gate of one bit per symbol says a pattern can be there, the
+// the rules and the kernels): a pattern is fitted only where its gates of one bit per symbol say it can be there, the
 // input history is laid out twice so the interpolator reads one run, and nothing in it divides or needs 64 bits.
 #include "air_softmodem.h"
 
@@ -37,11 +37,31 @@
 #define TRACK_SHIFT_MAX	10
 #define HOLE_US		2000			// input time off by more: samples were lost
 #define GAIN_MAX	(1u << 20)		// 16 line units per summed count
-// The gate (filtered, below): the steps of four levels or more between a pattern's neighboring symbols, as bits.
-// A fit with two of them missing (a step the wrong way, or none) is over Q_MAX whatever the rest does: the two cost
-// 10.7 levels squared at least, 256 x 10.7 / 24 symbols = 113. So a pattern is fitted only with one missing at most
-// (of the 16 newest steps: what the state has room for; random samples pass a pattern with 8 large steps one time
-// in 28, one with 11 one time in 170)
+// The gates (gate(), below), per pattern, from its air_sync_t words (air_softmodem_sync_prep). Each spares only fits
+// that would fail:
+//  - Steps: the steps of four levels or more between its neighboring symbols, as bits. One missing (a step the wrong
+//    way, or none) costs 8 levels squared at least, two 10.7 (they may share a symbol), whatever the level and
+//    offset (the samples are compared with each other). Over Q_MAX: 256 x 8 / n for one, so a pattern of up to
+//    STEP_TOL_SYMS symbols is fitted with none missing (256 x 8 / 16 = 128); 256 x 10.7 / 24 = 113 for two, so a
+//    longer one with one missing at most. (Of its 16 newest steps; random samples pass a 24-symbol pattern with 8
+//    large steps one time in 28, one with 11 one time in 170.)
+//  - Signs: the signs of its outer symbols among its 16 newest. Each wrong one is an outer symbol on the wrong side
+//    of zero, which costs (3 - |offset| / level)^2 levels squared at least: 2.25 while the fitted offset is within
+//    1.5 levels (OFF_MAX at the nominal level). A pattern passes with SIGN_TOL of them wrong at most, the most that
+//    can still be under Q_MAX: one more costs 256 x 2.25 x (SIGN_TOL + 1) / n, over Q_MAX (1 for 8 to 12 symbols, 2
+//    for 13 to 18, 3 for 19 to 24; random samples pass an 8-symbol pattern one time in 28). Past that offset (in
+//    noise, a tracked level far below the nominal with an offset left over) it can refuse a chance fit that would
+//    have passed; the tests show the same output with the gates and without on signals with scale and offset errors
+//    and on taps of unknown scale.
+#define STEP_TOL_SYMS	16u
+#define SIGN_TOL(nsyms)	((unsigned)(nsyms) * Q_MAX / 576u)	// 576 = 256 x 2.25
+#define SIGN_TOL1_SYMS	12u				// the longest pattern SIGN_TOL allows one
+_Static_assert(SIGN_TOL(SIGN_TOL1_SYMS) == 1 && SIGN_TOL(SIGN_TOL1_SYMS + 1) == 2, "SIGN_TOL1_SYMS");
+_Static_assert(SIGN_TOL(8) == 1 && SIGN_TOL(AIR_SYNC_SYMS_MAX) == 3, "SIGN_TOL");
+// The grid rule (AIR_PROFILE_SYNC_GRID, allowed()): how far from a whole number of the profile's sync spacing a sync
+// may fall, in symbols, while a lock holds. The count it is read from moves by one symbol at most at each re-timing,
+// and 2 is 1 % of symbol clock error over a 192-symbol frame (two crystals are 100 times closer)
+#define GRID_TOL	2u
 
 // The interpolator: a windowed sinc low-pass at 0.45 of the input rate, 12 phases x 8 taps, each phase summing to
 // 16384. Row p, tap t weighs the input sample t back from the newest; the output sits (47.5 - p) / 12 samples back
@@ -75,6 +95,36 @@ static uint32_t gcd32(uint32_t a, uint32_t b)
 static uint16_t sync_spacing(const air_profile_t *p)
 {
 	return p->sync_any_syms ? p->sync_any_syms : p->sync_every_syms;
+}
+
+void air_softmodem_sync_prep(air_sync_t *s)
+{
+	unsigned n = s->nsyms > AIR_SYNC_SYMS_MAX ? AIR_SYNC_SYMS_MAX : s->nsyms;
+
+	s->gate_up = s->gate_mask = s->sign_val = s->sign_mask = 0;
+	// Bit j: the symbol j back from the pattern's last (its step: from the symbol j + 1 back to it)
+	for (unsigned j = 0; j < n && j < 16; j++) {
+		int e = air_sym_level(air_sym_get(s->syms, (uint16_t)(n - 1 - j)));
+
+		if (e > 0)
+			s->sign_val |= (uint16_t)(1u << j);
+		if (e == 3 || e == -3)
+			s->sign_mask |= (uint16_t)(1u << j);
+		if (j + 1 < n) {
+			int d = e - air_sym_level(air_sym_get(s->syms, (uint16_t)(n - 2 - j)));
+
+			if (d >= 4)
+				s->gate_up |= (uint16_t)(1u << j);
+			if (d >= 4 || d <= -4)
+				s->gate_mask |= (uint16_t)(1u << j);
+		}
+	}
+}
+
+void air_softmodem_profile_prep(air_profile_t *p)
+{
+	for (uint8_t i = 0; i < p->nsyncs && i < AIR_SYNCS_MAX; i++)
+		air_softmodem_sync_prep(&p->sync[i]);
 }
 
 static bool rate_ok(const air_profile_t *p, uint32_t rate_hz, uint16_t *step, uint16_t *den)
@@ -123,13 +173,13 @@ void air_softmodem_rx_reset(air_softmodem_t *m)
 	m->ph_r = 0;
 	m->line_at = m->line_n = 0;
 	memset(m->steps, 0, sizeof m->steps);
+	memset(m->signs, 0, sizeof m->signs);
 	m->phase = 0;
-	m->fitted = false;
 	m->track_shift = TRACK_SHIFT_MIN;
 	m->track_n = 1u << TRACK_SHIFT_MIN;
 	m->locked = false;
 	m->running = false;
-	m->cand_q = m->cand_prev_q = m->last_q = Q_NONE;
+	m->cand_q = m->cand_prev_q = Q_NONE;
 	m->hold = 0;
 	m->due = EMIT_AT - 1;
 	m->sub = 0;
@@ -186,16 +236,8 @@ bool air_softmodem_rx_open(air_softmodem_t *m, const air_profile_t *p, uint32_t 
 		if (s->nsyms * s2 - s1 * s1 <= 0)
 			continue;	// one level only: nothing to fit
 		m->valid |= (uint8_t)(1u << i);
-		// The gate's bits: bit j is the step from the symbol j + 1 back to the symbol j back
-		for (unsigned j = 0; j + 1 < s->nsyms && j < 16; j++) {
-			int d = air_sym_level(air_sym_get(s->syms, (uint16_t)(s->nsyms - 1 - j)))
-				- air_sym_level(air_sym_get(s->syms, (uint16_t)(s->nsyms - 2 - j)));
-
-			if (d >= 4)
-				m->gate_up[i] |= (uint16_t)(1u << j);
-			if (d >= 4 || d <= -4)
-				m->gate_mask[i] |= (uint16_t)(1u << j);
-		}
+		if (s->flags & AIR_SYNC_START_ONLY)
+			m->start_only |= (uint8_t)(1u << i);
 	}
 	air_softmodem_rx_reset(m);
 	return true;
@@ -330,27 +372,46 @@ static void commit(air_softmodem_t *m, uint8_t back, uint16_t q_next)
 	m->hold = SPS;
 }
 
-// Fit the symbol-spaced samples that end `back` samples before the line's newest to every pattern; returns the
-// least error (past Q_MAX too: the sides of a peak place its bottom), Q_NONE when no pattern's slope is there
-static uint16_t search(const air_softmodem_t *m, unsigned back, uint8_t *which, int16_t *lvl, int16_t *off)
+// The patterns that may start (or climb) a candidate now: every one, but while a lock of a SYNC_GRID profile holds
+// and no sync is due, START_ONLY ones only (a new transmission, wherever it starts). The grid rule: a sync is due a
+// whole number of sync spacings (one or more) after the one that set the timing, GRID_TOL either side, counted from
+// pattern end to pattern end (a grid profile's patterns end where a frame's sync does)
+static unsigned allowed(const air_softmodem_t *m)
 {
+	const air_profile_t *p = m->p;
+	uint32_t every = sync_spacing(p), n = (uint32_t)m->since_sync + GRID_TOL;
+
+	if (!(p->flags & AIR_PROFILE_SYNC_GRID) || !m->locked || !every)
+		return m->valid;
+	if (n >= every) {
+		// (a lock ends two spacings and two sync lengths after its sync: this runs three times at most)
+		do
+			n -= every;
+		while (n >= every);
+		if (n <= 2 * GRID_TOL)
+			return m->valid;
+	}
+	return m->valid & m->start_only;
+}
+
+// Fit the symbol-spaced samples that end `back` samples before the line's newest to each pattern of the set; returns
+// the least error (past Q_MAX too: the sides of a peak place its bottom), Q_NONE when no pattern's slope is there;
+// with `limit`, only an error below it (limit when none is). The pattern's constants (levels, sums, determinant) are
+// worked out here, from its symbols: the state keeps none
+static uint16_t search(const air_softmodem_t *m, unsigned back, unsigned set, uint16_t limit, uint8_t *which,
+		       int16_t *lvl, int16_t *off)
+{
+	static const int8_t level[4] = { 1, 3, -1, -3 };	// air_sym_level's, read here a byte at a time
 	int8_t x[AIR_SYNC_SYMS_MAX];
 	const air_profile_t *p = m->p;
 	int32_t lvl_min = m->gain_known ? LVL_MIN_KNOWN : LVL_MIN_TRACKED;
 	int32_t sx = 0, sxx = 0;
-	uint16_t best = Q_NONE;
-	unsigned summed = 0, squared = 0, valid = m->valid;
+	uint16_t best = limit;
+	unsigned summed = 0, squared = 0, got = 0, valid = set & m->valid;
 	int at = (int)m->line_at - 1 - (int)back;
 
-	// x[k]: the sample k symbols back
 	if (at < 0)
 		at += LINE;
-	for (unsigned k = 0; k < AIR_SYNC_SYMS_MAX; k++) {
-		x[k] = m->line[at];
-		at -= SPS;
-		if (at < 0)
-			at += LINE;
-	}
 	for (unsigned i = 0; valid >> i; i++) {
 		const air_sync_t *s = &p->sync[i];
 		int32_t n = s->nsyms, sxe = 0, s1 = 0, s2 = 0, det, num, a, b, r, a2;
@@ -358,18 +419,29 @@ static uint16_t search(const air_softmodem_t *m, unsigned back, uint8_t *which, 
 
 		if (!(valid >> i & 1))
 			continue;
+		// x[k]: the sample k symbols back, as far as the longest pattern fitted so far
+		for (; got < (unsigned)n; got++) {
+			x[got] = m->line[at];
+			at -= SPS;
+			if (at < 0)
+				at += LINE;
+		}
 		if (summed != s->nsyms) {
 			sx = 0;
 			for (int k = 0; k < n; k++)
 				sx += x[k];
 			summed = s->nsyms;
 		}
-		for (int k = 0; k < n; k++) {
-			int e = air_sym_level(air_sym_get(s->syms, (uint16_t)k));
+		for (int k = 0; k < n; k += 4) {
+			unsigned byte = s->syms[k >> 2];
 
-			sxe += x[n - 1 - k] * e;
-			s1 += e;
-			s2 += e * e;
+			for (int j = k; j < k + 4 && j < n; j++, byte <<= 2) {
+				int e = level[byte >> 6 & 3];
+
+				sxe += x[n - 1 - j] * e;
+				s1 += e;
+				s2 += e * e;
+			}
 		}
 		det = n * s2 - s1 * s1;
 		num = n * sxe - s1 * sx;
@@ -389,7 +461,10 @@ static uint16_t search(const air_softmodem_t *m, unsigned back, uint8_t *which, 
 		r = sxx - (a * sxe + b * sx) / 256;		// what the line leaves: the sum of squared errors
 		if (r < 0)
 			r = 0;
-		a2 = ((a * a) >> 16) * n;
+		a2 = ((a * a) >> 16) * n;			// (16 or more: a is lvl_min or more)
+		// No better than the best so far (r << 8 and best x a2 are 2^30 at most): no divide
+		if (best != Q_NONE && ((uint32_t)r << 8) >= (uint32_t)best * (uint32_t)a2)
+			continue;
 		q = ((uint32_t)r << 8) / (uint32_t)a2;
 		if (q >= Q_NONE)
 			q = Q_NONE - 1;
@@ -403,16 +478,37 @@ static uint16_t search(const air_softmodem_t *m, unsigned back, uint8_t *which, 
 	return best;
 }
 
-// Can a pattern end at the newest sample: all its large steps there but one (steps: the sample's phase's bits)
-static bool gate(const air_softmodem_t *m, unsigned steps)
+// Which patterns of the set can end at the newest sample (steps, signs: its phase's histories): their outer symbols'
+// signs all there but SIGN_TOL, and their large steps all (up to STEP_TOL_SYMS symbols) or all but one. A pattern's
+// words 0 / 0: that gate passes it. (Every sample comes here, and most stop at the first test)
+static unsigned gate(const air_softmodem_t *m, unsigned set, unsigned steps, unsigned signs)
 {
-	for (unsigned i = 0, valid = m->valid; valid; i++, valid >>= 1) {
-		unsigned v = (steps ^ m->gate_up[i]) & m->gate_mask[i];
+	const air_sync_t *s = m->p->sync;
+	unsigned pass = 0;
 
-		if ((valid & 1) && !(v & (v - 1)))
-			return true;
+	for (unsigned i = 0; set; i++, set >>= 1, s++) {
+		unsigned v;
+
+		if (!(set & 1))
+			continue;
+		v = (signs ^ s->sign_val) & s->sign_mask;
+		if (v & (v - 1)) {
+			// Two wrong or more (most samples stop here): only a longer pattern allows more than one. All but one of
+			// them cleared, that one is the test's
+			if (s->nsyms <= SIGN_TOL1_SYMS)
+				continue;
+			for (unsigned k = SIGN_TOL(s->nsyms); k > 1 && v; k--)
+				v &= v - 1;
+			if (v & (v - 1))
+				continue;
+		}
+		v = (steps ^ s->gate_up) & s->gate_mask;
+		if (s->nsyms > STEP_TOL_SYMS)
+			v &= v - 1;
+		if (!v)
+			pass |= 1u << i;
 	}
-	return false;
+	return pass;
 }
 
 // One filtered sample v (summed input counts, before the gain) into the line; t_us as emit's
@@ -421,37 +517,31 @@ static void filtered(air_softmodem_t *m, int32_t v, uint32_t t_us)
 	int32_t y = fxp_clamp(fxp_scale16(v, m->gain), -127, 127);
 	unsigned at = m->line_at, ph = m->phase;
 	unsigned steps = ((unsigned)m->steps[ph] << 1 | (unsigned)(y > m->line[at >= SPS ? at - SPS : at + LINE - SPS])) & 0xFFFFu;
-	uint16_t q = Q_NONE;
+	unsigned signs = ((unsigned)m->signs[ph] << 1 | (unsigned)(y > 0)) & 0xFFFFu;
+	uint16_t q;
 	uint8_t which = 0;
 	int16_t lvl = 0, off = 0;
 
 	m->line[at] = (int8_t)y;
 	m->line_at = (uint8_t)(at + 1 == LINE ? 0 : at + 1);
 	m->steps[ph] = (uint16_t)steps;
+	m->signs[ph] = (uint16_t)signs;
 	m->phase = (uint8_t)(ph + 1 == SPS ? 0 : ph + 1);
 	if (m->line_n < LINE) {
 		m->line_n++;
 		return;
 	}
 	m->due++;
-	// The fit, where it can matter: on a peak being climbed, and where the gate lets a pattern through. A peak's
-	// near side is the sample before, fitted now if it was not then
-	if (!m->hold && (m->cand_q != Q_NONE || gate(m, steps))) {
-		q = search(m, 0, &which, &lvl, &off);
-		if (!m->fitted && q <= Q_MAX) {
-			uint8_t w;
-			int16_t l, o;
-
-			m->last_q = search(m, 1, &w, &l, &o);
-		}
-		m->fitted = true;
-	} else {
-		m->fitted = false;
-	}
+	// The fit, where it can matter: every pattern the grid rule allows on a peak being climbed, else those of them the
+	// gates let through. A peak's near side is the sample before, fitted with every allowed pattern when a candidate
+	// starts (a gated-out pattern can't start one, but its error on the near side places the bottom as it would
+	// without the gates)
 	if (m->hold) {
 		m->hold--;
 	} else if (m->cand_q != Q_NONE) {
-		// Climbing a peak: on while the error still falls, taken as soon as it rises
+		// Climbing a peak: on while the error still falls, taken as soon as it rises. The candidate's own pattern
+		// stays in the set if the grid rule's window closes during the climb (its far side places the bottom)
+		q = search(m, 0, allowed(m) | 1u << m->cand_sync, Q_NONE, &which, &lvl, &off);
 		if (q < m->cand_q) {	// (a candidate is Q_MAX or better)
 			m->cand_prev_q = m->cand_q;
 			m->cand_q = q;
@@ -461,14 +551,20 @@ static void filtered(air_softmodem_t *m, int32_t v, uint32_t t_us)
 		} else {
 			commit(m, 1, q);
 		}
-	} else if (q <= Q_MAX) {
-		m->cand_prev_q = m->last_q;
-		m->cand_q = q;
-		m->cand_sync = which;
-		m->cand_lvl = lvl;
-		m->cand_off = off;
+	} else {
+		unsigned set = m->locked ? allowed(m) : m->valid, pass = gate(m, set, steps, signs);
+
+		if (pass && (q = search(m, 0, pass, Q_MAX + 1, &which, &lvl, &off)) <= Q_MAX) {
+			uint8_t w;
+			int16_t l, o;
+
+			m->cand_prev_q = search(m, 1, set, Q_NONE, &w, &l, &o);
+			m->cand_q = q;
+			m->cand_sync = which;
+			m->cand_lvl = lvl;
+			m->cand_off = off;
+		}
 	}
-	m->last_q = q;
 	while (m->due >= EMIT_AT) {
 		emit(m, t_us);
 		m->due = (uint8_t)(m->due - SPS);

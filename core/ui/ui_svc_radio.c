@@ -33,6 +33,10 @@
 #if CONFIG_P25
 #include "radio/radio_p25.h"
 #endif
+#if CONFIG_M17
+#include "radio/radio_m17.h"
+#include "m17/m17_engine.h"
+#endif
 
 
 uint32_t ui_svc_feat_voice(void)
@@ -157,7 +161,7 @@ bool ui_svc_vfo_sfr(uint8_t a)
 bool ui_svc_mode(uint8_t mode)
 {
 	if (mode != RADIO_MODE_FM && mode != RADIO_MODE_DMR && !(mode == RADIO_MODE_P25 && CONFIG_P25) &&
-	    !(mode == RADIO_MODE_NXDN && CONFIG_NXDN)) {
+	    !(mode == RADIO_MODE_NXDN && CONFIG_NXDN) && !(mode == RADIO_MODE_M17 && CONFIG_M17)) {
 		return false;
 	}
 	radio_req_mode(mode);
@@ -165,16 +169,77 @@ bool ui_svc_mode(uint8_t mode)
 }
 #endif
 
-bool ui_svc_hear_all(bool on)
+// The mode a request about the channel's mode goes to (ui_svc.h): the channel's. A mode without a service of its own
+// for one (FM, P25, NXDN) keeps DMR's, as every request went to DMR before the modes had their own
+static uint8_t channel_mode(void)
 {
-	radio_req_dmr_hear_all(on);
+	radio_get_view(&ui_svc_view);
+	return ui_svc_view.ch.mode;
+}
+
+#if CONFIG_M17
+// The radio's M17 settings are the VFO's and those of a channel switched to M17 for now; a stored M17 channel's are its
+// block (m17-codeplug.md 2), which the radio core reads instead (m17.md 17.1). ui_svc_view: channel_mode's. A change
+// to one field starts from radio_m17_settings_next, so one made before the radio task took the last keeps it (boot
+// applies the CAN and the voice back to back)
+static bool m17_settings_apply(void)
+{
+	return ui_svc_view.vfo || ui_svc_view.ch.kind != CODEPLUG_KIND_M17;
+}
+
+// Digital monitor on M17: every CAN heard (squelch ANY), else the CAN alone; the settings', so not on a stored channel
+static bool m17_hear_all(bool on)
+{
+	radio_m17_settings_t m;
+	if (!m17_settings_apply())
+		return false;
+	radio_m17_settings_next(&m);
+	m.squelch = on ? M17_SQUELCH_ANY : M17_SQUELCH_CAN;
+	radio_req_m17_settings(&m);
 	return true;
 }
 
+bool ui_svc_m17_talk_to(const uint8_t dst[M17_ADDR_BYTES], uint8_t life)
+{
+	static const uint8_t all[M17_ADDR_BYTES] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	radio_m17_settings_t m;
+	if (channel_mode() != RADIO_MODE_M17 || life > UI_TALK_DEFAULT)
+		return false;
+	if (!m17_settings_apply())
+		return life == UI_TALK_PERMANENT && ui_svc_m17_write_block(dst, false);
+	radio_m17_settings_next(&m);
+	memcpy(m.dst, life == UI_TALK_DEFAULT && !ui_svc_view.vfo ? all : dst, sizeof m.dst);
+	radio_req_m17_settings(&m);
+	return true;
+}
+
+uint8_t ui_svc_m17_caps(void)
+{
+	if (!radio_m17_fits())
+		return 0;
+	return (CONFIG_M17_SIG ? UI_M17_SIG : 0u) | (CONFIG_M17_SCRAMBLER || CONFIG_M17_AES ? UI_M17_ENC : 0u) |
+	       (CONFIG_M17_PACKET ? UI_M17_SMS : 0u) | (CONFIG_M17_BERT ? UI_M17_BERT : 0u);
+}
+#endif
+
+bool ui_svc_hear_all(bool on)
+{
+	switch (channel_mode()) {
+#if CONFIG_M17
+	case RADIO_MODE_M17:
+		return m17_hear_all(on);
+#endif
+	case RADIO_MODE_DMR:
+	default:
+		radio_req_dmr_hear_all(on);
+		return true;
+	}
+}
+
 #if CONFIG_DMR_PRIVACY
-// On: the key slot in use (settings_t.privacy_active), else the first slot holding a valid key. False when no slot
+// DMR: on, the key slot in use (settings_t.privacy_active), else the first slot holding a valid key. False when no slot
 // does (the UI says to add one). Off keeps the key in its slot (settings-store.md 3.1)
-bool ui_svc_privacy(bool on)
+static bool dmr_privacy(bool on)
 {
 	if (!on) {
 		radio_req_dmr_privacy(DMR_PRIVACY_OFF, 0);
@@ -197,6 +262,15 @@ bool ui_svc_privacy(bool on)
 		}
 	}
 	return false;
+}
+
+bool ui_svc_privacy(bool on)
+{
+	switch (channel_mode()) {
+	case RADIO_MODE_DMR:
+	default:
+		return dmr_privacy(on);
+	}
 }
 #endif
 #endif
@@ -224,11 +298,14 @@ uint32_t ui_svc_feat_radio(void)
 #if CONFIG_NXDN
 	       (radio_nxdn_fits() ? UI_FEAT_NXDN : 0) |
 #endif
+#if CONFIG_M17
+	       (radio_m17_fits() ? UI_FEAT_M17 : 0) |
+#endif
 	       0;
 }
 
 #if CONFIG_DMR
-bool ui_svc_talk_to(uint32_t id, bool private_call, uint8_t life)
+static bool dmr_talk_to(uint32_t id, bool private_call, uint8_t life)
 {
 	switch (life) {
 	case UI_TALK_TEMPORARY:
@@ -243,6 +320,15 @@ bool ui_svc_talk_to(uint32_t id, bool private_call, uint8_t life)
 		return ui_svc_save_talk_target(id, private_call);
 	default:
 		return false;
+	}
+}
+
+bool ui_svc_talk_to(uint32_t id, bool private_call, uint8_t life)
+{
+	switch (channel_mode()) {
+	case RADIO_MODE_DMR:
+	default:
+		return dmr_talk_to(id, private_call, life);
 	}
 }
 #endif
@@ -531,6 +617,19 @@ void ui_svc_apply(uint8_t id, int32_t value)
 		position_gps_enable(value != 0);
 #endif
 		return;
+#if CONFIG_M17
+	case UI_SET_M17_CAN:		// the VFO's and a channel switched to M17's (radio_m17.h): both ways
+	case UI_SET_M17_VOICE: {
+		radio_m17_settings_t m;
+		radio_m17_settings_next(&m);
+		if (id == UI_SET_M17_CAN)
+			m.can = m.tx_can = (uint8_t)(v16 > M17_CAN_MAX ? 0 : v16);
+		else
+			m.mode1600 = value != 0;
+		radio_req_m17_settings(&m);
+		return;
+	}
+#endif
 	case UI_SET_LONG_PRESS_MS:	// the input layer's gesture timing (not a radio core setting)
 	case UI_SET_REPEAT_MS: {
 		static uint16_t long_ms, repeat_ms;

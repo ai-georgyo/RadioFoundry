@@ -5,6 +5,8 @@
 translation, else its English), a catalog kept in step by key (an English edit keeps the translation), the
 migration of a catalog without keys, the rewrite of old-form marks, and the rename of keys."""
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -162,6 +164,117 @@ class Generate(unittest.TestCase):
         for key, msgid, msgstr, _ in body:
             errs = i18n.check_translation(msgid, msgstr, msgid) if msgstr else []
             self.assertEqual(bool(errs), msgid in ("Volume ", "Bad"), msgid)
+
+
+COND_SRC = """// SPDX-License-Identifier: MIT
+#ifndef X_H
+#define X_H
+#define BOTH (CONFIG_TA && CONFIG_TB)
+a = TR(ALWAYS, "Always");
+#if CONFIG_TA
+b = TR(ONLY_A, "Only A");
+#if CONFIG_TB
+c = TR(A_AND_B, "A and B");
+#else
+d = TR(A_NOT_B, "A, not B");
+#endif
+#elif CONFIG_TB \\
+	|| CONFIG_TC
+e = TR(B_NOT_A, "B, not A");
+#endif
+#if BOTH
+f = TRX(BOTH_RX, "Both RX");
+#endif
+#if CONFIG_TA
+g = TR(SHARED, "Shared");
+#endif
+#if CONFIG_TC
+h = TR(SHARED, "Shared");
+#endif
+#ifdef CONFIG_TA
+i = TR(IFDEF, "Ifdef");
+#endif
+#if OTHER_MACRO
+j = TR(UNKNOWN, "Unknown");
+#endif
+#if CONFIG_TA
+k = TR(ONCE, "Once");
+#endif
+l = TR(ONCE, "Once");
+#endif
+"""
+
+
+class Conditions(unittest.TestCase):
+    def setUp(self):
+        self.saved = i18n.config_names_cache
+        i18n.config_names_cache = frozenset({"CONFIG_TA", "CONFIG_TB", "CONFIG_TC", "CONFIG_LANG_ANY"})
+
+    def tearDown(self):
+        i18n.config_names_cache = self.saved
+
+    def test_each_mark_its_blocks(self):
+        got = {m.key: m.cond for m in scan(COND_SRC)}
+        self.assertEqual(got["ALWAYS"], None)
+        self.assertEqual(got["ONLY_A"], "(CONFIG_TA)")
+        self.assertEqual(got["A_AND_B"], "(CONFIG_TA) && (CONFIG_TB)")
+        self.assertEqual(got["A_NOT_B"], "(CONFIG_TA) && (!(CONFIG_TB))")
+        self.assertEqual(got["B_NOT_A"], "(!(CONFIG_TA) && (CONFIG_TB || CONFIG_TC))")   # continued on the next line
+        self.assertEqual(got["BOTH_RX"], "(((CONFIG_TA && CONFIG_TB)))")     # the file's own macro of switches
+        self.assertEqual(got["IFDEF"], None)       # #ifdef, a macro from elsewhere: always (costs only the text)
+        self.assertEqual(got["UNKNOWN"], None)
+
+    def test_a_key_is_built_when_any_mark_is(self):
+        conds = i18n.key_conditions(scan(COND_SRC))
+        self.assertEqual(conds["SHARED"], "((CONFIG_TA)) || ((CONFIG_TC))")
+        self.assertEqual(conds["ONCE"], None)      # one mark always: the key always
+
+    def test_a_macro_that_varies_is_none(self):
+        src = "#if CONFIG_TA\n#define M CONFIG_TB\n#else\n#define M 0\n#endif\n#if M\nx = TR(K, \"K\");\n#endif\n"
+        self.assertIsNone(scan(src)[0].cond)
+        src = "#define M CONFIG_TB\n#undef M\n#if M\nx = TR(K, \"K\");\n#endif\n"
+        self.assertIsNone(scan(src)[0].cond)
+
+    def test_unbalanced_directives_read_as_always(self):
+        self.assertIsNone(scan("#if CONFIG_TA\nx = TR(K, \"K\");\n")[0].cond)
+        self.assertIsNone(scan("#endif\n#if CONFIG_TA\nx = TR(K, \"K\");\n#endif\n")[0].cond)
+
+    @unittest.skipUnless(shutil.which("cc"), "no C compiler")
+    def test_tables_compile_and_find_every_built_string(self):
+        # The generated tables with a switch on and off, through core/ui/i18n.c: a key of a segment that is off has
+        # its NUL only, the keys after it their text, and its TR_<KEY> isn't there
+        with tempfile.TemporaryDirectory() as d:
+            saved = i18n.LANG_DIR
+            i18n.LANG_DIR = d
+            try:
+                with open(os.path.join(d, "es.po"), "w", encoding="utf-8") as f:     # a language config.h knows
+                    f.write(PO.replace('msgctxt "DONE"', 'msgctxt "A_NOT_B"').replace('msgid "Done"',
+                                                                                    'msgid "A, not B"'))
+                i18n.generate(os.path.join(d, "lang_tables.h"), scan(COND_SRC + SRC))
+            finally:
+                i18n.LANG_DIR = saved
+            prog = os.path.join(d, "t.c")
+            with open(prog, "w", encoding="utf-8") as f:
+                f.write('#include <stdio.h>\n#include "i18n.h"\nint main(void) {\n'
+                        '\tprintf("%s|%s|%s|", tr_en(TR_ALWAYS), tr_en(TR_DONE), tr_en(TR_ONCE));\n'
+                        '#if CONFIG_TA\n\tprintf("%s|", tr_en(TR_ONLY_A));\n#endif\n'
+                        '#if CONFIG_TA && !CONFIG_TB\n\tlang_set(1);\n\tprintf("%s|", tr(TR_A_NOT_B));\n#endif\n'
+                        '\tprintf("%s\\n", tr_en(TR_RX));\n\treturn 0;\n}\n')
+            core = os.path.join(i18n.ROOT, "core")
+            for ta, want in (("1", "Always|Done|Once|Only A|Hecho|RX"), ("0", "Always|Done|Once|RX")):
+                exe = os.path.join(d, "t" + ta)
+                subprocess.run(["cc", "-std=gnu11", "-Wall", "-Werror", "-I" + d, "-I" + core,
+                                "-I" + os.path.join(core, "ui"), "-DCONFIG_LANG_ES=1",
+                                "-DCONFIG_TA=" + ta, "-DCONFIG_TB=0", "-DCONFIG_TC=0", "-o", exe, prog,
+                                os.path.join(core, "ui", "i18n.c")], check=True)
+                self.assertEqual(subprocess.run([exe], capture_output=True, text=True).stdout.strip(), want)
+            # a key used where its condition is off: no TR_<KEY>, the build fails
+            with open(prog, "a", encoding="utf-8") as f:
+                f.write("const char *x(void) { return tr_en(TR_ONLY_A); }\n")
+            r = subprocess.run(["cc", "-std=gnu11", "-I" + d, "-I" + core, "-I" + os.path.join(core, "ui"),
+                                "-DCONFIG_LANG_ES=1", "-DCONFIG_TA=0", "-c", "-o",
+                                os.path.join(d, "x.o"), prog], capture_output=True)
+            self.assertNotEqual(r.returncode, 0)
 
 
 class Sync(unittest.TestCase):

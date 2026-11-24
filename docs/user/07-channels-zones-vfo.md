@@ -2,7 +2,7 @@
 
 # Channels, Zones and the VFO
 
-A **channel** is a saved frequency with its mode (FM, DMR, or P25 and NXDN where the radio runs them) and settings. A **zone** is a named list of channels.
+A **channel** is a saved frequency with its mode (FM, DMR, or P25, NXDN and M17 where the radio runs them) and settings. A **zone** is a named list of channels.
 The **VFO** tunes any frequency by hand. Channels and zones come from the codeplug ([Programming the radio](04-programming.md)).
 
 ## Changing the channel
@@ -90,7 +90,8 @@ radio; sending a whole zone and receiving are tested only in the host tests so f
    repeater, its output frequency). A banner says "Sent to ..." when it is out.
 
 A zone too big for one send goes in part, and the radio says how much ("Sending 40 of 60 channels"). Scan lists,
-group lists and privacy keys are never sent.
+group lists and privacy keys are never sent. M17 station keys and signing keys never come in with a share: the radio
+trusts only keys added in the Codeplug Editor ([Signatures](24-m17.md#signatures)).
 
 **Receive:** **Settings > Connections > Accept zone shares** is **On** at first. Nothing is imported until you
 say so. Set it to **Off** to ignore what others send.
@@ -142,7 +143,7 @@ Focus a row and press **OK**:
 
 | Row | What OK does |
 |---|---|
-| Mode | steps to the next mode: FM, DMR, then P25 and NXDN on a radio that runs them. Stepping on comes back to the mode the channel had, with its settings as they were |
+| Mode | steps to the next mode: FM, DMR, then P25, NXDN and M17 on a radio that runs them. Stepping on comes back to the mode the channel had, with its settings as they were |
 | Two choices (timeslot, bandwidth, RX only, scan, VOX, tone burst, direct mode, beeps, talker alias, battery saver) | switches to the other one |
 | Power, RX CTCSS/DCS, TX CTCSS/DCS, color code, TX time-out | opens a picker: turn the knob (or Up / Down) to the value, **OK** keeps it, **Back** cancels. Color code and time-out also take digits |
 | RX CTCSS/DCS, TX CTCSS/DCS, typed | type a CTCSS tone with its tenths digit: **8 8 5** is 88.5, **1 3 1 8** is 131.8. Under 60 the digits are whole Hz: **6 7** is 67.0, **1 0 0** is 100.0. Start with **0** for a DCS code: **0 2 3** is D023N. **Back** takes the last digit back. For an inverted DCS code, turn the knob one step: each code's I follows its N (D023N, D023I, D025N) |
@@ -292,8 +293,9 @@ In the VFO, **\***, **5** (**\***, **6** in the DMR VFO) is **TX freq** (the spl
 
 ### DMR in the VFO
 
-**\***, **4** in the VFO switches it between FM and DMR on the same frequency ("VFO: DMR"), and to P25 and NXDN after DMR on a
-radio that runs them ([P25 in the VFO](#p25-in-the-vfo), [NXDN in the VFO](#nxdn-in-the-vfo)). In DMR the quick settings are the DMR ones:
+**\***, **4** in the VFO switches it between FM and DMR on the same frequency ("VFO: DMR"), and to P25, NXDN and M17 after DMR on a
+radio that runs them ([P25 in the VFO](#p25-in-the-vfo), [NXDN in the VFO](#nxdn-in-the-vfo), [M17 in the
+VFO](#m17-in-the-vfo)). In DMR the quick settings are the DMR ones:
 
 | Key | Tile | What it does in the DMR VFO |
 |---|---|---|
@@ -413,6 +415,35 @@ squelch and the group (when a contact has that group; else group 1).
   your unit ID (**Own ID**, up to 65519). RAN 0 receives every RAN. The squelch can be changed only from a computer.
 - Scan stops on NXDN channels and holds on a call you would hear there, at a rate the radio can receive. Dual watch
   takes one as A or B.
+
+### M17 in the VFO
+
+On a radio that runs M17 ([feature matrix](../feature-matrix.md)), M17 is one of the VFO's modes, after NXDN ("VFO:
+M17"). It is M17 voice in Codec 2 at 3200 bit/s, or 1600 bit/s with room for data. It needs no codec from the stock
+firmware. Everything about M17 on the radio is on its own page: [M17](24-m17.md).
+
+- It plays calls on the CAN of **Settings > Talk & listen > M17 CAN** (digital monitor, Quick **5**: every CAN).
+- PTT sends a voice call from your M17 callsign ([Your callsign](24-m17.md#your-callsign)) to **All call**, or to the
+  destination picked with long **#**. Without a callsign PTT says **No M17 callsign set**.
+- Home shows "M17", the destination, the CAN and the rate ("CAN0 3200"). During a call it shows who calls, the
+  destination and the call text, or why the call isn't played.
+- The quick settings are M17's: rate, CAN, digital monitor, privacy and the talk target ([Quick settings on
+  M17](24-m17.md#quick-settings-on-m17)).
+
+### M17 channels
+
+An M17 channel comes from a codeplug written on a computer ([M17 in the editor](04-programming.md#m17)), a zone
+shared by another radio, the VFO (in M17, open **Channels**, **New channel from current settings** and save it), or
+any channel: press **OK** on its Mode until it says M17, and save. A channel made M17 starts with the M17 CAN and
+voice settings, the destination **All call** and encryption off.
+
+- The channel's settings show **CAN** (0-15, or **Any**), **Rate**, **Destination** and **Encryption**
+  ([The channel editor](24-m17.md#the-channel-editor)). The keys come from the Codeplug Editor only.
+- **OK** on Mode steps to the other modes and back to M17 with its settings as they were. Saving the channel as
+  another mode removes its M17 settings: the radio asks first.
+- On a stored M17 channel the destination is the channel's: holding **OK** on a station in the picker makes it the
+  channel's destination.
+- Scan stops on M17 channels and holds on a call you would hear there. Dual watch takes one as A or B.
 
 ### Leaving the VFO
 

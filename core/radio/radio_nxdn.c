@@ -14,21 +14,12 @@
 #include "codeplug/codeplug_tag.h"
 #include "dmr/ambe/ambeVoice.h"
 #include "dmr/call/dmr_call.h"
-#if CONFIG_P25 && !defined(HAL_VOCODER_LEND_BYTES)
-#include "radio/radio_p25.h"
-#endif
+#include "radio/radio_air_mem.h"
+#include "radio/radio_air_modes.h"
 
 // The 72-bit voice frame NXDN carries is the one the DMR side's voice path takes and gives (nxdn.md 5): the
 // standard's second FEC test frame (7.2.1) is the DMR side's AMBE+2 silence frame
 _Static_assert(NXDN_EHR_BYTES == DMR_AMBE_FRAME_BYTES, "one voice frame size");
-
-#if CONFIG_P25 && !defined(HAL_VOCODER_LEND_BYTES)
-// P25's memory is idle while NXDN runs (one air mode at a time): no copy of our own
-#define NXDN_MEM_SHARED	1
-#else
-#define NXDN_MEM_SHARED	0
-static nxdn_engine_t own_mem;
-#endif
 
 static const radio_nxdn_settings_t defaults = {
 	.rate9600 = true, .rx_ran = NXDN_RAN_ANY, .tx_ran = 1, .rx_gid = 0, .unit_id = 1, .unit_call = false,
@@ -45,6 +36,7 @@ void radio_nxdn_init(void)
 {
 	set = defaults;
 	eng = NULL;
+	radio_air_mem_put(RADIO_MODE_NXDN);	// nothing runs from here: a block held before is free
 }
 
 void radio_nxdn_settings(radio_nxdn_settings_t *out)
@@ -199,18 +191,17 @@ static void voice_tx(bool on)
 		s->end(s->ctx);
 }
 
+// The engine runs in the shared arena (radio_air_mem.h): NXDN's voice is the vocoder's, so never in its loan
 static nxdn_engine_t *mem_get(void)
 {
-#if NXDN_MEM_SHARED
-	size_t len = 0;
-	void *m = radio_p25_idle_mem(&len);
+	return radio_air_mem_get(RADIO_MODE_NXDN, sizeof(nxdn_engine_t));
+}
 
-	if (m == NULL || len < sizeof(nxdn_engine_t) || ((uintptr_t)m & 7u) != 0)
-		return NULL;
-	return m;
-#else
-	return &own_mem;
-#endif
+// The block goes back: from every path that started with mem_get and stops (or never ran)
+static void mem_put(void)
+{
+	eng = NULL;
+	radio_air_mem_put(RADIO_MODE_NXDN);
 }
 
 bool radio_nxdn_begin(const channel_t *ch, uint16_t number)
@@ -222,14 +213,14 @@ bool radio_nxdn_begin(const channel_t *ch, uint16_t number)
 	params(ch, number, &cfg);
 	eng = mem_get();
 	if (eng == NULL || board.air == NULL || nxdn_engine_fit(board.air, cfg.rate9600) == 0) {
-		eng = NULL;
+		mem_put();
 		stats.begin_fails++;
 		return false;
 	}
 	ambeVoiceStart();	// before the engine: its first call may come at once
 	if (!nxdn_engine_begin(eng, board.air, &cfg, &voice_hooks, NULL)) {
 		ambeVoiceStop();
-		eng = NULL;
+		mem_put();
 		stats.begin_fails++;
 		return false;
 	}
@@ -245,7 +236,7 @@ void radio_nxdn_end(void)
 		return;
 	nxdn_engine_end(eng);	// the provider closed: no hook runs after this
 	ambeVoiceStop();
-	eng = NULL;
+	mem_put();
 }
 
 bool radio_nxdn_running(void)
@@ -440,5 +431,76 @@ void radio_nxdn_reset_stats(void)
 {
 	memset(&stats, 0, sizeof(stats));
 }
+
+// ── The radio core's row (radio_air_modes.h): radio_sm.c runs NXDN through it ──
+static bool row_begin(const channel_t *ch, uint16_t number, uint32_t own_id)
+{
+	(void)own_id;		// NXDN's unit ID is its own (the channel's or the settings'), never the DMR ID
+	return radio_nxdn_begin(ch, number);
+}
+
+static void row_apply(const channel_t *ch, uint16_t number, uint32_t own_id)
+{
+	(void)own_id;
+	radio_nxdn_apply(ch, number);
+}
+
+static bool row_poll(radio_view_t *v)
+{
+	return radio_nxdn_poll(&v->nxdn);
+}
+
+static bool row_rx(const radio_view_t *v)
+{
+	return (v->nxdn.flags & RADIO_NXDN_RX) != 0;
+}
+
+// A call of the channel's RAN: pending until its VCALL is in (no source yet, nothing decided); played; or decided
+// against (another group, encrypted)
+static uint8_t row_heard(const radio_view_t *v)
+{
+	const radio_nxdn_view_t *n = &v->nxdn;
+
+	if ((n->flags & RADIO_NXDN_RX) == 0)
+		return RADIO_AIR_HEARD_NONE;
+	if ((n->flags & RADIO_NXDN_PLAYED) != 0)
+		return RADIO_AIR_HEARD_PLAYED;
+	return (n->flags & RADIO_NXDN_ENC) == 0 && n->src == 0 ? RADIO_AIR_HEARD_PENDING : RADIO_AIR_HEARD_OTHER;
+}
+
+static bool row_played(const radio_view_t *v)
+{
+	return (v->nxdn.flags & RADIO_NXDN_PLAYED) != 0;
+}
+
+// The last call heard and the settings stay in the view
+static void row_view_off(radio_view_t *v)
+{
+	v->nxdn.flags &= (uint8_t)~(RADIO_NXDN_ON | RADIO_NXDN_RX | RADIO_NXDN_PLAYED);
+	v->nxdn.tx = AIR_TX_IDLE;
+}
+
+const radio_air_mode_t radio_nxdn_mode = {
+	.mode = RADIO_MODE_NXDN,
+	.key = "nxdn",
+	.name = "NXDN",
+	.features = RADIO_NXDN_FEATURES,
+	.fits = radio_nxdn_fits,
+	.take = radio_nxdn_take,
+	.receives = radio_nxdn_receives,	// at the channel's rate
+	.begin = row_begin,
+	.end = radio_nxdn_end,
+	.running = radio_nxdn_running,
+	.retuned = radio_nxdn_retuned,
+	.apply = row_apply,
+	.poll = row_poll,
+	.rx = row_rx,
+	.heard = row_heard,
+	.played = row_played,
+	.view_off = row_view_off,
+	.tx_deny = NULL,
+	.auto_tx = NULL,
+	.ops = &radio_nxdn_air,
+};
 
 #endif	// CONFIG_NXDN

@@ -5,6 +5,7 @@
 #include "codeplug/codeplug_records.h"
 #include "codeplug/codeplug_tag.h"
 #include "codeplug/codeplug_kv.h"
+#include "crypto/crypto_wipe.h"
 
 #if CODEPLUG_MODE_RECORDS
 
@@ -142,20 +143,21 @@ int codeplug_system_secret(uint8_t n, uint8_t *buf, uint16_t cap)
 
 int codeplug_traffic_key(uint8_t system, uint8_t alg, uint16_t key_id, uint8_t *key, uint16_t cap)
 {
-	// A walk over the family: keys are few, and only a call that needs one looks
+	// A walk over the family: keys are few, and only a call that needs one looks. Every key read passes through v:
+	// wiped before return, so no key stays on the caller's stack (channel-modes.md 8)
 	uint8_t v[CODEPLUG_TRAFFIC_HDR + 64u];
 	codeplug_kv_cursor_t c;
 	uint16_t k;
-	int len;
+	int len, n = -1;
 	codeplug_kv_begin(&c, CODEPLUG_KEY_TRAFFIC, (uint16_t)(CODEPLUG_KEY_TRAFFIC + TRAFFIC_MAX - 1u));
-	while ((len = codeplug_kv_next(&c, &k, v, sizeof v)) >= 0) {
+	while (n < 0 && (len = codeplug_kv_next(&c, &k, v, sizeof v)) >= 0) {
 		if (len >= (int)CODEPLUG_TRAFFIC_HDR && v[0] == system && v[1] == alg && rec_rd16(&v[2]) == key_id) {
-			int n = len - (int)CODEPLUG_TRAFFIC_HDR;
+			n = len - (int)CODEPLUG_TRAFFIC_HDR;
 			int fit = n < (int)(sizeof v - CODEPLUG_TRAFFIC_HDR) ? n : (int)(sizeof v - CODEPLUG_TRAFFIC_HDR);
 			memcpy(key, &v[CODEPLUG_TRAFFIC_HDR], (size_t)(fit < (int)cap ? fit : (int)cap));
-			return n;
 		}
 	}
-	return -1;
+	crypto_wipe(v, sizeof v);
+	return n;
 }
 #endif

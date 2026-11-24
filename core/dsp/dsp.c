@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Fixed-point helpers of the MBE core (mbe_dsp.h): 2^x, log2, interpolated cosine, and a real FFT built on a radix-2
-// complex FFT with Q15 twiddles from the quarter-wave table.
-#include "mbe_dsp.h"
-#include "../dsp/fxp.h"
+// The voice codecs' shared fixed-point helpers (dsp.h): 2^x, log2, interpolated cosine, and a real FFT built on a
+// radix-2 complex FFT with Q15 twiddles from the quarter-wave table.
+#include "dsp.h"
+#include "fxp.h"
 
-int32_t mbe_cos_i(uint32_t ph)
+int32_t dsp_cos_i(uint32_t ph)
 {
 	uint32_t i = ph >> 22;
-	int32_t c0 = mbe_sin_idx(i + 256u), c1 = mbe_sin_idx(i + 257u);
+	int32_t c0 = dsp_sin_idx(i + 256u), c1 = dsp_sin_idx(i + 257u);
 
 	// one step of the quarter wave is at most 201 (32767 pi / 512), so the product stays under 2^30: no 64-bit one
 	return c0 + (((c1 - c0) * (int32_t)(ph & 0x3FFFFFu)) >> 22);
 }
 
-int32_t mbe_exp2_q11(int32_t x)
+int32_t dsp_exp2_q11(int32_t x)
 {
 	int32_t ip = x >> 11;				// floor
 	uint32_t fr = (uint32_t)x & 2047u;		// 0..2047
 	uint32_t i = fr >> 5, f = fr & 31u;
-	uint32_t m = mbe_exp2_tab[i] + (((uint32_t)(mbe_exp2_tab[i + 1] - mbe_exp2_tab[i]) * f) >> 5);	// Q14, 1..2
+	uint32_t m = dsp_exp2_tab[i] + (((uint32_t)(dsp_exp2_tab[i + 1] - dsp_exp2_tab[i]) * f) >> 5);	// Q14, 1..2
 
 	if (ip >= 30)
 		return 1 << 30;
@@ -32,7 +32,7 @@ int32_t mbe_exp2_q11(int32_t x)
 
 static int clz32(uint32_t x) { return x ? __builtin_clz(x) : 32; }
 
-int32_t mbe_log2_q11(uint32_t x)
+int32_t dsp_log2_q11(uint32_t x)
 {
 	int e;
 	uint32_t m, fr, i, f, l;
@@ -44,19 +44,19 @@ int32_t mbe_log2_q11(uint32_t x)
 	fr = m & 0xFFFFu;
 	i = fr >> 10;
 	f = fr & 1023u;
-	l = mbe_log2_tab[i] + (((uint32_t)(mbe_log2_tab[i + 1] - mbe_log2_tab[i]) * f) >> 10);	// Q15
+	l = dsp_log2_tab[i] + (((uint32_t)(dsp_log2_tab[i + 1] - dsp_log2_tab[i]) * f) >> 10);	// Q15
 	return (e << 11) + (int32_t)(l >> 4);
 }
 
-int32_t mbe_log2_q11_64(uint64_t x)
+int32_t dsp_log2_q11_64(uint64_t x)
 {
 	uint32_t h = (uint32_t)(x >> 32), l = (uint32_t)x;
 
 	if (h) {
 		int s = 32 - clz32(h);			// 1..32: x >> s fits 32 bits, no variable 64-bit shift
-		return mbe_log2_q11(s == 32 ? h : (h << (32 - s)) | (l >> s)) + (s << 11);
+		return dsp_log2_q11(s == 32 ? h : (h << (32 - s)) | (l >> s)) + (s << 11);
 	}
-	return mbe_log2_q11(l);
+	return dsp_log2_q11(l);
 }
 
 // b is a Q15 twiddle from the quarter wave, a 16-bit factor: fxp_mulshr16's two 32-bit products give fxp_mulshr's result
@@ -66,7 +66,7 @@ static inline __attribute__((always_inline)) int32_t mulq15(int32_t a, int32_t b
 // k = half/2 butterflies of each stage need no multiply.
 static void cfft(int32_t *z, int inv)
 {
-	const int n = MBE_FFT_N;
+	const int n = DSP_FFT_N;
 
 	for (int i = 1, j = 0; i < n; i++) {
 		int bit = n >> 1;
@@ -112,8 +112,8 @@ static void cfft(int32_t *z, int inv)
 
 			if (2 * k == half)
 				continue;
-			c = mbe_sin_idx((uint32_t)(k * step + 256));
-			s = mbe_sin_idx((uint32_t)(k * step));
+			c = dsp_sin_idx((uint32_t)(k * step + 256));
+			s = dsp_sin_idx((uint32_t)(k * step));
 			if (!inv)
 				s = -s;
 			for (int i = k; i < n; i += len) {
@@ -130,11 +130,11 @@ static void cfft(int32_t *z, int inv)
 	}
 }
 
-void mbe_irfft(int32_t *buf)
+void dsp_irfft(int32_t *buf)
 {
 	// Fold the half spectrum X[0..N] into N complex points Z_k = (X_k + conj X_{N-k}) + i e^{i pi k/N} (X_k - conj X_{N-k}),
 	// then z = IFFT(Z) gives x[2m] = Re z_m and x[2m+1] = Im z_m.
-	const int n = MBE_FFT_N;
+	const int n = DSP_FFT_N;
 	int32_t x0 = buf[0], xn = buf[1];
 
 	buf[0] = x0 + xn;
@@ -144,7 +144,7 @@ void mbe_irfft(int32_t *buf)
 		int32_t ar = p[0], ai = p[1], br = q[0], bi = q[1];
 		int32_t sr = ar + br, si = ai - bi;		// X_k + conj X_{N-k}
 		int32_t dr = ar - br, di = ai + bi;		// X_k - conj X_{N-k}
-		int32_t c = mbe_sin_idx((uint32_t)(k * 512 / n + 256)), s = mbe_sin_idx((uint32_t)(k * 512 / n));
+		int32_t c = dsp_sin_idx((uint32_t)(k * 512 / n + 256)), s = dsp_sin_idx((uint32_t)(k * 512 / n));
 		int32_t er = mulq15(dr, c) - mulq15(di, s), ei = mulq15(dr, s) + mulq15(di, c);	// e^{i pi k/N} * d
 
 		p[0] = sr - ei;
@@ -157,10 +157,10 @@ void mbe_irfft(int32_t *buf)
 	cfft(buf, 1);
 }
 
-void mbe_rfft(int32_t *buf)
+void dsp_rfft(int32_t *buf)
 {
 	// z_m = x[2m] + i x[2m+1], Z = FFT(z); X_k = (Z_k + conj Z_{N-k}) / 2 - i e^{-i pi k/N} (Z_k - conj Z_{N-k}) / 2
-	const int n = MBE_FFT_N;
+	const int n = DSP_FFT_N;
 	int32_t z0r, z0i;
 
 	cfft(buf, 0);
@@ -173,7 +173,7 @@ void mbe_rfft(int32_t *buf)
 		int32_t ar = p[0], ai = p[1], br = q[0], bi = q[1];
 		int32_t sr = (ar + br) >> 1, si = (ai - bi) >> 1;	// (Z_k + conj Z_{N-k}) / 2
 		int32_t dr = (ar - br) >> 1, di = (ai + bi) >> 1;	// (Z_k - conj Z_{N-k}) / 2
-		int32_t c = mbe_sin_idx((uint32_t)(k * 512 / n + 256)), s = -mbe_sin_idx((uint32_t)(k * 512 / n));
+		int32_t c = dsp_sin_idx((uint32_t)(k * 512 / n + 256)), s = -dsp_sin_idx((uint32_t)(k * 512 / n));
 		int32_t er = mulq15(dr, c) - mulq15(di, s), ei = mulq15(dr, s) + mulq15(di, c);	// e^{-i pi k/N} * d
 
 		p[0] = sr + ei;

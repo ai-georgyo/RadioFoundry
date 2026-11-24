@@ -140,6 +140,9 @@ Both types:
 | `scanList` | Dropped | |
 | `admit` | Dropped | Written as `Always` |
 
+Other channel types are dropped (note `channel_type`). That includes qdmr's own `m17:` channel element in version 1:
+an M17 channel travels as an FM or DMR element with the `radioFoundry` block (3.7), mode `M17`.
+
 DMR channels:
 
 | qdmr | Editor | Notes |
@@ -210,7 +213,7 @@ A symbol from the alternate table, or `/D` and `/J`, exports as `None` with a no
 ### 3.7 The radioFoundry block
 
 qdmr has no element for the channel modes ([channel-modes.md](channel-modes.md)): systems, channels of a kind
-(Tier III, P25, P25 trunked, NXDN) and the kinds' radio-wide records. qdmr has no key for a channel's Accept Invalid
+(Tier III, P25, P25 trunked, NXDN, M17) and the kinds' radio-wide records. qdmr has no key for a channel's Accept Invalid
 CRC either. The editor carries all of them in a block named `radioFoundry`, one at the top level of the file and one in
 any channel element, the way qdmr carries its own blocks for some radios. `dmrconf` reads past keys it doesn't know, so a
 file with the block still opens in qdmr. qdmr never writes the block.
@@ -232,21 +235,21 @@ new system, entry or channel of that kind, so a hand-written file names only wha
 | Key | Holds |
 |---|---|
 | `systems` | The systems, in table order, each a map (below) |
-| `modeSettings` | The kinds' radio-wide records ([channel-modes.md](channel-modes.md) 5.5) by the kind's short name: `P25: {unitId: 9990123}`, `NXDN: {unitId: 1234}`. The export writes a record only when it differs from its defaults |
+| `modeSettings` | The kinds' radio-wide records ([channel-modes.md](channel-modes.md) 5.5) by the kind's short name: `P25: {unitId: 9990123}`, `NXDN: {unitId: 1234}`, `M17: {src: 10476881, text: Hello, gnss: true, sign: false, station: 0}` (`src` our address as a number, [m17-codeplug.md](m17-codeplug.md) 3). The export writes a record only when it differs from its defaults |
 
 **A system.**
 
 | Key | Field | Notes |
 |---|---|---|
 | `id` | | `sys1`, `sys2` in table order. A channel's `system` names it |
-| `type` | System type | The short name of [channel-modes.md](channel-modes.md) 4: `T3`, `P25T`, `NXDN` |
+| `type` | System type | The short name of [channel-modes.md](channel-modes.md) 4: `T3`, `P25T`, `NXDN`, `M17` |
 | `name` | Name | 16 characters |
-| `transmit` | Transmit side (flag bit 1) | Left out: the type's default (Tier III and NXDN on, P25 trunked off) |
+| `transmit` | Transmit side (flag bit 1) | Left out: the type's default (Tier III, NXDN and M17 on, P25 trunked off) |
 | `ownId` | The radio's ID on the system | 0: the kind's radio-wide one |
 | `authenticates` | Needs its secret (flag bit 0) | |
 | `sharing` | Sharing | `off`, `identity`, `whole` |
 | `fallback` | Fallback channel | A channel id |
-| `settings` | The type's block | Tier III: [dmr-trunking-codeplug.md](dmr-trunking-codeplug.md) 1. P25 trunked: [p25-codeplug.md](p25-codeplug.md) 3. NXDN: none |
+| `settings` | The type's block | Tier III: [dmr-trunking-codeplug.md](dmr-trunking-codeplug.md) 1. P25 trunked: [p25-codeplug.md](p25-codeplug.md) 3. NXDN, M17: none |
 | `entries` | The system's entries ([channel-modes.md](channel-modes.md) 7.2) | A list of flow maps, below |
 
 Tier III `settings`: `model` (0 tiny, 1 small, 2 large, 3 huge), `net`, `category` (`a` or `b`), `colorCode`, the
@@ -267,28 +270,30 @@ bits, only when set), then the class's fields:
 | P25 trunked | 0 control channel | `group` (the site), `iden`, `chanNo`, `rxHz`, `txHz` |
 | P25 trunked | 1 site | `group`, `rfss`, `site` (`~`: not known) |
 | P25 trunked | 2 identifier plan row | `group` (the identifier), `baseHz`, `spacingHz`, `txOffsetHz`, `bwHz`, `tdma`, `slots` |
+| M17 | 128 station key | `addr` (the station's address as a number), `pub` (its public key compressed, 66 hex digits: [m17-codeplug.md](m17-codeplug.md) 4.2) |
 
 **A channel's block.**
 
 | Key | Field | Notes |
 |---|---|---|
-| `mode` | Kind | The short name of [channel-modes.md](channel-modes.md) 4: `T3`, `P25`, `P25T`, `NXDN`. Left out: a plain channel |
+| `mode` | Kind | The short name of [channel-modes.md](channel-modes.md) 4: `T3`, `P25`, `P25T`, `NXDN`, `M17`. Left out: a plain channel |
 | `system` | The channel's system | A system id |
 | `transmit` | Transmit allowed (tag flag bit 0) | Left out: the kind's default |
 | `ownFrequencies` | The record stands on its own (tag flag bit 1) | |
 | `noFallback` | The kind's flag bit 4 | Tier III and P25 trunked |
 | `fallback` | The channel's own fallback | A channel id |
-| `settings` | The kind's parameter block | P25: `squelch`, `rxNac`, `txNac`. P25 trunked: `followAll`. NXDN: `rate9600`, `squelch`, `rxRan`, `txRan`, and `txKeyId` when set. Tier III: none |
+| `settings` | The kind's parameter block | P25: `squelch`, `rxNac`, `txNac`. P25 trunked: `followAll`. NXDN: `rate9600`, `squelch`, `rxRan`, `txRan`, and `txKeyId` when set. M17: `squelch`, `mode1600`, `can`, `txCan` (`~`: the CAN), `dst` (the destination as a number, 281474976710655 for All call), `enc`, `keyId` ([m17-codeplug.md](m17-codeplug.md) 2). Tier III: none |
 | `acceptInvalidCrc` | Accept Invalid CRC | A DMR channel's, plain or of a kind. Ignored on an FM channel |
 
 The channel element around the block is the channel's record. A channel of a kind without frequencies of its own
 (Tier III, P25 trunked) is the stand-in of [channel-modes.md](channel-modes.md) 2.3: a receive-only DMR channel on
 its system's first control channel. qdmr sees that receive-only channel.
 
-**Never written.** System secrets (the Tier III key and PSN) and traffic keys. The export says how many systems had
+**Never written.** System secrets (the Tier III key and PSN, the M17 signing key) and traffic keys. M17 station keys
+are public and are written. The export says how many systems had
 keys (note `mode_keys`). On import, a system with the type and identity ([channel-modes.md](channel-modes.md) 7.1) of
-a system in the open codeplug keeps that system's secret and traffic keys; for a type without identity octets (NXDN),
-the type and name must match. Any other system has no keys, and validation flags a system that authenticates without
+a system in the open codeplug keeps that system's secret and traffic keys; for a type without identity octets (NXDN,
+M17), the type and name must match. Any other system has no keys, and validation flags a system that authenticates without
 one.
 
 **A missing block.** A file without any `radioFoundry` key (every file qdmr writes) leaves the open codeplug's systems

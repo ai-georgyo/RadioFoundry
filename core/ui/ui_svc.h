@@ -14,6 +14,7 @@
 #include "config.h"
 #include "i18n.h"
 #include "radio/radio.h"
+#include "ui_addr.h"
 #include "codeplug/zone_edit.h"
 #if CONFIG_SATELLITE_TLE
 #include "satellite/store.h"
@@ -23,6 +24,9 @@
 #endif
 #if CONFIG_NXDN
 #include "nxdn/nxdn_codeplug.h"
+#endif
+#if CONFIG_M17
+#include "m17/m17_codeplug.h"
 #endif
 
 // The UI services' one radio view copy (the UI task's only; too big for its stack). A service fetches it with
@@ -54,6 +58,7 @@ extern radio_view_t ui_svc_view;
 #define UI_FEAT_REF_TRIM	(1u << 20)	// a reference trim (hal_radio_t.ref_trim, radio/ref_trim.h): Freq trim setting
 #define UI_FEAT_P25		(1u << 22)	// P25 on this board (CONFIG_P25, radio_p25_fits): the VFO's mode tile offers it
 #define UI_FEAT_NXDN		(1u << 23)	// NXDN on this board (CONFIG_NXDN, radio_nxdn_fits): the same
+#define UI_FEAT_M17		(1u << 24)	// M17 on this board (CONFIG_M17, radio_m17_fits): the same, and its screens
 uint32_t ui_svc_features(void);
 // The parts of it each package reports (ui_svc_features ORs them): dmr-voice / radio core, dmr-data, storage-cps,
 // radio-features
@@ -71,6 +76,8 @@ typedef enum {
 	UI_TALK_PERMANENT,	// written to the channel (the codeplug)
 	UI_TALK_DEFAULT,	// back to the channel's default (clears a temporary target)
 } ui_talk_life_t;
+// A request that is about the channel's mode (the talk target, digital monitor, privacy) goes to that mode's service:
+// ui_svc_radio.c routes by the channel's mode, and a mode without one of its own keeps DMR's
 bool ui_svc_talk_to(uint32_t id, bool private_call, uint8_t life);
 // The target focused in a list now (0 = none): a PTT press while it is focused transmits to it once (one-shot) and
 // keeps it for the reply window. The radio reads this at PTT down; the UI calls it on every focus change
@@ -85,7 +92,8 @@ bool ui_svc_mode(uint8_t mode);			// radio_mode_t: the VFO's mode (a channel's g
 // A channel mode's name as the screens show it (radio_mode_t). A name, never translated
 static inline const char *ui_mode_name(uint8_t mode)
 {
-	return mode == RADIO_MODE_DMR ? "DMR" : mode == RADIO_MODE_P25 ? "P25" : mode == RADIO_MODE_NXDN ? "NXDN" : "FM";
+	return mode == RADIO_MODE_DMR ? "DMR" : mode == RADIO_MODE_P25 ? "P25" : mode == RADIO_MODE_NXDN ? "NXDN" :
+		mode == RADIO_MODE_M17 ? "M17" : "FM";
 }
 // Copy to VFO: the channel on view into the VFO, which opens (CONFIG_VFO). Returns a radio_vfo_copy_t: VFO_COPY_OK
 // when the request went to the radio core, else why nothing changed
@@ -102,8 +110,10 @@ bool ui_svc_save_channel(void);
 // codeplug storage in this build
 void ui_svc_next_aes_key(channel_t *ch);
 bool ui_svc_write_channel(uint16_t number, const channel_t *ch, uint16_t from);
-#if CONFIG_P25 || CONFIG_NXDN
-// A P25 or NXDN channel's own settings, its tag's parameter block (p25-codeplug.md 2, nxdn-codeplug.md 2)
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
+// A P25, NXDN or M17 channel's own settings, its tag's parameter block (p25-codeplug.md 2, nxdn-codeplug.md 2,
+// m17-codeplug.md 2). M17's is kept as the stored bytes (m17_conv_encode): its decoded form is twice the size, and
+// the channel editor holds two of these
 typedef union {
 #if CONFIG_P25
 	p25_conv_t p25;
@@ -111,10 +121,13 @@ typedef union {
 #if CONFIG_NXDN
 	nxdn_conv_t nxdn;
 #endif
+#if CONFIG_M17
+	uint8_t m17[M17_CP_CONV_LEN];
+#endif
 } ui_air_conv_t;
-// ui_svc_write_channel for a P25 or NXDN channel (ch's kind, or a plain one in that mode) with conv as its block: the
-// channel editor's NAC, RAN and rate. A plain channel takes its talk target and talkaround from the radio's settings
-// as it does without conv
+// ui_svc_write_channel for a P25, NXDN or M17 channel (ch's kind, or a plain one in that mode) with conv as its block:
+// the channel editor's NAC, RAN, CAN, rate, destination. A plain channel takes its talk target and talkaround from
+// the radio's settings as it does without conv
 bool ui_svc_write_channel_air(uint16_t number, const channel_t *ch, uint16_t from, const ui_air_conv_t *conv);
 #endif
 #if CONFIG_CONTACT_EDIT
@@ -131,6 +144,30 @@ void ui_svc_zone_poll(void);
 bool ui_svc_zone_pending(void);
 // Write the talk target into the channel (UI_TALK_PERMANENT): false if it isn't a stored contact or can't be written
 bool ui_svc_save_talk_target(uint32_t id, bool private_call);
+
+#if CONFIG_M17
+// --- M17 (docs/spec/m17.md, docs/ux/m17.md) ---
+// The sub-features this radio runs, each also needing its build switch: signatures, encryption (scrambler or AES),
+// SMS, the BER test. ui_svc_radio.c (weak: 0)
+#define UI_M17_SIG	0x01u
+#define UI_M17_ENC	0x02u
+#define UI_M17_SMS	0x04u
+#define UI_M17_BERT	0x08u
+uint8_t ui_svc_m17_caps(void);
+// The destination PTT calls (the M17 talk target), a 48-bit address: in the VFO and on a channel switched to M17 the
+// radio's M17 settings (any life); a stored M17 channel's is its block, written by UI_TALK_PERMANENT (a storage job).
+// False: refused (a temporary one on a stored channel: the radio core has none there)
+bool ui_svc_m17_talk_to(const uint8_t dst[M17_ADDR_BYTES], uint8_t life);
+// The stored M17 channel on view written with dst as its destination (NULL: kept) and, with enc_off, no transmit
+// encryption: a storage job (ui_svc_storage.c). The radio core has no temporary changes on a stored M17 channel, so
+// this is how its talk target and Quick settings' privacy off last. False: busy, or not a stored channel
+bool ui_svc_m17_write_block(const uint8_t *dst, bool enc_off);
+// The radio-wide record (key 0x0A06: our callsign, the call text, Sign M17 calls, Send in M17 calls) written as w, a
+// storage job (m17_wide_save). False while another write is pending
+bool ui_svc_m17_wide_set(const m17_wide_t *w);
+// Every UI pass (ui_svc_m17.c): the SMS inbox's new messages and the sends' results as events
+void ui_svc_m17_poll(void);
+#endif
 
 // --- Scan (radio-features). Whether a scan runs is radio_view_t.scan ---
 bool ui_svc_scan(bool on);			// on: the zone (in the VFO: the band); off: stop where it is
@@ -197,25 +234,77 @@ void ui_svc_dtmf_block(bool blocked);
 // follows the knob again. Weak no-op without the radio core
 void ui_svc_volume_hold(bool hold);
 
-// --- Messages and signaling (dmr-data) ---
+// --- Messages: one inbox over every mode that carries text (ui_svc_msg.c, docs/spec/ui.md 2.6) ---
 #define UI_MSG_TEXT_MAX	143
+#define UI_MSG_CALL_MAX	9	// a callsign typed as a destination: 9 characters (an APRS call with its SSID, M17's)
+#define UI_MSG_INDEX_MAX	0x0FFFu	// the most messages a provider holds, and the merged inbox shows
+#define UI_MSG_NO_ROW		0xFFFFu	// ui_svc_msg_row: no such message
 typedef struct {
-	uint32_t src;		// sender (or, for sent ones, recipient)
-	bool group;		// sent to a talkgroup
+	ui_addr_t peer;		// the sender, or the recipient of one we sent
 	bool unread;
 	bool sent;		// one we sent
+	bool cut;		// longer than UI_MSG_TEXT_MAX: kept to that
 	uint32_t age_ms;	// how long ago
-	char name[17];		// sender's name if known
-	char text[UI_MSG_TEXT_MAX + 1];
+	char name[17];		// a contact's name if known (DMR); the callsign where peer can't hold it (APRS); else ""
+	char text[UI_MSG_TEXT_MAX + 1];	// the display's one-byte text (utf8_to_display, gfx.h)
 } ui_msg_t;
-uint16_t ui_svc_msg_count(void);		// inbox, newest first
+
+// What a provider's rows and composer offer beyond reading, replying and deleting
+#define UI_MSG_CAP_STATION	0x01u	// the peer is a station to talk to: Call, PTT, # its actions (else # writes to it)
+#define UI_MSG_CAP_TO_CALL	0x02u	// a new message goes to a callsign typed in the composer ("To callsign")
+#define UI_MSG_CAP_OPTIONS	0x04u	// the composer's Request acknowledgment and Include position rows
+#define UI_MSG_CAP_ASCII	0x08u	// it sends printable ASCII: the composer folds accented letters, '?' for the rest
+#define UI_MSG_CAP_CALLSIGN	0x10u	// the callsign typed is an M17 one (the callsign entry, TEXT_SET_CALLSIGN)
+#define UI_MSG_OPT_ACK		0x01u	// ask for an acknowledgment
+#define UI_MSG_OPT_POSITION	0x02u	// append our position
+// Where a new message goes
+typedef struct {
+	ui_addr_t to;		// the station or group; to.net picks the provider
+	char call[UI_MSG_CALL_MAX + 1];	// UI_MSG_CAP_TO_CALL: the callsign typed ("" none)
+	uint8_t opts;		// UI_MSG_CAP_OPTIONS: UI_MSG_OPT_*
+} ui_msg_to_t;
+
+// A mode's inbox and sender. Each is in ui_svc_msg.c's table only with its switch; an index is the provider's own,
+// newest first. All from the UI task
+typedef struct {
+	uint8_t net;				// UI_NET_*
+	uint8_t caps;				// UI_MSG_CAP_*
+	uint8_t text_max;			// the longest text it sends (the composer's limit)
+	tr_id_t new_row;			// the Messages row that starts a message to a typed callsign (TR_NONE: none)
+	bool (*new_ok)(void);			// whether that row is offered now (NULL: always)
+	bool (*send_ok)(tr_id_t *why);		// a message can go now (NULL: always): else that row and the replies
+						// are dimmed and say *why (a key it sets)
+	uint16_t (*count)(void);
+	uint16_t (*unread)(void);
+	bool (*get)(uint16_t i, ui_msg_t *out);
+	void (*read)(uint16_t i);		// mark read
+	bool (*del)(uint16_t i);
+	bool (*send)(const ui_msg_to_t *to, const char *text);	// queue it: the result comes back as a ui_notify event
+	bool (*reply)(uint16_t i, const char *text);		// to the sender of message i, the way it came
+} ui_msg_provider_t;
+extern const ui_msg_provider_t ui_msg_dmr;	// ui_svc_data.c (CONFIG_DMR_SMS)
+extern const ui_msg_provider_t ui_msg_aprs;	// ui_aprs.c, over ui_svc_aprs.h (CONFIG_APRS_AFSK)
+#if CONFIG_M17_PACKET
+extern const ui_msg_provider_t ui_msg_m17;	// ui_svc_m17.c (CONFIG_M17_PACKET)
+#endif
+
+// The merged inbox: every provider's messages newest first; an index is the merged row
+uint16_t ui_svc_msg_count(void);
 uint16_t ui_svc_msg_unread(void);
 bool ui_svc_msg_get(uint16_t i, ui_msg_t *out);
 void ui_svc_msg_read(uint16_t i);		// mark read
 bool ui_svc_msg_delete(uint16_t i);
-// Queue a text message; the result comes back as a ui_notify() event
-bool ui_svc_msg_send(uint32_t dst, bool group, const char *text);
-bool ui_svc_msg_reply(uint16_t i, const char *text);
+// Queue a text message through to->to.net's provider; the result comes back as a ui_notify() event
+bool ui_svc_msg_send(const ui_msg_to_t *to, const char *text);
+bool ui_svc_msg_reply(uint16_t i, const char *text);	// through row i's provider
+const ui_msg_provider_t *ui_svc_msg_of(uint16_t i);	// row i's provider (NULL: no such row)
+const ui_msg_provider_t *ui_svc_msg_net(uint8_t net);	// the provider of a bearer (NULL: not in this build)
+const ui_msg_provider_t *ui_svc_msg_nth(uint8_t n);	// the providers in table order (NULL past the last)
+// A message that stays itself while others arrive (an open message screen): its bearer and its index in that
+// provider's inbox. ui_svc_msg_row makes it the merged row again (a UI_EV_MESSAGE too), UI_MSG_NO_ROW when it's gone
+bool ui_svc_msg_where(uint16_t i, uint8_t *net, uint16_t *index);
+uint16_t ui_svc_msg_row(uint8_t net, uint16_t i);
+
 bool ui_svc_radio_check(uint32_t id);
 bool ui_svc_call_alert(uint32_t id);
 // ARS registration with the presence server (Settings > Connections > Data services), as dmrArsState_t
@@ -459,6 +548,13 @@ typedef enum {
 	// One step of a chain, set whole (its frequency and length in one write of the settings area): the value is
 	// UI_SIG_STEP(event, step, Hz, ms). Write only
 	UI_SET_SIG_STEP,
+	// M17 (Settings > Talk & listen, CONFIG_M17; settings_t.cp_flags, settings_m17_can / settings_m17_1600): the CAN
+	// 0..15 and the voice (0 3200, 1 1600 + data) of the VFO and of a channel switched to M17, and a new M17 channel's
+	// start (radio_m17_settings_t)
+	UI_SET_M17_CAN, UI_SET_M17_VOICE,
+	// M17's radio-wide record (key 0x0A06, m17-codeplug.md 3; a set is a storage job): Sign M17 calls (Settings >
+	// Privacy, CONFIG_M17_SIG), Send in M17 calls (Settings > Location), 1 on
+	UI_SET_M17_SIGN, UI_SET_M17_GNSS,
 	UI_SET_COUNT
 } ui_setting_t;
 
@@ -483,23 +579,24 @@ int32_t ui_svc_reply_shown(const radio_settings_t *s);
 
 // --- Inbound: events other packages hand to the UI (any task; the UI picks them up on its next pass) ---
 typedef enum {
-	UI_EV_MESSAGE,		// a message arrived: index (inbox), id, name, text
+	UI_EV_MESSAGE,		// a message arrived: index (in from.net's provider's inbox: the UI makes it the merged
+				// row), from, name, text
 	UI_EV_MESSAGE_SENT,	// ok = delivered (confirmed; index 1: sent, the format or a group has no confirmation) /
 				// failed after retries
-	UI_EV_CALL_ALERT,	// call alert received from id
+	UI_EV_CALL_ALERT,	// a call alert received (from: who)
 	UI_EV_RADIO_CHECK,	// answer to our radio check: ok, ms
-	UI_EV_PRIVATE_CALL,	// a private call to us from id started
-	UI_EV_EMERGENCY,	// emergency received from id
+	UI_EV_PRIVATE_CALL,	// a private call to us started (from: who)
+	UI_EV_EMERGENCY,	// an emergency received (from: who)
 	UI_EV_HOTSPOT_STARTED,	// the host started hotspot mode
 	UI_EV_SCAN_STOPPED,	// the scan stopped on a channel
 	UI_EV_CALL_ALERT_RESULT,	// our call alert: ok = the radio answered, else no answer after the retries
 	UI_EV_SAVE_FAILED,	// a save to the codeplug the UI asked for failed later (why: what failed)
 	UI_EV_POWER_OFF_FAILED,	// auto power off dropped the power latch but the radio is still on (the knob holds it)
-	UI_EV_ZONE_OFFER,	// another radio (id, name) offers a zone or channel (index 1): text "Zone Club, 24 channels"
-	UI_EV_ZONE_SENT,	// our zone to id (index 1: a talkgroup): ok = it went out whole
-	UI_EV_ZONE_IMPORTED,	// the import ended: ok with name (the zone here), index (channels), id 1 for an update, ms
-				// the channels of a kind that can't be used (their system isn't set up here); else why
-				// says why
+	UI_EV_ZONE_OFFER,	// another radio (from, name) offers a zone or channel (index 1): text "Zone Club, 24 channels"
+	UI_EV_ZONE_SENT,	// our zone went to from (index 1: a talkgroup): ok = it went out whole
+	UI_EV_ZONE_IMPORTED,	// the import ended: ok with name (the zone here), index (channels), updated for an
+				// update, ms the channels of a kind that can't be used (their system isn't set up here);
+				// else why says why
 	UI_EV_CODEPLUG_FOREIGN,	// a codeplug write is held: ask what to do with another firmware's codeplug
 	UI_EV_APRS_MESSAGE,	// an APRS message addressed to us: name = sender callsign, text = message text
 } ui_event_kind_t;
@@ -508,9 +605,10 @@ typedef struct {
 	uint8_t kind;		// ui_event_kind_t
 	bool ok;
 	uint16_t index;
-	uint32_t id;
+	ui_addr_t from;		// the station it is about: the banner's target (kind UI_ADDR_NONE: none)
 	uint32_t ms;
 	char name[17];
+	bool updated;		// UI_EV_ZONE_IMPORTED: it updated an earlier import
 	union {
 		char text[40];
 		tr_id_t why;	// UI_EV_SAVE_FAILED, UI_EV_ZONE_IMPORTED: what failed, a key (TR_NONE: none)

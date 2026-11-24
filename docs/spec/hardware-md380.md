@@ -525,8 +525,8 @@ a call or after our own transmit, the key beep in DMR and FM, and FM receive.
 `board.air` is the shared HR_C5000/HR_C6000 provider (`stm32_hrc_air`, `drivers/modem/hrc_common/hrc6000_air.c`): the
 chip's physical layer mode, with this chip's differences from its chip description
 ([modem-hrc6000.md](modem-hrc6000.md) 10.7). The HR_C5000 manual documents the mode (0x10 LayerMode bits 4-3 = 00,
-0x82 bit 0, 36 bytes of physical layer data in page 2). Every fit carries `AIR_FIT_UNTESTED` (`air_verified` is not
-set). `CONFIG_P25`, `CONFIG_P25_TRUNK` and `CONFIG_NXDN` are off on this radio (`BOARD_NOT_WRITTEN`) until receive
+0x82 bit 0, 36 bytes of physical layer data in page 2). Every fit carries `AIR_FIT_UNTESTED` (its verified set,
+`air_verified`, is empty). `CONFIG_P25`, `CONFIG_P25_TRUNK` and `CONFIG_NXDN` are off on this radio (`BOARD_NOT_WRITTEN`) until receive
 works: a mode that transmits but can't receive isn't offered. A build with them on gets the same from the fit: the
 chip description sets `air_tx_only`, so P25 and NXDN report transmit only. P25 needs receive, so the build's features
 leave it out and its channels aren't taken; NXDN stays for transmit, and scan skips its channels. Build with them on (`CONFIG_P25=y CONFIG_NXDN=y`) to work

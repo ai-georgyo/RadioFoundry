@@ -57,6 +57,10 @@ def ptt(down):
     (H.KEY, struct.pack("<BBBb", 0, H.ACTIONS["ok"], H.PRESS, 0), None),
     (H.RADIO, bytes([H.OP_TONE_BURST, 1, 0, 0]), "channel"),
     (H.RADIO, bytes([H.OP_TONE_BURST, 0, 0, 0]), None),
+    (H.RADIO, bytes([H.OP_M17, H.M17_BERT_RUN, 1]), "channel"),
+    (H.RADIO, bytes([H.OP_M17, H.M17_BERT_RUN, 0]), None),
+    (H.RADIO, bytes([H.OP_M17, H.M17_SMS]) + b"\xff" * 6 + b"x", "channel"),
+    (H.RADIO, bytes([H.OP_M17, 5, 1]), None),         # the BER test mode: PTT sends, the mode itself doesn't
     (H.DMR_DATA, bytes([H.DATA_OP_SMS]) + b"x", "channel"),
     (H.DMR_DATA, bytes([H.DATA_OP_EMERGENCY, 1]), "channel"),
     (H.DMR_DATA, bytes([H.DATA_OP_EMERGENCY, 0]), None),

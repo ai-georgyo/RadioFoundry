@@ -276,6 +276,41 @@ bool position_utc_fields(uint32_t *date_ddmmyy, uint32_t *utc_hms, uint32_t now_
 }
 #endif
 
+bool position_utc_last(uint32_t *date_ddmmyy, uint32_t *date_ms, uint32_t *utc_hms, uint32_t *time_ms)
+{
+	bool ok = false;
+	LOCK();
+#if CONFIG_GPS || CONFIG_POSITION_HOST
+	const fix_t *best = NULL;
+#if CONFIG_GPS
+	if (!p.gps_off && p.gps.utc_date_valid && p.gps.utc_time_valid) {
+		best = &p.gps;
+	}
+#endif
+#if CONFIG_POSITION_HOST
+	// The one whose time came last (the difference, so a wrap of the millisecond clock doesn't matter)
+	if (p.host.utc_date_valid && p.host.utc_time_valid &&
+	    (best == NULL || (int32_t)(p.host.utc_time_ms - best->utc_time_ms) > 0)) {
+		best = &p.host;
+	}
+#endif
+	if (best != NULL) {
+		*date_ddmmyy = best->f.date;
+		*date_ms = best->utc_date_ms;
+		*utc_hms = best->f.utc_hms;
+		*time_ms = best->utc_time_ms;
+		ok = true;
+	}
+#else
+	(void)date_ddmmyy;
+	(void)date_ms;
+	(void)utc_hms;
+	(void)time_ms;
+#endif
+	UNLOCK();
+	return ok;
+}
+
 // The middle of the ambiguity cell (grid in 1e-7 degree, within the whole degree) the position is in
 static int32_t blur(int32_t v, int32_t grid)
 {

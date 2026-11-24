@@ -346,20 +346,37 @@ static void conceal(int16_t *spk)
 	}
 }
 
+// The call stops playing, the speaker route with it unless a beep holds it: the mixer's end turns it off then, and an
+// off here would toggle the amplifier under the beep within one block (the mixer turns it on again after rx_block)
+static void rx_stop_playing(void)
+{
+	if (cb_rx_playing) {
+		cb_rx_playing = false;
+		if (!cb_mixing) {
+			speaker(false);
+		}
+	}
+}
+
 static void rx_block(int16_t *spk)
 {
-	uint8_t seq = LOAD(rx_seq);
+	// The call stack writes a call's start, then its frames, then its end; read in the reverse order, every frame
+	// counted here belongs to the call read (or an earlier one), and an end read has all of its call's frames in
+	uint8_t end_seq = LOAD(rx_end_seq), h = LOAD(rx_head), seq = LOAD(rx_seq);
+
 	if (seq != cb_rx_seq) {
-		// a new call. The speaker route is off after an end or ambeVoiceStop(); re-send it in any case
+		// A new call (what is left of the last one is dropped below). The speaker route may be off (an end,
+		// ambeVoiceStop()): sent again when the call plays. Not while a beep holds it: the beep's end turns it off
+		rx_stop_playing();
 		cb_rx_seq = seq;
-		cb_speaker = false;
+		if (!cb_mixing) {
+			cb_speaker = false;
+		}
 		cb_rx_live = true;
-		cb_rx_playing = false;
 		cb_rx_primed = false;
 		cb_bad_run = 0;
 		cb_call_frames = 0;
 		have_last = false;
-		stats.rx_peak = 0;
 		if (voc_ok()) {
 			if (cb_tx_on) {
 				cb_dec_fresh = true;	// not now: it would reset the encoder too (decode())
@@ -369,13 +386,13 @@ static void rx_block(int16_t *spk)
 		}
 	}
 	// Drop entries of earlier calls
-	uint8_t t = rx_tail, h = LOAD(rx_head);
+	uint8_t t = rx_tail;
 	while (t != h && rxq[t & (AMBE_VOICE_QUEUE - 1)].seq != cb_rx_seq) {
 		t++;
 	}
 	STORE(rx_tail, t);
 
-	bool ended = LOAD(rx_end_seq) == cb_rx_seq;
+	bool ended = end_seq == cb_rx_seq;
 	uint8_t queued = (uint8_t)(h - t);
 	if (!cb_rx_live) {
 		memset(spk, 0, AUDIO_BLOCK_SAMPLES * sizeof(int16_t));
@@ -386,6 +403,7 @@ static void rx_block(int16_t *spk)
 			cb_rx_primed = true;
 			cb_rx_playing = true;
 			stats.rx_calls++;
+			stats.rx_peak = 0;	// the latest call that played: one that never does leaves it
 			speaker(true);
 		} else {
 			if (ended) {
@@ -398,8 +416,7 @@ static void rx_block(int16_t *spk)
 	if (queued == 0) {
 		if (ended) {
 			cb_rx_live = false;
-			cb_rx_playing = false;
-			speaker(false);
+			rx_stop_playing();
 			memset(spk, 0, AUDIO_BLOCK_SAMPLES * sizeof(int16_t));
 		} else {
 			stats.rx_underruns++;

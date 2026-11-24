@@ -346,8 +346,57 @@
 #ifndef CONFIG_NXDN_SCRAMBLER
 #define CONFIG_NXDN_SCRAMBLER		0
 #endif
+// M17 (core/m17, docs/spec/m17.md): stream voice, packet data, BERT on the air interface, its Codec 2 voice in the tree.
+// Needs DMR (the air provider and the PCM audio live in the board's DMR glue). Sub-switches, each off-able:
+// M17_PACKET packet mode (SMS sent and received, other data types received and counted), M17_BERT the bit error rate
+// test mode, M17_SIG stream signatures (ECDSA P-256 sign and verify), M17_SCRAMBLER and M17_AES encryption (off in the
+// amateur variant, as NXDN's scrambler). HEARD_LIST: the list of stations heard (core/radio/radio_heard.c)
+#ifndef CONFIG_M17
+#define CONFIG_M17			0
+#endif
+#ifndef CONFIG_M17_PACKET
+#define CONFIG_M17_PACKET		0
+#endif
+#ifndef CONFIG_M17_BERT
+#define CONFIG_M17_BERT			0
+#endif
+#ifndef CONFIG_M17_SIG
+#define CONFIG_M17_SIG			0
+#endif
+#ifndef CONFIG_M17_SCRAMBLER
+#define CONFIG_M17_SCRAMBLER		0
+#endif
+#ifndef CONFIG_M17_AES
+#define CONFIG_M17_AES			0
+#endif
+#ifndef CONFIG_HEARD_LIST
+#define CONFIG_HEARD_LIST		0
+#endif
+// The M17 reflector client over the USB network or PPP (core/net/m17_net.c, docs/spec/m17-ip.md)
+#ifndef CONFIG_NET_M17
+#define CONFIG_NET_M17			0
+#endif
+// Derived from M17 and DMR_AES (config/features.mk, never set by hand): CODEC2 the vocoder (core/codec2); DSP the
+// shared FFT, trigonometry and log tables (core/dsp) of the MBE core and Codec 2; CRYPTO_AES (the one AES, for M17 and
+// DMR), CRYPTO_P256, CRYPTO_HMAC the generic ciphers (core/crypto); ENTROPY the random pool (core/crypto/entropy.c)
+// M17's AES nonces come from
+#ifndef CONFIG_CODEC2
+#define CONFIG_CODEC2			CONFIG_M17
+#endif
+#ifndef CONFIG_CRYPTO_AES
+#define CONFIG_CRYPTO_AES		(CONFIG_M17_AES || CONFIG_DMR_AES)
+#endif
+#ifndef CONFIG_CRYPTO_P256
+#define CONFIG_CRYPTO_P256		CONFIG_M17_SIG
+#endif
+#ifndef CONFIG_ENTROPY
+#define CONFIG_ENTROPY			CONFIG_M17_AES
+#endif
+#ifndef CONFIG_CRYPTO_HMAC
+#define CONFIG_CRYPTO_HMAC		(CONFIG_CRYPTO_P256 || CONFIG_ENTROPY)
+#endif
 #ifndef CONFIG_AIR
-#define CONFIG_AIR			(CONFIG_P25 || CONFIG_NXDN)
+#define CONFIG_AIR			(CONFIG_P25 || CONFIG_NXDN || CONFIG_M17)
 #endif
 // P25 trunked: the codec of its systems and channels (docs/spec/p25-codeplug.md 3), the control channel decoded, voice
 // channel grants followed and, where the system allows it, registration and transmit on a grant (core/p25/p25_follow.c)
@@ -363,10 +412,13 @@
 #ifndef CONFIG_MBE
 #define CONFIG_MBE			CONFIG_IMBE
 #endif
+#ifndef CONFIG_DSP
+#define CONFIG_DSP			(CONFIG_MBE || CONFIG_CODEC2)
+#endif
 // Derived: zone sharing carries channels of a kind and their systems (docs/spec/zone-share.md 4.2) in a build with a
 // mode's codec. Without it a share leaves channels of a kind out and refuses a record that has them
 #ifndef CONFIG_ZONE_SHARE_MODES
-#define CONFIG_ZONE_SHARE_MODES		(CONFIG_ZONE_SHARE && (CONFIG_P25 || CONFIG_NXDN || CONFIG_DMR_TRUNK))
+#define CONFIG_ZONE_SHARE_MODES		(CONFIG_ZONE_SHARE && (CONFIG_P25 || CONFIG_NXDN || CONFIG_M17 || CONFIG_DMR_TRUNK))
 #endif
 // The GPS status screen: the satellites (NMEA GSV / GSA) on a sky plot and signal bars, the fix's quality, the grid
 // locator (core/position/nmea_sky.c, core/ui/ui_gps.c). Needs GPS
@@ -412,16 +464,18 @@
 
 // Derived: the shared packet data / CSBK code
 // Any of the radio's own services on the USB network link (core/net/net.c starts and polls them)
-#define CONFIG_NET_LOCAL		(CONFIG_NET_TCP || CONFIG_MDNS || CONFIG_TFTP || CONFIG_NET_USRP || CONFIG_NET_RADIO_UDP)
+#define CONFIG_NET_LOCAL		(CONFIG_NET_TCP || CONFIG_MDNS || CONFIG_TFTP || CONFIG_NET_USRP || CONFIG_NET_RADIO_UDP || \
+				 CONFIG_NET_M17)
 #ifndef CONFIG_DMR_DATA_CORE
 #define CONFIG_DMR_DATA_CORE		(CONFIG_DMR_SMS || CONFIG_DMR_ARS || CONFIG_DMR_LRRP || CONFIG_DMR_SIGNALING || \
 					 CONFIG_DMR_EMERGENCY || CONFIG_DMR_IP_GATEWAY || CONFIG_ZONE_SHARE || CONFIG_CRASH_REPORT || \
 					 CONFIG_APRS_DMR)
 #endif
 // The position service (core/position): the board GPS, a host's NMEA, the fixed position. Built for the GPS and for
-// everything that reports our position (DMR GPS Info, LRRP, APRS), so each works without the others
+// everything that reports our position (DMR GPS Info, LRRP, APRS, M17's GNSS META), so each works without the others;
+// M17 also takes its UTC and its distance and bearing there (position_utc.h, position_geo.h)
 #ifndef CONFIG_POSITION
-#define CONFIG_POSITION			(CONFIG_GPS || CONFIG_APRS || CONFIG_DMR_LRRP || CONFIG_DMR_GPS)
+#define CONFIG_POSITION			(CONFIG_GPS || CONFIG_APRS || CONFIG_DMR_LRRP || CONFIG_DMR_GPS || CONFIG_M17)
 #endif
 // ... and its host source: NMEA from a computer comes in through APRS's host link and debug link command only
 #define CONFIG_POSITION_HOST		CONFIG_APRS
@@ -571,6 +625,18 @@
 #endif
 #if CONFIG_NXDN && !CONFIG_DMR
 #error "CONFIG_NXDN needs CONFIG_DMR (its voice is the DMR vocoder's)"
+#endif
+#if CONFIG_M17 && !CONFIG_DMR
+#error "CONFIG_M17 needs CONFIG_DMR (the air provider and the PCM audio are the board's DMR glue)"
+#endif
+#if (CONFIG_M17_PACKET || CONFIG_M17_BERT || CONFIG_M17_SIG || CONFIG_M17_SCRAMBLER || CONFIG_M17_AES) && !CONFIG_M17
+#error "an M17 sub-feature (M17_PACKET, M17_BERT, M17_SIG, M17_SCRAMBLER, M17_AES) is on without CONFIG_M17"
+#endif
+#if CONFIG_HEARD_LIST && !CONFIG_M17
+#error "CONFIG_HEARD_LIST needs CONFIG_M17 (its only source so far)"
+#endif
+#if CONFIG_NET_M17 && !(CONFIG_M17 && CONFIG_DMR_IP_GATEWAY)
+#error "CONFIG_NET_M17 needs CONFIG_M17 and CONFIG_DMR_IP_GATEWAY (the mode, and the IP stack it runs on)"
 #endif
 #if (CONFIG_APRS_RX && !CONFIG_APRS_AFSK) || (CONFIG_APRS_IGATE && !(CONFIG_APRS_RX && CONFIG_HOSTLINK))
 #error "an APRS sub-feature is on without its parent (APRS_RX needs APRS_AFSK; APRS_IGATE needs APRS_RX and HOSTLINK)"

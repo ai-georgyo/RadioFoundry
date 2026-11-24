@@ -4,6 +4,7 @@
 #include <string.h>
 #include "aprs/aprs_beacon.h"
 #include "aprs/aprs_fmt.h"
+#include "position/position_geo.h"
 
 #define PTT_SETTLE_MS	1500	// after our transmission: give the channel (and a repeater's tail) a moment
 
@@ -96,9 +97,12 @@ uint8_t aprs_beacon_due(const aprs_beacon_t *b, const aprs_beacon_cfg_t *cfg, co
 	} else if (cfg->interval_s != 0 && since >= (uint32_t)cfg->interval_s * 1000u) {
 		return APRS_WHY_INTERVAL;
 	}
-	if (cfg->distance_m != 0 && b->have_last_pos &&
-	    aprs_distance_m(b->last_lat, b->last_lon, pos->lat, pos->lon) >= cfg->distance_m) {
-		return APRS_WHY_DISTANCE;
+	if (cfg->distance_m != 0 && b->have_last_pos) {
+		uint32_t moved;
+		position_range(b->last_lat, b->last_lon, pos->lat, pos->lon, &moved, NULL);
+		if (moved >= cfg->distance_m) {
+			return APRS_WHY_DISTANCE;
+		}
 	}
 	return APRS_WHY_NONE;
 }

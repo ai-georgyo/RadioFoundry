@@ -23,6 +23,7 @@ the code is laid out, who owns the data behind each screen, and how the UI is te
 | `ui_menus.c` | every list screen and the screen table `ui_scr[]`: Hub, Actions, Compose, Contacts, Messages, Recent, Zones, Zone, the zone editor's (2.2), Channels, Channel, Tools, Settings, Picker, Info, Confirm, Scan, Roaming |
 | `ui_find.c` | type-to-find (T9 word starts, numbers, channel positions) |
 | `ui_svc.h`, `ui_svc_stub.c` | the thin interface to data other packages own, with weak "not in this build" stubs (section 4) |
+| `ui_addr.h`, `ui_svc_msg.c` | the address every mode's station travels as, and the inbox merged over the modes' message providers (2.6) |
 | `ui_svc_radio.c`, `ui_svc_data.c`, `ui_svc_storage.c` | the strong implementations on the radio core, the DMR data service and the settings store / codeplug editing |
 | `ui.c` | the UI task: splash (the mark, beside the name on a panel too short to stack them (128x64), the name, the two CPS boot text lines from the codeplug, board and version; `ui_draw_splash` in ui_screens.c), 50 ms frame pacing, backlight, status copy for the debug link |
 
@@ -144,7 +145,7 @@ without its label, for the cursor's steps. With 1024 channels a key took 0.34 s 
 | Unsaved Changes | `discard` | BACK in the channel editor with unsaved changes (2.1), or in the contact editor (2.4); titled "Save as FM?" or "Save as DMR?" before a save that would remove a channel's own mode (2.1) |
 | New Contact | `contactedit` | New contact in Contacts, Find's "Create contact 3100", or Save as contact in a station's or talkgroup's actions (`CONFIG_CONTACT_EDIT`): the contact editor (2.4) |
 | List picker | `chpick` | OK on a channel's TX contact or RX group list row: "None", then every stored contact or list, T9 filtered |
-| Talk target picker | `picker` | long CONTEXT on a DMR channel (else "Talk target: DMR channels only"), TALK_TARGET (a side key set to it), Quick 8. Its last rows: "Type a number..." (Find) and "Select contact..." (Contacts, whose keys are the picker's) |
+| Talk target picker | `picker` | long CONTEXT on a channel whose mode has talk target rows (2.6; DMR, else "Talk target: DMR channels only"), TALK_TARGET (a side key set to it), Quick 8. DMR's last rows: "Type a number..." (Find) and "Select contact..." (Contacts, whose keys are the picker's) |
 | Diagnostics | `diag` | Tools 7, Settings > Advanced |
 | Share | `zone_share` | without `CONFIG_ZONE_EDIT`: CONTEXT in a zone's channels (`zone`): Share zone to..., Share channel to... ([zone-share.md](zone-share.md) 7). With the zone editor these are rows of Zone options and Channel actions (2.2) |
 | Share To | `zone_share_to` | a pick in Share, Channel actions, Zone options or the channel editor: the contacts, T9 filtered. Digits that make an ID add "Private ID 9991234" and "TG 9991234" after the contacts ("Not saved"), so a station that isn't a contact can be sent to. OK sends and returns to the zone's list (to the channel editor from there) |
@@ -161,6 +162,14 @@ without its label, for the cursor's steps. With 1024 channels a key took 0.34 s 
 | About | `about` | Settings > My radio > About, and Settings > Advanced > About: a text page (`ui_draw_text_page`) in the smallest font, word-wrapped and never shortened, Up / Down / the knob scroll a line. `SF_NO_STRIP`: no status strip while the radio is idle (the owner's request); RX or TX draws it again, so the TX / RX pill still shows (P2) |
 | Message text | `message-read` | The Full message row, first in a message (`message`) whose text the screen shortens: the sender, the age and the whole text on a text page as About's (no dim labels: the sender wrote the colons). Whether the row is there is decided when the message opens, so the rows never shift under the cursor. PTT calls the sender |
 | Hardware | `hwopt` | Settings > Advanced > Hardware, only on a radio with hardware options (`hal/hal_hwopt.h`, such as a board revision) the board didn't detect (`HWOPT_ST_HIDDEN` rows are left out, and with none left the row is too): each option with the stored choice, "Not set" in the warning color while the board asks for it (`HWOPT_ST_ASK`). OK shows the next choice (marked `*` until stored), long OK stores it; the toast says "Stored: restart to apply" when a restart is still due (a board without a state hook: whenever the option applies from the next start-up). The simulator has no options, so the gallery has no picture of it |
+| Call Details | `call-details` | CONTEXT > Call details on the last M17 call (Home, Recent's newest M17 row), CONTEXT on a signature banner (`CONFIG_M17`): the last M17 call on a text page as About's, its signature word second. Empty: "No M17 call heard yet". PTT talks to the caller ([m17.md](../ux/m17.md) 6) |
+| Callsign | `callsign` | Settings > My radio > M17 callsign, OK on the "No M17 callsign set" PTT refusal, "Type a callsign..." in the picker and the channel editor's Destination, the M17 composer's To row: text entry in `TEXT_SET_CALLSIGN`, at most 9 characters, checked when kept (a letter or digit first; "ALL" refused as a destination: "For everyone, pick All call") |
+| Call Text | `call-text` | Settings > My radio > M17 call text: text entry in `TEXT_SET_ASCII`, at most 52 characters |
+| Signing Key | `m17-key` | Settings > Privacy > M17 signing key (`CONFIG_M17_SIG`): the callsign it signs as, the fingerprint (4 groups of 4 hex digits), the clock and the public key; "No signing key" or "The key doesn't match" instead. Also a station key from Station Keys |
+| Station Keys | `m17-keys` | Settings > Privacy > M17 station keys (`CONFIG_M17_SIG`): each station's callsign and the start of its fingerprint, T9 filtered; OK opens the key |
+| M17 BER Test | `m17-bert` | Tools > M17 BER test (`CONFIG_M17_BERT`): the receiver in BERT mode while the screen is up; the state, BER, errors, frames and signal; PTT sends the test pattern, OK resets the counts. Off an M17 channel it says so |
+| Heard | `heard` | Tools > Heard (`CONFIG_HEARD_LIST`): the stations heard, newest first: the caller, its age, how many times, its signature word. OK opens one, CONTEXT its actions |
+| Heard station | `heard-station` | OK in Heard: the station on a text page (mode, when, to whom, signal, position, signature) |
 
 The gallery (section 7) shows every screen at every display class.
 
@@ -203,8 +212,8 @@ instead of OK pressed once per step. The rows shown follow the copy's mode, so a
 - New from current (the first row in Channels: New channel from current settings) fills a copy from what the radio uses now: the channel in use
   with its temporary changes, or the VFO. It opens as an unsaved channel at the lowest free number, named after the
   source with a number appended (or the frequency, from the VFO).
-- OK on Mode steps FM, DMR, P25, NXDN, then the channel's own kind, and round to FM. A step is offered where it can
-  run: DMR with `CONFIG_DMR`; P25 and NXDN where the radio runs them (`UI_FEAT_P25`, `UI_FEAT_NXDN`, as the VFO's
+- OK on Mode steps FM, DMR, P25, NXDN, M17, then the channel's own kind, and round to FM. A step is offered where it can
+  run: DMR with `CONFIG_DMR`; P25, NXDN and M17 where the radio runs them (`UI_FEAT_P25`, `UI_FEAT_NXDN`, `UI_FEAT_M17`, as the VFO's
   mode tile), and not in a copy made by Copy here, which takes its source's tag and has no block of its own; a kind
   of its own (a trunked channel, [channel-modes.md](channel-modes.md)) only on the channel opened as one, since its
   system can't be picked here. In a listen band only FM. The step back to the mode the channel was opened with
@@ -222,6 +231,15 @@ instead of OK pressed once per step. The rows shown follow the copy's mode, so a
   P25 writes a stored P25 channel from the radio's P25 settings ([p25-codeplug.md](p25-codeplug.md) 2.3).
 - An NXDN channel the same way: Mode "NXDN", then RAN and Rate in place of NAC, no Talkaround. Own ID over 65519 is
   refused ("NXDN IDs go up to 65519").
+- An M17 channel (`CONFIG_M17`, the radio runs M17: `UI_FEAT_M17`; Mode steps to M17 after NXDN): Mode "M17", then CAN
+  and Rate, RX, TX, Power, RX only, Destination, Encryption, the TX time-out, Scan. CAN is a spinner 0-15 that also
+  takes digits; Down from 0 is "Any" (the channel plays every CAN, shown "Any/0"). Rate: OK toggles 3200 and 1600 bit/s.
+  Destination: OK opens the talk target picker on the M17 rows (All call, the stations heard, "Type a callsign...");
+  the pick is the row's value. Encryption: On / Off, Off only where the channel has a key and `CONFIG_M17_SCRAMBLER` or
+  `CONFIG_M17_AES` ("No key: set one in the editor", "Encryption: not in this build"). A changed block row is saved
+  with the channel: a stored channel's block is rewritten over its tag (`m17_conv_save`; an encryption this build
+  can't send stays as stored, and PTT goes on refusing), a plain channel in M17 gets
+  the block from the radio's M17 settings ([m17-codeplug.md](m17-codeplug.md)).
 - NAC shows the received NAC in hex, then the sent one where they differ ("F7E/293"); RAN the same in decimal. OK opens
   it. NAC: digits type hex digits (up to 3; a fourth starts over), Up and Down step the last one through 0-F (so A-F
   are reached), with none typed they step the whole NAC; BACK takes a digit back. RAN: a spinner 0-63 that also takes
@@ -396,6 +414,28 @@ characters (`tools/cjkfont.py`). It needs an advance width and row pitch of its 
 screen that draws words needs checking at the new pitch. The generated 16x16 face is cropped there and cannot be
 reused, so a board with such a panel keeps `CONFIG_LANG_ZH` unsupported until a face with a suitable license exists.
 
+### 2.6 Shared across modes
+
+The screens a mode shares with the others take its data through one generic piece each, so a mode adds a builder,
+a table or a provider, never a copy of a screen.
+
+| Piece | What a mode gives | Now |
+|---|---|---|
+| Address `ui_addr_t` (`ui_addr.h`, 8 bytes) | kind (`UI_ADDR_DMR_ID`, `_DMR_TG`, `_CALL`: a 48-bit base-40 callsign) and bearer (`UI_NET_*`), the ID or callsign. Targets, Recent, messages and banners carry it; `ui_sb_addr` makes its text where it is drawn ("TG 91", "9991234", "All call"; a callsign, or "#" and 12 hex digits for an extended address, with `CONFIG_M17`) | DMR |
+| Call screen (`draw_call`, `ui_screens.c`) | a builder that fills `ui_call_t` from the view: the title, the caller (or TX state word) large, then lines in the mode's order (`CALL_L_*`), the hint | DMR (`call_from_dmr`), M17 (`call_from_m17`: via, text, position, the signature word, why a call does not play; SIGNING during a signed call's tail); P25 and NXDN keep Home's activity region |
+| Talk target picker | its rows (`pick_mode_t`): the targets on entry, then its own rows after them | DMR; M17 (`pick_m17`: the destination now, All call, up to 8 stations from Recent, "Type a callsign...") |
+| Quick settings | a tile table (`ui_quick_kind`); positions keep their meaning (information-architecture.md 5). Digital monitor, privacy and the talk target go to the channel mode's service (`ui_svc_radio.c`), DMR's for a mode without its own | FM, DMR (P25 and NXDN on FM's) |
+| Text entry character set (`text_edit.h`) | `TEXT_SET_ANY` (every editor), `TEXT_SET_CALLSIGN` (A-Z, 0-9, `-`, `/`, `.`, space; upper case; key 1 `- / . 1`, key 0 space 0; `#` ABC / 123; Up / Down: space, A-Z, 0-9, `-`, `/`, `.`), `TEXT_SET_ASCII` (printable ASCII). A default text keeps only what its set holds | ANY only; the other two are built with `CONFIG_M17`, whose entries use them |
+| Messages (`ui_svc_msg.c`) | a provider `ui_msg_provider_t`: its inbox newest first (count, unread, get, read, delete), send, reply, whether it can send now (`send_ok`, and why not), and what its rows offer (`UI_MSG_CAP_*`; `UI_MSG_CAP_CALLSIGN`: the destination is typed in the callsign set): a station to call (Call, PTT, # its actions; else # writes to it), a typed callsign as destination, the acknowledgment and position rows, ASCII only. A New ... message row where it has one | DMR (`ui_svc_data.c`, `CONFIG_DMR_SMS`), APRS (`ui_aprs.c` over `ui_svc_aprs.h`, `CONFIG_APRS_AFSK`), M17 (`ui_svc_m17.c`, `CONFIG_M17_PACKET`) |
+| Text from the air | `utf8_to_display` (`gfx.c`): UTF-8 as the display's one-byte text. ASCII stays, U+00A0-U+00FF becomes its Latin-1 byte, a character the CJK face has stays UTF-8 (`CONFIG_LANG_ZH`), anything else is `?`; control characters are dropped; cut between characters | for M17; DMR's text is Latin-1 already, APRS's is kept as received |
+
+The Messages screens see one list: every provider's messages merged by age, newest first, a tie to the provider
+first in the table; a merged row is the index of `ui_svc_msg_get`, `_read`, `_delete` and `_reply`, and a send goes
+to the provider of the destination's bearer. An open message holds its provider and its index there, so a message
+that arrives meanwhile leaves the screen on the one it shows. A message banner holds the same reference
+(`UI_EV_MESSAGE` counts in its provider's inbox) and opens that message's merged row as it is then (`ui_svc_msg_row`),
+so another mode's message arriving under the banner doesn't change which message it opens.
+
 ## 3. Key meanings
 
 The same on every screen (information-architecture.md, key maps 7.1 to 7.5):
@@ -563,9 +603,14 @@ link time. `ui_svc_features()` ORs the bits each package reports.
 | `ui_svc_vibrate` patterns (message, call, emergency), `UI_FEAT_VIBRATE` | radio-features | `ui_svc_radio.c` (CONFIG_VIBRATE): a table from `UI_VIBE_*` to `VIBE_*` for `radio_req_vibrate`; the feature bit when the board has `hal_power_t.vibrate` (`radio-features.md` 4.1). Weak no-op otherwise |
 | `ui_svc_ptt_block`, `ui_svc_emergency_active` | input / dmr-ext | `ui_svc_radio.c`: `input_set_ptt_block`; `ui_svc_emergency.c`: `dmr_emergency_state` |
 | backlight dim / off | radio-features | `ui.c`: `radio_backlight_pct` (dims on a low battery too); full again on a key, a banner or the emergency screen (`ui_app_take_wake`) and while `radio_view_wakes` (radio-features.md 5.3) |
-| `ui_svc_msg_*`, `ui_svc_radio_check`, `ui_svc_call_alert`, `ui_svc_poll`, `ui_svc_feat_data` | dmr-data | `ui_svc_data.c` on `dmr_data_api.h`; `ui_svc_msg_delete` is `sms_inbox_delete` |
+| `ui_msg_dmr` (the DMR message provider, 2.6), `ui_svc_radio_check`, `ui_svc_call_alert`, `ui_svc_poll`, `ui_svc_feat_data` | dmr-data | `ui_svc_data.c` on `dmr_data_api.h`; a message's delete is `sms_inbox_delete`. `ui_svc_msg_*` merge the providers (`ui_svc_msg.c`, the UI's own) |
 | `ui_svc_position` | the position service (`ui_svc_position.c`, `position_gps`): the board GPS's last fix and satellite count, false while it is off or silent for a minute | stub (no `CONFIG_GPS`): "No GPS, or it is off"; the GPS settings are dimmed with "No GPS on this radio" on boards without `CAP_GPS` or whose module wasn't heard at start-up |
 | USB mode (Tools > USB network) | hostlink | `hostlink_network_mode`, `hostlink_request_usb_network` (with `CONFIG_USB_NETWORK` and `CONFIG_HOSTLINK`) |
+| `ui_svc_m17_caps` (`UI_M17_SIG`, `_ENC`, `_SMS`, `_BERT`: what this radio's M17 build has room for), `ui_svc_m17_talk_to`, M17 settings through `ui_svc_apply` (`UI_SET_M17_CAN`, `UI_SET_M17_VOICE`) | radio core (`CONFIG_M17`) | `ui_svc_radio.c`: `radio_m17_fits`, `radio_req_m17_settings` (the VFO's and a channel switched to M17: CAN, rate, destination, squelch); a stored channel has no temporary destination, so a permanent one goes through `ui_svc_m17_write_block` |
+| `ui_svc_m17_wide_set`, `ui_svc_m17_write_block`, `UI_SET_M17_SIGN`, `UI_SET_M17_GNSS` | storage-cps | `ui_svc_storage.c`: storage jobs that write the radio-wide M17 record (`m17_wide_save`) and a stored channel's block (destination, encryption off) |
+| `ui_msg_m17` (the M17 message provider, 2.6), `ui_svc_m17_poll` | radio core (`CONFIG_M17_PACKET`) | `ui_svc_m17.c` over `radio_m17_sms_*`: the inbox's rows, the sends, and the polled "Message from" / "Sent to" / "Not sent to" banners (M17 has no delivery report) |
+| Call Details, the signing key, station keys, BER test, Heard | radio core | `ui_m17.c`, `ui_heard.c` over `radio_m17_details`, `radio_m17_key`, `m17_station_key_at`, `radio_m17_bert_*`, `radio_heard` |
+| Tools > M17 reflector, Home's place line while linked, the picker's `ECHO` and `INFO` | the M17 reflector client (`CONFIG_NET_M17`) | `ui_m17.c` over `m17_net_link`, `m17_net_unlink` and `m17_net_status` (a copy any task reads; the host link task runs the link): [m17-ip.md](m17-ip.md) 7.1 |
 | talker alias, private call start | dmr-voice | read from `radio_view_t.dmr`; `UI_EV_PRIVATE_CALL` is not raised by anyone yet |
 
 A request to save channel changes reports the reason when it cannot start: the VFO keeps its settings

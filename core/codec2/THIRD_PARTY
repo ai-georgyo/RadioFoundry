@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 The RadioFoundry Authors
+# Third-party values (not code) in the Codec 2 vocoder (core/codec2), one "component: license" line as the About page
+# lists them (Settings > Advanced > About, tools/gen_about.py; a build with CONFIG_CODEC2 adds this list to the
+# platform's). docs/spec/codec2.md 1, 16.
+#
+# c2_tab.c: the LSP quantizer levels of modes 1600 and 3200 (spec 14.1, 14.2) are numbers from the Codec 2 reference
+# implementation (LGPL 2.1). Its other tables (ω0, energy, the harmonic count) follow from the spec's formulas (9.1,
+# 9.2, 10.2); values derived by running the reference only check them.
+# c2_enc_tab.c: the pitch estimator's low-pass taps (spec 14.3, table nlp_lpf_fir) are numbers from the same reference.
+# Its other tables follow from the spec's formulas (5.2 analysis window, 5.4 window spectrum, 6.4 pitch estimator
+# window) and bit patterns (8.4 expansion factors); tables.json's values only check them.
+# Both files' reference values were taken by decision of the RadioFoundry maintainer (2026-11-22), not under a separate
+# grant from the Codec 2 authors; the one line below covers both. No code, comments or identifiers were taken from the
+# reference or any other Codec 2 source (docs/CLEANROOM.md).
+Codec 2 table values: LGPL 2.1

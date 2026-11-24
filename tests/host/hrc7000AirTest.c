@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "modem/hrc7000/hrc7000_air.h"
+#include "air/air_verify.h"
 #include "fuzz.h"
 
 static int failures, checks;
@@ -868,9 +869,49 @@ static void test_fuzz(void)
 	CHECK(rf_ok && locks_ok);
 }
 
+// The verified set (core/air/air_verify.h) on this provider's fit as the glue makes it (the soft modem on the tap and
+// the chip's transmit): a board names the profiles checked on air on it; the boards that had the old yes have P25 and
+// NXDN, so their fits are as they were; M17 is untested on them; verify 0 never verified; AIR_VERIFY_ALL the old yes
+static void test_verified(void)
+{
+	static const hal_baseband_t tap = { .rx_rate_hz = 8000, .rx_hi_hz = 3000 };
+	const uint8_t was_yes = AIR_VERIFY_P25 | AIR_VERIFY_NXDN;
+	air_profile_t p = { .sym_rate = 4800, .levels = 4, .shape = AIR_SHAPE_C4FM, .shape_param = 20, .dev_outer_hz = 1800,
+			    .timing = AIR_TIMING_CONTINUOUS, .verify = AIR_VERIFY_P25 };
+	air_profile_t nx = p, m17 = p, z = p, all = p;
+	uint32_t f;
+
+	nx.shape = AIR_SHAPE_RRC;
+	nx.dev_outer_hz = 2400;
+	nx.verify = AIR_VERIFY_NXDN;
+	m17 = nx;
+	m17.shape_param = 50;
+	m17.verify = AIR_VERIFY_M17;
+	z.verify = 0;
+	all.verify = AIR_VERIFY_ALL;
+#define GLUE_FIT(q)	(air_softmodem_rx_fit(&(q), &tap) | hrc7000_air_tx_fit(&(q)))
+	f = GLUE_FIT(p);
+	CHECK(f == (AIR_FIT_RX | AIR_FIT_SOFT | AIR_FIT_TX | AIR_FIT_SHAPE_APPROX));
+	CHECK(air_fit_verify(f, was_yes, &p) == f);
+	CHECK(air_fit_verify(f, 0, &p) == (f | AIR_FIT_UNTESTED));
+	CHECK(air_fit_verify(f, AIR_VERIFY_NXDN | AIR_VERIFY_M17, &p) == (f | AIR_FIT_UNTESTED));
+	f = GLUE_FIT(nx);
+	CHECK(f != 0 && air_fit_verify(f, was_yes, &nx) == f);
+	f = GLUE_FIT(m17);
+	CHECK(f == (AIR_FIT_RX | AIR_FIT_SOFT | AIR_FIT_TX | AIR_FIT_SHAPE_APPROX));
+	CHECK(air_fit_verify(f, was_yes, &m17) == (f | AIR_FIT_UNTESTED));
+	CHECK(air_fit_verify(f, AIR_VERIFY_M17, &m17) == f);
+	CHECK(air_fit_verify(GLUE_FIT(z), 0xFF, &z) == (GLUE_FIT(z) | AIR_FIT_UNTESTED));
+	CHECK(air_fit_verify(GLUE_FIT(all), was_yes, &all) == GLUE_FIT(all));
+	CHECK(air_fit_verify(GLUE_FIT(all), 0, &all) == (GLUE_FIT(all) | AIR_FIT_UNTESTED));
+	CHECK(air_fit_verify(0, was_yes, &p) == 0);
+#undef GLUE_FIT
+}
+
 int main(void)
 {
 	test_pure();
+	test_verified();
 	test_tap();
 	test_rx_session();
 	test_tx();

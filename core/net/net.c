@@ -14,6 +14,9 @@
 #if CONFIG_NET_USRP
 #include "usbaudio/usrp_net.h"
 #endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
+#endif
 
 #if CONFIG_NET_TCP || CONFIG_NET_RADIO_UDP
 #include "net/net_svc.h"
@@ -161,6 +164,9 @@ void net_start(uint32_t salt)
 #if CONFIG_NET_USRP
 	usrp_net_start();
 #endif
+#if CONFIG_NET_M17
+	m17_net_start();
+#endif
 #if CONFIG_NET_RADIO_UDP
 	radio_udp_start();
 #endif
@@ -194,6 +200,9 @@ void net_poll(uint32_t now_ms, bool link_up)
 #endif
 #if CONFIG_NET_USRP
 	usrp_net_poll(now_ms, link_up);	// unkeys and stops the audio when the link goes down
+#endif
+#if CONFIG_NET_M17
+	m17_net_poll(now_ms, link_up);	// the reflector link waits for the host while the link is down
 #endif
 	if (!link_up) {
 #if CONFIG_NET_TCP

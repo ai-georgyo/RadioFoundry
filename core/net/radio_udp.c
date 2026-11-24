@@ -17,6 +17,7 @@
 #include "codeplug/codeplug.h"
 #include "dmr/ipGateway.h"
 #include "input/input.h"
+#include "radio/radio_air_modes.h"	// radio_mode_key
 #include "hal_time.h"
 
 #define REQ_MAX		40	// the longest request ("select?zone=65535&pos=65535" and room)
@@ -26,8 +27,6 @@
 #define ZONE_HOLD_MS	1000u	// a zone step counts from the last zone asked for this long (the view lags the request)
 #define BEAT_MS		30000u	// a notice this often, changed or not
 #define CHECK_MS	100u	// the radio's view is read for a change this often while subscribed
-
-static const char *const mode_names[] = { "fm", "dmr", "p25", "nxdn" };
 
 static struct {
 	int32_t channel_steps;	// channel steps asked for and not yet passed on (a knob's turns add up)
@@ -123,8 +122,7 @@ static void where(dl_text_t *t, const radio_view_t *v, bool channel)
 	}
 	dl_text(t, ",\"name\":");
 	json_str(t, v->ch.name);
-	dl_text(t, ",\"mode\":\"%s\",\"rx_hz\":%u", (v->ch.mode < 4u) ? mode_names[v->ch.mode] : "?",
-		(unsigned)v->ch.rx_hz);
+	dl_text(t, ",\"mode\":\"%s\",\"rx_hz\":%u", radio_mode_key(v->ch.mode), (unsigned)v->ch.rx_hz);
 #if CONFIG_DMR
 	if (v->ch.mode == RADIO_MODE_DMR) {
 		dl_text(t, ",\"cc\":%u,\"ts\":%u", v->ch.color_code, v->ch.timeslot);

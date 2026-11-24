@@ -74,12 +74,16 @@ Terms the user guide uses. In the web version, hover over, focus or tap a dotted
 | Term | Meaning |
 |---|---|
 | <a id="t-aprs"></a>APRS | Automatic Packet Reporting System: positions and short messages shared between amateur stations. [More](13-aprs.md) |
+| <a id="t-bert"></a>BERT (BER test) | Bit error rate test: an M17 transmission of a known pseudo-random pattern, so a receiver can count the bits it gets wrong. [More](24-m17.md) |
 | <a id="t-brandmeister"></a>BrandMeister | A worldwide amateur DMR network of linked servers and talkgroups. |
+| <a id="t-can"></a>CAN | Channel access number: a number from 0 to 15 an M17 channel uses, as DMR uses a color code. Radios play calls on their channel's CAN. [More](24-m17.md) |
+| <a id="t-codec-2"></a>Codec 2 | The open voice codec M17 uses, at 3200 or 1600 bit/s. Built into RadioFoundry: it needs nothing from the stock firmware. [More](../spec/codec2.md) |
 | <a id="t-cw-id"></a>CW ID | A station's callsign sent in Morse code. A standalone SFR repeater channel sends one in FM every few minutes after traffic (Settings > Talk & listen > SFR CW ID). [More](14-hotspot.md) |
 | <a id="t-dmr-id"></a>DMR ID (RadioID, DMR IDs) | The number that identifies your radio on DMR. Amateur IDs come from RadioID.net. |
 | <a id="t-hotspot"></a>Hotspot | A small DMR modem that connects radios nearby to a DMR network over the internet. [More](14-hotspot.md) |
 | <a id="t-igate"></a>iGate | A station that passes APRS packets between the air and the APRS-IS internet network. |
 | <a id="t-kiss"></a>KISS | A simple protocol between a computer's APRS program and a radio modem (TNC). |
+| <a id="t-m17"></a>M17 | An open digital voice and data mode for amateur radio: 4FSK at 4800 symbols a second, Codec 2 voice, stations addressed by their callsign. [More](24-m17.md) |
 | <a id="t-mdns"></a>mDNS | Multicast DNS: finding a device on a local network by a `.local` name. [More](../spec/mdns.md) |
 | <a id="t-mmdvm"></a>MMDVM | Multi-Mode Digital Voice Modem: the modem protocol MMDVMHost speaks. [More](../spec/mmdvm-protocol.md) |
 | <a id="t-rigctld"></a>rigctld | Hamlib's network rig control protocol, used by loggers and SDR programs. |

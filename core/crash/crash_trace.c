@@ -4,6 +4,7 @@
 // restarts, framed so a tool finds it among whatever else the port carries (tools/rfoundry_fault_trace.py). Pure: the
 // handler passes its own polled writer, and nothing here waits or allocates.
 #include "crash.h"
+#include "crash_secret.h"
 
 static uint16_t crc_add(uint16_t crc, const char *s)
 {
@@ -66,13 +67,15 @@ void crash_trace_line(const crash_trace_t *t, uint8_t n, void (*out)(const char 
 	put_reg(&k, "psr", t->psr);
 	put_reg(&k, "lr", t->lr);
 	put_reg(&k, "sp", t->sp);
+	// During secret work (crash_secret.h) the general registers print as zeros, as the crash record keeps them
+	bool secret = crash_secret != 0;
 	for (uint8_t i = 0; i < t->nr && i < 16u; i++) {
 		char name[4] = { 'r', (char)('0' + i % 10u), 0, 0 };
 		if (i >= 10u) {
 			name[1] = '1';
 			name[2] = (char)('0' + i - 10u);
 		}
-		put_reg(&k, name, t->r[i]);
+		put_reg(&k, name, secret ? 0u : t->r[i]);
 	}
 	hex(h, k.crc, 4);
 	out("*");
