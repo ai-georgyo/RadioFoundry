@@ -973,6 +973,9 @@ static void test_unread(void)
 	memset(&sim_flash_data[FREE_HI], 0xFF, S);
 	sim_flash_bad_read(J1 + 0x800u, 16u);
 	CHECK(boot(&with_factory) && blank_at(FREE_HI, S) && sim_flash_data[JOURNAL + 16] == 0xFF);
+#if CONFIG_DEBUGLINK
+	CHECK(strstr(log_last, "refused until the next start") != NULL);
+#endif
 	CHECK(!storage_sector_write(FREE, b) && !storage_write(FREE + 0x10u, b, 16) && blank_at(FREE_HI, S));
 	sim_flash_bad_read(0, 0);
 	CHECK(boot(&with_factory) && memcmp(&sim_flash_data[FREE_HI], a, S) == 0 && storage_sector_write(FREE, b));
