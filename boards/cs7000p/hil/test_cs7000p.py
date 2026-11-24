@@ -278,7 +278,7 @@ def test_reference_coding_knob(radio):
     """chip_reg 3:5 reaches the modem at the next receive set-up, and back (hardware-cs7000p.md 6.5): 1 leaves the
     set-up's 4:0x25 = 0x0E with the driver's 4:0x26 = 0xFD, 2 adds 4:0x26 = 0x7D, 0 gives the measured hold 0x0C and
     0xFD again. It writes that RAM-only knob and sets it back, whatever happens; it keys nothing. Whether the receiver
-    stays on channel in the maker's state is bring-up stage 9's test, with a carrier."""
+    stays on channel in the maker's state is bring-up stage 9.1's test, with a carrier."""
     try:
         start = radio.link.chip_reg(BOARD_CHIP, REF_CODING)
     except DebugLinkError as e:
@@ -322,7 +322,7 @@ def test_receive_calibration_sources(radio):
     """What receive takes from the maker's table (hardware-cs7000p.md 13.1, 15): with no table in use every value is
     today's, a trim A past the receive bound leaves the level at today's, and the modem holds the level and the 4:0x04
     that board.ref gives. Read only: it writes no knob and keys nothing. Whether the table's values receive better is
-    bring-up stage 9's A/B with chip_reg 3:0 and 3:4."""
+    bring-up stage 9.1's A/B with chip_reg 3:0 and 3:4."""
     b = board_view(radio)
     if "ref" not in b or "rx_cal" not in b:
         skip("not_built", "firmware without the receive calibration keys (older than the table's receive use)")
