@@ -14,7 +14,7 @@ static const uint32_t line_bit[CHAINSEQ_LINE_COUNT] = {
 	[CHAINSEQ_LINE_SYNTH_RAIL] = EXP_SYNTH_RAIL,
 	[CHAINSEQ_LINE_RX_RAIL] = EXP_RX_RAIL,
 	[CHAINSEQ_LINE_TX_RAIL] = EXP_TX_RAIL,
-	[CHAINSEQ_LINE_VCO_RX] = EXP_VCO_RX,
+	[CHAINSEQ_LINE_VCO_RX] = EXP_VCO_LOW,
 	[CHAINSEQ_LINE_APC_LOOP] = EXP_APC_LOOP,
 	[CHAINSEQ_LINE_IF_RUN] = EXP_AK_RUN,
 };
@@ -117,6 +117,14 @@ static bool op_tx_plan(void *ctx, uint32_t hz, uint8_t power, uint32_t *vco_hz, 
 	return true;
 }
 
+// The VCO by the channel's frequency (cs7000p_vco_low). The bench's 3:6 gives receive the rule by direction back;
+// transmit always follows f_tx. Also from the burst runner's interrupt: reads only
+static bool op_vco_line(void *ctx, uint32_t hz, bool tx)
+{
+	const cs7000p_rf_t *rf = ctx;
+	return cs7000p_vco_low(hz, tx, rf->lo_high || (!tx && rf->vco_rx_dir));
+}
+
 // --- Set-up, receive ---
 
 void cs7000p_rf_init(cs7000p_rf_t *rf, const cs7000p_rf_io_t *io, const cs7000p_cal_t *cal)
@@ -135,6 +143,7 @@ void cs7000p_rf_init(cs7000p_rf_t *rf, const cs7000p_rf_io_t *io, const cs7000p_
 			.delay_us = op_delay,
 			.rx_plan = op_rx_plan,
 			.tx_plan = op_tx_plan,
+			.vco_line = op_vco_line,
 			.rail_settle_us = CS7000P_RX_RAIL_US,
 			.lock_timeout_us = CS7000P_LOCK_US,
 			.tx_rail_lead_us = CS7000P_TX_RAIL_US,

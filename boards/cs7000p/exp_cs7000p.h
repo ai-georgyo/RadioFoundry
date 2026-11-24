@@ -3,7 +3,7 @@
 // CS7000 M17 PLUS output expander: three 74HC595 in a chain (IC619 -> IC620 -> IC621) on PE7 (clock), PE8 (latch) and
 // PE9 (data), 24 outputs that switch the rails, the chip selects, the audio paths, the LEDs and the supply hold
 // (docs/spec/hardware-cs7000p.md). From the maker's schematic; no bit has been checked on a radio, and four
-// polarities come from documents only (EXP_DMR_SLEEP, EXP_AK_RUN, EXP_AK_CSN while RSTN is released, EXP_VCO_RX).
+// polarities come from documents only (EXP_DMR_SLEEP, EXP_AK_RUN, EXP_AK_CSN while RSTN is released, EXP_VCO_LOW).
 //
 // Pure: the bit names, the word every reset writes, and the rule that ties the shared DAC to the transmit bits. The
 // one writer of the chain and of that DAC is exp_cs7000p.c; tests/cs7000pExpTest.c checks this file.
@@ -27,7 +27,9 @@
 #define EXP_MIC_EXT		(1u << 5)	// EXT-MIC-C: external microphone connected
 #define EXP_AK_RUN		(1u << 6)	// A-PDN: AK2365A out of power-down
 #define EXP_DMR_SLEEP		(1u << 7)	// DMR_SLEEP: HR_C6000 asleep (PWD)
-#define EXP_VCO_RX		(1u << 8)	// VCOVCC_SW: receive VCO powered; 0: transmit VCO (drawing note "T:0V R:3V")
+#define EXP_VCO_LOW		(1u << 8)	// VCOVCC_SW: the VCO below about 430 MHz powered (Q3); 0: the one above
+						// (Q4). Chosen by frequency in receive and transmit alike
+						// (rfplan_cs7000p.h, cs7000p_vco_low)
 #define EXP_TX_RAIL		(1u << 9)	// 5TC: 5T on, pre-drivers, TX LO path, antenna switch to transmit
 #define EXP_MIC_INT		(1u << 10)	// MIC-C: internal microphone connected
 #define EXP_SYNTH_RAIL		(1u << 11)	// SAVE: 5C on, charge pump, VCOs, modulation amplifiers (and with it the
@@ -46,11 +48,11 @@
 #define EXP_AUDIO_RAIL		(1u << 22)	// FM_SW: 5C_A on, the receive audio filters behind the ADC taps
 #define EXP_AF_MUTE		(1u << 23)	// AF_MUTE: no effect as drawn; kept 0
 
-// The state after every reset and before every reset: everything off, the receive VCO selected, both chips parked,
+// The state after every reset and before every reset: everything off, the lower VCO selected, both chips parked,
 // and the supply NOT held: with the knob on the hold changes nothing, with the knob off it must not keep the radio on.
 // (The chain outlives an MCU reset and the ROM bootloader, which a held SK1 starts, never writes it: a reset word
 // with the hold set could keep the radio on for good. The hold is set only after the knob has been read on.)
-#define EXP_RESET_WORD	(EXP_ACC_SCL | EXP_SPK_EXT_OFF | EXP_SPK_INT_OFF | EXP_VCO_RX | EXP_DMR_SLEEP | EXP_AK_CSN)
+#define EXP_RESET_WORD	(EXP_ACC_SCL | EXP_SPK_EXT_OFF | EXP_SPK_INT_OFF | EXP_VCO_LOW | EXP_DMR_SLEEP | EXP_AK_CSN)
 // The two transmit bits: the transmitter's rail and the loop that biases the PA
 #define EXP_TX_BITS	(EXP_TX_RAIL | EXP_APC_LOOP)
 _Static_assert(EXP_RESET_WORD == 0x2A0181u, "the reset word is the documented one");
@@ -70,8 +72,9 @@ _Static_assert((EXP_RESET_WORD & (EXP_POWER_HOLD | EXP_TX_BITS)) == 0u,
 #define CS7000P_APC_FLOOR	0
 #endif
 
-// What a fault path makes of the chain's shadow: the transmit bits off, the receive VCO selected, the rest as it was
-static inline uint32_t exp_rf_safe_word(uint32_t shadow) { return (shadow & ~EXP_TX_BITS) | EXP_VCO_RX; }
+// What a fault path makes of the chain's shadow: the transmit bits off, the VCO line parked (the lower VCO), the rest
+// as it was
+static inline uint32_t exp_rf_safe_word(uint32_t shadow) { return (shadow & ~EXP_TX_BITS) | EXP_VCO_LOW; }
 // The shared DAC's interlock, pure (cs7000pExpTest): a value above the floor may be on the DAC only while both
 // transmit bits are set (a drive) or both are clear (the receive tuning voltage), and a transmit bit may be set only
 // while the DAC is at or below the floor. The floor is the largest DAC code that gives no RF output

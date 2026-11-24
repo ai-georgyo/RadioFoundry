@@ -384,7 +384,7 @@ use PC1.
 
 ### 5.12 VCO select and the first LO
 
-The VCO-select line is the expander's bit 8 (`EXP_VCO_RX` in the port). For the model variant seen (variant 0):
+The VCO-select line is the expander's bit 8 (`EXP_VCO_LOW` in the port). For the model variant seen (variant 0):
 
 | Fact | How known |
 |---|---|

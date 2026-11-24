@@ -101,7 +101,7 @@ static void pll_delay(void *ctx)
 
 static const wire3_gpio_t pll_wire = { .cs = pll_cs, .clk = pll_clk, .data = pll_data, .delay = pll_delay };
 
-// One 16-bit word. Also from the burst runner's interrupt (the transmit VCO's words at a burst's tune)
+// One 16-bit word. Also from the burst runner's interrupt (the carrier's words at a burst's tune)
 static bool pll_write(void *ctx, uint16_t word)
 {
 	(void)ctx;
@@ -839,7 +839,7 @@ void cs7000p_radio_state(cs7000p_radio_state_t *s)
 
 #if CONFIG_DEBUGLINK
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
-enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET };
+enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_VCO_RULE = 6 };
 
 // The receive tuning value. Refused whenever a transmit bit is set: the same DAC is the PA's reference then, and
 // the board's interlock alone would let a value through with both bits set. Test and write under one mask, so the
@@ -908,6 +908,18 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 			retune_req = true;
 		}
 		*val = (uint8_t)cs7000p_rf.ref_offset;
+		return true;
+	case BOARD_VCO_RULE:
+		// 0: the VCO by frequency (the maker's rule), 1: by direction in receive, the rule before it (for a receive
+		// test across 479 MHz). Transmit follows its frequency either way
+		if (write) {
+			if (*val > 1u) {
+				return false;
+			}
+			cs7000p_rf.vco_rx_dir = *val != 0u;	// the next receive set-up selects by it
+			retune_req = true;
+		}
+		*val = cs7000p_rf.vco_rx_dir ? 1u : 0u;
 		return true;
 	default:
 		return false;
