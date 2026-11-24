@@ -5,7 +5,9 @@
 // hold of the DAC control word after every set-up, and no trace of it on a board that does not ask for it; the codec
 // input bits after a DMR entry and an FM transmit set-up; the modulation pair and one receiver restart on a new DMR
 // channel; FM transmit refused without a pair; the FM receive audio path either way; every bus failure counted, and
-// a chip that is not there found by its mode register on a bus that reports nothing.
+// a chip that is not there found by its mode register on a bus that reports nothing. The held reference's other
+// coding (one per receive state, 4:0x26 only when asked) and a receive 4:0x04 of the board's own; with those options
+// left NULL, or answering what NULL means, every transaction as before they existed (a hash of the log).
 // Against the fake register file of hrc6000ToneTest.c. Built a second time without DMR (hrc6000IfHostTestFm)
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +30,16 @@ static int fail_at = -1;		// the transaction that fails, counted from the last f
 static bool fail_all;
 static int fail_w = -1, fail_r = -1;	// a page 4 register whose writes / reads fail
 static int silent = -1;			// no chip on the bus: every read gives this level, writes are lost; -1: a chip
+static uint32_t log_hash;		// FNV-1a over every transaction's header and written bytes, in order
+static struct { uint8_t reg, val; } wl[8192];	// page 4 writes in order, n_wl of them
+static uint32_t n_wl;
+
+static void log_bytes(const uint8_t *p, uint16_t n)
+{
+	for (uint16_t i = 0; i < n; i++) {
+		log_hash = (log_hash ^ p[i]) * 16777619u;
+	}
+}
 
 static bool fake_transfer(void *ctx, const uint8_t *hdr, uint8_t hdr_len, const uint8_t *tx, uint8_t *rx, uint16_t len)
 {
@@ -35,6 +47,10 @@ static bool fake_transfer(void *ctx, const uint8_t *hdr, uint8_t hdr_len, const 
 	uint8_t page = hdr[0] & 7u;
 	bool read = (hdr[0] & 0x80u) != 0;
 	uint32_t k = n_xfer++;
+	log_bytes(hdr, hdr_len);
+	if (!read && tx != NULL) {
+		log_bytes(tx, len);
+	}
 	if (fail_all || (int)k == fail_at) {
 		return false;
 	}
@@ -70,6 +86,11 @@ static bool fake_transfer(void *ctx, const uint8_t *hdr, uint8_t hdr_len, const 
 			n_w[r] += page == 4;
 			if (page == 4) {
 				seq_w[r] = k;
+				if (n_wl < sizeof(wl) / sizeof(wl[0])) {
+					wl[n_wl].reg = r;
+					wl[n_wl].val = regs[page][r];
+					n_wl++;
+				}
 			}
 		}
 	}
@@ -135,6 +156,29 @@ static int8_t ref_offset(void *ctx, uint32_t hz)
 	return (int8_t)(hz == HZ_A ? -5 : hz == HZ_B ? 9 : 0);
 }
 
+// The reference coding and the receive 4:0x04, as a bench knob would set them
+static uint8_t coding_now, adc_now;
+static bool r04_own;		// rx_tx_offset answers r04_val, else ref_offset's value
+static int8_t r04_val;
+static bool r04_dmr;		// the mode rx_tx_offset was last asked for
+static int n_coding, n_r04;
+
+static uint8_t ref_coding(void *ctx, uint8_t *adc_ctl)
+{
+	see_ctx(ctx);
+	n_coding++;
+	*adc_ctl = adc_now;
+	return coding_now;
+}
+
+static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
+{
+	see_ctx(ctx);
+	n_r04++;
+	r04_dmr = dmr;
+	return r04_own ? r04_val : ref_offset(ctx, hz);
+}
+
 static void cb_enter(void)
 {
 	n_enter++;
@@ -162,6 +206,19 @@ static const hrc6000_if_cfg_t cfg_plain = {
 };
 // Nothing but the values
 static const hrc6000_if_cfg_t cfg_bare = { .dmr_mic_gain = 7, .safe_gain = SAFE_GAIN };
+// cfg_hold with the reference coding and the receive 4:0x04 asked of the board
+static const hrc6000_if_cfg_t cfg_opts = {
+	.dmr_mic_gain = 7, .rx_gain_db = 2, .fm_audio_chip = true, .ref_dac_hold = true, .e0_set = 0x02, .e0_clear = 0x40,
+	.lo_high = lo_high, .mod_pair = mod_pair, .ref_offset = ref_offset, .ref_coding = ref_coding,
+	.rx_tx_offset = rx_tx_offset,
+	.dmr_enter = cb_enter, .dmr_leave = cb_leave, .dmr_rx_restart = cb_restart, .safe_gain = SAFE_GAIN, .ctx = &ctx_seen,
+};
+// cfg_plain with the same two: they are for the hold, and never asked without it
+static const hrc6000_if_cfg_t cfg_plain_opts = {
+	.dmr_mic_gain = 7, .rx_gain_db = -3, .lo_high = lo_high, .mod_pair = mod_pair, .ref_offset = ref_offset,
+	.ref_coding = ref_coding, .rx_tx_offset = rx_tx_offset,
+	.dmr_enter = cb_enter, .dmr_leave = cb_leave, .dmr_rx_restart = cb_restart, .safe_gain = SAFE_GAIN, .ctx = &ctx_seen,
+};
 
 static void fake_reset(void)
 {
@@ -173,6 +230,11 @@ static void fake_reset(void)
 	memset(at_enter, 0, sizeof(at_enter));
 	memset(at_leave, 0, sizeof(at_leave));
 	n_xfer = 0;
+	n_wl = 0;
+	log_hash = 2166136261u;
+	coding_now = HRC6000_IF_REF_MID;
+	adc_now = 0;
+	r04_own = false;
 	fail_at = fail_w = fail_r = silent = -1;
 	fail_all = false;
 	side_flip = false;
@@ -198,6 +260,42 @@ static bool ref_held(int8_t off)
 {
 	uint16_t level = (uint16_t)(512 + off);
 	return regs[4][0x04] == (uint8_t)off && regs[4][0x47] == (uint8_t)level && regs[4][0x48] == (uint8_t)(level >> 8);
+}
+
+// The held level in the other coding, under the set-up's own control word: the offset itself, ten bits two's
+// complement (the same voltage as the hold's 512 + offset, by the inferred coding)
+static bool ref_signed(int8_t off)
+{
+	uint16_t level = (uint16_t)((uint16_t)off & 0x3FFu);
+	return regs[4][0x25] == 0x0E && regs[4][0x47] == (uint8_t)level && regs[4][0x48] == (uint8_t)(level >> 8);
+}
+
+// The first page 4 write of reg at or after the write numbered from, or -1
+static int wl_next(uint32_t from, uint8_t reg)
+{
+	for (uint32_t i = from; i < n_wl; i++) {
+		if (wl[i].reg == reg) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+// From the write numbered from: the signed level's writes, 0x04 then 0x47, 0x25 = 0x0E and 0x48 back to back
+static bool signed_order(uint32_t from)
+{
+	int i04 = wl_next(from, 0x04), i47 = wl_next(from, 0x47), i25 = wl_next(from, 0x25), i48 = wl_next(from, 0x48);
+	return i04 >= 0 && i47 == i04 + 1 && i25 == i47 + 1 && i48 == i25 + 1 && wl[i25].val == 0x0E;
+}
+
+// The number of writes of val to reg from the write numbered from
+static int wl_count(uint32_t from, uint8_t reg, uint8_t val)
+{
+	int n = 0;
+	for (uint32_t i = from; i < n_wl; i++) {
+		n += wl[i].reg == reg && wl[i].val == val;
+	}
+	return n;
 }
 
 // --- the tests ---
@@ -526,6 +624,197 @@ static void test_bare(void)
 	CHECK(n_xfer == x && !z.dmr && !z.fm_tx);
 }
 
+static void walk(hrc6000_if_t *h);
+
+// The reference DAC's coding: one per receive state, asked at its full set-up; 4:0x26 only when asked, and the
+// driver's value back with the next set-up; the hold alone in each coding
+static void test_coding(void)
+{
+	hrc6000_if_t h;
+
+	// Init in the signed coding: the set-up's 0x0E stays, the level is the offset (-5) itself
+	fake_reset();
+	coding_now = HRC6000_IF_REF_SIGNED;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	CHECK(h.up && h.ref_coding == HRC6000_IF_REF_SIGNED && h.adc_ctl == 0 && h.errors == 0);
+	CHECK(ref_signed(-5) && regs[4][0x04] == 0xFB && h.r25 == 0x0E);
+	CHECK(regs[4][0x47] == 0xFB && regs[4][0x48] == 0x03);
+	CHECK(regs[4][0x26] == 0xFD && wl_count(0, 0x26, 0x7D) == 0);	// the driver's: not asked
+	CHECK(wl_count(0, 0x25, 0x0C) == 0);	// never the hold's word in this state
+	// a retune in the same coding: no set-up, the order of the level's writes, the offsets 9 and 0
+	uint32_t w10 = n_w[0x10], mark = n_wl;
+	CHECK(!hrc6000_if_retune(&h, HZ_B));
+	CHECK(n_w[0x10] == w10 && signed_order(mark) && ref_signed(9) && regs[4][0x48] == 0x00);
+	mark = n_wl;
+	CHECK(!hrc6000_if_retune(&h, HZ_A + 25000u));
+	CHECK(signed_order(mark) && ref_signed(0) && regs[4][0x47] == 0x00);
+	CHECK(wl_count(0, 0x25, 0x0C) == 0);
+
+	// 4:0x26 when asked: a retune that finds the answer changed runs the whole set-up
+	adc_now = 0x7D;
+	mark = n_wl;
+	CHECK(hrc6000_if_retune(&h, HZ_A));
+	CHECK(n_w[0x10] > w10 && h.adc_ctl == 0x7D && regs[4][0x26] == 0x7D && ref_signed(-5));
+	// the FM receive rows' 0xFD first, then the board's value right after the level's last write
+	int i26 = wl_next(mark, 0x26), i48 = wl_next(mark, 0x48);
+	CHECK(i26 >= 0 && wl[i26].val == 0xFD && wl_count(mark, 0x26, 0x7D) == 1);
+	CHECK(i48 > i26 && wl_next((uint32_t)i26 + 1u, 0x26) == i48 + 1 && wl[i48 + 1].val == 0x7D);
+	mark = n_wl;
+	CHECK(!hrc6000_if_retune(&h, HZ_B));	// every receive entry of that state
+	CHECK(regs[4][0x26] == 0x7D && wl_count(mark, 0x26, 0x7D) == 1 && ref_signed(9));
+	// and back: the driver's value, nothing written after the rows
+	adc_now = 0;
+	mark = n_wl;
+	CHECK(hrc6000_if_retune(&h, HZ_B));
+	CHECK(regs[4][0x26] == 0xFD && wl_count(mark, 0x26, 0x7D) == 0 && ref_signed(9));
+
+	// The signed coding back to the hold: the whole set-up, the hold's word and level
+	coding_now = HRC6000_IF_REF_MID;
+	w10 = n_w[0x10];
+	CHECK(hrc6000_if_retune(&h, HZ_B));
+	CHECK(n_w[0x10] > w10 && h.ref_coding == HRC6000_IF_REF_MID && ref_held(9) && regs[4][0x25] == 0x0C);
+	CHECK(h.r25 == 0x0C && regs[4][0x26] == 0xFD);
+	CHECK(!hrc6000_if_retune(&h, HZ_B));
+	// An answer the interface does not know is the hold, with the driver's 4:0x26 whatever else it gives
+	coding_now = 7;
+	adc_now = 0x7D;
+	mark = n_wl;
+	CHECK(!hrc6000_if_retune(&h, HZ_B) && ref_held(9) && h.adc_ctl == 0 && wl_count(mark, 0x26, 0x7D) == 0);
+	adc_now = 0;
+
+	// The hold alone, in each coding, one write and no question asked
+	coding_now = HRC6000_IF_REF_MID;
+	regs[4][0x25] = 0x0E;
+	int asked = n_coding;
+	uint32_t x = n_xfer;
+	hrc6000_if_rx_hold(&h);
+	CHECK(regs[4][0x25] == 0x0C && n_xfer == x + 1);
+	coding_now = HRC6000_IF_REF_SIGNED;
+	CHECK(hrc6000_if_retune(&h, HZ_B) && ref_signed(9));
+	asked = n_coding;
+	regs[4][0x25] = 0x0C;
+	x = n_xfer;
+	hrc6000_if_rx_hold(&h);
+	CHECK(regs[4][0x25] == 0x0E && n_xfer == x + 1 && n_coding == asked);
+	// the knob turned without a receive entry yet: the hold keeps the coding of the state it is in
+	coding_now = HRC6000_IF_REF_MID;
+	hrc6000_if_rx_hold(&h);
+	CHECK(regs[4][0x25] == 0x0E && n_coding == asked);
+
+	// A transmit set-up in between, and back: the end asks again
+	coding_now = HRC6000_IF_REF_SIGNED;
+	adc_now = 0x7D;
+	CHECK(hrc6000_if_retune(&h, HZ_B) && regs[4][0x26] == 0x7D);
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	CHECK(regs[4][0x25] == 0x0E && regs[4][0x26] == 0xFE && regs[4][0x47] == 9 && regs[4][0x04] == 9);
+	x = n_xfer;
+	CHECK(!hrc6000_if_retune(&h, HZ_A) && n_xfer == x);	// only noted, whatever the coding says
+	hrc6000_if_fm_tx_end(&h);
+	CHECK(ref_signed(-5) && regs[4][0x26] == 0x7D && h.r25 == 0x0E);
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	coding_now = HRC6000_IF_REF_MID;	// changed during the transmission: its end takes it
+	adc_now = 0;
+	hrc6000_if_fm_tx_end(&h);
+	CHECK(ref_held(-5) && regs[4][0x25] == 0x0C && regs[4][0x26] == 0xFD && h.ref_coding == HRC6000_IF_REF_MID);
+	CHECK(!hrc6000_if_retune(&h, HZ_A));
+	CHECK(h.errors == 0);
+
+#if CONFIG_DMR
+	// DMR: the entry in the signed coding with 4:0x26 asked, as the engine finds it
+	fake_reset();
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	coding_now = HRC6000_IF_REF_SIGNED;
+	adc_now = 0x7D;
+	hrc6000_if_mode(&h, true, HZ_B);
+	CHECK(h.dmr && n_enter == 1 && at_enter[0x25] == 0x0E && at_enter[0x26] == 0x7D);
+	CHECK(at_enter[0x47] == 9 && at_enter[0x48] == 0x00 && h.r25 == 0x0E);
+	// a coding change at a retune: the engine off and on around the whole DMR entry, the driver's 0x26 back
+	adc_now = 0;
+	coding_now = HRC6000_IF_REF_MID;
+	int restarts = n_restart;
+	CHECK(hrc6000_if_retune(&h, HZ_A));
+	CHECK(n_leave == 1 && n_enter == 2 && n_restart == restarts && h.dmr);
+	CHECK(at_enter[0x25] == 0x0C && at_enter[0x26] == 0xFD && at_enter[0x47] == 0xFB && at_enter[0x48] == 0x01);
+	CHECK(at_enter[0x45] == pair_byte(HZ_A, true, false) && at_leave[0x10] == 0x6E);	// the new channel's pair
+	CHECK(regs[4][0x36] == 0x00 && h.tuned_hz == HZ_A);
+	// the hold after a burst sequence, in DMR, in each coding
+	regs[4][0x25] = 0x0E;
+	hrc6000_if_rx_hold(&h);
+	CHECK(regs[4][0x25] == 0x0C);
+	coding_now = HRC6000_IF_REF_SIGNED;
+	CHECK(hrc6000_if_retune(&h, HZ_A) && n_enter == 3 && ref_signed(-5));
+	regs[4][0x25] = 0x0C;
+	hrc6000_if_rx_hold(&h);
+	CHECK(regs[4][0x25] == 0x0E);
+	// back to FM in the signed coding: the level and its word, nothing of the hold's
+	mark = n_wl;
+	hrc6000_if_mode(&h, false, HZ_B);
+	CHECK(!h.dmr && ref_signed(9) && signed_order(mark) && wl_count(mark, 0x25, 0x0C) == 0);
+	CHECK(h.errors == 0);
+#endif
+
+	// Any one transaction failing in the signed coding with 4:0x26 asked: counted
+	fake_reset();
+	coding_now = HRC6000_IF_REF_SIGNED;
+	adc_now = 0x7D;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	uint32_t n_init = n_xfer;
+	walk(&h);
+	uint32_t n_all = n_xfer;
+	for (uint32_t k = 0; k < n_all; k++) {
+		fake_reset();
+		coding_now = HRC6000_IF_REF_SIGNED;
+		adc_now = 0x7D;
+		fail_at = (int)k;
+		bool up = hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A);
+		walk(&h);
+		if ((k < n_init && up) || h.errors == 0) {
+			printf("FAIL signed transaction %u: up %d, errors %u\n", (unsigned)k, (int)up, (unsigned)h.errors);
+			failures++;
+		}
+		checks++;
+	}
+}
+
+// The 4:0x04 value of a receive entry from its own callback: at every receive entry and nowhere else, the level
+// still from the reference offset
+static void test_rx_tx_offset(void)
+{
+	hrc6000_if_t h;
+	fake_reset();
+	r04_own = true;
+	r04_val = 0x33;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	CHECK(regs[4][0x04] == 0x33 && regs[4][0x47] == 0xFB && regs[4][0x48] == 0x01 && held(regs[4][0x25]));
+	CHECK(!r04_dmr);
+	r04_val = -2;
+	CHECK(!hrc6000_if_retune(&h, HZ_B));
+	CHECK(regs[4][0x04] == 0xFE && regs[4][0x47] == 9 && regs[4][0x48] == 0x02);
+	// FM transmit takes ref_offset's value, and asks nothing
+	int asked = n_r04;
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	CHECK(regs[4][0x04] == 9 && n_r04 == asked);
+	hrc6000_if_fm_tx_end(&h);
+	CHECK(regs[4][0x04] == 0xFE && n_r04 == asked + 1);
+	// the hold alone writes no 4:0x04
+	uint32_t w04 = n_w[0x04];
+	hrc6000_if_rx_hold(&h);
+	CHECK(n_w[0x04] == w04 && n_r04 == asked + 1);
+	// the signed coding takes it as well
+	coding_now = HRC6000_IF_REF_SIGNED;
+	CHECK(hrc6000_if_retune(&h, HZ_B) && regs[4][0x04] == 0xFE && ref_signed(9));
+	coding_now = HRC6000_IF_REF_MID;
+	CHECK(hrc6000_if_retune(&h, HZ_B));
+#if CONFIG_DMR
+	hrc6000_if_mode(&h, true, HZ_A);
+	CHECK(r04_dmr && regs[4][0x04] == 0xFE && at_enter[0x04] == 0xFE && at_enter[0x47] == 0xFB);
+	CHECK(!hrc6000_if_retune(&h, HZ_B) && r04_dmr && regs[4][0x04] == 0xFE);
+	hrc6000_if_mode(&h, false, HZ_B);
+	CHECK(!r04_dmr);
+#endif
+	CHECK(h.errors == 0);
+}
+
 // Everything the host does after a good init, once
 static void walk(hrc6000_if_t *h)
 {
@@ -538,6 +827,51 @@ static void walk(hrc6000_if_t *h)
 	(void)hrc6000_if_fm_tx(h, HZ_A, true, 7);
 	hrc6000_if_fm_tx_end(h);
 	hrc6000_if_rx_hold(h);
+}
+
+// walk() and more on one configuration: the hash of the whole bus log, every transaction in order
+static uint32_t script(const hrc6000_if_cfg_t *cfg)
+{
+	hrc6000_if_t h;
+	fake_reset();
+	(void)hrc6000_if_init(&h, &dev, cfg, HZ_A);
+	walk(&h);
+	hrc6000_if_retune(&h, HZ_HIGH_SIDE);
+	(void)hrc6000_if_fm_tx(&h, HZ_B, false, 9);
+	hrc6000_if_retune(&h, HZ_A);
+	hrc6000_if_fm_tx_end(&h);
+	hrc6000_if_mode(&h, true, HZ_A);
+	hrc6000_if_rx_hold(&h);
+	hrc6000_if_retune(&h, HZ_B);
+	hrc6000_if_mode(&h, false, HZ_B);
+	hrc6000_if_retune(&h, HZ_B);
+	return log_hash;
+}
+
+// The logs of the code before the reference coding and the receive 4:0x04 callback existed, taken from it once
+#if CONFIG_DMR
+#define LOG_HOLD	0x7fb9109fu
+#define LOG_PLAIN	0x77e3cdaau
+#define LOG_BARE	0xf59b2579u
+#else
+#define LOG_HOLD	0x81b06773u
+#define LOG_PLAIN	0x1c76dd26u
+#define LOG_BARE	0x47eaacebu
+#endif
+
+// The options left NULL write exactly what the host wrote before them, transaction for transaction; and so do
+// options that answer what NULL means: the measured hold, the driver's 4:0x26, ref_offset's value in 4:0x04
+static void test_log(void)
+{
+	CHECK(script(&cfg_hold) == LOG_HOLD);
+	CHECK(script(&cfg_plain) == LOG_PLAIN);
+	CHECK(script(&cfg_bare) == LOG_BARE);
+	n_coding = n_r04 = 0;
+	CHECK(script(&cfg_opts) == LOG_HOLD);
+	CHECK(n_coding > 0 && n_r04 > 0);
+	// On a board without the receive hold the two options are never asked
+	n_coding = n_r04 = 0;
+	CHECK(script(&cfg_plain_opts) == LOG_PLAIN && n_coding == 0 && n_r04 == 0);
 }
 
 static void test_failures(void)
@@ -645,6 +979,9 @@ int main(void)
 	test_dmr();
 	test_bare();
 	test_failures();
+	test_log();
+	test_coding();
+	test_rx_tx_offset();
 	CHECK(ctx_seen > 0 && ctx_bad == 0);	// every callback got the board's context
 	printf("hrc6000IfHostTest%s: %d checks, %d failures\n", CONFIG_DMR ? "" : " (no DMR)", checks, failures);
 	return failures != 0;
