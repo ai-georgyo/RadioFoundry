@@ -9,10 +9,12 @@
 // result, the stats and the flash after each step go into one 64-bit FNV-1a hash, compared with the golden value
 // below.
 //
-// The golden value was produced once from the storage.c before the factory ranges existed (commit 51dedf59):
+// The golden value was first produced from the storage.c before the factory ranges existed (commit 51dedf59):
 //   git show 51dedf59:core/storage/storage.c > $TMPDIR/storage_before.c
 //   make -C tests/host -B storageJournalLogTest JOURNAL_LOG_STORAGE=$TMPDIR/storage_before.c
 //   tests/host/storageJournalLogTest		(prints the hash)
+// It moved once since, on purpose: a sector entry whose J1 doesn't match its header is read a second time before it
+// is given up (one marginal read is not a stale header), 16 reads more in shape 4 and nothing else.
 // The Makefile builds this test with today's storage.c twice, with STORAGE_FACTORY_KEEP 0 (every board but those that
 // keep the maker's bytes) and 1 (those, on a map whose list is empty): both must give the same hash. A change to
 // the journal that moves any flash operation fails here; one that means to has to say so by changing the golden
@@ -24,7 +26,7 @@
 #include "debuglink/dlog.h"
 #include "sim/sim_flash.h"
 
-#define GOLDEN		0x74135635351b583cull
+#define GOLDEN		0x55cddf512b99644cull
 
 static int failures;
 

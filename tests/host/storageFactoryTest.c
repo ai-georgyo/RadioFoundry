@@ -903,6 +903,81 @@ static void test_replay(void)
 	CHECK(sim_flash_data[JOURNAL + 20] == 0 && kept_intact() && sim_flash_violations() == 0);
 }
 
+// A start whose replay can't read the entry of a kept sector whose target is erased: J1, the kept block's header, its
+// stream, J0's header, a patch entry's data. Never given up: the session's writes are refused (the first erase would
+// take the only copies of the factory bytes), and a clean start, or the held journal once the reads work again,
+// finishes it. A misread of the block once is read again
+static void test_unread(void)
+{
+	static uint8_t a[S], b[S], journal[2u * S];
+	static const struct { uint32_t addr, len; } bad[] = {
+		{ J1, S }, { JOURNAL + 32u, 16u }, { JOURNAL + 48u + 0x100u, 16u }, { JOURNAL, 16u },
+	};
+	fill(a, S, 61);
+	fill(b, S, 62);
+
+	for (unsigned k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+		for (unsigned later = 0; later < 2; later++) {
+			fresh_kept();
+			pending_ours(RANGE_A, a);
+			sim_flash_bad_read(bad[k].addr, bad[k].len);
+			bool ok = boot(&with_factory) && storage_region() == STORAGE_REGION_OURS && blank_at(RANGE_A, S);
+			memcpy(journal, &sim_flash_data[JOURNAL], sizeof(journal));
+			if (later == 1 && k != 3) {
+				// The reads work again in the same session: the next write finishes the entry first
+				sim_flash_bad_read(0, 0);
+				ok = ok && storage_sector_write(FREE, b) && rest_is(RANGE_A, a) && kept_intact();
+				ok = ok && memcmp(&sim_flash_data[FREE], b, S) == 0;
+			} else {
+				ok = ok && !storage_sector_write(FREE, b) && !storage_write(FREE + 0x10u, b, 16);
+				ok = ok && !storage_sector_write(0x7000u, b) && !storage_write(FREE_HI, b, 2u * S);
+				ok = ok && memcmp(journal, &sim_flash_data[JOURNAL], sizeof(journal)) == 0;
+				sim_flash_bad_read(0, 0);
+				// J0's header unread holds until the next start, the others are tried again by each write
+				ok = ok && (k == 3 ? !storage_sector_write(FREE, b) : true);
+				ok = ok && boot(&with_factory) && rest_is(RANGE_A, a) && kept_intact();
+				ok = ok && storage_sector_write(FREE, b);
+			}
+			ok = ok && grant_closed() && sim_flash_violations() == 0;
+			if (!ok) {
+				printf("FAIL %s:%d: unread 0x%x (later %u, fill %d)\n", __FILE__, __LINE__, (unsigned)bad[k].addr,
+				       later, kept_fill);
+				failures++;
+			}
+		}
+	}
+	// The kept block misread once by the replay (its CRC fails): read again, not taken as torn. The start's scan reads
+	// that byte three times before (J0's blank check, the kept area's, the block's CRC)
+	fresh_kept();
+	pending_ours(RANGE_A, a);
+	sim_flash_misread(JOURNAL + 48u + 0x10u, 4);
+	CHECK(boot(&with_factory) && rest_is(RANGE_A, a) && kept_intact() && sim_flash_data[JOURNAL + 16] == 0);
+	// An earlier firmware's patch entry, its sector staged and the target erased, its data unread at the start
+	uint8_t p[0x20];
+	fill(p, sizeof(p), 63);
+	fresh_kept();
+	pending_patch(RANGE_A + 0x400u, p, sizeof(p));
+	sim_flash_bad_range(RANGE_A, S);
+	CHECK(boot(&with_factory) && blank_at(RANGE_A, S));
+	sim_flash_bad_range(0, 0);
+	sim_flash_bad_read(JOURNAL + 24u, sizeof(p));
+	CHECK(boot(&with_factory) && blank_at(RANGE_A, S) && !storage_sector_write(FREE, b));
+	sim_flash_bad_read(0, 0);
+	CHECK(boot(&with_factory) && memcmp(&sim_flash_data[RANGE_A + 0x400u], p, sizeof(p)) == 0 && kept_intact());
+	CHECK(storage_sector_write(FREE, b) && grant_closed() && sim_flash_violations() == 0);
+	// A sector holding no factory bytes (the factory copy's record, say), erased by a cut past its commit point, J1
+	// unread at the start: not given up either
+	fresh_kept();
+	CHECK(boot(&with_factory));
+	pending_sector(FREE_HI, a);
+	memset(&sim_flash_data[FREE_HI], 0xFF, S);
+	sim_flash_bad_read(J1 + 0x800u, 16u);
+	CHECK(boot(&with_factory) && blank_at(FREE_HI, S) && sim_flash_data[JOURNAL + 16] == 0xFF);
+	CHECK(!storage_sector_write(FREE, b) && !storage_write(FREE + 0x10u, b, 16) && blank_at(FREE_HI, S));
+	sim_flash_bad_read(0, 0);
+	CHECK(boot(&with_factory) && memcmp(&sim_flash_data[FREE_HI], a, S) == 0 && storage_sector_write(FREE, b));
+}
+
 // A power cut at every flash operation of the replays that write: this firmware's entry, a conversion, a patch entry
 static unsigned replay_kind;
 static uint8_t rp_data[S];
@@ -1209,6 +1284,7 @@ int main(void)
 	test_misread();
 	test_held();
 	test_replay();
+	test_unread();
 	test_claim();
 	test_debug_read();
 	test_staging();
