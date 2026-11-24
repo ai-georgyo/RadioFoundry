@@ -679,7 +679,9 @@ read completely, before it sends CLAIM on such a board; the dump of the three ra
 can't check that it did. Older builds end after the three ranges (26 bytes after the status): a host reads the
 missing flags byte as 0, and takes INFO by its length, so later fields can follow.
 
-`rfoundry_debug.py storage info | dump | claim` drives it; `claim` always dumps first, outside any git tree. On a
+`rfoundry_debug.py storage info | dump | claim | factory` drives it; `claim` always dumps first, outside any git tree.
+`factory` reads op 3 and the factory range (READ, twice) and compares them with a backup; `factory --restore` sends
+ops 4 and 5 with the CRC-32 of the window it read itself, never the one op 3 reports (`settings-store.md` 4.2). On a
 claim-first board `claim` first reads the whole data flash through the CPS shim (`cps-protocol.md` 2.2, area 1),
 twice and compared, into one file in `--out DIR`, and claims only when every byte came back; `--skip-full-backup`
 leaves that out for an owner who has one. The web clients claim on such a board only after their own full backup

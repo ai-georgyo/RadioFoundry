@@ -34,7 +34,8 @@ version, in every region set: a file from a tool that doesn't carry it (0xFF the
 data flash's physical ones, so a write keeps the board's protected regions (board.toml [[flash.protect]], mem "data";
 docs/dev/board-registry.md): a sector holding one is written, but no byte of the region is sent, and the radio keeps
 its own bytes there (the shim's prepare read them from the flash). When the file holds bytes for a region that are not
-blank, one line on stderr names it. The board comes from --board, else from the radio type info reports: when
+blank, one line on stderr names it and the command that compares the radio's bytes there with a backup and writes the
+backup's back (tools/rfoundry_debug.py storage factory --backup FILE, docs/spec/settings-store.md 4.2). The board comes from --board, else from the radio type info reports: when
 several boards report that type, the protected regions of each are kept.
 """
 import argparse
@@ -411,7 +412,8 @@ def job_sends(job, keep):
 def kept_notes(protect, img, regions, offset=0, base=None):
     """One line for each protected data region whose bytes img holds inside the regions and which aren't blank (with
     base, what the radio holds: only where they differ from it). A CPS write sends none of them: the radio keeps its
-    own, and the line says so"""
+    own, and the line says so and names the one way to put a backup's bytes back there (settings-store.md 4.2), so a
+    restore of a codeplug never carves around them silently"""
     lines = []
     for p in sorted(rfprotect.entries(protect), key=lambda p: p["start"]):
         if p["mem"] != "data":
@@ -421,7 +423,9 @@ def kept_notes(protect, img, regions, offset=0, base=None):
         held = any(bytes(img[a:b]) != b"\xff" * (b - a) and (base is None or bytes(img[a:b]) != bytes(base[a:b]))
                    for a, b in spans)
         if held:
-            lines.append("%s: kept, the image's bytes there not sent (the radio keeps its own)" % rfprotect.describe(p))
+            lines.append("%s: kept, the image's bytes there not sent (the radio keeps its own; to compare them with a "
+                         "backup and write the backup's back: tools/rfoundry_debug.py storage factory --backup FILE)"
+                         % rfprotect.describe(p))
     return lines
 
 
