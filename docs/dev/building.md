@@ -16,6 +16,9 @@ pinned version of each toolchain is in `platform/<p>/platform.toml` `[toolchain]
 You also need make, git and Python 3. Clone with submodules: `git submodule update --init` fetches FreeRTOS, TinyUSB
 and ST's HAL and CMSIS into `third_party/`.
 
+With Nix, `nix develop` gives a shell with the pinned compilers and `nix build .#<board>` builds an image:
+[Building with Nix](nix.md).
+
 ## Worktrees
 
 A `git worktree` does not need its own copy of the submodules (about 100 MB of files). Leave them uninitialized and

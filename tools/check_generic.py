@@ -49,7 +49,7 @@ DOC_DIRS = ("docs/spec/", "docs/user/", "docs/dev/", "docs/build-config.md")
 GENERATED = ("tools/rfoundry/rfoundry/registry.json",)
 SKIP_DIRS = ("third_party/", "codecs/", "build/")
 TEXT_EXT = (".c", ".h", ".S", ".ld", ".py", ".js", ".mjs", ".sh", ".mk", ".md", ".toml", ".json", ".yml", ".yaml",
-            ".txt", ".html", ".css", ".cfg", ".ini", "")
+            ".txt", ".html", ".css", ".cfg", ".ini", ".nix", "")
 # every marker style tools/registry_docs.py writes (MARKERS: html, yaml, bare)
 GEN_BLOCK = re.compile(r"^[ \t]*(?:<!-- |# )?generated: tools/boards\.py docs [\w-]+;[^\n]*$.*?"
                        r"^[ \t]*(?:<!-- |# )?end generated(?: -->)?$", re.M | re.S)

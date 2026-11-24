@@ -19,6 +19,9 @@
 #   RFOUNDRY_CI_PRUNE=0 tools/ci.sh  keep every build tree (about 65 MB per configuration). By default each tree is
 #                               removed once its size is in the report and it built clean (the log and the .bin stay;
 #                               a configuration that failed keeps its tree to debug)
+#   RFOUNDRY_CI_SKIP_OK='<regex>' tools/ci.sh   a skipped step fails the run unless the whole text of its skip line
+#                               (after "ci: skip  ") matches that extended regular expression; set to nothing, no
+#                               step may skip. For a run that must not pass with a tool missing (the Nix checks)
 #
 # The CI workflows (docs/dev/ci.md) run pieces of it: per push `--steps registry,python,licenses`, the host tests and
 # `--steps bench`, `--quick --steps firmware --toolchain <t>` for each toolchain; nightly `--matrix --steps firmware --toolchain <t>`.
@@ -40,7 +43,8 @@
 #      the channel-mode kinds and system types agree in the spec, the firmware and the Codeplug Editor
 #      (tools/check_modes.py);
 #      the glossary data is sound and its pages current (tools/glossary.py); the web site builds without a warning (site/build.py, needs markdown-it-py or uv) and the web flasher's tests
-#      pass against rfoundry (site/tests/run.sh, needs Node 20+)
+#      pass against rfoundry (site/tests/run.sh, needs Node 20+); the runner's job gate (tools/ci-runner/job-gate-test.sh)
+#      and RFOUNDRY_CI_SKIP_OK above (tools/ci-skip-test.sh) take and refuse what they should
 #   3. firmware, for every boards/<b>/board.mk whose compiler is installed (a board without one is skipped with a
 #      notice naming what installs it, its platform.toml toolchain.build):
 #        default            the board's defaults
@@ -62,7 +66,9 @@
 #      Each must build with zero compiler and linker warnings. Sizes go to build/ci/size-report.md. The default and the
 #      maximal configuration must pass the static stack check (make stack-check, docs/dev/stack-check.md): each task's
 #      deepest call chain fits its stack with the margin.
-#   4. tools/license_grep.sh, and `reuse lint` (skipped with a notice when reuse isn't installed: pipx install reuse)
+#   4. tools/license_grep.sh; third_party/ holds submodule links only, and with a flake.lock each link's commit is the
+#      one flake.lock pins (tools/check_flake_pins.py); `reuse lint` (skipped with a notice when reuse isn't installed:
+#      pipx install reuse)
 #   5. tools/similarity_scan.py against the trees in $RFOUNDRY_SIMILARITY_REFS (space separated), only when it is set:
 #      the reference trees are never part of this repository or of public CI
 #
@@ -86,7 +92,7 @@ while [ $# -gt 0 ]; do
 	--platform) PLATFORMS="$2"; shift ;;
 	--toolchain) TOOLCHAINS="$2"; shift ;;
 	--steps) STEPS="$2"; shift ;;
-	-h|--help) sed -n '5,69p' "$0"; exit 0 ;;
+	-h|--help) sed -n '5,75p' "$0"; exit 0 ;;
 	*) echo "ci: unknown option $1" >&2; exit 2 ;;
 	esac
 	shift
@@ -107,8 +113,16 @@ SKIPPED=""
 ok()   { echo "ci: ok    $*"; }
 bad()  { echo "ci: FAIL  $*"; FAILED="$FAILED
   $*"; }
-skip() { echo "ci: skip  $*"; SKIPPED="$SKIPPED
-  $*"; }
+# RFOUNDRY_CI_SKIP_OK set, even to nothing: a skip is a failure unless its whole text matches that extended regular
+# expression, so a run that must not skip a step fails where it would have passed with the step left out
+skip() {
+	if [ -n "${RFOUNDRY_CI_SKIP_OK+set}" ] && ! printf '%s\n' "$*" | grep -Eqx -- "$RFOUNDRY_CI_SKIP_OK"; then
+		bad "skipped: $*"
+		return
+	fi
+	echo "ci: skip  $*"; SKIPPED="$SKIPPED
+  $*"
+}
 WARNED=""
 warn() { echo "ci: warn  $*"; WARNED="$WARNED
   $*"; }
@@ -405,7 +419,8 @@ for f in sys.argv[1:]:
 	fi
 	if command -v node > /dev/null; then
 		if RFOUNDRY_SITE_FIXTURES="$OUT/site-tests" site/tests/run.sh > "$OUT/site-tests.log" 2>&1; then
-			ok "web flasher tests: $(grep -E '^. pass' "$OUT/site-tests.log" | sed 's/^. //') against rfoundry"
+			# the line's first character is not ASCII, and is several where grep reads bytes (no UTF-8 locale)
+			ok "web flasher tests: $(grep -E '^[^ ]+ pass [0-9]+$' "$OUT/site-tests.log" | sed 's/^[^ ]* //') against rfoundry"
 		else
 			tail -30 "$OUT/site-tests.log"
 			bad "web flasher tests (see $OUT/site-tests.log)"
@@ -422,6 +437,12 @@ for f in sys.argv[1:]:
 		fi
 	else
 		skip "runner job gate: bash not installed"
+	fi
+	if tools/ci-skip-test.sh > "$OUT/ci-skip.log" 2>&1; then
+		ok "strict skips (RFOUNDRY_CI_SKIP_OK): $(tail -1 "$OUT/ci-skip.log" | sed 's/^ci-skip: //')"
+	else
+		cat "$OUT/ci-skip.log"
+		bad "strict skips (see $OUT/ci-skip.log)"
 	fi
 else
 	skip "python checks: no python3"
@@ -611,6 +632,9 @@ tp_dir=$PWD/third_party
 tb=$(for x in ${SELECTED_PLATFORMS:-}; do reg list --platform "$x" | head -1; done | head -1)
 if [ -z "$tb" ] || [ -z "$tp_dir" ]; then
 	skip "shared third_party: no board built, or no checked-out third_party/ to share"
+elif [ -z "$(git ls-tree HEAD third_party/ 2>/dev/null)" ]; then
+	# a copy of the tree (a tarball, the Nix sandbox): no commit with submodule links to make a worktree of
+	skip "shared third_party: no submodule links in this tree"
 else
 	tp_wt=$PWD/$OUT/tp-worktree
 	tp_log=$PWD/$OUT/tp-worktree.log
@@ -652,6 +676,13 @@ if tools/license_grep.sh; then ok "license_grep"; else bad "license_grep: marker
 # symlinks (a merge would then replace the submodules in every checkout)
 if git ls-tree HEAD third_party/ | awk '$1 != "160000" {bad=1} END {exit bad}'; then ok "third_party: submodule links"
 else bad "third_party: entries in HEAD are not submodule links (git ls-tree HEAD third_party/)"; fi
+# flake.lock records each submodule's commit a second time, for the Nix builds (docs/dev/nix.md): the two must agree.
+# A copy of the tree without the links (the Nix build sandbox) has nothing to compare
+if [ -f flake.lock ]; then
+	if [ -z "$(git ls-tree HEAD third_party/ 2>/dev/null)" ]; then skip "flake pins: no submodule links in this tree"
+	elif pins=$(python3 tools/check_flake_pins.py 2>&1); then ok "flake pins: $pins"
+	else echo "$pins"; bad "flake pins: flake.nix, flake.lock and the submodule links differ (tools/check_flake_pins.py)"; fi
+fi
 if command -v reuse > /dev/null; then
 	if reuse lint > "$OUT/reuse.log" 2>&1; then ok "reuse lint"; else tail -30 "$OUT/reuse.log"; bad "reuse lint (see $OUT/reuse.log)"; fi
 else

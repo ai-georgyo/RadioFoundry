@@ -96,6 +96,9 @@ write_test_size = 0x2000
 tool = "hrc7000_codec"
 profile = "dm32-049"
 sources = ["DM32.01.01.049.bin", "DM32.00.01.046HRVocoder.bin"]
+# Baofeng's download page (baofengradio.com/pages/download, 2026-11-21) has only this release, 01.L01.048
+# (tools/hrc7000_codec.py PROFILES, codec-dm32.md "Vendor firmware versions"): the Nix build merges its codec
+download = { url = "https://baofeng.s3.amazonaws.com/Baofeng_DM-32UV_Firmware_v1.01.048.zip", sha256 = "79ee0f41de20231300d6cad1e3d063148cc03c8e3c6d40924fc7198601c6336d", file = "Baofeng_DM-32UV_Firmware_v1.01.048/DM32_L01_048_20250821.bin" }
 
 # How the site draws the radio
 [frame]
