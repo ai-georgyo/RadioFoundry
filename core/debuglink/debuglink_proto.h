@@ -198,6 +198,9 @@ enum {
 					// inside the three ranges
 	DL_STORAGE_OP_CLAIM,		// token u32 (the chip UID's low word) -> reason u8 (as REBOOT's); the erase follows in
 					// the housekeeping task: poll the view's storage.region
+	DL_STORAGE_OP_FACTORY_INFO,	// -> present u8, then the factory copy's range, source, window and record states and
+					// CRCs (core/storage/factory_copy.h: 25 bytes with present); BUSY until its load ran,
+					// UNAVAILABLE without CONFIG_FACTORY_COPY
 };
 // INFO's flags byte, after the three ranges (older builds end before it, which a host reads as 0). Claim first: the
 // board's data flash holds another firmware's data of unknown layout until the claim (settings-store.md 5), so a

@@ -630,10 +630,23 @@ and the claim of a foreign region.
 | 0 INFO | none | region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then address u32 + size u32 for the settings ring, the journal, the calibration copy, then flags u8 (bit 0: claim first, below; other bits 0) |
 | 1 READ | address u32, length u16 (1-1000) | address u32, the bytes. Only inside one of the three ranges of INFO or, on a board built with `STORAGE_FACTORY_KEEP`, inside one factory range of the flash map (`hal_flash_map_t.factory`, `settings-store.md` 4.1; not after `storage_init` refused the list), else `DL_ST_REFUSED`. INFO doesn't list the factory ranges: a host takes them from the board registry. Taken under the storage lock |
 | 2 CLAIM | token u32: the chip UID's low word (INFO_CHIP offset 7) | reason u8. `DL_ST_REFUSED` with reason 1 (bad token) or 4 (no chip info); `DL_ST_UNAVAILABLE` when the region isn't foreign. On OK the housekeeping task erases the region (10 sector erases, up to about 4 s, during which it does not watch the power knob); poll `storage.region` |
+| 3 FACTORY_INFO | none | the factory copy (`settings-store.md` 4.2): present u8, then, when present is 1, 24 bytes (below). `DL_ST_BUSY` until the copy's load ran at this start; `DL_ST_UNAVAILABLE` in a build without `CONFIG_FACTORY_COPY` |
 
 Every op answers `DL_ST_UNAVAILABLE` on a radio with no flash map: a memory chip smaller than the board's map needs
 (the driver drops a map its chip is too small for), where nothing is stored. The web tools read that INFO answer as region "nomap", apart from region 0 in an OK answer (a map whose flash didn't start). A build without the
 command answers `DL_ST_UNKNOWN_CMD`.
+
+**FACTORY_INFO** (op 3). Present 0: the board keeps no factory copy, and nothing follows. Present 1: the range's
+address u32 and size u16, the source u8 (0 none, 1 the window, 2 the record), the window's state u8 (0 unread, 1
+blank, 2 zero, 3 refused, 4 ok), the reason u8 and offset u16 beside it, the window's CRC-32 u32 (0 when unread), the
+record's state u8 (0 unread, 1 blank, 2 ok, 3 bad, 4 newer, 5 other), the CRC-32 u32 of the record's bytes (when ok
+or bad, else 0), the last restore's result u8 (0xFF: none), the bytes a restore has loaded u16 (0), and whether the
+record was written at this start u8 (0 no, 1 written and read back, 2 the write failed). The CRCs are
+`storage_crc32`'s, the same as Python's `zlib.crc32`, so a host compares them with its backup's bytes. The reason
+numbers 1-0xEF are the board's checker's (its hardware page names them); the copy's own are 0xF0 `read` (no flash, a
+read failed), 0xF1 `unstable` (two reads differed), 0xF2 `conflict` (window and record both valid and different:
+neither used), 0xF3 `buffer` (the shared storage buffer was taken), 0xF4 `config` (the board's configuration doesn't
+fit its map). A firmware from before the op answers `DL_ST_BAD_ARG`.
 
 **Claim first** (flags bit 0): the board builds with `STORAGE_CLAIM_FIRST` (`settings-store.md` 5). Its data flash
 holds another firmware's data in an unknown layout until the claim, the region is foreign on every unit until then,

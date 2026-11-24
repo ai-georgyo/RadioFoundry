@@ -27,6 +27,9 @@
 #include "input/input.h"
 #include "radio/radio.h"
 #include "storage/storage.h"
+#if CONFIG_FACTORY_COPY
+#include "storage/factory_copy.h"
+#endif
 #include "settings/settings.h"
 #include "ui/gfx.h"
 
@@ -796,6 +799,21 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		out[0] = DL_ST_OK;
 		out[1] = DL_REBOOT_OK;
 		return 2;
+	}
+	case DL_STORAGE_OP_FACTORY_INFO: {
+#if CONFIG_FACTORY_COPY
+		size_t n = 0;
+		if (len != 1) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		if (!factory_copy_info(board.factory_copy, out + 1, &n)) {
+			return status_only(out, DL_ST_BUSY);	// the load at start hasn't run yet
+		}
+		out[0] = DL_ST_OK;
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
 	}
 	default:
 		return status_only(out, DL_ST_BAD_ARG);
