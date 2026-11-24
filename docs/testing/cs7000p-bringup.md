@@ -190,8 +190,9 @@ model tables in `rfcal_cs7000p.c`; the polarity of an expander bit in `exp_cs700
 
 Run-time, over the debug link (`tools/rfoundry_debug.py reg 3 N [VALUE]`,
 [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 14): 3:0 the receive tuning DAC, 3:1 the expander shadow (read),
-3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset, 3:5 the reference DAC's coding (receive only).
-Chip 0 is the HR_C6000, 1 the SKY72310 (write
+3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset (0x100 releases it), 3:5 the reference DAC's coding
+(receive only), 3:6 the receive VCO rule, 3:7 the IF chip's words (receive only). None of them is stored: a restart
+puts each back to its default. Chip 0 is the HR_C6000, 1 the SKY72310 (write
 only), 2 the AK2365A. **Never write DAC1 or GPIOE with `reg soc`**: such a write bypasses the interlock and can key
 the PA, at any stage and whatever `board.cal` says (hardware page 4.3, 14). No step on this page needs a SoC write.
 
@@ -404,15 +405,60 @@ radio's full power. Nothing transmits (`board.cal=none`).
 | A generator on channel: `board.rssi_raw` rises, `board.noise_raw` falls | **the first LO's side** (question 2), the receive rail, the front end | Nothing at f, with the read-back above passing: `rfoundry_debug.py reg 3 3 1` flips the side. If that is the answer, build with `CS7000P_LO_HIGH=1` |
 | The carrier's leak or the receive LO on a counter while stepping 4:0x47, 0x48, 0x04 and 0x25 through `reg 0 ... --page 4` | **the reference oscillator's control** (question 1): which register moves it, the coding, the on-frequency level | Then `CS7000P_REF_OFFSET`, and the reference trim for the unit. Note the frequency against time after the synthesizer rail comes on (question 35): `CS7000P_REF_SETTLE_MS` |
 | The same with `reg 3 2` at 0 %, 50 % and 100 % duty | PC8's pull on the reference (question 4): about 0.27 V of control voltage over the swing | The spectrum close in shows the PWM's ripple |
-| The maker's coding of the reference DAC ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 8 item 1), receive only, nothing keyed: a carrier on channel, note what `reg 3 4` reads, then `reg 3 5 1` and `reg 3 4 0` (bias 0, 4:0x04 0), `board.hrc` reads `r25=0x0e`. Then `reg 3 4` in steps of a few and back to 0, then `reg 3 5 2` (`reg 0 0x26 --page 4` reads 0x7D), then `reg 3 5 0`: `r25=0x0c` and 4:0x26 0xFD again, and `reg 3 4` back to the value noted. A key-up meanwhile is refused with `why=14`. `test_reference_coding_knob` (`boards/cs7000p/hil/test_cs7000p.py`) checks the register values without a carrier | the DAC's coding under 0x0E: on channel with the bias at 0, about 18-21 Hz per step (the hardware page, 6.5). Whether 4:0x26 = 0x7D changes anything | Off channel by about 10 kHz with the bias at 0: not the inferred coding; note it, and the hold stays |
 | `reg 3 0` swept at several frequencies for the best sensitivity. **Record the DAC code per frequency** | the front-end tuning voltage | The values go into the table in `rfcal_cs7000p.c`; meanwhile `CS7000P_RX_TUNE_NOMINAL` |
-| With the maker's table in use (`board.cal_table` `src=window` or `record`): `board.ref` and `board.rx_cal` read `src=maker` and `rx_cal=maker`. A carrier on channel, then the A/B: `reg 3 4 0` (today's level) against `reg 3 4 0x100` (trim A), `reg 3 0 2048` (today's tune) against `reg 3 0 0` (the tune row); signal and noise readings and the audio each way. `test_receive_calibration_sources` checks the keys and the held level without a carrier | the table's receive values are this unit's and no worse than today's ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.1) | Worse with the table: leave the knob on today's value for the session (it is RAM only) and note the frequency, the readings and `board.ref`; `why=rx_bound`: trim A is over 32 steps and was not used |
-| The maker's squelch thresholds, receive only, nothing keyed (`board.sq_maker` `ok`, with the table in use): a carrier on channel stepped down from -110 dBm into the noise, `board.noise_raw` >> 4 against `o1` / `c1` and `o9` / `c9` at each step, with the port's IF words, then `reg 3 7 1` (the maker's: `board.rx_cal` `ifw=maker`) the same, then `reg 3 7 0`. `test_receive_calibration_sources` checks the keys' form | where the maker's levels 1 and 9 fall on this port's noise scale, and whether the maker's IF words move the noise, the RSSI or the audio ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 5.7, 5.13) | Nothing is applied: the squelch stays the port's. Audio worse under the maker's words: note it and go back with `reg 3 7 0` (RAM only, off at every start) |
 | FM audio from the speaker on a modulated carrier, wide and narrow | the chip's FM demodulation of the 450 kHz IF, the AK2365A's filter words, the IF level (question 9) | No audio with RSSI present: the I/Q order, `ctrl3` (the IF buffer gain), the 4:0x36 feed-through |
 | RSSI and noise at -120, -110, -100, -80, -60 dBm. **Record them** | the mappings | `CS7000P_FE_GAIN_DB`, the squelch thresholds |
 | CTCSS and DCS open the squelch; a wrong tone does not | the sub-audio filter on PA2, `EXP_AUDIO_RAIL` | CTCSS but not DCS: build with `CS7000P_DCS_RX_INVERT=1`, and check again after any change of `CS7000P_LO_HIGH`. `board.qt_raw` for the level. `CS7000P_DCS_INVERT` is for transmit |
 | A sensitivity or noise floor scan across the band, CPU running | the 96 MHz bus clock's harmonic at 480 MHz, the 48 MHz harmonics (question 17) | note the channels |
 | `board.gps_baud` outdoors | the GPS module's rate (question 23) | no answer at 9600 or 115200: the rate list in `gps_cs7000p.c` |
+
+### 9.1 Receive on the maker's table
+
+For a radio with its table in use: restored in stage 6, or never lost. Nothing here transmits, and nothing is stored:
+each `reg 3 N` knob is back at its default after a restart, so a restart undoes every step. A steady signal on one
+FM channel is enough (the generator at about -110 dBm, or a station heard weakly); steps 4 and 5 want one at a known
+frequency. Write each reading into the bring-up record. All commands are `tools/rfoundry_debug.py`.
+
+1. **The table's state, before and after the restore.** `view --section board2`, once before stage 6's restore and
+   once after it. Before, on a lost table: `board.cal_table=blank src=none`, `board.ref=hold bias=0x200 r04=0x00 d_a=-
+   d_b=- src=default why=table`, `board.rx_cal=default rssi=sheet ...`, `board.sq_maker=none why=table`. After:
+   `cal_table=ok src=window` with the backup's `crc=`, `ref=hold bias=0x...` with `bias` = 0x200 + `d_a`,
+   `src=maker why=none`, `rx_cal=maker rssi=maker`, `sq_maker=ok o1= c1= o9= c9=`. The restore needs no restart:
+   the radio takes the table at its next status poll. If not: `ref ... src=default why=rx_bound` is a trim A over 32
+   steps, not used (note `d_a`, receive keeps today's level); `why=group` a field group the reader refused (the
+   `fields=` of `cal_table`); `src=none` after `restore=ok`: stage 6's "If not" column.
+2. **FM, today's values against the table's.** On the channel with the signal, one knob at a time, each taking effect
+   at the next status poll (under a second): the tune, `reg 3 0 2048` (today's) and `reg 3 0 0` (the table's row);
+   the level, `reg 3 4 0` (today's) and `reg 3 4 0x100` (trim A). For each, `view --section board` (`board.rssi_raw`,
+   `board.noise_raw`, `board.rx_tune`) and `view --section board2` (`board.ref`, `board.rx_cal`), and the audio by
+   ear: clearer, the same or noisier. Expect the table's no worse. If worse: keep today's value for the session with
+   the same command (it is RAM only, so set it again after each start) and note the frequency, the readings and
+   `board.ref`. A build without the `board.ref` key receives on today's values whatever the table holds.
+3. **DMR, the same.** On a DMR channel with a station or the bench repeater: `reset` before each half, then a few
+   calls, `view --section dmr_stats` (`call.rx_calls`, `call.rx_lost_frames`) and `view --section dmr_call` (the
+   source and talk group shown) with today's values (`reg 3 0 2048`, `reg 3 4 0`), then with the table's (`reg 3 0
+   0`, `reg 3 4 0x100`). Expect the same calls decoded each way. The RSSI (`call.rssi_dbm`, the S-meter) is on the
+   table's scale now (`rx_cal ... rssi=maker`), so its figures differ from before: compare the decode, not the dBm.
+4. **The maker's coding of the reference DAC** ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 8 item 1),
+   FM only. Note what `reg 3 4` reads (0x0100: no bench offset). Then `reg 3 5 1` and `reg 3 4 0` (bias 0, 4:0x04
+   0): `board.hrc` reads `r25=0x0e`, `board.ref` `ref=maker bias=0x000`. Listen: on channel, the same audio as
+   before, means the inferred coding holds; about 10 kHz off (no audio on a narrow channel, distorted on a wide one,
+   `noise_raw` high) means it does not. Then `reg 3 4 0x05` and `reg 3 4 0xFB` (+5 and -5 steps; about 18-21 Hz
+   each, so the audio does not change, but a counter or an SDR on the carrier's beat shows it) and back to `reg 3 4
+   0`. Then `reg 3 5 2`: `reg 0 0x26 --page 4` reads 0x7D; note whether anything changes. Last `reg 3 5 0`:
+   `r25=0x0c`, `reg 0 0x26 --page 4` reads 0xFD, and `reg 3 4 0x100` (or the value noted). A key-up meanwhile is
+   refused with `board.tx_refused` `why=14`. Record: on channel or not under 3:5 = 1, the step size if measured,
+   whether 3:5 = 2 changed anything. Off channel: the hold stays the default, nothing else to do.
+   `test_reference_coding_knob` checks the register values without a signal.
+5. **The maker's IF words and squelch thresholds.** With `board.sq_maker` `ok`: the signal stepped down from about
+   -110 dBm into the noise (or a weak station and no signal), at each step `board.noise_raw` and `board.rssi_raw`
+   (`view --section board`), with `noise_raw` / 16 set against `o1` / `c1` (squelch level 1, open / close) and `o9`
+   / `c9` (level 9). Then `reg 3 7 1` (`board.rx_cal ... ifw=maker`), the same steps, the audio by ear, and `reg 3 7
+   0`. Nothing is applied: the squelch stays the port's either way. Record both columns. If the audio is worse
+   under the maker's words: `reg 3 7 0` and note it.
+
+`python3 -m pytest boards/cs7000p/hil/test_cs7000p.py -k "receive_calibration or reference_coding" -v -rs` checks
+the keys, the held level against `board.ref` and the knob's register values, without a signal and without keying.
 
 ## 10. DMR receive
 
