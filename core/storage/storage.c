@@ -13,6 +13,9 @@
 //   J1  the new content of the sector being rewritten
 // J0 programmed is the commit point. Then for each sector: J1 = the sector merged with the data, "staged", the
 // sector erased and programmed from J1, "done". Replay: a sector not staged is still intact, so it is merged again.
+// A replay that can't read the entry it must finish (J0's header, J1, a patch's data) leaves it pending and stalls the
+// journal: every journaled write of that session is refused, since its first erase would take the only copy of a
+// target that may be erased already. The next start tries again.
 // With STORAGE_FACTORY_KEEP the map's factory ranges (hal_flash_map_t.factory) are the maker's bytes (settings-store.md
 // 4.1): the list is checked at storage_init, and a sector holding some (a kept sector) is rewritten only by the kept
 // rewrite, which carries those bytes over from the flash and takes the rest from the writer. Its sector entry gains a
@@ -22,8 +25,7 @@
 //   J1  the merged sector (the writer's bytes, the kept ones in place)
 // so the kept bytes are in two places before the target is erased, and an earlier firmware's replay of J1 keeps them
 // too. storage_factory_write (the factory copy's restore, CONFIG_FACTORY_COPY) is the same kept rewrite with the
-// caller's bytes for one range in place of the sector's. Without the define none of that is compiled, and every
-// board's code is what it was before the ranges existed.
+// caller's bytes for one range in place of the sector's. Without the define none of that is compiled.
 #include <string.h>
 #include "config.h"
 #include "storage/storage.h"
@@ -50,6 +52,7 @@ static bool claim_pending;
 static uint8_t buffer[STORAGE_SECTOR] RFOUNDRY_COLD_RAM;	// task-side only (storage_buffer_acquire)
 static bool buffer_taken;
 static storage_stats_t stats;
+static bool stalled;			// the start left an entry it could not read: journaled writes refused (journal_free)
 #if STORAGE_FACTORY_KEEP
 static bool factory_valid;		// the map's factory list passed storage_init's checks
 static uint32_t granted = UINT32_MAX;	// the one kept sector wr()/er() may reach now (grant()), or none
@@ -587,11 +590,14 @@ static void pending(uint32_t addr)
 	(void)addr;
 }
 
-// A sector entry (its header valid, pending) whose target is a kept sector (settings-store.md 4.1, the replay table)
+// A sector entry (its header valid, pending) whose target is a kept sector (settings-store.md 4.1, the replay table).
+// Held from the first read on: the target may be erased already (a cut or a failure past the commit point before
+// this start), its factory bytes in J0 and J1 alone, so the journal holds (journal_free) until the entry is finished
+// or known to be given up. A check that came back false because a read failed knows nothing: the entry stays held
 static void kept_replay(const hal_flash_map_t *m, uint32_t target, uint32_t hcrc)
 {
 	static const uint8_t done = 0;
-	uint32_t j0 = m->journal_addr, crc, t;
+	uint32_t j0 = m->journal_addr, crc, t, e;
 	uint8_t *c = kchunk;
 
 	if (kept_count(m, target) == STORAGE_SECTOR) {
@@ -601,6 +607,7 @@ static void kept_replay(const hal_flash_map_t *m, uint32_t target, uint32_t hcrc
 		}
 		return;
 	}
+	held = true;
 	// J1 must match the header before anything is copied or converted: a partly erased J0 can keep an old header.
 	// Giving the entry up leaves a target this firmware may have erased with its factory bytes in J0 alone, so a
 	// mismatch counts only when a second read of J1 agrees: one marginal read is not a stale header
@@ -614,9 +621,17 @@ static void kept_replay(const hal_flash_map_t *m, uint32_t target, uint32_t hcrc
 		}
 		return;
 	}
-	if (!block_ok(m, &t, c)) {
-		if (!blank_with(j0 + K_HDR, K_DATA - K_HDR + kept_count(m, target), c)) {
+	// The kept block on two reads too, before it counts as torn; a read that failed in any of them (stats.errors
+	// counts each) leaves the entry held
+	e = stats.errors;
+	if (!block_ok(m, &t, c) && !block_ok(m, &t, c)) {
+		bool empty = blank_with(j0 + K_HDR, K_DATA - K_HDR + kept_count(m, target), c);
+		if (stats.errors != e) {
+			return;
+		}
+		if (!empty) {
 			pending(target);	// torn (a cut conversion), or a block the map doesn't explain
+			held = false;
 			return;
 		}
 		// Another firmware's entry, or one from before the rule: the kept block from the target as it is now
@@ -628,9 +643,9 @@ static void kept_replay(const hal_flash_map_t *m, uint32_t target, uint32_t hcrc
 	}
 	if (t != target) {
 		pending(target);
+		held = false;
 		return;
 	}
-	held = true;
 	if (finish_kept(m, target, c) && wr(j0 + J_DONE, &done, 1)) {
 		stats.replays++;
 		stats.factory_replays++;
@@ -638,20 +653,32 @@ static void kept_replay(const hal_flash_map_t *m, uint32_t target, uint32_t hcrc
 	}
 }
 
-// A patch entry (pending, its CRC holds) that touches a kept sector: only an earlier firmware makes one. Replayed
-// under the grant when its data misses every factory byte (an intact sector is merged again, a staged J1 was merged
-// from the intact sector); left pending when it reaches one
+// A patch entry (pending, its CRC holds) for a kept sector whose data misses every factory byte: only an earlier
+// firmware makes one. Replayed under the grant (an intact sector is merged again, a staged J1 was merged from the
+// intact sector)
 static void kept_patch_replay(const hal_flash_map_t *m, uint32_t addr, uint32_t len)
 {
-	if (hal_flash_factory_bytes(m, addr, len)) {
-		pending(addr);
-		return;
-	}
 	held = true;
 	if (patch_finish(m, addr, len, buffer)) {
 		stats.replays++;
 		stats.factory_replays++;
 		held = false;
+	}
+}
+
+// A pending patch header h in J0 for a kept sector, at a start or for the held journal: one whose data reaches
+// factory bytes is left pending (known from the header alone); else its CRC on two reads, as for a sector entry, and
+// held while a read of it fails
+static void kept_patch(const hal_flash_map_t *m, const uint8_t *h)
+{
+	uint32_t addr = get32(&h[4]), len = get32(&h[8]), e = stats.errors;
+	if (hal_flash_factory_bytes(m, addr, len)) {
+		pending(addr);
+		held = false;
+	} else if (patch_len(m, h) != 0 || patch_len(m, h) != 0) {
+		kept_patch_replay(m, addr, len);
+	} else {
+		held = stats.errors != e;
 	}
 }
 #endif
@@ -661,22 +688,28 @@ static void replay(void)
 {
 	const hal_flash_map_t *m = storage_map();
 	uint8_t h[P_DATA];
-	uint32_t crc;
+	uint32_t crc, e = stats.errors;
 
 	if (!rd(m->journal_addr, h, sizeof(h))) {
+		stalled = true;		// whatever J0 holds is not known: it may be an entry whose target is erased
 		return;
 	}
 	if (get32(&h[0]) == P_MAGIC) {
 #if STORAGE_FACTORY_KEEP
 		if (kept(m, get32(&h[4]), get32(&h[8]))) {
-			if (h[P_ALL] == 0xFF && patch_len(m, h) != 0) {
-				kept_patch_replay(m, get32(&h[4]), get32(&h[8]));
+			if (h[P_ALL] == 0xFF) {
+				kept_patch(m, h);
 			}
 			return;
 		}
 #endif
-		if (h[P_ALL] == 0xFF && patch_len(m, h) != 0 && patch_finish(m, get32(&h[4]), get32(&h[8]), buffer)) {
-			stats.replays++;
+		if (h[P_ALL] == 0xFF) {
+			uint32_t n = patch_len(m, h);
+			if (n != 0 && patch_finish(m, get32(&h[4]), get32(&h[8]), buffer)) {
+				stats.replays++;
+			}
+			// Its data unread: not known to be torn (stats.errors counts each read that failed)
+			stalled = n == 0 && stats.errors != e;
 		}
 		return;
 	}
@@ -690,7 +723,14 @@ static void replay(void)
 		return;
 	}
 #endif
-	if (flash_crc(m->journal_addr + STORAGE_SECTOR, STORAGE_SECTOR, 0, &crc) && crc == get32(&h[8])) {
+	// J1 must match the header (a partly erased J0 can keep an old one), on two reads before the entry is given up:
+	// one marginal read is not a stale header, and a read that failed says nothing
+	if (!flash_crc(m->journal_addr + STORAGE_SECTOR, STORAGE_SECTOR, 0, &crc) ||
+	    (crc != get32(&h[8]) && !flash_crc(m->journal_addr + STORAGE_SECTOR, STORAGE_SECTOR, 0, &crc))) {
+		stalled = true;
+		return;
+	}
+	if (crc == get32(&h[8])) {
 		uint32_t target = get32(&h[4]);
 		uint32_t now;
 		if (!flash_crc(target, STORAGE_SECTOR, 0, &now) || now != crc) {
@@ -890,6 +930,7 @@ bool storage_init(void)
 	ready = false;
 	region = STORAGE_REGION_NONE;
 	claim_pending = false;
+	stalled = false;
 #if STORAGE_FACTORY_KEEP
 	factory_valid = false;
 	held = false;
@@ -1015,9 +1056,8 @@ static bool refused(void)
 // The held entry's patch rows (patch_len holds a chunk: not in held_replay's frame)
 static void __attribute__((noinline)) held_patch(const hal_flash_map_t *m, const uint8_t *h)
 {
-	uint32_t addr = get32(&h[4]), len = get32(&h[8]);
-	if (h[P_ALL] == 0xFF && patch_len(m, h) != 0 && kept(m, addr, len)) {
-		kept_patch_replay(m, addr, len);
+	if (h[P_ALL] == 0xFF && kept(m, get32(&h[4]), get32(&h[8]))) {
+		kept_patch(m, h);
 	} else {
 		held = false;
 	}
@@ -1048,17 +1088,30 @@ static void held_replay(void)
 	}
 }
 
-// The held journal: a committed entry for a kept sector that this session did not finish (a flash failure past its
-// commit point) holds J0 and J1, the only copies of the kept bytes while its target may be erased. A journaled write
-// first finishes it; while that fails the write is refused, so nothing erases those copies. A patch entry's replay
-// merges in the shared buffer: not while someone holds it
+#endif
+
+// Whether a journaled write may erase J0 and J1 now. Not in a stalled session (replay: the start could not read the
+// entry it had to finish). With factory bytes, the held journal too: a committed entry for a kept sector that this
+// session did not finish (a flash failure past its commit point, or a start whose replay of it failed or could not
+// read it) holds J0 and J1, the only copies of the kept bytes while its target may be erased. A journaled write first
+// finishes it; while that fails the write is refused, so nothing erases those copies. A patch entry's replay merges
+// in the shared buffer: not while someone holds it
 static bool journal_free(void)
 {
+	if (stalled) {
+		return fail();
+	}
+#if STORAGE_FACTORY_KEEP
 	if (held) {
 		held_replay();
 	}
 	return !held || factory_refuse();
+#else
+	return true;
+#endif
 }
+
+#if STORAGE_FACTORY_KEEP
 
 // A write's bytes for a range differ from the flash: dropped, counted, the first of a start logged
 static void dropped(const hal_flash_map_t *m, uint32_t addr)
@@ -1166,9 +1219,6 @@ static bool kept_rewrite(const hal_flash_map_t *m, uint32_t addr, const uint8_t 
 // read as 0xFF and whose replay would later undo a write skipped against it
 static bool kept_sector_write(const hal_flash_map_t *m, uint32_t addr, const uint8_t *data)
 {
-	if (!journal_free()) {
-		return false;
-	}
 	int r = kept_compare(m, addr, data);
 	if (r == 0) {
 		stats.sector_skips++;
@@ -1218,16 +1268,17 @@ bool storage_sector_write(uint32_t addr, const uint8_t *data)
 		return refused();
 	}
 	storage_lock();
+	// A held or stalled entry first, as above (an earlier firmware's patch entry can reach this sector too); a skip
+	// is refused with it, its compare could be against an erased target
+	if (!journal_free()) {
+		storage_unlock();
+		return false;
+	}
 #if STORAGE_FACTORY_KEEP
 	if (kept(m, addr, STORAGE_SECTOR)) {
 		ok = kept_sector_write(m, addr, data);
 		storage_unlock();
 		return ok;
-	}
-	// A held entry first, as above: an earlier firmware's patch entry can reach this sector too
-	if (!journal_free()) {
-		storage_unlock();
-		return false;
 	}
 #endif
 	if (same(addr, data, STORAGE_SECTOR)) {
@@ -1298,13 +1349,11 @@ bool storage_write(uint32_t addr, const void *buf, uint32_t len)
 		return len == 0;
 	}
 	storage_lock();
-#if STORAGE_FACTORY_KEEP
 	// Before the shared buffer is ours: a held patch entry's replay merges in it
-	if (held && !journal_free()) {
+	if (!journal_free()) {
 		storage_unlock();
 		return false;
 	}
-#endif
 	uint8_t *b = storage_buffer_acquire();
 	bool ok = b != NULL;
 	// A range touching a kept sector takes the sector path, so the kept rewrite: the patch transaction would erase

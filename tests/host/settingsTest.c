@@ -122,6 +122,58 @@ static void test_journal_cuts(void)
 	       new_seen, total);
 }
 
+// A rewrite cut after the target's erase, then a start whose replay can't read the entry (J1, or J0's header) or misreads
+// J1 once: never given up. An unread entry stays pending and every journaled write of that session is refused (its
+// first erase would take the only copy of the target); the next clean start finishes it
+static void test_journal_unread(void)
+{
+	static uint8_t old[STORAGE_SECTOR], neu[STORAGE_SECTOR], other[STORAGE_SECTOR];
+	const uint32_t target = 0x6000u, j0 = map.journal_addr, j1 = j0 + STORAGE_SECTOR;
+	// J1 erased and programmed, J0 erased and its header, the target erased and 10 bytes of it
+	const uint32_t past = 1u + STORAGE_SECTOR + 1u + 16u + 1u + 10u;
+
+	fill(old, 5);
+	fill(neu, 6);
+	fill(other, 7);
+	for (unsigned k = 0; k < 3; k++) {
+		sim_flash_create(FLASH_SIZE, &map);
+		CHECK(storage_init());
+		CHECK(storage_sector_write(target, old));
+		sim_flash_cut_after(past);
+		CHECK(!storage_sector_write(target, neu));
+		sim_flash_power_on();
+		CHECK(sim_flash_data[j0 + 16] == 0xFF && sim_flash_data[target + 0x100u] == 0xFF);
+		storage_stats_t s0;
+		storage_get_stats(&s0);
+		if (k == 2) {
+			// A marginal read of J1: read again, and replayed
+			sim_flash_misread(j1 + 0x10u, 1);
+			CHECK(storage_init() && memcmp(&sim_flash_data[target], neu, STORAGE_SECTOR) == 0);
+			CHECK(sim_flash_data[j0 + 16] == 0 && storage_sector_write(0x7000u, other));
+			continue;
+		}
+		sim_flash_bad_read(k == 0 ? j1 : j0, k == 0 ? STORAGE_SECTOR : 16u);
+		CHECK(storage_init() && storage_region() == STORAGE_REGION_OURS);
+		CHECK(sim_flash_data[j0 + 16] == 0xFF);
+		uint8_t journal[16];
+		memcpy(journal, &sim_flash_data[j0], sizeof(journal));
+		// Refused, every path: a sector, a patch, the sector path, a skip
+		CHECK(!storage_sector_write(0x7000u, other));
+		CHECK(!storage_write(0x7010u, other, 16));
+		CHECK(!storage_write(0x7000u, other, 2u * STORAGE_SECTOR));
+		CHECK(!storage_sector_write(0x3000u, &sim_flash_data[0x3000]));
+		CHECK(memcmp(journal, &sim_flash_data[j0], sizeof(journal)) == 0 && sim_flash_data[0x7000] == 0xFF);
+		storage_stats_t s1;
+		storage_get_stats(&s1);
+		CHECK(s1.errors >= s0.errors + 4u && s1.replays == s0.replays);
+		// Readable again at the next start: finished, the journal free
+		sim_flash_bad_read(0, 0);
+		CHECK(storage_init() && memcmp(&sim_flash_data[target], neu, STORAGE_SECTOR) == 0);
+		CHECK(storage_sector_write(0x7000u, other) && memcmp(&sim_flash_data[0x7000], other, STORAGE_SECTOR) == 0);
+	}
+	CHECK(sim_flash_violations() == 0);
+}
+
 // --- settings ---
 
 static void test_settings_basic(void)
@@ -1284,6 +1336,7 @@ int main(void)
 {
 	test_journal_basic();
 	test_journal_cuts();
+	test_journal_unread();
 	test_settings_basic();
 	test_settings_wear();
 	test_settings_cuts();
