@@ -102,6 +102,9 @@ tools/rfoundry_debug.py storage factory --backup BACKUP.zip              # compa
 tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore    # write the backup's calibration back
 ```
 
+The web installer's **Restore** makes the same compare after it writes the channels back, and offers a button when
+the backup is this radio's. Its messages say what the rows below say.
+
 The restore needs RadioFoundry's settings area (hand it over first, [above](#settings-are-not-kept)) and nothing
 transmitting. The tool exits 0 when the radio holds the backup's calibration afterwards, 2 when it refused or the
 write failed. When the radio holds the backup's calibration already, it says "nothing to restore", sends nothing

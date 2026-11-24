@@ -1262,7 +1262,7 @@ identity gate: nothing of ours writes them, so they are this radio's backup's an
 handshake, then polls op 3 and reads the window back. Until a restore runs, the kept rewrite keeps whatever the
 window holds, blank bytes included. A codeplug restore of the backup does not bring the table back: the CPS tools and
 the web flasher's Restore send none of its bytes (`cps_client.py` names `storage factory` on stderr, the web flasher
-names the range in its log and shows a notice that points to the command). Under a firmware without the command, the CPS read of the codeplug regions
+names the range in its log). The web flasher's Restore then runs the same compare and identity gate itself and offers one button that runs ops 4 and 5 ([web-flasher.md](../dev/web-flasher.md#the-factory-calibration-step)). Under a firmware without the command, the CPS read of the codeplug regions
 (`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and its sha256 against the backup's says
 whether the table is still there.
 
