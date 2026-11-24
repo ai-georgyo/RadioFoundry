@@ -33,7 +33,7 @@ view keys below on a radio and never transmits.
 
 ## First radio
 
-One unit, 2026-11-22, by its owner; readings through `rfoundry_debug.py view --section board` unless said otherwise.
+One unit, from 2026-11-22, by its owner; readings through `rfoundry_debug.py view --section board` unless said otherwise.
 This radio went straight to the install: stages 0 to 2 were not run on it as written.
 
 | What | Seen | Settles |
@@ -53,13 +53,14 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | The volume knob | `vol_raw` 7 just above the power click, 3178 at full volume | `CS7000P_VOL_FULL_RAW` |
 | `board.hrc` with the second image | `1 r10=0x80 r25=0x0c`: the receive hold is written and reads back | stage 8's hold row |
 | `board.i2s` | `dir=swapped ioswp=0 edges=0/869`: the probe saw the chip's clock and gave a verdict | question 8 |
-| The full backup and the claim | the web installer's Back Up, Everything read the data flash and claimed the settings region; settings then survive a power cycle and a codeplug can be written | stage 6: the claim-first order, storage on this flash (question 21 stays: what the maker keeps where is still unknown, the backup holds it) |
+| The full backup and the claim | the web installer's Back Up, Everything read the data flash and claimed the settings region; settings then survive a power cycle and a codeplug can be written | stage 6: the claim-first order, storage on this flash (question 21 stays in part: the maker's codeplug, fonts and voice data are not located, the backup holds them) |
 | The passband against another radio's carrier on 433.500 MHz, 500 Hz steps, wide filter | `noise_raw` under 800 from -6.0 to +6.5 kHz: the center 250 Hz high, inside the sweep's resolution and the other radio's own error. The reference offset stays 0 | question 1's level: mid-scale is on frequency to a few hundred Hz on this unit |
 | DMR receive, a handheld's group call on 433.500 MHz, color code 1, simplex, 5 feet away | Synced at once: `dmr.rx_cc=1`, `call.src` and `call.dst` decoded, 222 voice bursts in 13.4 s (none missed), 666 voice frames, the call ended by its terminator. `voice.rx_bit_errors` 132 and `voice.rx_repeats` 44 over the call, at a signal strong enough to overload the receiver. `board.hrc` read `r10=0x6e`; `board.i2s` went to 1 for the call. No audio: no codec | question 2's I/Q order, question 9's IF level for DMR, the HR_C6000's three interrupt lines and its DMR set-up; the error rate at a normal signal level is not measured |
 | A key press | beeps | PCM to the chip's line out, the amplifier and the speaker switch (stage 8's beep row) |
 | The six function keys with the corrected order | each does what its label says | question 11's key half |
 | FM receive with the level fix (the bias at mid-scale, written in one step) | the squelch opens on a signal on channel, also after minutes of idling; the audio is clear and at a sensible level. An image that wrote the level through zero at every receive entry opened the squelch after a start and later stopped | question 1 except the fine offset; question 9's audio |
 | An update from the web installer | failed once with "not this radio's update mode (it reports ?)": the browser had no alternate setting names for the loader. The page now reads them from the device. An update with `rfoundry flash` from a loader entered by hand worked | the page's device check |
+| The data flash's 0x001000-0x0011FF, read on 2026-11-23 against the whole-chip backup taken before the claim | all 0xFF on the radio; the backup holds the maker's factory table there ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 2). A codeplug write made with an earlier build, which wrote whole sectors of the EEPROM image, replaced it. The radio is uncalibrated as before (nothing used the table), but the maker's firmware would transmit on the blank bytes | why the table's bytes are kept now and why the restore exists ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.3; stage 6's `storage factory` rows) |
 
 Not checked on it yet: the reference against a counter (only against another radio), sensitivity in FM and DMR, the
 DMR error rate at a normal signal level, DMR data and text, CTCSS and DCS, the battery against a meter, and
@@ -105,7 +106,7 @@ and the table at the end has one row per open question.
 | The reference oscillator's bias: which register, the coding, the on-frequency level | 9, 11 | 1, 35 |
 | The first LO is below the signal | 9 | 2 |
 | The lock line reads unlocked at once after new synthesizer words; the DAC carries the tuning value about 100 us after a burst | 11 | 3, 25, 33 |
-| No calibration: every transmission is refused until the PA and modulation tables are measured | 11 | 5 |
+| No transmit calibration in use: every transmission is refused until the PA and modulation values are measured or taken from the maker's table (read and shown, not used for transmit) | 11 | 5 |
 | The whole-chip backup is complete (no claim before it) | 6 | 21 |
 
 ## 0. Before anything
@@ -532,10 +533,10 @@ checked above, and what to change.
 | 15 | The core supply is good at VOS3 | 12 | none |
 | 16 | The crystal starts without bypass; USB works from a PLL with a 1 MHz input | 3 | the clock table in `board.c`. A table with a 5 MHz input that stays in VOS3: `pll_m` 5, `pll_n` 144 (VCO 720 MHz, wide range), `pll_p` 4 (CPU 180 MHz), `pll_q` 15 (48 MHz), `ahb_div` 2 (HCLK 90 MHz), `apb_div` 2 (45 MHz, timers 90 MHz), `flash_latency` 1. With it `board.c`'s static asserts (the medium VCO, two wait states) change, PC8's period follows the timer clock (87.9 kHz: `subpwm_cs7000p.h`), and question 17 is checked again (5 x 90 = 450 MHz). The platform never changes the voltage scale, and question 15 is against a higher one |
 | 17 | The bus clock's harmonics don't desense the receiver | 9 | the clock table |
-| 18 | The software ROM entry reaches the loader and harms nothing: allowed only with loader 0x91 or PB10 high; not yet tried on a radio. rfoundry and the web flasher use it for an update (`[flash.bootloader] restart`) | 12 | `CS7000P_SOFT_ROM_ENTRY`; `restart` in `board.toml` |
+| 18 | The software ROM entry reaches the loader and harms nothing: allowed only with loader 0x91 or PB10 high; `reboot --rom-dfu` reached the loader on the first radio (First radio), whether it harms nothing is not checked. rfoundry and the web flasher use it for an update (`[flash.bootloader] restart`) | 12 | `CS7000P_SOFT_ROM_ENTRY`; `restart` in `board.toml` |
 | 19 | The ROM's Leave starts the image; an erased first sector starts nothing | 3 | the tools already ask for a power cycle |
 | 20 | Nothing unit-specific is in the processor's flash | 0, 2 | none: the codeplug saved (and the tuning data, if the maker's tuner can export it), the maker's recovery, the codeplug written back, before the install |
-| 21 | Nothing is known about the maker's data on the flash chip: nothing is written before the claim | 6 | `STORAGE_CLAIM_FIRST` stays |
+| 21 | The maker's table, device information and records on the flash chip are located (hardware page 10.3), its codeplug, fonts and voice data are not: nothing is written before the claim | 6 | `STORAGE_CLAIM_FIRST` stays |
 | 22 | The flash chip may be in any address mode; no block protection; the write enable latch state after `C5h` does not matter (the driver sends `04h` either way) | 6 | `drivers/flash/spi_nor` |
 | 23 | The GPS module talks NMEA at 9600 or 115200 | 9 | the rate list in `gps_cs7000p.c` |
 | 24 | PHONE_DET, BAT_DET, IC611, the spare output, Bluetooth, the accelerometer and the motor are not used | 5, 12 | none |
