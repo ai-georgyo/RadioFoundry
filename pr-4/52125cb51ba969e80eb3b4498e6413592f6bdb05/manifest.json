@@ -1,0 +1,481 @@
+{
+  "pr": 4,
+  "base_sha": "4dd766ef04e6e26502728d48e8df27b2c9825bfb",
+  "head_sha": "52125cb51ba969e80eb3b4498e6413592f6bdb05",
+  "generated": "2026-11-24T04:41:49Z",
+  "counts": {
+    "changed": 0,
+    "added": 55,
+    "removed": 0,
+    "unchanged": 889
+  },
+  "images": [
+    {
+      "geometry": "128x64",
+      "color": "mono",
+      "image": "compare/128x64-1.png",
+      "rows": 8,
+      "screens": [
+        "call_details",
+        "callsign",
+        "home_m17",
+        "home_m17_linked",
+        "home_m17_rx",
+        "home_m17_rx_signed",
+        "home_m17_tx",
+        "m17_bert"
+      ]
+    },
+    {
+      "geometry": "128x64",
+      "color": "mono",
+      "image": "compare/128x64-2.png",
+      "rows": 3,
+      "screens": [
+        "m17_key",
+        "m17_keys",
+        "m17_reflector"
+      ]
+    },
+    {
+      "geometry": "160x128",
+      "color": "color",
+      "image": "compare/160x128-1.png",
+      "rows": 8,
+      "screens": [
+        "call_details",
+        "callsign",
+        "home_m17",
+        "home_m17_linked",
+        "home_m17_rx",
+        "home_m17_rx_signed",
+        "home_m17_tx",
+        "m17_bert"
+      ]
+    },
+    {
+      "geometry": "160x128",
+      "color": "color",
+      "image": "compare/160x128-2.png",
+      "rows": 3,
+      "screens": [
+        "m17_key",
+        "m17_keys",
+        "m17_reflector"
+      ]
+    },
+    {
+      "geometry": "160x120i5",
+      "color": "color",
+      "image": "compare/160x120i5-1.png",
+      "rows": 8,
+      "screens": [
+        "call_details",
+        "callsign",
+        "home_m17",
+        "home_m17_linked",
+        "home_m17_rx",
+        "home_m17_rx_signed",
+        "home_m17_tx",
+        "m17_bert"
+      ]
+    },
+    {
+      "geometry": "160x120i5",
+      "color": "color",
+      "image": "compare/160x120i5-2.png",
+      "rows": 3,
+      "screens": [
+        "m17_key",
+        "m17_keys",
+        "m17_reflector"
+      ]
+    },
+    {
+      "geometry": "240x320",
+      "color": "color",
+      "image": "compare/240x320-1.png",
+      "rows": 8,
+      "screens": [
+        "call_details",
+        "callsign",
+        "home_m17",
+        "home_m17_linked",
+        "home_m17_rx",
+        "home_m17_rx_signed",
+        "home_m17_tx",
+        "m17_bert"
+      ]
+    },
+    {
+      "geometry": "240x320",
+      "color": "color",
+      "image": "compare/240x320-2.png",
+      "rows": 3,
+      "screens": [
+        "m17_key",
+        "m17_keys",
+        "m17_reflector"
+      ]
+    },
+    {
+      "geometry": "240x320i10x5",
+      "color": "color",
+      "image": "compare/240x320i10x5-1.png",
+      "rows": 8,
+      "screens": [
+        "call_details",
+        "callsign",
+        "home_m17",
+        "home_m17_linked",
+        "home_m17_rx",
+        "home_m17_rx_signed",
+        "home_m17_tx",
+        "m17_bert"
+      ]
+    },
+    {
+      "geometry": "240x320i10x5",
+      "color": "color",
+      "image": "compare/240x320i10x5-2.png",
+      "rows": 3,
+      "screens": [
+        "m17_key",
+        "m17_keys",
+        "m17_reflector"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "geometry": "128x64",
+      "screen": "call_details",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "callsign",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "home_m17",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "home_m17_linked",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "home_m17_rx",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "home_m17_rx_signed",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "home_m17_tx",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "m17_bert",
+      "status": "added",
+      "image": "compare/128x64-1.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "m17_key",
+      "status": "added",
+      "image": "compare/128x64-2.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "m17_keys",
+      "status": "added",
+      "image": "compare/128x64-2.png"
+    },
+    {
+      "geometry": "128x64",
+      "screen": "m17_reflector",
+      "status": "added",
+      "image": "compare/128x64-2.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "call_details",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "callsign",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "home_m17",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "home_m17_linked",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "home_m17_rx",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "home_m17_rx_signed",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "home_m17_tx",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "m17_bert",
+      "status": "added",
+      "image": "compare/160x128-1.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "m17_key",
+      "status": "added",
+      "image": "compare/160x128-2.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "m17_keys",
+      "status": "added",
+      "image": "compare/160x128-2.png"
+    },
+    {
+      "geometry": "160x128",
+      "screen": "m17_reflector",
+      "status": "added",
+      "image": "compare/160x128-2.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "call_details",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "callsign",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "home_m17",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "home_m17_linked",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "home_m17_rx",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "home_m17_rx_signed",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "home_m17_tx",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "m17_bert",
+      "status": "added",
+      "image": "compare/160x120i5-1.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "m17_key",
+      "status": "added",
+      "image": "compare/160x120i5-2.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "m17_keys",
+      "status": "added",
+      "image": "compare/160x120i5-2.png"
+    },
+    {
+      "geometry": "160x120i5",
+      "screen": "m17_reflector",
+      "status": "added",
+      "image": "compare/160x120i5-2.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "call_details",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "callsign",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "home_m17",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "home_m17_linked",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "home_m17_rx",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "home_m17_rx_signed",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "home_m17_tx",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "m17_bert",
+      "status": "added",
+      "image": "compare/240x320-1.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "m17_key",
+      "status": "added",
+      "image": "compare/240x320-2.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "m17_keys",
+      "status": "added",
+      "image": "compare/240x320-2.png"
+    },
+    {
+      "geometry": "240x320",
+      "screen": "m17_reflector",
+      "status": "added",
+      "image": "compare/240x320-2.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "call_details",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "callsign",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "home_m17",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "home_m17_linked",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "home_m17_rx",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "home_m17_rx_signed",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "home_m17_tx",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "m17_bert",
+      "status": "added",
+      "image": "compare/240x320i10x5-1.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "m17_key",
+      "status": "added",
+      "image": "compare/240x320i10x5-2.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "m17_keys",
+      "status": "added",
+      "image": "compare/240x320i10x5-2.png"
+    },
+    {
+      "geometry": "240x320i10x5",
+      "screen": "m17_reflector",
+      "status": "added",
+      "image": "compare/240x320i10x5-2.png"
+    }
+  ]
+}
