@@ -952,6 +952,14 @@ bool storage_init(void)
 	if (region == STORAGE_REGION_OURS) {
 		replay();
 	}
+#if STORAGE_FACTORY_KEEP
+	// The owner's tools see the refusals in storage.errors; the log says why
+	if (stalled) {
+		dlog("storage: journal entry unreadable: journaled writes refused until the next start");
+	} else if (held) {
+		dlog("storage: journal entry for a kept sector not finished: writes wait for it");
+	}
+#endif
 	storage_unlock();
 	return region == STORAGE_REGION_OURS;
 }

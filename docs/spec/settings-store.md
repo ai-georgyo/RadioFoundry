@@ -245,7 +245,9 @@ time before the done byte is programmed: one marginal read is not a stale header
 at all (J0's header, J1, a patch's data: a bus error, not a cut) leaves it pending and **stalls** the journal: every
 journaled write of that session (`storage_sector_write`, both paths of `storage_write`) is refused and counted in
 `storage.errors`, because its first erase would take the only copy of a target that may be erased already. The next
-start tries again. A copy that fails is tried again at the next start too, without the stall.
+start tries again. A copy that fails is tried again at the next start too, without the stall. On a board that keeps
+factory bytes the start logs it (`storage: journal entry unreadable: journaled writes refused until the next start`),
+and a held entry (4.1) too (`storage: journal entry for a kept sector not finished: writes wait for it`).
 
 `storage_write(addr, buf, len)` writes any range (the codeplug editor's records, names and bitmaps). Open-firmware
 channel, zone and contact records don't divide 4 KB, so some cross a sector end; two separate sector rewrites would
