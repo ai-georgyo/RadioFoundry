@@ -302,7 +302,18 @@ bool cs7000p_c6000_init(void)
 	return true;
 }
 void cs7000p_c6000_mode(bool dmr, uint32_t hz) { hw(6, dmr, hz); modem.dmr = dmr; ref_entry(); }
-void cs7000p_c6000_retune(uint32_t hz) { hw(7, hz, 0); modem.retunes++; ref_entry(); }
+// What runs on the debug link's task while the radio task waits inside a receive set-up (NULL: nothing)
+static void (*mid_setup)(void);
+
+void cs7000p_c6000_retune(uint32_t hz)
+{
+	hw(7, hz, 0);
+	modem.retunes++;
+	ref_entry();
+	if (mid_setup != NULL) {
+		mid_setup();
+	}
+}
 void cs7000p_c6000_rx_hold(void) { hw(8, 0, 0); }
 bool cs7000p_c6000_fm_rx(void) { return !modem.dmr && !modem.fm_tx; }
 void cs7000p_c6000_fm_audio(bool on) { modem.audio = on; }
@@ -939,6 +950,75 @@ static void test_table_request_asleep(void)
 }
 #endif
 
+#if CONFIG_DEBUGLINK && CONFIG_FACTORY_COPY
+// board2's lines while the radio task takes a restored table and sets receive up on it (the debug link's task runs
+// while the set-up waits): none shows a mix of the two tables. Lines asked in the middle of the change wait for its end
+// and say busy when it never comes (here it can't: one task); a reply's lines are all of the state its first one
+// copied, a change between them included; the next reply's are the new state's, whole
+static char mid_lines[CS7000P_CAL_VIEW_LINES][128];
+static uint32_t mid_waited_us;
+
+static void view_mid_setup(void)
+{
+	const uint32_t t0 = now_us;
+	for (uint8_t k = 0; k < CS7000P_CAL_VIEW_LINES; k++) {
+		cs7000p_cal_view_line(k, mid_lines[k], sizeof(mid_lines[k]));
+	}
+	mid_waited_us = now_us - t0;
+}
+
+static void test_view_whole(void)
+{
+	static const char *const keys[CS7000P_CAL_VIEW_LINES] = { "cal_table", "cal_rec", "ref", "rx_cal", "sq_maker" };
+	radio_status_t st;
+	char line[128], want[32];
+	chip(NULL, NULL);
+	boot(true, 0);
+	memcpy(&sim_flash_data[WIN], table_a, N);
+	factory_copy_load(&cs7000p_factory_copy);
+	cs7000p_factory_copy.changed();
+
+	// A reply's first line copies the state before the take; its later lines stay with that copy
+	cs7000p_cal_view_line(0, line, sizeof(line));
+	CHECK(strstr(line, "cal_table=blank src=none") == line);
+	cs7000p_radio.status(&st);
+	cs7000p_cal_view_line(2, line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x200 r04=0x00 d_a=- d_b=- src=default why=table"));
+	cs7000p_cal_view_line(4, line, sizeof(line));
+	CHECK(line_is(line, "sq_maker=none why=table"));
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER);	// taken: only the reply's copy is the old state
+	// A reply in the middle of a change (the same table taken again): no copy, every line busy after the wait,
+	// nothing of either state
+	factory_copy_load(&cs7000p_factory_copy);
+	cs7000p_factory_copy.changed();
+	mid_setup = view_mid_setup;
+	cs7000p_radio.status(&st);
+	mid_setup = NULL;
+	for (uint8_t k = 0; k < CS7000P_CAL_VIEW_LINES; k++) {
+		snprintf(want, sizeof(want), "%s=busy", keys[k]);
+		CHECK(line_is(mid_lines[k], "%s", want));
+	}
+	CHECK(mid_waited_us >= 250000u && mid_waited_us < 300000u);
+	// The next reply: the new state, every line of it
+	cs7000p_cal_view_line(0, line, sizeof(line));
+	CHECK(line_is(line, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0",
+		      crc(table_a), CS7000P_MK_F_ALL));
+	cs7000p_cal_view_line(2, line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none"));
+	cs7000p_cal_view_line(3, line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq ifw=port"));
+	cs7000p_cal_view_line(4, line, sizeof(line));
+	CHECK(strstr(line, "sq_maker=ok ") == line);
+	cs7000p_cal_view_line(CS7000P_CAL_VIEW_LINES, line, sizeof(line));
+	CHECK(line[0] == '\0');
+	// A receive set-up that takes no table (a bench change) changes nothing the view waits for
+	mid_setup = view_mid_setup;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	mid_setup = NULL;
+	CHECK(mid_waited_us == 0u && strstr(mid_lines[0], "cal_table=ok src=window") == mid_lines[0]);
+}
+#endif
+
 #if CONFIG_FACTORY_COPY
 // The one restore path on this board, as the owner's tool drives it (STORAGE ops 4 and 5, then the housekeeping task's
 // job): refused while a transmission is up; the window written, the record after it; the view's restore= while the
@@ -1524,6 +1604,9 @@ int main(void)
 #if CONFIG_FACTORY_COPY
 	test_table_request();
 	test_table_request_asleep();
+#if CONFIG_DEBUGLINK
+	test_view_whole();
+#endif
 	test_restore();
 #endif
 	test_table_rx();
