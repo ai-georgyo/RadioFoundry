@@ -53,3 +53,22 @@ const ak2365a_cfg_t cs7000p_if_cfg = {
 	.ctrl4 = 0x01,
 	.ctrl5 = 0x80,
 };
+
+const ak2365a_cfg_t cs7000p_if_cfg_maker_fm = {
+	.ctrl1_wide = AK2365A_CTRL1(7, true, 1, 1),	// 0xF5
+	.ctrl1_narrow = AK2365A_CTRL1(7, false, 2, 1),	// 0xE9
+	.ctrl2 = 0x1Eu | AK2365A_CTRL2_CAL,		// 0x1F
+	.ctrl3 = 0x00,
+	.ctrl4 = 0x01,
+	.ctrl5 = 0x80,
+};
+
+// DMR is a 12.5 kHz signal whatever the channel says: one word for both
+const ak2365a_cfg_t cs7000p_if_cfg_maker_dmr = {
+	.ctrl1_wide = AK2365A_CTRL1(7, false, 1, 1),	// 0xE5
+	.ctrl1_narrow = AK2365A_CTRL1(7, false, 1, 1),
+	.ctrl2 = 0x1Eu | AK2365A_CTRL2_CAL,
+	.ctrl3 = 0x00,
+	.ctrl4 = 0x01,
+	.ctrl5 = 0x80,
+};

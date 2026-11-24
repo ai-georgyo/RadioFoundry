@@ -14,8 +14,9 @@
 // a restore's request taken only at the status poll, never under a transmission. Receive on the table: a refused
 // table (and none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only
 // the tune and the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back
-// alone; the bench's 3:0 and 3:4 over all of it. Built again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the
-// window alone. Every table here is invented.
+// alone; the bench's 3:0 and 3:4 over all of it. The bench's 3:7: the IF chip's words (read off its pins) the port's
+// or the maker's for the mode, and no part of a key-up; the maker's squelch thresholds at f_rx shown. Built again
+// without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -86,14 +87,62 @@ static void hw(uint32_t kind, uint32_t a, uint32_t b)
 	}
 }
 
+// The IF receiver's frames as its pins and its select carry them: the data line at each rising clock while the
+// select (an expander bit) is low. A frame of 16 clocks with the data line driven throughout is a write; a read
+// turns the line around and is not kept
+static struct {
+	bool sel, data, read;
+	uint32_t word;
+	unsigned bits;
+} akd;
+#define AK_LOG_MAX	64u
+static uint16_t ak_log[AK_LOG_MAX];
+static unsigned ak_n;		// the writes since the test last cleared it
+
+static void ak_pin(GPIO_TypeDef *port, uint16_t pins, bool level)
+{
+	if (port == PIN_PORT(PIN_AK_SDATA) && pins == PIN_MASK(PIN_AK_SDATA)) {
+		akd.data = level;
+	} else if (port == PIN_PORT(PIN_AK_SCLK) && pins == PIN_MASK(PIN_AK_SCLK) && level && akd.sel) {
+		akd.word = akd.word << 1 | (akd.data ? 1u : 0u);
+		akd.bits++;
+	}
+}
+
+static void ak_select(uint32_t set, uint32_t clear)
+{
+	if ((clear & EXP_AK_CSN) != 0u) {
+		akd.sel = true;
+		akd.read = false;
+		akd.word = 0;
+		akd.bits = 0;
+	} else if ((set & EXP_AK_CSN) != 0u && akd.sel) {
+		akd.sel = false;
+		if (!akd.read && akd.bits == AK2365A_WORD_BITS && ak_n < AK_LOG_MAX) {
+			ak_log[ak_n++] = (uint16_t)akd.word;
+		}
+	}
+}
+
 void stm32_gpio_clock(GPIO_TypeDef *port) { (void)port; }
 void stm32_pin_force(GPIO_TypeDef *port, uint16_t pins, bool level) { (void)port; (void)pins; (void)level; }
 void stm32_pin_out(GPIO_TypeDef *port, uint16_t pins, bool level, bool od)
 {
 	hw(1, (uint32_t)(port - fake_ports) << 16 | pins, (uint32_t)level << 1 | od);
+	ak_pin(port, pins, level);
 }
-void stm32_pin_in(GPIO_TypeDef *port, uint16_t pins, uint32_t pull) { hw(2, (uint32_t)(port - fake_ports) << 16 | pins, pull); }
-void stm32_pin_write(GPIO_TypeDef *port, uint16_t pins, bool level) { hw(3, (uint32_t)(port - fake_ports) << 16 | pins, level); }
+void stm32_pin_in(GPIO_TypeDef *port, uint16_t pins, uint32_t pull)
+{
+	hw(2, (uint32_t)(port - fake_ports) << 16 | pins, pull);
+	if (port == PIN_PORT(PIN_AK_SDATA) && pins == PIN_MASK(PIN_AK_SDATA) && akd.sel) {
+		akd.read = true;
+	}
+}
+void stm32_pin_write(GPIO_TypeDef *port, uint16_t pins, bool level)
+{
+	hw(3, (uint32_t)(port - fake_ports) << 16 | pins, level);
+	ak_pin(port, pins, level);
+}
 void stm32_wait_ns(uint32_t ns) { now_us += ns / 1000u; }
 
 bool stm32_pin_read(GPIO_TypeDef *port, uint16_t pin)
@@ -159,6 +208,7 @@ bool cs7000p_exp_set(uint32_t set, uint32_t clear)
 			mic_writes++;
 		}
 		shadow = after;
+		ak_select(set, clear);
 	}
 	portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
 	return ok;
@@ -1028,7 +1078,7 @@ static void test_table_rx(void)
 	cs7000p_ref_line(line, sizeof(line));
 	CHECK(line_is(line, "ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none"));
 	cs7000p_rx_cal_line(line, sizeof(line));
-	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq"));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq ifw=port"));
 	// The same on a store not yet claimed (the window read, no copy written): using it is a reader's matter
 	chip(table_a, NULL);
 	boot(false, 0);
@@ -1067,7 +1117,7 @@ static void test_table_rx(void)
 	CHECK(log_differs_only(false, false, &n_dac, &n_ref) && dbm == dbm0);
 	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_ref == -5);
 	cs7000p_rx_cal_line(line, sizeof(line));
-	CHECK(line_is(line, "rx_cal=maker rssi=sheet vco=low vco_rule=freq"));
+	CHECK(line_is(line, "rx_cal=maker rssi=sheet vco=low vco_rule=freq ifw=port"));
 #if CONFIG_FACTORY_COPY
 	// The table in use from the record (a blank window): the same receive as from the window
 	chip(NULL, table_a);
@@ -1191,6 +1241,219 @@ static void test_ref_coding(void)
 }
 #endif
 
+#if CONFIG_DEBUGLINK
+// The IF chip's words since ak_n was cleared: one set-up, the reset, then control 1 and 2 as given, 3 to 5 the port's
+static bool ak_setup_is(uint8_t c1, uint8_t c2)
+{
+	const uint16_t want[AK2365A_SETUP_WORDS] = {
+		ak2365a_word(AK2365A_REG_SRST, AK2365A_SRST_VALUE), ak2365a_word(AK2365A_REG_CTRL1, c1),
+		ak2365a_word(AK2365A_REG_CTRL2, c2), ak2365a_word(AK2365A_REG_CTRL3, 0x00),
+		ak2365a_word(AK2365A_REG_CTRL4, 0x01), ak2365a_word(AK2365A_REG_CTRL5, 0x80),
+	};
+	if (ak_n != AK2365A_SETUP_WORDS) {
+		printf("  %u IF words, want one set-up\n", ak_n);
+		return false;
+	}
+	for (unsigned i = 0; i < AK2365A_SETUP_WORDS; i++) {
+		if (ak_log[i] != want[i]) {
+			printf("  IF word %u: 0x%04x, want 0x%04x\n", i, ak_log[i], want[i]);
+			return false;
+		}
+	}
+	return true;
+}
+
+// A bench key-up on 446 MHz, FM: its writes hashed, from the call to the carrier, and the IF words among them
+static uint32_t keyup_hash(unsigned *ak)
+{
+	hw_hash = 2166136261u;
+	ak_n = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	*ak = ak_n;
+	return hw_hash;
+}
+
+// chip_reg 3:7, the maker's IF chip words for a receive test of the table's squelch and RSSI points: one
+// configuration per mode (FM wide, FM narrow, DMR), RAM only, taken at the next status poll by a receive set-up and
+// again at a mode change. Receive only: the chip has no part in a transmission, which is neither refused nor
+// changed by it
+static void test_if_words(void)
+{
+	radio_status_t st;
+	char line[128];
+	uint32_t v = 0;
+	unsigned ak_off, ak_on;
+	start();
+	// The port's: 0xF1 on a 25 kHz FM channel, 0xE9 on 12.5 kHz and in DMR whatever the channel says, 0x1D
+	ak_n = 0;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL) && ak_setup_is(0xF1, 0x1D));
+	ak_n = 0;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL) && ak_setup_is(0xE9, 0x1D));
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	ak_n = 0;
+	cs7000p_radio.status(&st);
+	CHECK(ak_n == 0u);	// with the port's words a mode change asks for no set-up: as before the knob
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL) && ak_setup_is(0xE9, 0x1D));
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	CHECK(cs7000p_chip_reg(3, 0, 7, &v, false) && v == 0u);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(strstr(line, " ifw=port") != NULL);
+	// The port's key-up, to compare
+	const uint32_t h_off = keyup_hash(&ak_off);
+	cs7000p_radio.tx_off();
+	CHECK(!modem.fm_tx && cs7000p_rf.seq.state == CHAINSEQ_ST_RX);
+
+	v = 2;
+	CHECK(!cs7000p_chip_reg(3, 0, 7, &v, true) && !cs7000p_rf.if_maker);
+	v = 1;
+	ak_n = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 7, &v, true) && v == 1u && cs7000p_rf.if_maker && ak_n == 0u);
+	cs7000p_radio.status(&st);	// the receive set-up it asks for: FM wide
+	CHECK(ak_setup_is(0xF5, 0x1F));
+	ak_n = 0;
+	cs7000p_radio.status(&st);
+	CHECK(ak_n == 0u);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(strstr(line, " ifw=maker") != NULL);
+	ak_n = 0;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL) && ak_setup_is(0xE9, 0x1F));
+	// DMR: the mode change asks for the DMR word, on either channel width
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	ak_n = 0;
+	cs7000p_radio.status(&st);
+	CHECK(ak_setup_is(0xE5, 0x1F));
+	ak_n = 0;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL) && ak_setup_is(0xE5, 0x1F));
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	ak_n = 0;
+	cs7000p_radio.status(&st);
+	CHECK(ak_setup_is(0xF5, 0x1F));
+
+	// Receive only: the same key-up, write for write, and no IF word in it; the way back sets the maker's up again
+	const uint32_t h_on = keyup_hash(&ak_on);
+	CHECK(h_on == h_off && ak_on == 0u && ak_off == 0u && cs7000p_rf.tx_refused_why != CS7000P_TX_REF_CODING);
+	ak_n = 0;
+	cs7000p_radio.tx_off();
+	CHECK(!modem.fm_tx && ak_setup_is(0xF5, 0x1F));
+
+	// Back to the port's at the next status poll; never stored: a new start is the port's
+	v = 0;
+	ak_n = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 7, &v, true) && v == 0u && !cs7000p_rf.if_maker);
+	cs7000p_radio.status(&st);
+	CHECK(ak_setup_is(0xF1, 0x1D));
+	v = 1;
+	CHECK(cs7000p_chip_reg(3, 0, 7, &v, true));
+	ak_n = 0;
+	start();
+	CHECK(!cs7000p_rf.if_maker && ak_setup_is(0xF1, 0x1D));
+}
+#endif
+
+#if CONFIG_DEBUGLINK
+// The maker's squelch thresholds at the receive frequency (board.sq_maker): the reader's lookup at f_rx, levels 1 and
+// 9, shown and never applied; none with the lookup's reason when there is no table to take them from
+static void test_sq_maker(void)
+{
+	static uint8_t sloped[N], levels[N];
+	char line[128], want[128];
+	cs7000p_maker_t m;
+	uint8_t o1, c1, o9, c9;
+	invented(table_a, 0x5A);
+
+	// None at all
+	chip(NULL, NULL);
+	boot(true, 0);
+	cs7000p_sq_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "sq_maker=none why=table"));
+
+	// The invented table's flat rows: the same at every frequency
+	chip(table_a, NULL);
+	boot(true, 0);
+	cs7000p_sq_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "sq_maker=ok o1=120 c1=130 o9=40 c9=50"));
+
+	// Rows that rise with the points: the line over the two points around f_rx (test_table_rx: the receive writes
+	// with a valid table differ only in the tune and the bias, so nothing of these is applied)
+	memcpy(sloped, table_a, N);
+	for (unsigned i = 0; i < 8; i++) {
+		sloped[0x04C + i] = (uint8_t)(30 + 2 * i);	// level 9 open
+		sloped[0x054 + i] = (uint8_t)(38 + 2 * i);	// level 9 close
+		sloped[0x05C + i] = (uint8_t)(100 + 10 * i);	// level 1 open
+		sloped[0x064 + i] = (uint8_t)(110 + 10 * i);	// level 1 close
+	}
+	CHECK(cs7000p_maker_parse(sloped, crc(sloped), CS7000P_APC_FLOOR, &m) && m.valid);
+	CHECK((m.fields & CS7000P_MK_F_SQUELCH) != 0u);
+	chip(sloped, NULL);
+	boot(true, 0);
+	const uint32_t hz[2] = { 446u * MHZ, 470u * MHZ };
+	for (unsigned k = 0; k < 2; k++) {
+		CHECK(cs7000p_radio.rx(hz[k], RADIO_BW_12K5, NULL));
+		CHECK(cs7000p_maker_squelch(&m, hz[k], 1, &o1, &c1, NULL) &&
+		      cs7000p_maker_squelch(&m, hz[k], 9, &o9, &c9, NULL));
+		snprintf(want, sizeof(want), "sq_maker=ok o1=%u c1=%u o9=%u c9=%u", o1, c1, o9, c9);
+		cs7000p_sq_maker_line(line, sizeof(line));
+		CHECK(line_is(line, "%s", want));
+		// Between the two points around it (440 and 460 MHz, then 460 and 478.95 MHz), not at either
+		CHECK(o1 > 120u + 10u * k && o1 < 130u + 10u * k && o9 > 34u + 2u * k && o9 < 36u + 2u * k);
+	}
+	// The same pinned by hand (spec 4.4): at a point, both sides of the 479 MHz switch segment (the end value on the
+	// frequency's VCO side, not the line across it) and past the last point (extended)
+	static const struct {
+		uint32_t hz;
+		const char *want;
+	} vec[] = {
+		{ 446000000u, "sq_maker=ok o1=123 c1=133 o9=35 c9=43" },
+		{ 460000000u, "sq_maker=ok o1=130 c1=140 o9=36 c9=44" },
+		{ 470000000u, "sq_maker=ok o1=135 c1=145 o9=37 c9=45" },
+		{ 479000000u, "sq_maker=ok o1=140 c1=150 o9=38 c9=46" },
+		{ 479040000u, "sq_maker=ok o1=150 c1=160 o9=40 c9=48" },
+		{ 520000000u, "sq_maker=ok o1=175 c1=185 o9=45 c9=53" },
+	};
+	for (unsigned k = 0; k < sizeof(vec) / sizeof(vec[0]); k++) {
+		CHECK(cs7000p_radio.rx(vec[k].hz, RADIO_BW_12K5, NULL) && cs7000p_rf.seq.rx_hz == vec[k].hz);
+		cs7000p_sq_maker_line(line, sizeof(line));
+		CHECK(line_is(line, "%s", vec[k].want));
+	}
+	// Shown only: a receive set-up writes the same with other squelch rows (the port's squelch is the noise reading)
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+	hw_hash = 2166136261u;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	const uint32_t h_sloped = hw_hash;
+#if CONFIG_FACTORY_COPY
+	// From the record when the window is blank: the same thresholds
+	chip(NULL, sloped);
+	boot(true, 0);
+	CHECK(strstr(tline, " src=record ") != NULL);
+	cs7000p_sq_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "%s", vec[0].want));
+#endif
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+	hw_hash = 2166136261u;
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	CHECK(hw_hash == h_sloped);
+
+	// A damaged squelch row (level 9 open over its close at a point) is an integrity rule: no table in use
+	memcpy(levels, sloped, N);
+	sloped[0x04C + 3] = 60;
+	chip(sloped, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, " src=none ") != NULL && strstr(tline, " why=sq_hyst ") != NULL);
+	cs7000p_sq_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "sq_maker=none why=table"));
+	// ... and so are levels out of order (level 1's open not above level 9's at a point)
+	levels[0x05C + 2] = levels[0x04C + 2];
+	chip(levels, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, " src=none ") != NULL && strstr(tline, " why=sq_level ") != NULL);
+	cs7000p_sq_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "sq_maker=none why=table"));
+}
+#endif
+
 int main(void)
 {
 	test_fm_mic();
@@ -1205,6 +1468,8 @@ int main(void)
 #if CONFIG_DEBUGLINK
 	test_ref_coding();
 	test_table_rx_bench();
+	test_if_words();
+	test_sq_maker();
 #endif
 	sim_flash_free();
 	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",

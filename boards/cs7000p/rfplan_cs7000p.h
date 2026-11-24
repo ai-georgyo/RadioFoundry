@@ -81,6 +81,13 @@ bool cs7000p_pll_plan(uint32_t hz, bool tx, bool lo_high, int16_t trim_ppb, cs70
 // demodulation level on a 25 kHz channel, the +-3 kHz filter on a 12.5 kHz one; the data sheet's required AGC
 // setting with the calibration started; the IF buffer at 6 dB. The IF level the modem wants is open
 extern const ak2365a_cfg_t cs7000p_if_cfg;
+// The maker's words instead (calibration-cs7000p.md 5.13), for a receive test of the table's squelch and RSSI points
+// under the words they were set under (chip_reg 3:7; never the default): control 1 0xE9 FM narrow, 0xF5 FM wide,
+// 0xE5 DMR (0xF5 and 0xE5 select filter F2, the next after the +-6 kHz one), one configuration for FM and one for
+// DMR, as the maker's DMR word differs from its FM narrow one. Control 2 is the maker's AGC setting, 0x1E, with the
+// calibration start this port's set-up needs after its software reset (0x1F); control 3 to 5 are the port's, as the
+// maker's are not known
+extern const ak2365a_cfg_t cs7000p_if_cfg_maker_fm, cs7000p_if_cfg_maker_dmr;
 
 // The wait ahead of one word of the IF chip's set-up (ak2365a_setup_words), microseconds. The data sheet's
 // calibration procedure: the circuits the calibration runs on (LO buffer, reference, discriminator) are up 500 us

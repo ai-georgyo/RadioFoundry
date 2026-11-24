@@ -98,5 +98,7 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len);
 // ... and the receive side's: the reference level and its source, the tune's and the RSSI scale's sources
 void cs7000p_ref_line(char *buf, uint8_t len);
 void cs7000p_rx_cal_line(char *buf, uint8_t len);
+// ... and the maker's squelch thresholds at the receive frequency, shown only
+void cs7000p_sq_maker_line(char *buf, uint8_t len);
 
 #endif

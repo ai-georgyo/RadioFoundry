@@ -420,11 +420,14 @@ static bool io_synth(void *ctx, uint8_t ref_div, uint32_t vco_hz)
 }
 
 // The driver's words in its order, written here and not by ak2365a_setup(): the chip wants a wait between two of
-// them (rfplan_cs7000p.h), and a frame of this bus is far shorter than that wait
+// them (rfplan_cs7000p.h), and a frame of this bus is far shorter than that wait. The port's words, or for a receive
+// test the maker's for the mode (chip_reg 3:7): the chip is the receiver's alone, so nothing keyed sees them
 static bool io_if_setup(void *ctx, bool wide)
 {
+	const ak2365a_cfg_t *c = !cs7000p_rf.if_maker ? &cs7000p_if_cfg
+			       : (dmr_mode ? &cs7000p_if_cfg_maker_dmr : &cs7000p_if_cfg_maker_fm);
 	uint16_t w[AK2365A_SETUP_WORDS];
-	uint8_t n = ak2365a_setup_words(&cs7000p_if_cfg, wide, w);
+	uint8_t n = ak2365a_setup_words(c, wide, w);
 	bool ok = true;
 	(void)ctx;
 	for (uint8_t i = 0; i < n; i++) {
@@ -899,6 +902,9 @@ static void set_mode(radio_mode_t mode)
 	if (tx_on || dmr_armed) {
 		tx_end(false);	// a transmission does not outlive its mode
 	}
+	if (cs7000p_rf.if_maker && dmr != dmr_mode) {
+		retune_req = true;	// the maker's IF words are the mode's: the receiver set up again (status())
+	}
 	dmr_mode = dmr;
 	cs7000p_c6000_mode(dmr, cs7000p_rf.seq.rx_hz);
 }
@@ -1114,12 +1120,28 @@ void cs7000p_ref_line(char *buf, uint8_t len)
 }
 
 // The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
-// receive (chip_reg 3:6)
+// receive (chip_reg 3:6), the IF chip's words (chip_reg 3:7)
 void cs7000p_rx_cal_line(char *buf, uint8_t len)
 {
-	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s", src_name(cs7000p_rf.tune_src),
+	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s ifw=%s", src_name(cs7000p_rf.tune_src),
 	       rssi_src == CS7000P_SRC_MAKER ? "maker" : "sheet", (cs7000p_exp_get() & EXP_VCO_LOW) != 0u ? "low" : "high",
-	       cs7000p_rf.vco_rx_dir ? "dir" : "freq");
+	       cs7000p_rf.vco_rx_dir ? "dir" : "freq", cs7000p_rf.if_maker ? "maker" : "port");
+}
+
+// The maker's squelch thresholds at the receive frequency, shown and never applied (the squelch is the port's,
+// cs7000p_noise): open and close at levels 1 and 9 as 8-bit noise codes, the scale of noise_raw >> 4 (calibration-
+// cs7000p.md 5.7; they were set under the maker's IF words, chip_reg 3:7). none: no valid table, its SQUELCH group
+// refused, or no receive frequency the rows reach, with the lookup's reason
+void cs7000p_sq_maker_line(char *buf, uint8_t len)
+{
+	uint8_t o1 = 0, c1 = 0, o9 = 0, c9 = 0, why = CS7000P_MK_LK_OK;
+	const uint32_t hz = cs7000p_rf.seq.rx_hz;
+	if (cs7000p_maker_squelch(&maker, hz, 1, &o1, &c1, &why) &&
+	    cs7000p_maker_squelch(&maker, hz, 9, &o9, &c9, &why)) {
+		dl_fmt(buf, len, "sq_maker=ok o1=%u c1=%u o9=%u c9=%u", o1, c1, o9, c9);
+	} else {
+		dl_fmt(buf, len, "sq_maker=none why=%s", cs7000p_maker_lookup_name(why));
+	}
 }
 #endif
 
@@ -1127,7 +1149,10 @@ void cs7000p_rx_cal_line(char *buf, uint8_t len)
 
 #if CONFIG_DEBUGLINK
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
-enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE };
+enum {
+	BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE,
+	BOARD_IF_WORDS
+};
 #define REF_RELEASE	0x100u	// chip_reg 3:4: no bench offset (written: released; read: none set)
 
 // The receive tuning value. Refused whenever a transmit bit is set: the same DAC is the PA's reference then, and
@@ -1234,6 +1259,19 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 			retune_req = true;
 		}
 		*val = cs7000p_rf.vco_rx_dir ? 1u : 0u;
+		return true;
+	case BOARD_IF_WORDS:
+		// 0: the port's IF chip words, 1: the maker's for the mode (rfplan_cs7000p.h), for a receive test of
+		// the table's squelch and RSSI points under the words they were set under. The chip only receives, so
+		// a transmission is neither refused nor changed by it
+		if (write) {
+			if (*val > 1u) {
+				return false;
+			}
+			cs7000p_rf.if_maker = *val != 0u;	// the next receive set-up writes them
+			retune_req = true;
+		}
+		*val = cs7000p_rf.if_maker ? 1u : 0u;
 		return true;
 	default:
 		return false;
