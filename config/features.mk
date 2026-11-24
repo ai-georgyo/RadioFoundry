@@ -300,6 +300,11 @@ CONFIG_FAULT_TRACE ?= y
 # (drivers/flash/nand_sectors, docs/spec/nand-sectors.md). On in the config.mk of radios whose data flash is SPI NAND
 # (docs/feature-matrix.md); off, such a radio runs on the default settings and stores nothing. Radios with SPI NOR don't use it
 CONFIG_NAND_STORAGE ?= n
+# the factory copy: a verified copy of the maker's data that the board keeps in a factory range of its data flash,
+# written once into a record sector of the board's and used when the range no longer holds it; STORAGE op 3 shows it
+# (core/storage/factory_copy.c, docs/spec/settings-store.md 4.2). Only where the board keeps factory ranges
+# (STORAGE_FACTORY_KEEP in its board.mk; unsupported elsewhere, below). Needs nothing else
+CONFIG_FACTORY_COPY ?= $(if $(filter -DSTORAGE_FACTORY_KEEP=1,$(MCU_DEFS)),y,n)
 
 # APRS (core/aprs, docs/spec/aprs.md): our position sent by the beacon triggers, its settings and its page. The engine
 # only: it sends through the two backends below, and needs at least one. Transmit stays off until the user turns it on
@@ -351,7 +356,7 @@ CONFIG_SATELLITE_TLE ?= $(if $(filter y,$(CONFIG_DEBUGLINK)),y,n)
 
 FEATURES := USB_SERIAL_REQUEST FM SUBTONE DMR DMR_PRIVACY DMR_AES DMR_TALKER_ALIAS DMR_GPS DMR_SMS DMR_TMS DMR_ARS DMR_LRRP DMR_SIGNALING DMR_EMERGENCY DMR_ROAMING DMR_TRUNK DMR_TRUNK_TX DMR_TRUNK_SUPL DMR_TRUNK_GW VOICE_CAPTURE DMR_IP_GATEWAY ZONE_SHARE DMR_UDP_COMPRESS NET_TCP NET_KISS NET_HTTP NET_HTTP_GZIP NET_WEBCTL NET_RIGCTL NET_APRSIS NET_USRP MDNS TFTP TFTP_IDDB IDDB_COMPACT DMR_CONTROL_STATION SNMP SFR SFR_DUALPATH_RX SFR_CWID TASK_STACKS \
 	USB HOSTLINK USB_NETWORK NET_PPP HOTSPOT HOTSPOT_SPLIT DEBUGLINK DEBUGLINK_DMRIP CPS_OPENFW CPS_FAST VFO VFO_FM VFO_DMR DIAG BACKLIGHT_TEST FONT_XL FONT_AA FONT_BIG LANG_ES LANG_IT LANG_FR LANG_ZH CJK_GLYPHS LANG_DEFAULT_ES LANG_DEFAULT_IT LANG_DEFAULT_FR LANG_DEFAULT_ZH UI_COLOR UI_SETTINGS SCAN DUAL_WATCH BEEP SIG_TONES FM_TX_TONES DTMF \
-	RX_EXT VOX REF_TRIM BATTERY_SAVE VIBRATE GPS AUDIO_PROBE STUB_ENTRY NAND_STORAGE CRASH_LOG CRASH_SCREEN CRASH_REPORT WATCHDOG SUPPORT_INFO FAULT_TRACE AM_RX BCAST_FM APRS APRS_AFSK APRS_DMR APRS_RX APRS_IGATE GPS_SKY SATELLITE_TLE KEY_ASSIGN CHANNEL_LIST CHANNEL_EDIT ZONE_EDIT CONTACT_EDIT VOLUME_BAR P25 P25_TRUNK NXDN NXDN_SCRAMBLER AIR_RAW
+	RX_EXT VOX REF_TRIM BATTERY_SAVE VIBRATE GPS AUDIO_PROBE STUB_ENTRY NAND_STORAGE FACTORY_COPY CRASH_LOG CRASH_SCREEN CRASH_REPORT WATCHDOG SUPPORT_INFO FAULT_TRACE AM_RX BCAST_FM APRS APRS_AFSK APRS_DMR APRS_RX APRS_IGATE GPS_SKY SATELLITE_TLE KEY_ASSIGN CHANNEL_LIST CHANNEL_EDIT ZONE_EDIT CONTACT_EDIT VOLUME_BAR P25 P25_TRUNK NXDN NXDN_SCRAMBLER AIR_RAW
 
 # The panel's width in pixels: the display class the board's board.toml names (hardware.gallery = "160x128", the width
 # first). Empty when it names none, which counts as a narrow panel
@@ -361,6 +366,11 @@ PANEL_W := $(shell sed -n 's/^gallery = "\([0-9][0-9]*\)x.*/\1/p' boards/$(BOARD
 # the board's config.mk (tools/boards.py reads this reason too)
 ifneq ($(shell test "0$(PANEL_W)" -ge 220 && echo y),y)
 BOARD_UNSUPPORTED += FONT_BIG	# the 9x18 font is drawn only on panels 220 px and wider
+endif
+# The factory copy copies bytes the board keeps (STORAGE_FACTORY_KEEP and the map's factory ranges): a board whose
+# maker keeps no data of its own in the data flash has nothing to copy, with no line in its config.mk
+ifeq ($(filter -DSTORAGE_FACTORY_KEEP=1,$(MCU_DEFS)),)
+BOARD_UNSUPPORTED += FACTORY_COPY	# the maker keeps no data of its own in the data flash (no factory ranges)
 endif
 
 # Dependencies

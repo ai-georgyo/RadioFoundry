@@ -312,6 +312,9 @@
 #ifndef CONFIG_NAND_STORAGE
 #define CONFIG_NAND_STORAGE		0
 #endif
+#ifndef CONFIG_FACTORY_COPY
+#define CONFIG_FACTORY_COPY		1
+#endif
 #ifndef CONFIG_AM_RX
 #define CONFIG_AM_RX			CONFIG_FM
 #endif

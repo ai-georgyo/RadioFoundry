@@ -1644,14 +1644,24 @@ storageFactoryTest: $(FACTORY_DEPS)
 storageFactoryAddr4Test: $(FACTORY_DEPS)
 	$(CC) $(CFLAGS) $(FACTORY_FLAGS) -DSPI_NOR_ADDR4=1 -o $@ $(FACTORY_SRC)
 
+# The factory copy (core/storage/factory_copy.c, docs/spec/settings-store.md 4.2) over core/storage as a board that keeps
+# factory bytes builds it: the record and its states, the source order, the first-start write with a power cut at every
+# flash operation, STORAGE op 3's reply
+FCOPY   := factoryCopyTest.c $(CORE)/storage/factory_copy.c $(CORE)/storage/storage.c $(CORE)/support/sha256.c sim/sim_flash.c
+TESTS   += factoryCopyTest
+
+factoryCopyTest: $(FCOPY) $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(CORE)/support/sha256.h $(ROOT)/hal/hal_flash.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -o $@ $(FCOPY)
+
 run: run-settings
-run-settings: settingsTest storageClaimFirstTest storageJournalLogTest storageJournalLogKeepTest storageFactoryTest storageFactoryAddr4Test spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
+run-settings: settingsTest storageClaimFirstTest storageJournalLogTest storageJournalLogKeepTest storageFactoryTest storageFactoryAddr4Test factoryCopyTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
 	./settingsTest
 	./storageClaimFirstTest
 	./storageJournalLogTest
 	./storageJournalLogKeepTest
 	./storageFactoryTest
 	./storageFactoryAddr4Test
+	./factoryCopyTest
 	./spiNorTest
 	./spiNorAddr4Test
 	./spiNandTest

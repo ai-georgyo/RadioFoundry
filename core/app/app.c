@@ -44,6 +44,9 @@
 #if CONFIG_CPS_FAST
 #include "cps/cps_fast.h"
 #endif
+#if CONFIG_FACTORY_COPY
+#include "storage/factory_copy.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -117,6 +120,13 @@ static void startup_task(void *arg)
 	board_rx_ext_set((cp->cp_flags & SETTINGS_CP_RX_EXT) != 0);	// before the radio core checks the stored VFO against the bands
 	settings_end(hal_millis());
 	codeplug_init();
+#if CONFIG_FACTORY_COPY
+	// The maker's data and our copy of it (settings-store.md 4.2): after every boot-time writer above (the journal's
+	// replay, the fast and TFTP resumes), before the radio, which takes the bytes in use
+	if (board.factory_copy != NULL) {
+		factory_copy_load(board.factory_copy);
+	}
+#endif
 	board.radio->init();
 	radio_core_start();
 	input_start();
