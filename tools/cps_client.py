@@ -35,8 +35,9 @@ data flash's physical ones, so a write keeps the board's protected regions (boar
 docs/dev/board-registry.md): a sector holding one is written, but no byte of the region is sent, and the radio keeps
 its own bytes there (the shim's prepare read them from the flash). When the file holds bytes for a region that are not
 blank, one line on stderr names it and the command that compares the radio's bytes there with a backup and writes the
-backup's back (tools/rfoundry_debug.py storage factory --backup FILE, docs/spec/settings-store.md 4.2). The board comes from --board, else from the radio type info reports: when
-several boards report that type, the protected regions of each are kept.
+backup's back (tools/rfoundry_debug.py storage factory --backup FILE, docs/spec/settings-store.md 4.2). The board comes from --board, else from the
+debug link VERSION's board= on the same port, else (a radio on another firmware) from the radio type info reports:
+when several boards report that type, the protected regions of each are kept.
 """
 import argparse
 import os
@@ -72,6 +73,12 @@ RADIO_TYPES = {0: "GD-77", 1: "GD-77S", 2: "DM-1801", 3: "RD-5R", 4: "DM-1801A",
 
 class CpsError(Exception):
     pass
+
+
+def rfoundry_debug_module():
+    """tools/rfoundry_debug.py (the debug link's framing), imported when first needed: it imports this module too"""
+    import rfoundry_debug
+    return rfoundry_debug
 
 
 def rfoundry_package():
@@ -222,6 +229,32 @@ class Cps:
         while self.t.read(4096, 0.1):
             pass
 
+    def version_board(self, timeout=0.5):
+        """The board= value of the radio's debug link VERSION (a debug link frame on this port is answered between CPS
+        requests, cps-protocol.md 1), or None: no answer in time (a radio on another firmware), or no board line. Asked
+        once, before any CPS request, and what else came is thrown away"""
+        dbg = rfoundry_debug_module()
+        seq = 0x5C
+        self.t.write(dbg.frame(dbg.VERSION, seq))
+        buf, end = bytearray(), time.monotonic() + timeout
+        while time.monotonic() < end:
+            buf += self.t.read(1, max(end - time.monotonic(), 0))
+            i = buf.find(bytes([dbg.SOF1, dbg.SOF2]))
+            if i < 0 or len(buf) < i + 8:
+                continue
+            n = buf[i + 4] | (buf[i + 5] << 8)
+            if n > 1024:
+                del buf[:i + 1]
+                continue
+            if len(buf) < i + 8 + n:
+                continue
+            f = bytes(buf[i:i + 8 + n])
+            del buf[:i + 8 + n]
+            if (dbg.crc16(f[2:6 + n]) == (f[6 + n] | (f[7 + n] << 8)) and f[2] == (dbg.VERSION | 0x80)
+                    and f[3] == seq and n >= 1 and f[6] == 0):
+                return dbg.parse_kv(f[7:6 + n].decode("ascii", "replace")).get("board") or None
+        return None
+
     def info(self):
         d = self.read(9, 0, 0x20)
         v = {"struct": int.from_bytes(d[0:4], "little"), "radio_type": int.from_bytes(d[4:8], "little"),
@@ -370,12 +403,16 @@ def kept_ranges(protect, offset=0):
 
 def protect_for(info, board_id=None):
     """(the protected regions a write keeps on the radio the CPS radio info describes, a note or None). board_id
-    (--board): that board's. Else every board that reports the info's radio type (board.toml [cps] radio_types):
-    radios of different makers can report the same type, so a byte any of them keeps is a byte no write sends, and
-    the note says so when their data flash entries differ. A type no board lists: the board the model name means,
-    or none."""
+    (--board): that board's. Else the board info["board"] names (the debug link VERSION's board=, version_board), as
+    cps_fast.py and the site find it. Else, for a radio whose VERSION names no board the registry knows (another or an
+    older firmware), every board that reports the info's radio type (board.toml [cps] radio_types): radios of
+    different makers can report the same type, so a byte any of them keeps is a byte no write sends, and the note
+    says so when their data flash entries differ. A type no board lists: the board the model name means, or none."""
     if board_id:
         return rfprotect.entries(rfoundryboards.get(board_id)), None
+    known = rfoundryboards.from_debuglink_name(info["board"]) if info.get("board") else None
+    if known is not None:
+        return rfprotect.entries(known), None
     boards = [b for _, b in sorted(rfoundryboards.BOARDS.items())
               if info.get("radio_type") in (getattr(b, "cps_radio_types", None) or ())]
     if not boards:
@@ -677,9 +714,15 @@ def bar(done, total):
         sys.stderr.write("\n")
 
 
+def radio_info(cps):
+    """cps.info() with the board the radio's debug link VERSION names (version_board), asked first, for protect_for"""
+    board = cps.version_board()
+    return dict(cps.info(), board=board)
+
+
 def board_protect(cps, board_id=None):
-    """protect_for the radio on cps (its info read unless board_id names the board), the note on stderr"""
-    protect, note = protect_for({} if board_id else cps.info(), board_id)
+    """protect_for the radio on cps (its info and VERSION read unless board_id names the board), the note on stderr"""
+    protect, note = protect_for({} if board_id else radio_info(cps), board_id)
     if note:
         print(note, file=sys.stderr)
     return protect
