@@ -58,14 +58,22 @@ enum {
 	DL_VIEW_P25,		// P25 on the channel: the call, settings, engine and voice counters (debuglink_view_p25.c)
 	DL_VIEW_P25_TRUNK,	// a trunked P25 channel's follower: system, channels, call followed, counters (the same file)
 	DL_VIEW_NXDN,		// NXDN on the channel: the call, settings, the provider's fit, engine counters (debuglink_view_nxdn.c)
+	DL_VIEW_BOARD2,		// the board's keys from board.view_split on (debuglink_view_board.c); only where it splits them
 	DL_VIEW_COUNT
 };
 #define DL_VIEW_VERSION		5	// bumped when a key changes meaning or goes away (new keys don't bump it)
 
 // Render one section of v into t. Every section starts with "section=<name>"
 void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t);
-// A section's name ("core", ...), NULL past the last
+// A section's name ("core", ...), NULL past the last and for a section this radio doesn't have
 const char *debuglink_view_name(uint8_t section);
+
+// The board's own keys (debuglink_view_board.c): part 0 the `board` section's, 1 the `board2` section's (the board's
+// lines from board.view_split on, still "board.<key>"). A section is present on every board but `board2`, which only a
+// board that sets view_split has; next is the present section after it, 0xFF after the last
+void debuglink_view_board(uint8_t part, dl_text_t *t);
+bool debuglink_view_present(uint8_t section);
+uint8_t debuglink_view_next(uint8_t section);
 
 // The DMR sections (part 0: DL_VIEW_DMR, 1: DL_VIEW_DMR_CALL, 2: DL_VIEW_DMR_STATS), in their own file so the DMR
 // integration can change them without touching the rest; built without DMR they say "dmr.built=0"

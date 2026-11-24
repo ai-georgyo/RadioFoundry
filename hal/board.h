@@ -141,7 +141,8 @@ typedef struct {
 	// Optional: zero the counters behind diag_line (the debug link's RESET_COUNTERS)
 	void (*diag_reset)(void);
 	// Optional: line i of the board's own debug link view keys as "key=value" (the debug link's `board` section adds
-	// the "board." prefix; the keys are listed in the radio's hardware spec); false past the last line
+	// the "board." prefix; the keys are listed in the radio's hardware spec); false past the last line. buf is
+	// room in the reply itself (len up to 255, less near its end): a line that fills it is dropped and ends the section
 	bool (*view_line)(uint8_t i, char *buf, uint8_t len);
 	// Optional: true when a marker the board reads suggests the radio is another hardware version than the image was
 	// built for (a build option such as POWER). Only a warning, since the marker may be wrong: the radio still
@@ -192,9 +193,12 @@ typedef struct {
 	uint8_t hwopt_count;
 #endif
 	// Optional: a verified copy of the maker's data in one factory range of the flash map, kept by the core in a
-	// record sector of the board's (factory_copy_cfg_t above; CONFIG_FACTORY_COPY builds). NULL: none. The last field,
-	// so that no other field moves
+	// record sector of the board's (factory_copy_cfg_t above; CONFIG_FACTORY_COPY builds). NULL: none
 	const factory_copy_cfg_t *factory_copy;
+	// Optional: the first of view_line's lines that goes to a second view section, `board2`, as a `board` section
+	// holding them all would outgrow one reply and drop its last lines (docs/spec/debuglink.md 3.7; the keys keep
+	// their "board." prefix). 0: one section, and no board2. Last, so that no other field moves
+	uint8_t view_split;
 } board_t;
 
 extern const board_t board;

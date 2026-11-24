@@ -201,9 +201,17 @@ static bool view_json(dl_text_t *t, const char *query)
 	const char *q = (query != NULL) ? strstr(query, "section=") : NULL;
 
 	if (q == NULL) {
+		bool first = true;
+
 		dl_text(t, "{\"sections\":[");
-		for (uint8_t i = 0; debuglink_view_name(i) != NULL; i++) {
-			dl_text(t, "%s\"%s\"", (i > 0) ? "," : "", debuglink_view_name(i));
+		// Every section this radio has: one it doesn't (board2 on most boards) has no name and may sit before others
+		for (uint8_t i = 0; i < DL_VIEW_COUNT; i++) {
+			const char *nm = debuglink_view_name(i);
+
+			if (nm != NULL) {
+				dl_text(t, "%s\"%s\"", first ? "" : ",", nm);
+				first = false;
+			}
 		}
 		dl_text(t, "]}\n");
 		return true;
@@ -211,10 +219,10 @@ static bool view_json(dl_text_t *t, const char *query)
 	q += 8;
 	size_t qn = strcspn(q, "&");
 
-	for (uint8_t i = 0; debuglink_view_name(i) != NULL; i++) {
+	for (uint8_t i = 0; i < DL_VIEW_COUNT; i++) {
 		const char *nm = debuglink_view_name(i);
 
-		if ((strlen(nm) == qn) && (memcmp(nm, q, qn) == 0)) {
+		if ((nm != NULL) && (strlen(nm) == qn) && (memcmp(nm, q, qn) == 0)) {
 			section = i;
 		}
 	}
