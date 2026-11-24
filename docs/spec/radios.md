@@ -159,10 +159,13 @@ A forum thread reports a 2023+ HD1 v2 on the HR_C7000, but posters contradict ea
   Read Unprotect, which erases the whole program flash: the maker's bootloader and both programs. The maker
   documents this as its recovery procedure and publishes the files to go back.
 - No codec route: where the stock DMR program keeps its vocoder is not known from any allowed source.
-- No calibration source: the maker's tuning data is somewhere in the data flash, in a format nobody has documented.
-- **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7` builds and passes its host tests; nothing has run
-  on a radio ([hardware-cs7000p.md](hardware-cs7000p.md), [cs7000p-bringup.md](../testing/cs7000p-bringup.md)).
-  Transmit is refused until the PA and the modulation are calibrated on a bench, and DMR voice is off without a
+- Calibration: the maker's factory table is 512 bytes in the data flash, at 0x001000 inside the open-firmware
+  EEPROM image ([calibration-cs7000p.md](calibration-cs7000p.md)). The port keeps those bytes, reads and checks the
+  table, keeps its own verified copy and can restore it from a backup; it transmits on none of it yet.
+- **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7`. One radio runs it: display, keys, the channel
+  selector, USB, the debug link, settings storage, FM receive and DMR receive ([hardware-cs7000p.md](hardware-cs7000p.md),
+  [cs7000p-bringup.md](../testing/cs7000p-bringup.md)).
+  Transmit is refused until the PA and the modulation are calibrated, and DMR voice is off without a
   codec. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`, `drivers/display/st7735`
   and `drivers/flash/spi_nor`, and the STM32 code the two families share (`platform/stm32`). New shared code:
   `drivers/io/hc595`, `drivers/bus/wire3_gpio`, `drivers/rf/chainseq`, `drivers/modem/hrc6000/if_host`,
