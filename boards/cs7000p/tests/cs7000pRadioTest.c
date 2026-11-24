@@ -11,7 +11,8 @@
 // The maker's factory table, on core/storage and the factory copy as the board builds them (the board's map, kept
 // bytes, claimed first) over the simulated NOR flash: the table in use taken at init, the source and the view's keys
 // for a blank, zero, unstable and damaged window, with and without a valid record, a conflict, a use rule's failure;
-// a restore's request taken only at the status poll, never under a transmission. Receive on the table: a refused
+// a restore's request taken only at the status poll, never under a transmission, and receive on the restored table
+// from the set-up after it (a receiver asleep: the wake, then the poll after it). Receive on the table: a refused
 // table (and none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only
 // the tune and the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back
 // alone; the bench's 3:0 and 3:4 over all of it. The bench's 3:7: the IF chip's words (read off its pins) the port's
@@ -848,6 +849,17 @@ static void test_table_sources(void)
 }
 
 #if CONFIG_FACTORY_COPY
+// The held level's offset the modem was given at its last receive entry since hw_n was cleared (INT32_MIN: none)
+static int32_t last_ref(void)
+{
+	for (uint32_t i = hw_n < HW_LOG_MAX ? hw_n : HW_LOG_MAX; i-- > 0u;) {
+		if (hw_log[i].kind == HW_REF) {
+			return (int32_t)hw_log[i].a;
+		}
+	}
+	return INT32_MIN;
+}
+
 // A restore's changed() only raises the request; the table in use changes at the radio task's status poll, never
 // under a transmission, and a receive set-up follows. busy() holds from the request until it is taken
 static void test_table_request(void)
@@ -896,6 +908,35 @@ static void test_table_request(void)
 	CHECK(!cs7000p_factory_copy.busy());
 	cs7000p_radio.set_mode(RADIO_MODE_FM);
 }
+
+// A table restored while the FM receiver sleeps: the poll takes it, but sets nothing up; the wake gives the modem the
+// new level, and the poll after the wake the new tune, so receive is on the restored table from then on
+static void test_table_request_asleep(void)
+{
+	radio_status_t st;
+	chip(NULL, NULL);
+	boot(true, 0);
+	cs7000p_radio.rx_sleep(true);
+	memcpy(&sim_flash_data[WIN], table_a, N);
+	factory_copy_load(&cs7000p_factory_copy);
+	cs7000p_factory_copy.changed();
+	int retunes = modem.retunes;
+	cs7000p_radio.status(&st);
+	cs7000p_cal_table_line(tline, sizeof(tline));
+	CHECK(strstr(tline, "cal_table=ok src=window") == tline && !cs7000p_factory_copy.busy());
+	CHECK(modem.retunes == retunes && cs7000p_rf.tune_src == CS7000P_SRC_DEFAULT);	// asleep: no set-up yet
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_SLEEP && st.rssi_dbm == -95);
+	hw_n = 0;
+	cs7000p_radio.rx_sleep(false);
+	CHECK(modem.retunes == retunes + 1 && last_ref() == -5 && cs7000p_rf.ref_src == CS7000P_SRC_MAKER);
+	cs7000p_radio.status(&st);
+	cs7000p_maker_t m;
+	uint16_t tune = 0;
+	CHECK(cs7000p_maker_parse(table_a, crc(table_a), CS7000P_APC_FLOOR, &m) &&
+	      cs7000p_maker_rx_tune(&m, 446u * MHZ, &tune, NULL));
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_tune == tune && dac_now == tune);
+	CHECK(cs7000p_rf.rx_ref == -5 && cs7000p_rf.seq.state == CHAINSEQ_ST_RX);
+}
 #endif
 
 #if CONFIG_FACTORY_COPY
@@ -936,7 +977,11 @@ static void test_restore(void)
 	cs7000p_cal_rec_line(rline, sizeof(rline));
 	CHECK(strstr(tline, "cal_table=blank src=none") == tline);
 	CHECK(line_is(rline, "cal_rec=blank crc=- wrote=0 restore=ok"));
+	// ... and receive with it: today's values until then
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_DEFAULT && cs7000p_rf.rx_tune == CS7000P_RX_TUNE_NOMINAL);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_DEFAULT && cs7000p_rf.rx_ref == CS7000P_REF_OFFSET);
 	int retunes = modem.retunes;
+	hw_n = 0;
 	cs7000p_radio.status(&st);
 	cs7000p_cal_table_line(tline, sizeof(tline));
 	cs7000p_cal_rec_line(rline, sizeof(rline));
@@ -944,6 +989,22 @@ static void test_restore(void)
 		      CS7000P_MK_F_ALL));
 	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=ok", a));
 	CHECK(!cs7000p_factory_copy.busy() && modem.retunes == retunes + 1);
+	// The receive set-up after the take is on the restored table: its tune row, trim A in the held level (4:0x04
+	// today's), and this same poll's RSSI on its two points (code 110: -95 dBm)
+	cs7000p_maker_t m;
+	uint16_t tune = 0;
+	CHECK(cs7000p_maker_parse(table_a, a, CS7000P_APC_FLOOR, &m) && cs7000p_maker_rx_tune(&m, 446u * MHZ, &tune, NULL));
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_tune == tune && dac_now == tune);
+	CHECK(cs7000p_rf.rx_ref == -5 && cs7000p_rf.ref_src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_rf.ref_offset == CS7000P_REF_OFFSET && st.rssi_dbm == -95);
+	CHECK(last_ref() == -5);	// what the modem was given at that receive entry
+#if CONFIG_DEBUGLINK
+	char line[128];
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none"));
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq ifw=port"));
+#endif
 	// Taken: the next restore is checked at once (the window holds a valid table now: another one is refused)
 	req[0] = req[1] = 0;
 	memcpy(req + 2, table_b, 8);
@@ -1462,6 +1523,7 @@ int main(void)
 	test_table_sources();
 #if CONFIG_FACTORY_COPY
 	test_table_request();
+	test_table_request_asleep();
 	test_restore();
 #endif
 	test_table_rx();

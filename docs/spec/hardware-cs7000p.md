@@ -1218,7 +1218,7 @@ under a transmission, followed by a receive set-up. The view's `cal_table` and `
 log a line, `cal: maker table ok src=window crc=0x... rec=... fields=0x...`, or why none is used. A build without
 `CONFIG_FACTORY_COPY` reads the window alone (`cal_rec=off`). If the window held another radio's valid table at the
 first claimed start, that table is in the record now: compare `cal_table`'s CRC with the backup's 0x1000-0x11FF before
-the first start of such a firmware. Nothing receives or transmits on the table yet.
+the first start of such a firmware. Receive uses the table in use (13.1) from the receive set-up that follows its take: after a restore, the one at that status poll (a receiver asleep in FM battery saving: its wake writes the new level, the poll after it the new tune). Nothing transmits on it.
 
 **Another radio's table has no way out yet.** A CPS read through the shim of an earlier build includes 0x1000-0x11FF,
 so a codeplug file saved from radio A and written to radio B with such a build puts A's valid table into B's window,
