@@ -10,8 +10,8 @@
  *    first / continuation / continuation / last
  *  - CRC-CCITT (B.3.7) for the BS activation CSBK
  *  - talker alias (FLCO 4 header, FLCO 5-7 blocks) decoding (all four formats) and encoding (7-bit, ISO 8-bit)
- *  - GPS Info (FLCO 8): position error, longitude, latitude, encoding and decoding, and the range / bearing between
- *    two positions for the screens
+ *  - GPS Info (FLCO 8): position error, longitude, latitude, encoding and decoding (the range and bearing to a
+ *    position: position_range, core/position/position_geo.h)
  *
  * No board or modem knowledge: modems that build the embedded signaling themselves only need the 9 LC octets;
  * a software modem or a host test uses the fragment functions.
@@ -163,8 +163,5 @@ bool dmr_gps_decode(const uint8_t lc[DMR_LC_BYTES], dmr_gps_t *g);
 uint8_t dmr_gps_err_code(uint32_t meters);
 // The upper bound in meters of an error code (0: unknown or over 200 km)
 uint32_t dmr_gps_err_m(uint8_t code);
-// From position 1 to position 2: distance in meters and the initial bearing in degrees (0 north, 90 east). A flat
-// earth approximation around the mid latitude: within 0.5 % up to a few hundred km (DMR ranges), no libm needed
-void dmr_gps_range(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2, uint32_t *meters, uint16_t *bearing);
 
 #endif

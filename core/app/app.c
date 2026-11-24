@@ -44,6 +44,9 @@
 #if CONFIG_CPS_FAST
 #include "cps/cps_fast.h"
 #endif
+#if CONFIG_ENTROPY
+#include "crypto/entropy_boot.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -116,6 +119,11 @@ static void startup_task(void *arg)
 	codeplug_accept((cp->cp_flags & SETTINGS_CP_ACCEPTED) != 0);
 	board_rx_ext_set((cp->cp_flags & SETTINGS_CP_RX_EXT) != 0);	// before the radio core checks the stored VFO against the bands
 	settings_end(hal_millis());
+#if CONFIG_ENTROPY
+	// The boot count bumped and saved, and the random pool started on it with the SoC's generator: before the radio
+	// core (whose task draws the nonces) starts. This task saves the settings, so the write is here
+	entropy_boot_start(board.system, hal_millis());
+#endif
 	codeplug_init();
 	board.radio->init();
 	radio_core_start();

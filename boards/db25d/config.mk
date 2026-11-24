@@ -12,6 +12,12 @@ CONFIG_NAND_STORAGE ?= y
 # it the hotspot (the MMDVM host port on UART1) is on: simplex whole calls through the same per-burst TX path as a call
 # (hardware-db25d.md 9). CONFIG_VFO_DMR follows the default (the core's DMR VFO, checked on this radio)
 CONFIG_DMR ?= y
+# M17 follows DMR at the full clock (board.mk DB25D_FULL_CLOCK=1, the default). At the loader's 72 MHz
+# (DB25D_FULL_CLOCK=0) it is off: Codec 2 encodes in the audio callback, about 14 ms of each 20 ms block at that clock
+# (docs/spec/codec2.md 18.6); the hardware can, the clock can't (hardware-db25d.md 2)
+ifeq ($(DB25D_FULL_CLOCK),0)
+CONFIG_M17 ?= n
+endif
 # USRP voice over UDP needs 8 kHz 16-bit PCM both ways (128 kbit/s plus headers): more than the 115200 baud host port carries.
 # On the radio it filled the link whenever a call was heard and the host link task stopped answering (core/usbaudio/usrp_net.c)
 CONFIG_NET_USRP ?= n

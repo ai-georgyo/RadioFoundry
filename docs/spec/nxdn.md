@@ -174,8 +174,8 @@ incorrect key cannot be detected. Scrambled voice was checked on air against ano
 ## 6. The radio core (`core/radio/radio_nxdn.c`)
 
 `RADIO_MODE_NXDN` runs the engine on the board's air interface with the board in its digital mode and the DMR stack
-stopped, as P25 does ([p25.md](p25.md) 7). The engine's memory is its own, or with P25 built and no lending vocoder
-the memory P25 keeps for itself (one engine runs at a time).
+stopped, as P25 does ([p25.md](p25.md) 7). The engine runs in the air modes' shared arena
+([air-interface.md](air-interface.md) 7), never in the vocoder's loan: its voice is the vocoder's.
 
 | State | Engine | PTT |
 |---|---|---|

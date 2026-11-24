@@ -25,6 +25,17 @@
 #include "radio/radio_trunk.h"	// not under roaming: trunking builds without it
 #endif
 
+// A built mode transmits on its own (a row with auto_tx: M17's packets and test runs; a host test's fake row): the
+// radio core keys for it (radio_sm.c air_auto). Without one that code and its state stay out
+#if CONFIG_M17 || defined(RADIO_AIR_TEST_ROW)
+#define RADIO_AIR_AUTO	1
+#else
+#define RADIO_AIR_AUTO	0
+#endif
+// ... and refuses a transmission of its own beyond the shared checks (a row with tx_deny: M17 without a callsign; the
+// host test's fake row): air_key asks it. P25's and NXDN's rows have none, so today's builds leave the call out
+#define RADIO_AIR_DENY	RADIO_AIR_AUTO
+
 #define RADIO_SM_CW		(CONFIG_HOTSPOT || CONFIG_SFR_CWID)	// the CW keyer (radio_sm.c)
 #define RADIO_POLL_MS		25	// status poll and squelch period
 #define RADIO_RETUNE_SETTLE_MS	400	// RREQ_RETUNE: tune once the reference trim has held this long
@@ -199,6 +210,12 @@ typedef enum {
 	RREQ_AIR_BENCH,		// the air interface bench (CONFIG_AIR_RAW): arg 1 take the modem, 0 give it back
 	RREQ_AIR_TX,		// ... arg 1 key (arg2: the longest time in ms), 0 unkey
 	RREQ_NXDN_SET,		// radio_task.c: the pending NXDN settings were copied (radio_nxdn_set_settings); applied here
+	// M17 (CONFIG_M17): radio_task.c copies what came with the request (the settings, an SMS's text) and calls the
+	// mode's module; SET is applied here as P25's and NXDN's are, the others are the module's alone
+	RREQ_M17_SET,		// the pending M17 settings were copied (radio_m17_set_settings); applied here
+	RREQ_M17_SMS,		// the pending SMS was copied (radio_m17_sms_send)
+	RREQ_M17_BERT,		// arg: RADIO_REQ_M17_BERT_*
+	RREQ_M17_BENCH,		// arg: RADIO_REQ_M17_BENCH_*; arg2: phase | mode << 8 (the codec bench)
 	// New request types go above
 
 	RREQ_COUNT		// KEEP LAST: sizes req_flags[] (radio_sm.c)
@@ -339,9 +356,12 @@ typedef struct {
 	bool led_timed;			// a timed signal was showing at the last outputs(): the tick keeps calling it
 	bool hotspot;			// hotspot mode: the host link owns the modem
 #if CONFIG_AIR
-	// An air-framed mode (P25, NXDN; radio_air.h)
+	// An air-framed mode (P25, NXDN; radio_air.h, radio_air_modes.h)
 	bool air_tx;			// a transmission runs in the engine (from prepare until it is done and cleared)
 	bool air_keyed;			// board.radio->tx() keyed for it (until tx_off)
+#if RADIO_AIR_AUTO
+	bool air_hold;			// ... and it is the mode's own HOLD transmission (radio_air_modes.h auto_tx)
+#endif
 #endif
 #if CONFIG_P25
 #if CONFIG_P25_TRUNK

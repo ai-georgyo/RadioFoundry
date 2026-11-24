@@ -29,6 +29,11 @@ _Static_assert(sizeof(settings_t) % 4 == 0, "settings_t has tail padding");
 _Static_assert(offsetof(settings_t, dual_b) == SETTINGS_PAGE_BYTES, "page 1 starts at its first field");
 _Static_assert(offsetof(settings_t, ref_trim_ppb) % 2 == 0, "ref_trim_ppb is aligned");
 _Static_assert(sizeof(settings_t) == 412, "settings_t changed size: update docs/spec/settings-store.md 3 and this");
+// The boot count keeps this place in every layout (settings-store.md 3), so a load can carry it over a layout change
+_Static_assert(offsetof(settings_t, boot_count_hi) == 399 && offsetof(settings_t, boot_count_lo) == 406,
+	       "the boot count's place is fixed across layouts: settings-store.md 3");
+#define BOOT_HI		(offsetof(settings_t, boot_count_hi) - SETTINGS_PAGE_BYTES)	// in page 1
+#define BOOT_LO		(offsetof(settings_t, boot_count_lo) - SETTINGS_PAGE_BYTES)
 
 static settings_t live;			// under the quick lock
 static settings_t saved;		// what the newest record holds (or the defaults)
@@ -139,6 +144,20 @@ static uint8_t slot_buf[SLOT_SIZE];
 static uint16_t rec_page(const uint8_t *r) { return (uint16_t)((r[8] | (r[9] << 8)) >> SETTINGS_PAGE_SHIFT); }
 static uint16_t rec_layout(const uint8_t *r) { return (uint16_t)((r[8] | (r[9] << 8)) & 0x0FFFu); }
 
+// The boot count a valid record holds: a page 1 record of any layout but 0 (the ownership mark's) whose payload
+// reaches it, else 0. Read from every record, so neither a layout change (the defaults) nor a cut save that left a
+// newer page 1 than the set in force can lower it: the count only goes up, so the highest one is the latest
+static uint32_t rec_boot_count(const uint8_t *r)
+{
+	uint16_t n = (uint16_t)(r[10] | (r[11] << 8));
+	if (rec_page(r) != 1 || rec_layout(r) == 0 || n < BOOT_LO + 2u) {
+		return 0;
+	}
+	uint16_t lo;
+	memcpy(&lo, &r[HDR + BOOT_LO], sizeof lo);	// the payload is settings_t as in RAM
+	return (uint32_t)lo | ((uint32_t)r[HDR + BOOT_HI] << 16);
+}
+
 settings_load_t settings_init(void)
 {
 	const hal_flash_map_t *m = storage_map();
@@ -161,8 +180,8 @@ settings_load_t settings_init(void)
 	}
 	// First pass: the newest record of any page (where the next save follows) and the newest page 0 (the set)
 	bool have0 = false;
-	uint32_t seq0 = 0, seq_any = 0;
-	uint16_t sec0 = 0, sl0 = 0;
+	uint32_t seq0 = 0, seq_any = 0, boot = 0;
+	uint16_t sec0 = 0, sl0 = 0, boot_sec = 0;
 	storage_lock();
 	for (uint16_t sec = 0; sec < sectors; sec++) {
 		for (uint16_t sl = 0; sl < SLOTS; sl++) {
@@ -175,6 +194,11 @@ settings_load_t settings_init(void)
 				continue;
 			}
 			uint32_t q = get32(&r[4]);
+			uint32_t bc = rec_boot_count(r);
+			if (bc > boot) {
+				boot = bc;
+				boot_sec = sec;
+			}
 			if (!have_newest || (int32_t)(q - seq_any) > 0) {
 				have_newest = true;
 				seq_any = q;
@@ -231,6 +255,13 @@ settings_load_t settings_init(void)
 		}
 		stats.load = whole ? SETTINGS_LOADED : SETTINGS_UPGRADED;
 		power_levels_check(&live);
+	}
+	// The nonce counter's boot count never goes back (crypto.md 8.3): the defaults of a layout change keep it too.
+	// Not marked unsaved, but its record's sector is kept like the set in force's until a save stores the count
+	// again, so a cut save can't erase the only copy
+	if (boot > settings_boot_count(&live)) {
+		settings_set_boot_count(&live, boot);
+		valid_mask |= 1u << boot_sec;
 	}
 	storage_unlock();
 	saved = live;

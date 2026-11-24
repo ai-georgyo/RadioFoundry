@@ -10,6 +10,9 @@
  * bytes, of which the first 49 bits (MSB first) are XORed onto the frame's 49 AMBE+2 parameter bits (after the FEC
  * decode, in dmrPrivacy.h's bit order).
  *
+ * The cipher is the tree's one AES (core/crypto/aes.h, the forward cipher; OFB needs no inverse), which M17 uses too;
+ * secrets are wiped with crypto_wipe (core/crypto/crypto_wipe.h).
+ *
  * No RTOS calls, no allocation: the call stack's hook runs in the radio task, the keyring is owned by its caller.
  */
 #ifndef RFOUNDRY_DMRAES_H
@@ -17,6 +20,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "crypto/aes.h"
 
 #define DMR_AES_ALG_AES256		0x25	// PI header algorithm ID
 #define DMR_AES_KEY_BYTES		32
@@ -26,14 +30,6 @@
 #define DMR_AES_SF_SKIP_BYTES		16	// keystream bytes skipped at the start of each superframe
 #define DMR_AES_BURST_KS_BYTES		(3 * DMR_AES_FRAME_KS_BYTES)	// 21
 
-// --- AES-256 (FIPS-197), encryption only (OFB needs no decryption) ---
-typedef struct {
-	uint8_t rk[240];	// the 15 round keys
-} aes256_ctx_t;
-
-void aes256Init(aes256_ctx_t *ctx, const uint8_t key[DMR_AES_KEY_BYTES]);
-void aes256Encrypt(const aes256_ctx_t *ctx, const uint8_t in[16], uint8_t out[16]);
-
 // --- The DMRA scheme ---
 
 // The next word of the MI sequence: 32 steps of the LFSR (shift left, the new LSB is the parity of state & 0x80200003)
@@ -42,7 +38,7 @@ uint32_t dmrAesMiNext(uint32_t w);
 void dmrAesIv(uint32_t mi, uint32_t sf, uint8_t iv[16]);
 // The keystream of voice burst voice_index (0..5 = A..F) of the superframe with this IV: its 3 frames' 7 bytes each.
 // Made again for each burst (at most 9 blocks) rather than kept for the superframe, to spare RAM
-void dmrAesBurstKeystream(const aes256_ctx_t *ctx, const uint8_t iv[16], uint8_t voice_index,
+void dmrAesBurstKeystream(const aes_ctx_t *ctx, const uint8_t iv[16], uint8_t voice_index,
 			  uint8_t ks[DMR_AES_BURST_KS_BYTES]);
 // XOR a burst's keystream onto its 3 frames in their on-air form (27 bytes). RX bursts are FEC corrected first
 // (correctErrors), TX bursts are taken as encoded
@@ -86,9 +82,6 @@ void dmrAesSeqReserved(dmrAesSeq_t *q, uint32_t saved);
 // The saving failed or was abandoned: asked again by the next dmrAesSeqReserve
 void dmrAesSeqDropPending(dmrAesSeq_t *q);
 
-// Overwrite n bytes through a volatile pointer: a wipe the compiler can't drop as a dead store
-void dmrAesWipe(void *p, unsigned n);
-
 // --- Keys and the call stack's hook ---
 typedef struct {
 	uint8_t alg;		// DMR_AES_ALG_AES256, 0 = an empty slot
@@ -103,7 +96,7 @@ typedef struct {
 	uint32_t iv_mi, iv_sf;
 	uint8_t iv[16];
 	dmrAesKey_t keys[DMR_AES_KEY_SLOTS];
-	aes256_ctx_t aes;
+	aes_ctx_t aes;
 	int8_t aes_slot;	// the key aes holds, -1 = none
 	bool iv_valid;
 	int8_t tx_slot;		// our overs are encrypted with this key, -1 = sent in the clear

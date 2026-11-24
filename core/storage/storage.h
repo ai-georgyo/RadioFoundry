@@ -68,6 +68,11 @@ storage_slot_t storage_slot_check(const uint8_t slot[STORAGE_SLOT_SIZE]);
 // Rewrite the erase unit at addr (aligned) with data (STORAGE_SECTOR bytes), through the journal. Skipped when the
 // flash already holds exactly that
 bool storage_sector_write(uint32_t addr, const uint8_t *data);
+// The same; with wipe (a sector that holds a secret: a key the codeplug settings area stores), once the rewrite
+// finished the journal's copy of the sector (J1) is erased, so it is gone from the flash range the debug link's
+// storage dump reads (docs/spec/settings-store.md 4). A rewrite that is cut keeps its copy for the replay;
+// storage_init erases a copy left once nothing is to replay. A flash with replace keeps no copy
+bool storage_sector_write_wipe(uint32_t addr, const uint8_t *data, bool wipe);
 
 // Write any range: each sector it touches is read into the shared buffer, merged and rewritten as above. False if
 // the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF)

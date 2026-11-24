@@ -213,38 +213,42 @@ static bool patch_finish(const hal_flash_map_t *m, uint32_t addr, uint32_t len, 
 	       wr(m->journal_addr + P_ALL, &zero, 1);
 }
 
-// A pending journal entry: finish it
-static void replay(void)
+// A pending journal entry: finish it. True when one is left to finish (a flash error): J1 is still needed then
+static bool replay(void)
 {
 	const hal_flash_map_t *m = storage_map();
 	uint8_t h[P_DATA];
 	uint32_t crc;
 
 	if (!rd(m->journal_addr, h, sizeof(h))) {
-		return;
+		return true;
 	}
 	if (get32(&h[0]) == P_MAGIC) {
-		if (h[P_ALL] == 0xFF && patch_len(m, h) != 0 && patch_finish(m, get32(&h[4]), get32(&h[8]), buffer)) {
-			stats.replays++;
+		if (h[P_ALL] != 0xFF || patch_len(m, h) == 0) {
+			return false;
 		}
-		return;
+		if (!patch_finish(m, get32(&h[4]), get32(&h[8]), buffer)) {
+			return true;
+		}
+		stats.replays++;
+		return false;
 	}
 	if (get32(&h[0]) != J_MAGIC || h[J_DONE] != 0xFF ||
 	    get32(&h[12]) != storage_crc32(0, h, 12) || !target_ok(m, get32(&h[4]))) {
-		return;
+		return false;
 	}
 	if (flash_crc(m->journal_addr + STORAGE_SECTOR, STORAGE_SECTOR, 0, &crc) && crc == get32(&h[8])) {
 		uint32_t target = get32(&h[4]);
 		uint32_t now;
 		if (!flash_crc(target, STORAGE_SECTOR, 0, &now) || now != crc) {
 			if (!copy_sector(target, m->journal_addr + STORAGE_SECTOR)) {
-				return;		// try again at the next boot
+				return true;	// try again at the next boot
 			}
 		}
 		stats.replays++;
 	}
 	uint8_t done = 0;
-	wr(m->journal_addr + J_DONE, &done, 1);
+	return !wr(m->journal_addr + J_DONE, &done, 1);
 }
 
 storage_slot_t storage_slot_check(const uint8_t r[STORAGE_SLOT_SIZE])
@@ -392,7 +396,16 @@ bool storage_init(void)
 	storage_lock();
 	region = scan_region(m);
 	if (region == STORAGE_REGION_OURS) {
-		replay();
+		// Nothing reads J1 once nothing is pending: a copy of a sector that held a key (one a firmware without
+		// storage_sector_write_wipe left, or a cut before its erase), or part of a rewrite a cut stopped before its
+		// header, would stay there for the debug link's dump (settings-store.md 4). A flash with replace rewrites
+		// sectors without J1 (a patch commits before it stages): never such a copy. A first byte erased: none there
+		// either (a sector is programmed from its start, a settings area's starts with its magic), no erase to wear
+		uint32_t j1 = m->journal_addr + STORAGE_SECTOR;
+		uint8_t first;
+		if (!replay() && board.flash->replace == NULL && rd(j1, &first, 1) && first != 0xFF) {
+			er(j1);
+		}
 	}
 	storage_unlock();
 	return region == STORAGE_REGION_OURS;
@@ -473,7 +486,7 @@ static bool refused(void)
 	return false;
 }
 
-bool storage_sector_write(uint32_t addr, const uint8_t *data)
+bool storage_sector_write_wipe(uint32_t addr, const uint8_t *data, bool wipe)
 {
 	const hal_flash_map_t *m = storage_map();
 	bool ok = false;
@@ -513,9 +526,17 @@ bool storage_sector_write(uint32_t addr, const uint8_t *data)
 	    wr(m->journal_addr + J_DONE, &done, 1)) {
 		stats.sector_writes++;
 		ok = true;
+		if (wipe) {
+			er(j1);		// the rewrite is done whether this works or not; a failure counts as an error
+		}
 	}
 	storage_unlock();
 	return ok;
+}
+
+bool storage_sector_write(uint32_t addr, const uint8_t *data)
+{
+	return storage_sector_write_wipe(addr, data, false);
 }
 
 uint8_t *storage_buffer_acquire(void)

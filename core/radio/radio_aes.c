@@ -5,6 +5,7 @@
 #include <string.h>
 #include "board.h"
 #include "codeplug/codeplug_records.h"
+#include "crypto/crypto_wipe.h"
 #include "dmr/dmrAes.h"
 #include "dmr/dmrPrivacy.h"
 #include "radio/radio.h"
@@ -57,7 +58,7 @@ bool radio_aes_configure(const channel_t *ch, dmr_call_config_t *cfg)
 		channel_key_ref = ch->aes_ref;
 		channel_tx_allowed = (sys.flags & CODEPLUG_SYS_TX) != 0;
 	}
-	dmrAesWipe(key, sizeof key);
+	crypto_wipe(key, sizeof key);
 	channel_keys.seq = &aes_seq;
 	if (!dmrAesHasKeys(&channel_keys))
 		return false;

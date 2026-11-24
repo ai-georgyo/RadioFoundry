@@ -44,6 +44,15 @@ Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read [docs/dev](
 | [pa-keyup.md](pa-keyup.md) | DMR PA key-up per burst from the power cal table |
 | [rx2-link.md](rx2-link.md) | The link to a second receiver on another SoC: frames, messages, timing |
 
+## Other digital modes
+
+| Spec | Covers |
+|---|---|
+| [m17.md](m17.md) | M17: the air interface, frames and FEC, stream and packet modes, encryption, signatures, addresses |
+| [p256.md](p256.md) | P-256 ECDSA for M17 signatures: field and point arithmetic, RFC 6979 signing, verifying, keys, cost |
+| [crypto.md](crypto.md) | Symmetric crypto: AES and counter mode, HMAC-SHA-256, HMAC_DRBG, secrets handling, the entropy pool |
+| [codec2.md](codec2.md) | Codec 2 vocoder, modes 3200 and 1600: bit stream, analysis, synthesis, tables |
+
 ## Host link and network
 
 | Spec | Covers |
@@ -74,6 +83,7 @@ Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read [docs/dev](
 | [p25-codeplug.md](p25-codeplug.md) | P25 conventional and trunked channels and systems in the codeplug |
 | [ham-trunking.md](ham-trunking.md) | The recommended ham Tier III and P25 trunked systems, and their templates |
 | [nxdn-codeplug.md](nxdn-codeplug.md) | NXDN conventional channels in the codeplug |
+| [m17-codeplug.md](m17-codeplug.md) | M17 channels, systems, signing and station keys in the codeplug, and the Codeplug Editor's M17 fields |
 | [settings-store.md](settings-store.md) | Settings store and safe flash writes |
 | [nand-sectors.md](nand-sectors.md) | NOR-like 4 KB sectors over NAND, for the settings store on NAND radios |
 

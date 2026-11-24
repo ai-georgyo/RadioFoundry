@@ -154,7 +154,9 @@ typedef struct {
 // Apply n sets and removes in order, then write the area in one journaled sector rewrite (through the shared sector
 // buffer) and bump codeplug_kv_serial(). All or nothing: false, and nothing written, if any op doesn't fit, names key 0 or
 // 0xFFFF, while a CPS session holds the buffer, when the storage region isn't ours or the area is CODEPLUG_KV_NEWER.
-// A batch that changes nothing (a key set to the value it has, an absent key removed) is true with no write
+// A batch that changes nothing (a key set to the value it has, an absent key removed) is true with no write. An area
+// that then holds a secret (a system secret or a traffic key, docs/spec/channel-modes.md 8) leaves no copy in the
+// storage journal (storage_sector_write_wipe, docs/spec/settings-store.md 4); one without keys keeps its journal
 bool codeplug_kv_write(const codeplug_kv_op_t *ops, uint8_t n);
 bool codeplug_kv_set(uint16_t key, const void *value, uint16_t len);
 bool codeplug_kv_set_u32(uint16_t key, uint32_t value);
@@ -163,7 +165,8 @@ bool codeplug_kv_remove(uint16_t key);
 codeplug_kv_state_t codeplug_kv_check(const uint8_t *sector);
 // A raw write of sector (STORAGE_SECTOR bytes) at flash address addr, for every path that commits the EEPROM image's
 // sectors (CPS shim, fast CPS, TFTP): the sector is written through the journal unless codeplug_kv_keep says the
-// radio's stays, which counts as written. False only when the write failed
+// radio's stays, which counts as written. The area's own sector, a tool's that may hold any key, leaves no copy in the
+// journal (storage_sector_write_wipe, docs/spec/settings-store.md 4). False only when the write failed
 bool codeplug_kv_commit(uint32_t addr, const uint8_t *sector);
 // Whether a raw write of sector (STORAGE_SECTOR bytes) at flash address addr must leave the radio's sector as it is
 // (docs/spec/codeplug-settings.md 6): addr is the area's sector and the radio's area is CODEPLUG_KV_NEWER, or

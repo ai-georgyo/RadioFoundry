@@ -23,6 +23,22 @@ typedef enum { AIR_TIMING_CONTINUOUS, AIR_TIMING_TDMA } air_timing_t;
 // air_sync_t.flags
 #define AIR_SYNC_START_ONLY	0x01	// on air only at the start of a transmission (a preamble's tail + the first sync)
 
+// air_profile_t.flags
+// Every sync of a transmission falls a whole number of sync_any_syms after the one before it (frames of one length, a
+// sync opening each). A receiver that holds a lock may then take a sync only where one is due: short syncs also turn
+// up in random payload, and re-timing on one corrupts the frame (docs/spec/air-interface.md 6). START_ONLY patterns
+// are always taken (a new transmission). Not for a mode whose units differ in length
+#define AIR_PROFILE_SYNC_GRID	0x01
+
+// air_profile_t.verify: which bit of a board's verified set (its glue's air_verified mask) says this profile was
+// checked on air on that board. A fit loses AIR_FIT_UNTESTED only when the board has the profile's bit; a profile with
+// verify 0 is never verified (the debug link's raw bench sets its own). Named by the mode a profile belongs to; both
+// NXDN rates share one bit, as they share one physical layer pipe
+#define AIR_VERIFY_P25		0x01
+#define AIR_VERIFY_NXDN		0x02
+#define AIR_VERIFY_M17		0x04
+#define AIR_VERIFY_ALL		0xFF	// the raw bench's 15-byte profile header: today's meaning (any verified board)
+
 // One fixed pattern a mode puts on air. A provider with a correlator of its own takes the first ones it can use (a
 // modem chip: 24 symbols, all outer, not START_ONLY), as many as it holds, so a mode lists its patterns most useful
 // first; the framer searches for all of them in the symbol stream itself
@@ -35,6 +51,15 @@ typedef struct {
 	// frame starts inside it (a preamble ahead of the frame's own sync), negative the pattern sits inside the frame
 	int8_t frame_at;
 	uint8_t syms[AIR_SYNC_SYMS_MAX / 4];
+	// The soft modem's sync search gates (core/air/air_softmodem.c, docs/spec/air-interface.md 6), constants of the
+	// pattern kept here so its state needs no per-pattern RAM. gate_up / gate_mask: the steps of its last 17 symbols
+	// (bit 0 the newest): up, and which are steps of four levels or more. sign_val / sign_mask: the signs of its last 16
+	// symbols: positive, and which are outer symbols. air_softmodem_sync_prep() computes them; a mode's const profile
+	// writes them as literals (tests/host/airSoftmodemTest.c checks them against the prep), a profile built at run
+	// time (the debug link's) calls the prep. 0 / 0: that gate is off for the pattern (fitted at more samples, same
+	// result, more CPU)
+	uint16_t gate_up, gate_mask;
+	uint16_t sign_val, sign_mask;
 } air_sync_t;
 
 typedef struct {
@@ -54,6 +79,8 @@ typedef struct {
 	// sync is shorter than 24 symbols); 0 = sync_every_syms. The soft modem holds its timing this long
 	uint16_t sync_any_syms;
 	uint8_t idle;			// four dibits a provider sends when a continuous transmission runs dry
+	uint8_t flags;			// AIR_PROFILE_xxx
+	uint8_t verify;			// AIR_VERIFY_xxx: the board's verified-set bit for this profile, 0 none
 	uint8_t nsyncs;
 	air_sync_t sync[AIR_SYNCS_MAX];
 } air_profile_t;
@@ -69,7 +96,7 @@ enum {
 	AIR_FIT_NEEDS_SYNC	= 1u << 6,	// receive starts only at a 24-symbol pattern: no late entry on shorter syncs
 	AIR_FIT_TDMA		= 1u << 7,	// slot clock and per-slot keying
 	AIR_FIT_FULL_DUPLEX	= 1u << 8,
-	AIR_FIT_UNTESTED	= 1u << 15,	// from register facts, never checked on air on this board
+	AIR_FIT_UNTESTED	= 1u << 15,	// never checked on air on this board with this profile (air_profile_t.verify)
 };
 
 // air_chunk_t.flags

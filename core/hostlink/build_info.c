@@ -4,6 +4,7 @@
 #include "config.h"
 #include "hostlink/build_info.h"
 #include "ui/i18n.h"
+#include "radio/radio_air_modes.h"
 #if CONFIG_P25
 #include "radio/radio_p25.h"
 #endif
@@ -24,19 +25,56 @@ const char build_off[] = RFOUNDRY_FEATURES_OFF;
 // The language an empty setting means, as the UI picks it (i18n.c lang_find)
 const char *build_start_now(void) { return lang_code(lang_find(0)); }
 
-// The air-framed modes, each only where the board runs it (build_modes_now)
-#if CONFIG_P25_TRUNK
-#define P25_FEATURES	"P25,P25_TRUNK,"
-#elif CONFIG_P25
-#define P25_FEATURES	"P25,"
+// The air-framed modes' part (build_modes_now): what each row whose mode fits adds (radio_air_mode_t.features), in the
+// table's order. Each set of fitting modes has its string here in flash, so the answer needs no RAM: index bit 0 P25,
+// 1 NXDN, 2 M17, a mode the build doesn't have adding nothing. radioCoreTest checks every set against the rows'
+#if CONFIG_P25
+#define P25_FEATURES	RADIO_P25_FEATURES
+#else
+#define P25_FEATURES	""
 #endif
-#if CONFIG_P25 && CONFIG_NXDN
-static const char modes_both[] = P25_FEATURES "NXDN,";
+#if CONFIG_NXDN
+#define NXDN_FEATURES	RADIO_NXDN_FEATURES
+#else
+#define NXDN_FEATURES	""
+#endif
+#if CONFIG_M17
+#define M17_FEATURES	"M17,"
+#else
+#define M17_FEATURES	""
+#endif
+#if CONFIG_AIR
+static const char *const modes_fit[] = {
+	"", P25_FEATURES, NXDN_FEATURES, P25_FEATURES NXDN_FEATURES,
+#if CONFIG_M17
+	M17_FEATURES, P25_FEATURES M17_FEATURES, NXDN_FEATURES M17_FEATURES, P25_FEATURES NXDN_FEATURES M17_FEATURES,
+#endif
+};
+#define MODE_BITS	(CONFIG_M17 ? 3u : 2u)	// the sets above: without M17 its bit is never set
 #endif
 
 static const char features[] =
 #if CONFIG_NXDN_SCRAMBLER
 	"NXDN_SCRAMBLER,"
+#endif
+	// M17's parts (the mode itself is in build_modes_now): the Codeplug Editor offers the encryptions built
+#if CONFIG_M17_PACKET
+	"M17_PACKET,"
+#endif
+#if CONFIG_M17_BERT
+	"M17_BERT,"
+#endif
+#if CONFIG_M17_SIG
+	"M17_SIG,"
+#endif
+#if CONFIG_M17_SCRAMBLER
+	"M17_SCRAMBLER,"
+#endif
+#if CONFIG_M17_AES
+	"M17_AES,"
+#endif
+#if CONFIG_HEARD_LIST
+	"HEARD_LIST,"
 #endif
 #if CONFIG_FM
 	"FM,"
@@ -226,17 +264,20 @@ static const char features[] =
 #endif
 	"HOSTLINK";	// both listeners run on the host link (USB CDC or a UART)
 
-// P25 and NXDN run where the board's air interface carries them: the Codeplug Editor offers their channels only there
+// The air modes run where the board's air interface carries them (their rows' fits): the Codeplug Editor offers their
+// channels only there
 const char *build_modes_now(void)
 {
-#if CONFIG_P25 && CONFIG_NXDN
-	bool p25 = radio_p25_fits(), nxdn = radio_nxdn_fits();
+#if CONFIG_AIR
+	unsigned fit = 0;
 
-	return p25 && nxdn ? modes_both : p25 ? P25_FEATURES : nxdn ? "NXDN," : "";
-#elif CONFIG_P25
-	return radio_p25_fits() ? P25_FEATURES : "";
-#elif CONFIG_NXDN
-	return radio_nxdn_fits() ? "NXDN," : "";
+	for (const radio_air_mode_t *const *r = radio_air_modes; *r != NULL; r++) {
+		const radio_air_mode_t *m = *r;		// a typed pointer: the stack check follows its calls
+		unsigned bit = (unsigned)(m->mode - RADIO_MODE_P25);	// P25, NXDN, M17 in radio_mode_t's order
+		if (bit < MODE_BITS && m->fits())
+			fit |= 1u << bit;
+	}
+	return modes_fit[fit];
 #else
 	return "";
 #endif

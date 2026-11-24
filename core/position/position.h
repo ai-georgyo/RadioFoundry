@@ -74,6 +74,11 @@ uint8_t position_fix_for_satellite(position_fix_t *out, uint32_t now_ms);
 // Current date and UTC from a fresh GPS or host NMEA stream, independent of the selected coordinate source
 bool position_utc_fields(uint32_t *date_ddmmyy, uint32_t *utc_hms, uint32_t now_ms);
 #endif
+// The UTC the newest GPS or host NMEA sentence carried, whatever coordinate source is selected and however old it is
+// (position_utc.c ages it): the date (ddmmyy) and the time (hhmmss) of the source whose time came last, and the
+// milliseconds (hal_millis) each came at. False: none has sent both since start-up (the board GPS: since
+// Settings > Location > GPS last went on)
+bool position_utc_last(uint32_t *date_ddmmyy, uint32_t *date_ms, uint32_t *utc_hms, uint32_t *time_ms);
 // The same for a DMR report (LRRP), with the ambiguity setting applied; err_m the error estimate in meters, the blur
 // included
 uint8_t position_report(position_fix_t *out, uint32_t *err_m, uint32_t now_ms);

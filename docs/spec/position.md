@@ -8,7 +8,8 @@ screen. None of its users needs another one built in: DMR GPS Info and LRRP work
 works in a build without DMR.
 
 Code: `core/position/position.c` (the service), `nmea.c` (RMC and GGA), `nmea_sky.c` (satellites, `CONFIG_GPS_SKY`),
-the UI in `core/ui/ui_position.c` and Settings > Location, the debug link in `core/debuglink/debuglink_position.c`.
+`position_utc.c` (the time, section 8), `position_geo.c` (distance and bearing, section 9), the UI in
+`core/ui/ui_position.c` and Settings > Location, the debug link in `core/debuglink/debuglink_position.c`.
 
 ## 1. Users and switches
 
@@ -18,10 +19,12 @@ the UI in `core/ui/ui_position.c` and Settings > Location, the debug link in `co
 | LRRP answers and triggered reports ([dmr-data.md](dmr-data.md) 6) | `CONFIG_DMR_LRRP` | `position_report` through the data service's `ownPosition` hook |
 | APRS beacons ([aprs.md](aprs.md) 7) | `CONFIG_APRS` | `position_fix` (exact; the AX.25 packet formats its own ambiguity, the DMR report gets `position_blur`) |
 | Tools > Position ([ui.md](ui.md) 2.3) | `CONFIG_GPS` | `position_gps`, `position_gps_sat` |
+| M17 ([m17.md](m17.md)) | `CONFIG_M17` | `position_fix` (GNSS META), `position_utc_now` (timestamps, section 8), `position_range` |
+| The range to a station: APRS Stations heard, a DMR caller's GPS Info, an LRRP trigger's distance | `CONFIG_APRS`, `CONFIG_DMR_GPS`, `CONFIG_DMR_LRRP` | `position_range` (section 9) |
 
 | Switch | Set by | Builds |
 |---|---|---|
-| `CONFIG_POSITION` | derived: `GPS`, `APRS`, `DMR_LRRP` or `DMR_GPS` | the service, its settings, the Settings > Location rows, the debug link keys |
+| `CONFIG_POSITION` | derived: `GPS`, `APRS`, `DMR_LRRP`, `DMR_GPS` or `M17` | the service, its settings, the Settings > Location rows, the debug link keys, the time and the distance helper |
 | `CONFIG_GPS` | the build | the board GPS half: the board fix, `position_gps_enable`, the Position screen's data |
 | `CONFIG_POSITION_HOST` | derived: `APRS` | the host half: a fix from NMEA sent by a computer. Its feeders are APRS's host port and the debug link's NMEA command |
 | `CONFIG_GPS_SKY` | the build (needs `GPS`) | the satellite table (section 4) |
@@ -158,7 +161,65 @@ APRS or not:
 The APRS command's SET fields for the fixed latitude and longitude, the source, "Send in DMR calls" and the
 ambiguity, and its NMEA operation (host half), are answered by the position service, so they work without APRS.
 
-## 8. Tests
+## 8. UTC
+
+`core/position/position_utc.h`, `position_utc.c`. Wall-clock time from what the radio hears. The tree keeps no clock
+of its own across a restart ([radio-features.md](radio-features.md) 5.6): without a fresh source there is no time.
+
+| Source | `src` | From | Stamp |
+|---|---|---|---|
+| GNSS | `UTC_SRC_GNSS` | the newest board GPS or host NMEA sentence with a time, and the newest RMC date (`position_utc_last`) | the millisecond the time came |
+| A trusted host | `UTC_SRC_HOST` (or what the caller passes) | `utc_set(unix_s, now_ms, src)`: the debug link, later a host link command or a network time client | `now_ms` of the call |
+
+`position_utc_now(now_ms, max_age_ms, &unix_s, &src)`:
+
+- Each source's time is its stamped value plus the whole seconds since the stamp (`now_ms - stamp`).
+- A source older than `max_age_ms` doesn't count. The freshest of the rest wins; on a tie GNSS wins.
+- False, with `src` `UTC_SRC_NONE`: no source in the window. The caller says so (M17 sends timestamp 0).
+- A stamp up to 1 s after `now_ms` is age 0: another task stamped it after the caller read the clock. One further
+  ahead is too old.
+- The age is a difference, so it is right across the millisecond clock's wrap. A source not refreshed for 49.7 days
+  would read fresh again; no source here lasts that long without a new sentence or set.
+
+GNSS details:
+
+- The board GPS counts only while Settings > Location > GPS is on. Of the board GPS and the host, the one whose time
+  came last is taken.
+- The time comes from RMC or GGA; the date only from RMC. When the two came at different moments, the midnights
+  between their stamps move the date to the time's day (with 0.5 s of slack for sentences of the same second). A
+  date and a time a day or more apart give no time.
+- Dates are `ddmmyy`: 80-99 are the 1900s, 00-79 the 2000s, as the satellite tracker reads them. A day past the
+  month's end, a 24th hour, a 60th minute or second (a leap second) give no time.
+- The fraction of a second is dropped.
+
+`utc_set` stores the time in RAM, replaced by the next call; `UTC_SRC_NONE` clears it. One task writes it, the host
+link task (the debug link's M17 op, its only caller); any task reads it: a sequence count, odd while a write is under way, lets a reader that preempted the writer leave the
+source out of that answer instead of waiting.
+
+`utc_since_2020(unix_s)` converts to M17's seconds since 2020-01-01T00:00:00Z (0 before then).
+
+## 9. Distance and bearing
+
+`core/position/position_geo.h`, `position_geo.c`. The one helper every mode's "12.3 km NE" comes from: APRS Stations
+heard and SmartBeaconing's distance, a DMR caller's GPS Info, LRRP's distance trigger, M17.
+
+`position_range(lat1, lon1, lat2, lon2, &meters, &bearing_deg)`: from position 1 to position 2, in 1e-7 degree.
+Either output may be NULL.
+
+| Property | Value |
+|---|---|
+| Model | a sphere of 6371 km: the haversine distance and the initial bearing (0 north, 90 east, 0..359) |
+| Math | single precision with polynomials for sin, cos, atan2 and sqrt; no libm and no double (a double cos and sqrt cost about 8 KB of flash on a soft-float build) |
+| Distance | within 0.5 % of the great circle up to 1,000 km, 1 % beyond (measured: 6.3e-4 from 1 to 1,000 km, the float's step near 1 km; 1.2e-4 beyond) |
+| Bearing | within 1 degree (measured 0.5: the rounding), where it means something: not at a pole, not at the point itself, not at the antipode |
+| Near the antipode | measured to the antipode and taken from half the circumference: the float can't resolve the haversine there |
+| Latitude past a pole | the pole (any int32 may arrive from the air) |
+| Longitudes | any two int32 values: the difference goes the short way round |
+
+It replaced two mode-named copies: APRS's haversine (`aprs_distance_m`, `aprs_bearing_deg`) moved here, and DMR's
+flat-earth `dmr_gps_range` went. Built with `CONFIG_POSITION`.
+
+## 10. Tests
 
 | Test | Checks |
 |---|---|
@@ -166,3 +227,6 @@ ambiguity, and its NMEA operation (host half), are answered by the position serv
 | `tests/host/aprsRadioTest.c` | APRS saves its settings without changing the position's; the host NMEA path |
 | `tests/host/uiFlowTest.c` | the Settings > Location rows, the Fixed position page and its editor |
 | `tests/hil/test_gps.py` (opt-in) | the position keys and settings on the radio, with and without APRS |
+| `tests/host/positionUtcTest.c` | GNSS time aged by the milliseconds since; nothing too old; the host's NMEA and a set time, the freshest winning, GNSS on a tie; the date across midnight and the year; bad dates and times; the clock's wrap and a stamp just ahead; a torn set left out |
+| `tests/host/positionGeoTest.c` | known pairs (meters, 100 km, 1,000 km, long, nearly antipodal, the date line, the poles) and seeded random pairs against a double reference, to the accuracy above; NULL outputs, latitudes past a pole, longitudes a turn apart |
+| `tests/host/aprsTest.c`, `dmrCallTest.c`, `lrrpTest.c` | the APRS, DMR GPS Info and LRRP ranges through `position_range` |

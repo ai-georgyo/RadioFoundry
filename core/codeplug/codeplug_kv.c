@@ -241,7 +241,11 @@ bool codeplug_kv_keep(uint32_t addr, const uint8_t *sector)
 
 bool codeplug_kv_commit(uint32_t addr, const uint8_t *sector)
 {
-	return codeplug_kv_keep(addr, sector) || storage_sector_write(addr, sector);
+	// The area from a tool, which may hold any key: no copy of it left in the journal (settings-store.md 4). No map
+	// (no flash): the write refuses, as before
+	const hal_flash_map_t *m = storage_map();
+	return codeplug_kv_keep(addr, sector) ||
+	       storage_sector_write_wipe(addr, sector, m != NULL && addr == m->openfw_eeprom + CODEPLUG_KV_ADDR);
 }
 
 // Whether an entry before the one at end has key k
@@ -324,9 +328,10 @@ static bool apply(uint8_t *d, uint16_t *len, uint32_t room, const codeplug_kv_op
 }
 
 // Apply the ops to the area in b (a whole sector); with *changed, b is the new area: later entries of any key dropped
-// (no reader sees them), the rest 0xFF, the header and CRC made. A sector that isn't a valid area starts a new one.
-// False if an op doesn't fit or the area is a newer version
-static bool edit(uint8_t *b, const codeplug_kv_op_t *ops, uint8_t n, bool *changed)
+// (no reader sees them), the rest 0xFF, the header and CRC made, and *secret whether it holds a system secret or a
+// traffic key (channel-modes.md 8). A sector that isn't a valid area starts a new one. False if an op doesn't fit or the
+// area is a newer version
+static bool edit(uint8_t *b, const codeplug_kv_op_t *ops, uint8_t n, bool *changed, bool *secret)
 {
 	uint16_t hdr = CODEPLUG_KV_HDR, len = 0;
 	uint32_t crc;
@@ -352,9 +357,13 @@ static bool edit(uint8_t *b, const codeplug_kv_op_t *ops, uint8_t n, bool *chang
 	}
 	for (uint32_t at = 0; at < len; ) {
 		uint32_t next = at + ENTRY_HDR + get16(&d[at + 2]);
-		if (seen(d, at, get16(&d[at]))) {
+		uint16_t k = get16(&d[at]);
+		if (seen(d, at, k)) {
 			len = (uint16_t)cut(d, len, at, next);
 		} else {
+			// 0x0300-0x03FF system secrets, 0x1900-0x1CFF traffic keys (codeplug_kv.h)
+			*secret |= (k >> 8) == (CODEPLUG_KEY_SYS_KEY >> 8) ||
+				   (uint16_t)(k - CODEPLUG_KEY_TRAFFIC) < CODEPLUG_KEY_ZONE_TAG - CODEPLUG_KEY_TRAFFIC;
 			at = next;
 		}
 	}
@@ -382,9 +391,11 @@ bool codeplug_kv_write(const codeplug_kv_op_t *ops, uint8_t n)
 	}
 	storage_lock();
 	uint8_t *b = storage_buffer_acquire();
-	bool changed = false;
-	bool ok = b != NULL && board.flash->read(a, b, STORAGE_SECTOR) && edit(b, ops, n, &changed) &&
-		  (!changed || storage_sector_write(a, b));
+	bool changed = false, secret = false;
+	// The journal's copy of an area that holds a key holds every key in it: it goes (settings-store.md 4). An area
+	// without keys keeps its journal
+	bool ok = b != NULL && board.flash->read(a, b, STORAGE_SECTOR) && edit(b, ops, n, &changed, &secret) &&
+		  (!changed || storage_sector_write_wipe(a, b, secret));
 	if (b != NULL) {
 		storage_buffer_release();
 	}

@@ -67,6 +67,10 @@ typedef struct {
 	// application's base, a first stage included, to the end of the data's load copy). read() reads it: the support
 	// info's image hash (docs/spec/support-info.md 3)
 	void (*image)(uint32_t *addr, uint32_t *len);
+	// Optional (NULL: none): up to n bytes from the SoC's hardware random number generator into buf; returns how many
+	// it gave (0 when the generator reports a seed or clock fault). Never blocks longer than the generator's few
+	// microseconds a word. The core conditions them (core/crypto/entropy.h): they are never used raw
+	size_t (*entropy)(uint8_t *buf, size_t n);
 #if defined(CONFIG_STUB_ENTRY) && CONFIG_STUB_ENTRY
 	uint32_t stub_run_addr;		// last, so a file built without config.h sees the same layout before it
 	// Optional (NULL: any image): the loaded image may run here. The STM32 refuses one that doesn't feed the IWDG

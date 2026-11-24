@@ -93,14 +93,18 @@ static void rx_lost(void *ctx)
 
 // 4.4.4: the FSW, -3 +1 -3 +3 -3 -3 +3 +3 -1 +3; 4.4.3 and 5.3.1.2: the preamble's last 9 symbols with it, which
 // a receiver may lock on at once (N6 = 1, 3 bit errors) where the FSW alone needs two (N5 = 2, 2 bit errors). The
-// head hook stands in for the second FSW
+// head hook stands in for the second FSW. Each pattern's soft modem step gate (air_softmodem_sync_prep;
+// tests/host/airSoftmodemTest.c checks it); no sign gate. No SYNC_GRID flag yet: it waits for on-air evidence. Both
+// rates share one verified-set bit
 #define NXDN_SYNCS \
 	.idle = 0x5F,			/* +3 +3 -3 -3: the reference deviation pattern (3.6) */ \
+	.verify = AIR_VERIFY_NXDN, \
 	.nsyncs = 2, \
 	.sync = { \
-		{ .id = 0, .nsyms = 10, .max_errs = 2, .frame_at = 0, .syms = { 0xCD, 0xF5, 0x90 } }, \
+		{ .id = 0, .nsyms = 10, .max_errs = 2, .frame_at = 0, .syms = { 0xCD, 0xF5, 0x90 }, \
+		  .gate_up = 0x0149, .gate_mask = 0x01EB }, \
 		{ .id = 1, .nsyms = 19, .max_errs = 3, .flags = AIR_SYNC_START_ONLY, .frame_at = 9, \
-		  .syms = { 0xDD, 0x7F, 0x73, 0x7D, 0x64 } }, \
+		  .syms = { 0xDD, 0x7F, 0x73, 0x7D, 0x64 }, .gate_up = 0x8549, .gate_mask = 0xA7EB }, \
 	}
 
 const air_mode_t nxdn_air_mode = {

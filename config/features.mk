@@ -326,15 +326,46 @@ CONFIG_P25 ?= $(CONFIG_DMR)
 # DMR, through the DMR voice path; nothing of the vocoder is in it. Needs DMR
 CONFIG_NXDN ?= $(CONFIG_DMR)
 CONFIG_NXDN_SCRAMBLER ?= $(CONFIG_NXDN)
+# M17 (core/m17, docs/spec/m17.md): stream voice in Codec 2 (core/codec2, encoded and decoded in the tree, no stock
+# vocoder), packet data and the BER test on the air interface, and the M17 channel mode. Needs DMR: the air provider and
+# the PCM audio are the board's DMR glue. It follows DMR, as NXDN does
+CONFIG_M17 ?= $(CONFIG_DMR)
+# M17 packet mode: SMS sent and received, the other data types received and counted (needs M17)
+CONFIG_M17_PACKET ?= $(CONFIG_M17)
+# the M17 bit error rate test mode: BERT frames sent and counted on receive (needs M17)
+CONFIG_M17_BERT ?= $(CONFIG_M17)
+# M17 stream signatures: ECDSA P-256 sign on transmit and verify on receive (needs M17; core/crypto, docs/spec/p256.md)
+CONFIG_M17_SIG ?= $(CONFIG_M17)
+# the M17 scrambler: a stream's frames (voice, and the data a 1600 bit/s stream carries) encrypted with the
+# channel's scrambler key; packet mode has no encryption (needs M17)
+CONFIG_M17_SCRAMBLER ?= $(CONFIG_M17)
+# M17 AES encryption: AES-CTR with the channel's key and nonces from the random pool (needs M17; core/crypto)
+CONFIG_M17_AES ?= $(CONFIG_M17)
+# the list of stations heard (core/radio/radio_heard.c): M17 is its only source so far (needs M17)
+CONFIG_HEARD_LIST ?= $(CONFIG_M17)
+# Derived from the M17 switches and DMR_AES, never set by hand (a command line or a board's config.mk that sets one
+# stops the build): CODEC2 the vocoder (core/codec2), with M17; CRYPTO_AES the one AES in the tree, with M17_AES or
+# DMR_AES; CRYPTO_P256 ECDSA P-256 with M17_SIG; ENTROPY the random pool M17's AES nonces come from, with M17_AES;
+# CRYPTO_HMAC HMAC-SHA-256 and HMAC_DRBG, with P-256 (its RFC 6979 nonces) or the pool; CRYPTO the generic cipher
+# directory (core/crypto), with any of them
+M17_DERIVED := CODEC2 CRYPTO_AES CRYPTO_P256 ENTROPY CRYPTO_HMAC CRYPTO
+$(foreach f,$(M17_DERIVED),$(if $(filter-out undefined,$(origin CONFIG_$(f))),\
+	$(error CONFIG_$(f) is derived from the M17 switches and DMR_AES ($(origin CONFIG_$(f))): set those instead)))
+CONFIG_CODEC2 := $(CONFIG_M17)
+CONFIG_CRYPTO_AES := $(if $(filter y,$(CONFIG_M17_AES) $(CONFIG_DMR_AES)),y,n)
+CONFIG_CRYPTO_P256 := $(CONFIG_M17_SIG)
+CONFIG_ENTROPY := $(CONFIG_M17_AES)
+CONFIG_CRYPTO_HMAC := $(if $(filter y,$(CONFIG_CRYPTO_P256) $(CONFIG_ENTROPY)),y,n)
+CONFIG_CRYPTO := $(if $(filter y,$(CONFIG_CRYPTO_AES) $(CONFIG_CRYPTO_P256) $(CONFIG_CRYPTO_HMAC) $(CONFIG_ENTROPY)),y,n)
 # Derived, never set by hand (a command line or a board's config.mk that sets one stops the build): AIR the air
-# interface, on with any air-framed mode (P25, NXDN); IMBE the full-rate voice decoder and MBE the MBE core, with P25
-$(foreach f,AIR IMBE MBE,$(if $(filter-out undefined,$(origin CONFIG_$(f))),$(error CONFIG_$(f) is derived from CONFIG_P25 \
-	and CONFIG_NXDN ($(origin CONFIG_$(f))): set those instead)))
-CONFIG_AIR := $(if $(filter y,$(CONFIG_P25) $(CONFIG_NXDN)),y,n)
+# interface, on with any air-framed mode (P25, NXDN, M17); IMBE the full-rate voice decoder and MBE the MBE core, with P25
+$(foreach f,AIR IMBE MBE,$(if $(filter-out undefined,$(origin CONFIG_$(f))),$(error CONFIG_$(f) is derived from CONFIG_P25, \
+	CONFIG_NXDN and CONFIG_M17 ($(origin CONFIG_$(f))): set those instead)))
+CONFIG_AIR := $(if $(filter y,$(CONFIG_P25) $(CONFIG_NXDN) $(CONFIG_M17)),y,n)
 CONFIG_IMBE := $(CONFIG_P25)
 CONFIG_MBE := $(CONFIG_IMBE)
 # diagnostics: debug link commands that open an air interface session and move raw symbols, for bench tests (needs an
-# air-framed mode such as P25 or NXDN, and DEBUGLINK; docs/spec/debuglink.md)
+# air-framed mode such as P25, NXDN or M17, and DEBUGLINK; docs/spec/debuglink.md)
 CONFIG_AIR_RAW ?= n
 # P25 trunked: the codec of its systems and channels (docs/spec/p25-codeplug.md 3), a control channel decoded and voice
 # channel grants followed, and where the system allows it registration, voice requests and transmit on the grant
@@ -351,7 +382,8 @@ CONFIG_SATELLITE_TLE ?= $(if $(filter y,$(CONFIG_DEBUGLINK)),y,n)
 
 FEATURES := USB_SERIAL_REQUEST FM SUBTONE DMR DMR_PRIVACY DMR_AES DMR_TALKER_ALIAS DMR_GPS DMR_SMS DMR_TMS DMR_ARS DMR_LRRP DMR_SIGNALING DMR_EMERGENCY DMR_ROAMING DMR_TRUNK DMR_TRUNK_TX DMR_TRUNK_SUPL DMR_TRUNK_GW VOICE_CAPTURE DMR_IP_GATEWAY ZONE_SHARE DMR_UDP_COMPRESS NET_TCP NET_KISS NET_HTTP NET_HTTP_GZIP NET_WEBCTL NET_RADIO_UDP NET_RIGCTL NET_APRSIS NET_USRP MDNS TFTP TFTP_IDDB IDDB_COMPACT DMR_CONTROL_STATION SNMP SFR SFR_DUALPATH_RX SFR_CWID TASK_STACKS \
 	USB HOSTLINK USB_NETWORK NET_PPP HOTSPOT HOTSPOT_SPLIT DEBUGLINK CPS_OPENFW CPS_FAST VFO VFO_FM VFO_DMR DIAG BACKLIGHT_TEST FONT_XL FONT_AA FONT_BIG LANG_ES LANG_IT LANG_FR LANG_ZH CJK_GLYPHS LANG_DEFAULT_ES LANG_DEFAULT_IT LANG_DEFAULT_FR LANG_DEFAULT_ZH UI_COLOR UI_SETTINGS SCAN DUAL_WATCH BEEP SIG_TONES FM_TX_TONES DTMF \
-	RX_EXT VOX REF_TRIM BATTERY_SAVE VIBRATE GPS AUDIO_PROBE STUB_ENTRY NAND_STORAGE CRASH_LOG CRASH_SCREEN CRASH_REPORT WATCHDOG SUPPORT_INFO FAULT_TRACE AM_RX BCAST_FM APRS APRS_AFSK APRS_DMR APRS_RX APRS_IGATE GPS_SKY SATELLITE_TLE KEY_ASSIGN CHANNEL_LIST CHANNEL_EDIT ZONE_EDIT CONTACT_EDIT VOLUME_BAR P25 P25_TRUNK NXDN NXDN_SCRAMBLER AIR_RAW
+	RX_EXT VOX REF_TRIM BATTERY_SAVE VIBRATE GPS AUDIO_PROBE STUB_ENTRY NAND_STORAGE CRASH_LOG CRASH_SCREEN CRASH_REPORT WATCHDOG SUPPORT_INFO FAULT_TRACE AM_RX BCAST_FM APRS APRS_AFSK APRS_DMR APRS_RX APRS_IGATE GPS_SKY SATELLITE_TLE KEY_ASSIGN CHANNEL_LIST CHANNEL_EDIT ZONE_EDIT CONTACT_EDIT VOLUME_BAR P25 P25_TRUNK NXDN NXDN_SCRAMBLER \
+	M17 M17_PACKET M17_BERT M17_SIG M17_SCRAMBLER M17_AES HEARD_LIST AIR_RAW
 
 # The panel's width in pixels: the display class the board's board.toml names (hardware.gallery = "160x128", the width
 # first). Empty when it names none, which counts as a narrow panel
@@ -416,10 +448,13 @@ ifneq ($(call feature_on,HOTSPOT_SPLIT),)
   endif
 endif
 $(if $(and $(call feature_on,NXDN_SCRAMBLER),$(if $(call feature_on,NXDN),,x)),$(error CONFIG_NXDN_SCRAMBLER=y needs CONFIG_NXDN=y))
-$(if $(and $(call feature_on,AIR_RAW),$(if $(call feature_on,AIR),,x)),$(error CONFIG_AIR_RAW=y needs CONFIG_P25=y or CONFIG_NXDN=y (an air-framed mode)))
+$(if $(and $(call feature_on,AIR_RAW),$(if $(call feature_on,AIR),,x)),$(error CONFIG_AIR_RAW=y needs CONFIG_P25=y or CONFIG_NXDN=y or CONFIG_M17=y (an air-framed mode)))
 $(if $(and $(call feature_on,P25_TRUNK),$(if $(call feature_on,P25),,x)),$(error CONFIG_P25_TRUNK=y needs CONFIG_P25=y))
 $(if $(and $(call feature_on,P25),$(if $(call feature_on,DMR),,x)),$(error CONFIG_P25=y needs CONFIG_DMR=y (its talk groups are the codeplug's contacts)))
 $(if $(and $(call feature_on,NXDN),$(if $(call feature_on,DMR),,x)),$(error CONFIG_NXDN=y needs CONFIG_DMR=y (its voice is the DMR vocoder's)))
+# M17: the mode needs DMR, its sub-features need the mode
+$(if $(and $(call feature_on,M17),$(if $(call feature_on,DMR),,x)),$(error CONFIG_M17=y needs CONFIG_DMR=y (the air provider and the PCM audio are the board's DMR glue)))
+$(foreach f,M17_PACKET M17_BERT M17_SIG M17_SCRAMBLER M17_AES HEARD_LIST,$(if $(and $(call feature_on,$(f)),$(if $(call feature_on,M17),,x)),$(error CONFIG_$(f)=y needs CONFIG_M17=y)))
 $(if $(and $(call feature_on,AIR_RAW),$(if $(call feature_on,DEBUGLINK),,x)),$(error CONFIG_AIR_RAW=y needs CONFIG_DEBUGLINK=y))
 ifneq ($(call feature_on,DEBUGLINK),)
   ifeq ($(call feature_on,HOSTLINK),)
@@ -564,10 +599,20 @@ endif
 # Derived: the shared packet data / CSBK code is built when any data feature is on (the emergency alarm is a CSBK)
 CONFIG_DMR_DATA_CORE := $(if $(strip $(foreach f,DMR_SMS DMR_ARS DMR_LRRP DMR_SIGNALING DMR_EMERGENCY DMR_IP_GATEWAY ZONE_SHARE CRASH_REPORT APRS_DMR,$(call feature_on,$(f)))),y,n)
 
-# Derived: the position service (core/position) is built for the GPS and for everything that reports our position
-CONFIG_POSITION := $(if $(strip $(foreach f,GPS APRS DMR_LRRP DMR_GPS,$(call feature_on,$(f)))),y,n)
+# Derived: the position service (core/position) is built for the GPS and for everything that reports our position;
+# M17 also takes its UTC and its distance and bearing (position_utc.h, position_geo.h)
+CONFIG_POSITION := $(if $(strip $(foreach f,GPS APRS DMR_LRRP DMR_GPS M17,$(call feature_on,$(f)))),y,n)
+
+# Derived, never set by hand: the shared DSP (core/dsp: FFT, sine and cosine, 2^x and log2, the integer helpers),
+# built for the voice codecs on it, the MBE core and Codec 2
+$(if $(filter-out undefined,$(origin CONFIG_DSP)),$(error CONFIG_DSP is derived from CONFIG_MBE and CONFIG_CODEC2 \
+	($(origin CONFIG_DSP)): set the modes instead))
+CONFIG_DSP := $(if $(strip $(foreach f,MBE CODEC2,$(call feature_on,$(f)))),y,n)
 
 FEATURE_DEFS := $(foreach f,$(FEATURES) DMR_DATA_CORE POSITION AIR IMBE MBE,-DCONFIG_$(f)=$(if $(call feature_on,$(f)),1,0))
+# M17: the switches derived from it (above)
+FEATURE_DEFS += $(foreach f,$(M17_DERIVED),-DCONFIG_$(f)=$(if $(call feature_on,$(f)),1,0))
+FEATURE_DEFS += -DCONFIG_DSP=$(if $(call feature_on,DSP),1,0)
 
 ## Numeric build values (board config.mk sets the defaults; the command line overrides)
 # Display safe area in pixels: edges hidden by the bezel or lens. CONFIG_DISPLAY_INSET sets all four

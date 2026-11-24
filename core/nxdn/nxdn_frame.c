@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "../air/air_syms.h"
+#include "../fec/crc.h"
 
 // ── Scrambling (4.6) ──
 // Every symbol behind the FSW has its sign inverted where the PN sequence is 1: X^9 + X^4 + 1, loaded with
@@ -75,19 +76,11 @@ static void bit_put(uint8_t *p, uint16_t i, uint8_t b)
 	p[i >> 3] = (uint8_t)(b ? (p[i >> 3] | m) : (p[i >> 3] & ~m));
 }
 
-// ── CRC (4.5.5): MSB first, the register loaded with ones; its bits follow the data, the highest first ──
+// ── CRC (4.5.5): MSB first, the register loaded with ones; its bits follow the data, the highest first. The shared
+// bit-serial CRC (core/fec/crc.h) is this one ──
 uint16_t nxdn_crc(const uint8_t *bits, uint16_t n, uint8_t width, uint16_t poly)
 {
-	uint16_t mask = (uint16_t)((1u << width) - 1), r = mask;
-
-	for (uint16_t i = 0; i < n; i++) {
-		uint8_t fb = (uint8_t)(bit_get(bits, i) ^ ((r >> (width - 1)) & 1));
-
-		r = (uint16_t)((r << 1) & mask);
-		if (fb)
-			r ^= poly;
-	}
-	return r;
+	return fec_crc_bits(bits, n, width, poly, (uint16_t)((1u << width) - 1u));
 }
 
 #define CRC6_POLY	0x27	// x6 + x5 + x2 + x + 1 (SACCH)

@@ -12,6 +12,7 @@
 #include "codeplug/codeplug_kv.h"
 #include "codeplug/codeplug_tag.h"
 #include "codeplug/codeplug_records.h"
+#include "m17/m17_codeplug.h"		// M17_CP_ENTRY_STATION: what a share never brings in (add_system)
 #endif
 
 // The import's working state: static, as the housekeeping task's stack is small. One import or export at a time (the
@@ -325,8 +326,22 @@ static uint8_t find_system(const zsSystem_t *s, uint8_t *buf, uint16_t cap)
 	return CODEPLUG_SYSTEM_NONE;
 }
 
-// A whole system the radio doesn't have, added: its record (own ID 0, no fallback), its secret, its entries. All or
-// nothing: CODEPLUG_SYSTEM_NONE when the area has no room
+// Trust that a share never brings in: an M17 system's station keys say whose signatures are good, and its secret
+// would sign the user's own calls (m17-codeplug.md 7). An offer is unauthenticated and shows neither, so an import
+// leaves both out, in a build without M17 too (the codeplug outlives the firmware); the user adds keys in the Codeplug
+// Editor. Every other type's secret and entries come as sent
+static bool share_keeps_secret(const zsSystem_t *s)
+{
+	return s->type != CODEPLUG_SYSTYPE_M17;
+}
+
+static bool share_keeps_entry(const zsSystem_t *s, const zsEntry_t *e)
+{
+	return s->type != CODEPLUG_SYSTYPE_M17 || e->cls != M17_CP_ENTRY_STATION;
+}
+
+// A whole system the radio doesn't have, added: its record (own ID 0, no fallback), its secret, its entries (as
+// share_keeps_* allow). All or nothing: CODEPLUG_SYSTEM_NONE when the area has no room
 static uint8_t add_system(const zsSystem_t *s)
 {
 	uint8_t first = added_key_count;
@@ -348,15 +363,20 @@ static uint8_t add_system(const zsSystem_t *s)
 	}
 	bool ok = add_key((uint16_t)(CODEPLUG_KEY_SYSTEM + n), kv_buf, (uint16_t)(CODEPLUG_SYS_HDR + s->blockLen));
 
-	if (ok && s->secretLen > 0) {
+	if (ok && s->secretLen > 0 && share_keeps_secret(s)) {
 		ok = add_key((uint16_t)(CODEPLUG_KEY_SYS_KEY + n), s->secret, s->secretLen);
 	}
 	mark_used(CODEPLUG_KEY_SYS_CHAN);
 	for (int k = 0; ok && k < s->entries; k++) {
 		zsEntry_t e;
-		int at = take_free(0xFF);
+		int at;
 
-		ok = at >= 0 && zsEntryAt(&rec, s, k, &e);
+		ok = zsEntryAt(&rec, s, k, &e);
+		if (ok && !share_keeps_entry(s, &e)) {
+			continue;
+		}
+		at = take_free(0xFF);
+		ok = ok && at >= 0;
 		if (ok) {
 			kv_buf[0] = (uint8_t)n;
 			kv_buf[1] = e.cls;

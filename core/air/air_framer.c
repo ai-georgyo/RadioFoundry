@@ -350,6 +350,17 @@ static bool lock(air_framer_t *fr, const air_sync_t *s, uint8_t errs)
 	return true;
 }
 
+// Off its place, while locked (above): a grid profile's pattern only near where it was due, or a START_ONLY one
+#define GRID_TOL	2	// symbols, as the soft modem's grid rule (air_softmodem.c)
+
+static bool grid_allows(const air_framer_t *fr, const air_sync_t *s)
+{
+	int d = (int)fr->upos - sync_need(s);
+
+	return !(fr->mode->profile.flags & AIR_PROFILE_SYNC_GRID) || (s->flags & AIR_SYNC_START_ONLY) ||
+	       (d >= -GRID_TOL && d <= GRID_TOL);
+}
+
 static void rx_sym(air_framer_t *fr, uint8_t d, int8_t soft, bool search)
 {
 	const air_profile_t *p = &fr->mode->profile;
@@ -417,13 +428,15 @@ static void rx_sym(air_framer_t *fr, uint8_t d, int8_t soft, bool search)
 		}
 	}
 	// A sync where none belongs counts only while the last one due was missed: the signal we follow may be gone
-	// and another one there. (A short pattern also turns up in payload, so never while our own syncs come.)
+	// and another one there. (A short pattern also turns up in payload, so never while our own syncs come.) With
+	// AIR_PROFILE_SYNC_GRID only a START_ONLY pattern (a new transmission) or one within GRID_TOL of its place (a
+	// slipped symbol): the payload of a frame whose sync was missed holds a chance 8-symbol sync about every fifth time
 	if (fr->misses && !(fr->upos <= due && fr->sync_seen)) {
 		for (uint8_t i = 0; i < p->nsyncs; i++) {
 			const air_sync_t *s = &p->sync[i];
 			int16_t lvl = fr->lvl, off = fr->off;
 
-			if (fr->upos == (uint16_t)sync_need(s) || !sync_match(fr, s, false, &errs))
+			if (fr->upos == (uint16_t)sync_need(s) || !grid_allows(fr, s) || !sync_match(fr, s, false, &errs))
 				continue;
 			if (sync_need(s) <= AIR_SYNC_SYMS_MAX && !fr->ring) {
 				if (fr->confirmed && fr->mode->rx_lost)

@@ -9,6 +9,7 @@
 #include "board.h"
 #include "vocoder.h"
 #include "mem_window.h"
+#include "chip_uid.h"
 #include "modem/hrc7000/hrc7000.h"
 
 #define WDT_KEY			0x5ADA7200u
@@ -23,21 +24,13 @@
 static uint32_t uid[3];
 static bool have_uid;
 
+// An ID of one repeated byte leaves the radio without a chip ID (chip_uid.h): INFO_CHIP answers unavailable, REBOOT and
+// CLAIM are refused (no token to give), and the entropy pool runs without one
 void hrc_chip_set_uid(const uint8_t *id, uint32_t len)
 {
-	uint32_t w[4] = { 0 };
-	bool varies = false;
-	for (uint32_t i = 0; i < len && i < sizeof(w); i++) {
-		w[i / 4] |= (uint32_t)id[i] << (8u * (i % 4));
-		varies = varies || id[i] != id[0];
+	if (hrc_chip_uid_fold(id, len, uid)) {
+		have_uid = true;
 	}
-	if (!varies) {
-		return;		// all one value: a bus that read nothing, not an ID
-	}
-	uid[0] = w[0] ^ w[3];	// all 16 bytes count: the token (uid[0]) differs whichever part of the ID varies
-	uid[1] = w[1];
-	uid[2] = w[2];
-	have_uid = true;
 }
 
 static bool chip(hal_chip_t *c)

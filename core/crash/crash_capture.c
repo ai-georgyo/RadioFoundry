@@ -8,6 +8,7 @@
 #include <string.h>
 #include "config.h"
 #include "crash/crash.h"
+#include "crash/crash_secret.h"
 #include "hal_time.h"
 #include "board.h"
 #include "FreeRTOS.h"
@@ -89,6 +90,9 @@ void crash_commit(crash_record_t *r)
 		memcpy(r->stack, (const void *)(uintptr_t)r->sp, span);
 		r->flags |= CRASH_F_STACK;
 	}
+	// During secret work (a key or a signing nonce in registers or on the stack) none of that leaves the radio
+	if (crash_secret != 0)
+		crash_secret_scrub(r);
 #if CONFIG_TASK_STACKS
 	put_tasks(r);
 #endif

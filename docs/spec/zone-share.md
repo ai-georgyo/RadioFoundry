@@ -106,8 +106,9 @@ codeplug is sent: no scan lists, no RX group lists, no privacy keys.
 ### 4.2 The modes part
 
 Channels of a kind ([channel-modes.md](channel-modes.md)) go with their tags and the systems they are on. Builds with
-a mode that has channels of a kind carry them (`CONFIG_ZONE_SHARE_MODES`, on with `CONFIG_ZONE_SHARE` and `CONFIG_P25`
-or `CONFIG_DMR_TRUNK`). A record holds
+a mode that has channels of a kind carry them (`CONFIG_ZONE_SHARE_MODES`, on with `CONFIG_ZONE_SHARE` and
+`CONFIG_P25`, `CONFIG_NXDN`, `CONFIG_M17` or `CONFIG_DMR_TRUNK`). What each kind's share holds is in its codeplug
+spec ([m17-codeplug.md](m17-codeplug.md) 7 for M17). A record holds
 the part only when it has such a channel, so a share of plain channels is the same as before. Every length is one
 octet. Kinds' and system types' bytes are opaque here: their mode modules read them.
 
@@ -203,7 +204,7 @@ With a modes part (4.2), after the import's channels are chosen:
 
 | Rule | Behavior |
 |---|---|
-| Systems | matched by type and identity against the radio's own. A match is used as it is: nothing of the radio's system is changed. A whole system the radio doesn't have is added when an imported channel is on it (its own ID 0, no fallback), with its entries and its secret if the record has one. It takes the lowest free system number among those a radio runs (0 to 7); with none free it is missing. Listen only comes as the sender set it: the receiver never forces it |
+| Systems | matched by type and identity against the radio's own. A match is used as it is: nothing of the radio's system is changed. A whole system the radio doesn't have is added when an imported channel is on it (its own ID 0, no fallback), with its entries and its secret if the record has one, except what its type says a share never brings: an M17 system comes without its station keys and its secret ([m17-codeplug.md](m17-codeplug.md) 7). It takes the lowest free system number among those a radio runs (0 to 7); with none free it is missing. Listen only comes as the sender set it: the receiver never forces it |
 | Missing | a system sent as its identity that the radio doesn't have, one the sender withholds, or one with no room left: its channels come in with no system, receive only, and the import counts them as unavailable. The Codeplug Editor flags them |
 | Tags | written for each imported channel: kind, flags and parameter block as sent |
 | Transmit | kept only on a channel whose system the radio has; the system's listen-only flag then rules. Every other channel is receive only (5.3) |

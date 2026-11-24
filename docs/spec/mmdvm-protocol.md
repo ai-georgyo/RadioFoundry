@@ -80,6 +80,9 @@ up to the next 0xE0.
 DMR_DATA2. Every host here accepts both (an ACK of DMR data is ignored;
 the bench tools drop ACKs). Pick one and keep it; ACKing costs 4 bytes per 60 ms.
 
+M17 (45-49) stays NAK 2 on every radio, also where the radio runs M17: the M17 hotspot is not written, because no
+permissible source gives its mode number, commands, payload or status bytes ([m17.md, Not written](m17.md#19-not-written)).
+
 ### 2.2 ACK and NAK
 
 - ACK: `E0 04 70 <cmd>`.

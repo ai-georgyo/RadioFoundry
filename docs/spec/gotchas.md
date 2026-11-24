@@ -21,6 +21,7 @@ Status words: "on air" means verified with an SDR or a second radio; "built" mea
 | 10, 11, 12 | Flash and storage, calibration, memory and RAM limits |
 | 13, 14 | Build and toolchain, SFR |
 | 15, 16, 17 | Testing practice, input, scan |
+| 18 | Air interface and the soft modem |
 
 ## 1. DMR modem timing: HR_C6000
 
@@ -969,3 +970,24 @@ level), so every stop counted a carrier and probed for 700 ms instead of the 150
 took about 12 s. Rule: the scale also sits above the floor the scan reads, the lowest strength past the settle on the
 last 8 stops, by 6 dB plus 3 dB a level (`scan_floor`, `RADIO_DMR_SQL_L1_FLOOR_DB`). A call 20 dB over that floor
 still holds the scan, by the noise reading or by the strength alone (`test_scan_dmr_high_floor`).
+
+## 18. Air interface and the soft modem
+
+**18.1 Short syncs re-time a soft modem on random payload.**
+Symptom: a clean M17-shaped signal through the soft modem came out with symbol errors in bursts and the odd slipped
+symbol (about 19 % of symbols over 120-frame calls, `airSoftmodemTest`); the same modem gave P25 and NXDN none. Cause:
+the modem re-timed on every sync it fitted, anywhere. An 8-symbol pattern of outer symbols turns up in random 4-level
+payload at about (1/4)^8 per position, four such patterns make it frequent, and a near miss a sample or two off moves
+the timing for the rest of the frame. Rule: a profile whose frames are all one length with a sync opening each sets
+`AIR_PROFILE_SYNC_GRID`; while locked the soft modem then takes a sync only where one is due (a whole number of
+`sync_any_syms` after the last, 2 symbols either side), START_ONLY patterns anywhere ([air-interface.md](air-interface.md)
+6). Never on a mode whose units differ in length: its syncs are not on one grid. Status: built.
+
+**18.2 An inverted receive path turns one sync into another.**
+Symptom (by construction, `airSoftmodemTest`): an M17 signal received upside down gives syncs of the wrong kind, not
+none. Cause: M17's LSF sync is its stream sync negated and its packet sync the BERT sync negated, so a tap or a chip
+polarity bit of the wrong sign reads an LSF frame as a stream frame and packet as BERT; P25's and NXDN's syncs negated
+match nothing and just fail. Rule: the mode's frame checks (the LSF CRC, the LICH, the packet CRC) confirm a frame's
+kind before it is used; the head hook rejects a frame that fails them, so an inverted path gives no frame rather than
+a mis-typed one. A receive path is trusted for M17 only once it is checked with the right sign: one checked with P25
+or NXDN has it. Status: built.

@@ -34,6 +34,7 @@ enum {
 #define CRASH_F_STACK		0x04u	// stack[] holds the words at sp (sp pointed into RAM)
 #define CRASH_F_SEEN		0x08u	// shown on the screen or dismissed: not news any more
 #define CRASH_F_SENT		0x10u	// the report went out over the air
+#define CRASH_F_SECRET		0x20u	// it came during secret work (crash_secret.h): r[] and stack[] were zeroed
 
 // Fixed-width members, no padding (256 bytes)
 // One task other than the running one, as the crash found it (crash_record_t.tasks)

@@ -3,7 +3,8 @@
 // APRS information fields (APRS Protocol Reference 1.0.1, chapters 5-14, and the 1.1 / 1.2 addenda; docs/spec/aprs.md
 // 5): our position reports (uncompressed and compressed, symbol, course / speed, altitude, comment, ambiguity),
 // status, messages and acks built; positions (uncompressed, compressed, Mic-E, objects, items), status and messages
-// parsed from what is heard. Positions are integers in 1e-7 degree. Distance and bearing for the station list.
+// parsed from what is heard. Positions are integers in 1e-7 degree. Distance and bearing: position_range
+// (core/position/position_geo.h).
 #ifndef RFOUNDRY_APRS_FMT_H
 #define RFOUNDRY_APRS_FMT_H
 
@@ -75,12 +76,6 @@ typedef struct {
 // Parse an information field. dst is the frame's destination (Mic-E carries latitude there). False only when the
 // field is empty; unknown types come back as APRS_T_UNKNOWN / APRS_T_OTHER
 bool aprs_parse(const ax25_addr_t *dst, const uint8_t *info, size_t n, aprs_parsed_t *p);
-
-// --- Geometry ---
-
-// Great circle distance in meters and initial bearing in degrees (0..359) from a to b
-uint32_t aprs_distance_m(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2);
-uint16_t aprs_bearing_deg(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2);
 
 // Base 91 helpers (exposed for the tests)
 void aprs_base91(uint32_t v, uint8_t digits, char *out);

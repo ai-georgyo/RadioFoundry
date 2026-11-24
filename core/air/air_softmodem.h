@@ -10,6 +10,10 @@
 // It holds its output back by the length of a sync pattern, so a sync found is already sampled on the timing it
 // gave: the framer (air_framer.h) sees every sync it could have seen. No RTOS or board call: the provider owns the
 // tap, calls air_softmodem_rx with what it read, and passes the chunks on as AIR_EV_RX events.
+//
+// A profile with AIR_PROFILE_SYNC_GRID is re-timed, while a lock holds, only by a sync where one is due (short syncs
+// turn up in payload). Each pattern's search gates are constants of the pattern in air_sync_t (gate_up, gate_mask,
+// sign_val, sign_mask), so the state has no per-pattern RAM: air_softmodem_sync_prep computes them.
 #ifndef RFOUNDRY_AIR_SOFTMODEM_H
 #define RFOUNDRY_AIR_SOFTMODEM_H
 
@@ -27,7 +31,7 @@
 typedef void (*air_softmodem_out_t)(const air_chunk_t *c, void *ctx);
 
 // The receiver's state: the caller's memory (a provider with no RAM to spare lays it over buffers its idle DMR
-// engine does not use during a session). About 380 bytes
+// engine does not use during a session). About 350 bytes
 typedef struct {
 	const air_profile_t *p;
 	air_softmodem_out_t out;
@@ -57,17 +61,15 @@ typedef struct {
 	int8_t line[AIR_SOFTMODEM_LINE];	// line units (16 per symbol level at nominal), a ring: the newest at line_at - 1
 	uint8_t line_at;
 	uint8_t line_n;				// valid samples in it (saturates)
-	uint8_t phase;				// line_at modulo SPS: the sample phase, steps' index
-	bool fitted;				// the sample before this one was fitted: last_q is its error
-	// The sync search's gate: per sample phase, one bit per symbol back (bit 0 the newest): that sample was above
-	// the one a symbol before it. A pattern is fitted only where the large steps of its last 17 symbols are all
-	// there but one
+	uint8_t phase;				// line_at modulo SPS: the sample phase, the histories' index
+	// The sync search's gates (each pattern's constants are in its air_sync_t): per sample phase, one bit per symbol
+	// back (bit 0 the newest). steps: that sample was above the one a symbol before it; signs: it was above zero
 	uint16_t steps[AIR_SOFTMODEM_SPS];
-	uint16_t gate_up[AIR_SYNCS_MAX];	// per pattern: the bits of its steps up ...
-	uint16_t gate_mask[AIR_SYNCS_MAX];	// ... and which bits are steps of four levels or more (0: no gate)
+	uint16_t signs[AIR_SOFTMODEM_SPS];
 	uint8_t valid;				// bit i: pattern i can be fitted (its length, more than one level)
+	uint8_t start_only;			// ... and is AIR_SYNC_START_ONLY (the grid rule takes it anywhere)
 	// The sync search: the best fit so far of the peak being climbed
-	uint16_t cand_q, cand_prev_q, last_q;	// fit errors (0xFFFF none): the candidate's, the sample's before it
+	uint16_t cand_q, cand_prev_q;		// fit errors (0xFFFF none): the candidate's, the sample's before it
 	int16_t cand_lvl, cand_off;		// x 256
 	uint8_t cand_sync;
 	uint8_t hold;				// samples before a new candidate may start (the far side of a peak)
@@ -102,5 +104,12 @@ void air_softmodem_rx_reset(air_softmodem_t *m);
 // n samples of one channel, the first taken at t_us on the provider's clock. Calls out for each chunk that fills
 // and for what is left at the end of the call (a chunk never waits for the next call)
 void air_softmodem_rx(air_softmodem_t *m, const int16_t *samples, uint16_t n, uint32_t t_us);
+
+// The search gate words of a pattern from its symbols (hal_air.h, air_sync_t): gate_up / gate_mask, sign_val /
+// sign_mask. For a profile built at run time; a mode's const profile writes the same words as literals (a mode may
+// leave the sign words 0: that gate is off)
+void air_softmodem_sync_prep(air_sync_t *s);
+// ... for each of the profile's nsyncs patterns
+void air_softmodem_profile_prep(air_profile_t *p);
 
 #endif

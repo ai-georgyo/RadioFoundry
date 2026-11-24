@@ -134,6 +134,8 @@ const air_mode_t p25_air_mode = {
 		.bw = RADIO_BW_12K5,
 		.sync_every_syms = P25_LDU_SYMS,	// the longest unit: a frame sync opens every one
 		.idle = 0x5F,			// +3 +3 -3 -3: the deviation test pattern (9.4.1), nothing a receiver frames
+		// No SYNC_GRID: units differ in length, so syncs are not on one grid
+		.verify = AIR_VERIFY_P25,
 		.nsyncs = 1,
 		.sync = { {
 			.id = 0,
@@ -141,6 +143,9 @@ const air_mode_t p25_air_mode = {
 			.max_errs = 4,
 			.frame_at = 0,
 			.syms = { 0x55, 0x75, 0xF5, 0xFF, 0x77, 0xFF },	// 8.3
+			// The soft modem's step gate (air_softmodem_sync_prep; tests/host/airSoftmodemTest.c checks it); no
+			// sign gate
+			.gate_up = 0x20A0, .gate_mask = 0xA8F0,
 		} },
 	},
 	.frame_syms = P25_LDU_SYMS,

@@ -11,6 +11,9 @@ CONFIG_DMR_PRIVACY ?= n
 CONFIG_NXDN_SCRAMBLER ?= n
 # AES-256 voice encryption, for the same reason
 CONFIG_DMR_AES ?= n
+# M17's scrambler and AES encryption hide the meaning in the same way (its signatures stay: they hide nothing)
+CONFIG_M17_SCRAMBLER ?= n
+CONFIG_M17_AES ?= n
 # Motorola text message format: business radio fleets and dispatch software
 CONFIG_DMR_TMS ?= n
 # Registration with a presence server: dispatch systems

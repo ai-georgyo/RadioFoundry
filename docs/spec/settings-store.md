@@ -63,7 +63,10 @@ bytes are 0xFF. It is valid when the magic, the length and the CRC match and the
 (a torn write) is counted in `settings.skipped` and ignored. The valid page 0 record with the highest sequence
 number is in force (2.1 has the other pages). When its layout is not `SETTINGS_LAYOUT`, or no page 0 record is
 valid, the radio starts from the defaults (`settings.load=defaults`). A shorter or longer payload of the same layout
-fills the fields both firmwares know, and the rest keep their defaults (`upgraded`).
+fills the fields both firmwares know, and the rest keep their defaults (`upgraded`). Whatever loads, the boot count
+(section 3) is the highest of any valid page 1 record in the ring, of any layout but 0, so neither a layout change nor
+a save cut after its page 1 lowers it. When that record is not part of the set in force, its sector is kept like the
+set's until the next save stores the count.
 
 **Save**: the records go to the next free slots after the newest record. When a sector is full, the next sector of
 the ring is erased first. Each record is programmed, then its commit word, then the slot is read back. A cut before
@@ -174,8 +177,10 @@ callsign. The own DMR ID is always the codeplug's.
 | Tier III stun | Page 1, after `power_levels` at offset 396: `t3_stun`, a stun kept across a restart ([dmr-trunking.md](dmr-trunking.md) 7.9). Bit 7 (`SETTINGS_T3_STUN`) set: stunned on the codeplug system in slot bits 4-6, whose network ID and model hash to bits 0-3. Written by the radio core when a stun is taken or revived. 0 (an older record) = not stunned. Cleared by a factory reset |
 | Tier III kill | Page 1, offset 397: `t3_kill`, bit 0 (`SETTINGS_T3_KILLED`) a kill taken ([dmr-trunking.md](dmr-trunking.md) 7.9): no DMR at all, in any build, until a factory reset clears it; bits 1-7 reserved (0). 0 (an older record) = not killed |
 | Satellite selection | Page 1, offset 398 (`reserved10[0]`): `satellite_index`, the installed TLE record index selected in Tools > Satellite; 0 selects the first record. Older records read as 0, not `SETTINGS_UNSET8`. The selection is saved when changed. TLE records and frequency pairs are stored separately ([satellite.md](satellite.md) 5) |
-| signaling tones | Page 1, offsets 400-405: `sig_dmr[3]` and `sig_fm[3]`, where the start, end and idle tone sound in DMR and in FM (0 default, 1 off, 2 speaker, 3 on air, 4 speaker + air). Offset 399 remains reserved (`reserved10[1]`); offsets 406-407 are `reserved11[2]` (0). Older records read these as 0, the radio's own tone. The chains of steps are not here: each event's is its codeplug record (`CODEPLUG_KEY_SIG_BEGIN` + event, [codeplug-settings.md](codeplug-settings.md) 3.3), read at start and on every change, so `settings_t` copies on task stacks stay small. `radio_settings_t.sig_dmr`, `sig_fm`, `sig_hz`, `sig_ms` ([radio-features.md](radio-features.md) 4.3) |
-| DMR AES MI reservation | Page 1, offsets 408-411, appended after `reserved11` (a record from before reads 0): `aes_mi_res`, u32, the end of the MI positions reserved for our AES overs ([dmr-voice.md](dmr-voice.md) 5.1.1). 0 = no position yet: the first AES channel with a key seeds one. Written between overs at first use after power-up and renewed as the reservation runs low. A restore while the radio runs can overwrite it; the radio writes back the in-memory end between overs. A restart before that save or a factory reset can still cause keystream reuse |
+| signaling tones | Page 1, offsets 400-405: `sig_dmr[3]` and `sig_fm[3]`, where the start, end and idle tone sound in DMR and in FM (0 default, 1 off, 2 speaker, 3 on air, 4 speaker + air). Offsets 399 and 406-407 hold the boot count (below). Older records read the tone bytes as 0, the radio's own tone. The chains of steps are not here: each event's is its codeplug record (`CODEPLUG_KEY_SIG_BEGIN` + event, [codeplug-settings.md](codeplug-settings.md) 3.3), read at start and on every change, so `settings_t` copies on task stacks stay small. `radio_settings_t.sig_dmr`, `sig_fm`, `sig_hz`, `sig_ms` ([radio-features.md](radio-features.md) 4.3) |
+| boot count | Page 1, in the three bytes that were reserved: bits 0-15 in `boot_count_lo` (offset 406, was `reserved11[2]`), bits 16-23 in `boot_count_hi` (offset 399, was `reserved10[1]`); read and write it through `settings_boot_count` / `settings_set_boot_count`. The start-ups counted: the top of the random pool's nonce counter ([crypto.md](crypto.md) 8.3), so an AES nonce never repeats on this radio. With `CONFIG_ENTROPY` it is bumped and saved at each start-up before any nonce is drawn, and again when a start-up draws 3,072 nonces; a build without the switch keeps it as stored. Never lowered: a factory reset keeps it, and a load takes the highest count in the ring whatever the record's layout (section 2), so a layout change keeps it too. Its place, offsets 399 and 406, is fixed in every layout from now on (`settings.c` asserts it). It stops at 2²⁴ - 1. 0 (an older record) = none yet. In reserved bytes rather than appended: the build keeps several static copies of `settings_t` and more on task stacks |
+| DMR AES MI reservation | Page 1, offsets 408-411, appended after `boot_count_lo` (a record from before reads 0): `aes_mi_res`, u32, the end of the MI positions reserved for our AES overs ([dmr-voice.md](dmr-voice.md) 5.1.1). 0 = no position yet: the first AES channel with a key seeds one. Written between overs at first use after power-up and renewed as the reservation runs low. A restore while the radio runs can overwrite it; the radio writes back the in-memory end between overs. A restart before that save or a factory reset can still cause keystream reuse |
+| M17 | Page 1, in `cp_flags`' spare bits: bits 2-5 the CAN (0..15), bit 6 the voice (set: Codec 2 1600 + data, clear: 3200); through `settings_m17_can` / `settings_m17_1600` / `settings_set_m17`. The VFO's and a channel switched to M17's CAN and voice, and what a new M17 channel starts with: Settings > Talk & listen > M17 CAN, M17 voice, Quick settings in the VFO; handed to the radio core as `radio_m17_settings_t` (`radio_req_m17_settings`, [m17.md](m17.md) 17.1). In spare bits, not appended: `settings_t` has several static copies, and the radio with the least RAM has no 4 bytes a copy to spare. 0 (an older record) = CAN 0, 3200 bit/s; firmware from before keeps the bits (it changes `cp_flags` bit by bit). Cleared by a factory reset. Our callsign, the call text and the sign and position choices are the codeplug's radio-wide record (`0x0A06`, [m17-codeplug.md](m17-codeplug.md) 3), not here |
 | crash report | packed into spare bits, so an older record reads as off with no target: the mode (0 off, 1 ask, 2 send at once) in `accent` bits 4-5; the target's codeplug contact number (0 none, else 1..1024, 11 bits) bits 0-5 in `theme` bits 2-7 and bits 6-10 in `updown_home` bits 2-6. `theme` and `updown_home` keep their value in bits 0-1; read and write them through `settings_theme` / `settings_updown_home` and `settings_crash_*` (`settings.h`). Firmware from before reads a `theme` or `updown_home` with these bits as out of range: the dark theme and Up/Down = channel ([crash-log.md](crash-log.md) 5.2) |
 
 All of these are still layout 1: they were appended before any firmware with the settings store shipped. Page 0
@@ -194,7 +199,8 @@ storage jobs: `storage_job_post(fn, ctx)` hands a function to the housekeeping t
 (the UI says so), and `storage.job_busy` on the debug link shows a pending job. A job runs with no UI lock held, so
 the UI keeps drawing during the flash write; the job reports back through `ui_notify`.
 
-Factory reset (a job): `settings_defaults` into the live copy and save it at once, then `storage_native_erase`.
+Factory reset (a job): `settings_defaults` into the live copy (the boot count kept, section 3) and save it at once,
+then `storage_native_erase`.
 That erases the native area only when its first word is the native magic `STORAGE_NATIVE_MAGIC` (0x4E52444F, bytes 4F 44 52 4E)
 or when it is blank already; anything else is reported as foreign and left alone. The open-firmware codeplug, the
 calibration and the foreign-guarded regions (section 5) are never touched; a reset of those would need its own
@@ -271,6 +277,26 @@ sector rewrite then calls it and checks the result. There is no journal on such 
 the replace is one atomic record, and the replay at boot finds nothing to finish. The patch transaction of
 `storage_write` (up to 4 KB across one or two sectors) still uses the journal.
 
+**Secrets.** J1 keeps a copy of the last sector rewritten, and the debug link's storage dump can read the journal
+([debuglink.md](debuglink.md) 3.13). A copy of the codeplug settings area holds every key the area does: system
+secrets (0x0300-0x03FF) and traffic keys (0x1900-0x1CFF, [channel-modes.md](channel-modes.md) 8). So a rewrite of a
+sector that holds one goes through `storage_sector_write_wipe(addr, data, true)`, which erases J1 once the rewrite is
+done (after step 5; a rewrite that is cut keeps J1 for its replay):
+
+| Write | J1 after it |
+|---|---|
+| `codeplug_kv_write` of an area that then holds a secret (the key's own write, or any other write while one is stored) | Erased |
+| `codeplug_kv_write` of an area with no secret | Kept: the copy holds no key |
+| `codeplug_kv_commit` of the area's sector (a CPS or TFTP commit: a tool's area may hold any key) | Erased when the sector was rewritten; a sector the flash held already is skipped and changes nothing |
+| Any other sector, and `storage_write` (records, names, bitmaps: never a settings area key) | Kept |
+
+At boot, after the replay, J1 is erased when nothing is left to replay and its first byte is not erased: that clears a
+copy a firmware without this rule left, one a cut between a rewrite's step 5 and its erase left, and the part of a
+rewrite a cut stopped before its header, which no replay reads. A J1 starting with 0xFF holds no settings area (its
+header starts with a magic) and is left, so a boot wears nothing. J0 is never erased for this: a sector rewrite's
+header holds only the target's address and a CRC. A flash with `replace` rewrites sectors without J1 and has no such
+copy. The extra erase is one per write of an area with keys, and one per boot after a rewrite.
+
 Wear: J0 and J1 are erased once per sector rewrite. A full qdmr write is about 46 sectors, so the journal sectors
 take 46 erases per write. At 100,000 cycles, that is about 2,000 full codeplug writes. Spreading the journal over a
 ring is possible later. The map has room after 0x01B000.
@@ -333,7 +359,8 @@ send it:
    work tree), then sends the claim with the token.
 2. The firmware notes the request (`storage.claim_pending`). The housekeeping task (`settings_poll`) erases every
    settings sector and both journal sectors, checks they read blank, marks the region ours and writes the
-   ownership mark, then saves the settings the radio is running with.
+   ownership mark, then saves the settings the radio is running with, the boot count included (a foreign region
+   held no record of ours, so no stored count is lost).
 3. The tool polls until `storage.region=ours`.
 
 `rfoundry_debug.py storage dump` saves the same files without claiming; `storage info` shows the state and addresses.
@@ -342,7 +369,7 @@ send it:
 
 | Test | What |
 |---|---|
-| `tests/host/settingsTest.c` | load, save, debounce, ring wrap, layout change, older and newer payload sizes; pages (a page 0 alone from an older firmware, a page newer than page 0, a save that passes over a sector holding an old page); power levels stored against another level count reset; a power cut at every flash operation of a save (the previous or the new set is in force, never neither, and never pages of two saves) |
+| `tests/host/settingsTest.c` | load, save, debounce, ring wrap, layout change, older and newer payload sizes; the boot count over a layout change, a save cut after its page 1 and a cut save right after it erased a sector (the count's record is kept), and through a claim; pages (a page 0 alone from an older firmware, a page newer than page 0, a save that passes over a sector holding an old page); power levels stored against another level count reset; a power cut at every flash operation of a save (the previous or the new set is in force, never neither, and never pages of two saves) |
 | the journal part of `settingsTest.c` | a power cut at every one of the 701 flash operations of a sequence of sector rewrites, then a boot: every sector holds either its old or its new content, and the replayed ones the new |
 | `tests/host/sim/sim_flash.c` | the simulated NOR: program only clears bits (violations counted), erase per 4 KB, a power cut after N operations (a torn program or erase leaves random bits) |
 | `tests/host/radioCoreTest.c` `test_persist` | the radio core saves the zone, the channel and the VFO and comes back to them after a reboot |

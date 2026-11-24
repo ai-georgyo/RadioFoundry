@@ -66,6 +66,8 @@ typedef struct {
 #include "radio/radio_air.h"
 
 extern const radio_air_ops_t radio_nxdn_air;
+// What NXDN adds to the feature string where it fits (its row's features, build_modes_now)
+#define RADIO_NXDN_FEATURES	"NXDN,"
 
 void radio_nxdn_init(void);
 // The board's provider gives NXDN something (receive or transmit) at either rate (any task): what the UI and the
