@@ -32,8 +32,9 @@ import { verify, segments, forDevBuild } from "./manifest.js";
 import { Dfu, DfuError, NormalModeError, WebUsbTransport, checkKey, usbSupported } from "./dfu.js";
 import { Link, LinkError, CableError, SerialStream, RFOUNDRY_USB, RFOUNDRY_NET, CABLES, probe, whyNoAnswer, noAnswerKey, serialSupported, serialApi, browserErrorKey, noDeviceChosen, knownRadioPort } from "./link.js";
 import { readRadio, makeBundle, openBundle, bundleFolder, notBundle, bundleName, describeFirmware, CODEPLUG_SPAN } from "./backup.js";
-import { targets, planInternal, planStock, codeplugSectors, writeCodeplug, codeplugLayout } from "./restore.js";
+import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug, codeplugLayout } from "./restore.js";
 import { Selection } from "./select.js";
+import { describe as describeProtected } from "./protect.js";
 import { codecPresent, decideCodec, DecisionError } from "./decide.js";
 import { tooBig } from "./buildfit.js";
 import { suggestPack, packCode, startCode, startLanguages, startLanguage, setStartLanguage } from "./langsuggest.js";
@@ -3012,7 +3013,11 @@ function afterRestore() {
 			}
 			const spi = S.bundle.parts.get("spi-flash");
 			const now = await link.cpsDump(1, 0, Math.min(spi.data.length, 0x120000), { progress: (d, n) => prog.set(d, n, t("flash.restore.comparing")) });
+			// the board's protected data keeps the radio's bytes: none of the backup's are sent there, and a sector that
+			// differs only inside a protected region isn't written
 			const sectors = codeplugSectors(spi.data, now.data, S.board?.protect);
+			const kept = keptDiffering(spi.data, now.data, S.board?.protect);
+			if (kept.length) diag.note("restore: protected data differs from the backup, the radio keeps its own", { regions: kept.map(describeProtected).join("; ") });
 			await prepareStorage(status);	// the radio refuses every codeplug write until its settings area is RadioFoundry's
 			const refused = await writeCodeplug(link, sectors, (d, n) => prog.set(d, n, t("flash.restore.writing_codeplug")));
 			status.append(notice(refused.length ? t("flash.restore.codeplug_refused", { n: refused.length, total: sectors.length })

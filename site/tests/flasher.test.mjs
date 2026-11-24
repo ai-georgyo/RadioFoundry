@@ -20,7 +20,8 @@ import * as vendorfile from "../static/js/flasher/vendorfile.js";
 import * as explain from "../static/js/flasher/explain.js";
 import { pictureSrc } from "../static/js/flasher/radiotop.js";
 import { readRadio, makeBundle, openBundle, bundleFolder, notBundle, bundleName, CODEPLUG_SPAN } from "../static/js/flasher/backup.js";
-import { targets, planInternal, planStock, codeplugSectors, writeCodeplug } from "../static/js/flasher/restore.js";
+import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug } from "../static/js/flasher/restore.js";
+import { FakeCpsRadio } from "../static/js/codeplug/fakecps.js";
 import { Selection } from "../static/js/flasher/select.js";
 import { codecPresent, decideCodec, DecisionError } from "../static/js/flasher/decide.js";
 import { findKey, readBootKey } from "../static/js/flasher/bootkey.js";
@@ -1044,6 +1045,35 @@ test("protected regions: keep and merge plans refuse a protected sector, a resto
 	const all = codeplugSectors(spi, now).map(([a]) => a);
 	const cut = codeplugSectors(spi, now, [{ mem: "data", start: 0x2000, end: 0x4000, what: "test (x.md 1)" }]).map(([a]) => a);
 	assert.deepEqual(all.filter((a) => a < 0x2000 || a >= 0x4000), cut);
+});
+
+test("the codeplug restore keeps a protected range inside a sector: compared and written around it, its bytes never sent", async () => {
+	// invented ranges: one inside sector 0x1000, one inside sector 0x4000, one covering sector 0x6000 whole
+	const T = { mem: "data", start: 0x1100, end: 0x1300, what: "factory table (hardware-x.md 2.1)" };
+	const T2 = { ...T, start: 0x4800, end: 0x4900 }, WHOLE = { ...T, start: 0x6000, end: 0x7000 }, SAME = { ...T, start: 0x8000, end: 0x8010 };
+	const protect = [WHOLE, T, SAME, T2];
+	const now = new Uint8Array(CODEPLUG_SPAN).fill(0x22);
+	now.fill(0x5A, T.start, T.end);
+	const spi = now.slice();
+	spi.fill(0x00, 0x1000, 0x1400);		// sector 0x1000 differs outside the range and inside it
+	spi.fill(0x33, 0x3100, 0x3200);		// sector 0x3000: no range
+	spi.fill(0x44, T2.start, T2.end);	// sector 0x4000 differs only inside its range
+	spi.fill(0x55, 0x6000, 0x7000);		// sector 0x6000: inside its range whole
+	const sectors = codeplugSectors(spi, now, protect);
+	assert.deepEqual(sectors.map(([a]) => a), [0x1000, 0x3000]);
+	const [, data, parts] = sectors[0];
+	assert.deepEqual(parts.map(([a, d]) => [a, d.length]), [[0x1000, 0x100], [0x1300, 0xD00]]);
+	assert.ok(data.subarray(0x100, 0x300).every((x) => x === 0x5A), "the sector as the radio will hold it: its own bytes in the range");
+	assert.deepEqual(sectors[1][2], [[0x3000, sectors[1][1]]], "a sector without a range: sent whole");
+	assert.deepEqual(keptDiffering(spi, now, protect), [WHOLE, T, T2], "the ranges whose backup bytes the radio doesn't take");
+	// through the CPS: no byte of a range sent, every written sector as the restore said it would be
+	const radio = new FakeCpsRadio({ board: "x" });
+	radio.spi.set(now);
+	assert.deepEqual(await writeCodeplug(new Link(radio.stream()), sectors), []);
+	assert.ok(radio.writes.every(([a, n]) => protect.every((p) => a + n <= p.start || a >= p.end)), "no byte of a range sent");
+	for (const [a, d] of sectors) assert.ok(equal(radio.spi.subarray(a, a + 4096), d), `sector 0x${a.toString(16)}`);
+	assert.ok(radio.spi.subarray(T.start, T.end).every((x) => x === 0x5A) && radio.spi.subarray(T2.start, T2.end).every((x) => x === 0x22));
+	assert.deepEqual(codeplugSectors(spi, radio.spi.subarray(0, CODEPLUG_SPAN), protect), [], "nothing left to write");
 });
 
 test("a backup unpacked and zipped again (one folder, macOS's __MACOSX/) still opens; a zip without backup.json does not", async () => {
