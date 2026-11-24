@@ -822,7 +822,9 @@ A UHF handheld with a keypad, a channel selector, a volume knob with the power s
 screen. **In development, for testers: one radio runs it so far, receive only.** Know these four things first:
 
 - **It does not transmit yet.** RadioFoundry reads the maker's calibration but doesn't transmit on it yet, and it
-  guesses none, so it refuses every transmission, FM and DMR.
+  guesses none, so it refuses every transmission, FM and DMR. Receive uses it: with the calibration in place (on a
+  radio that lost it, after the restore from your backup, [below](#installing-on-the-cs7000-m17-plus)) the receiver
+  takes its tuning from it, and the signal strength reads on the maker's scale, so the figures differ from before.
 - **No DMR voice.** No voice codec is known for this radio. DMR calls show on the screen without audio, and you can't
   talk on DMR. DMR data and FM don't need a codec.
 - **The first installation erases the original firmware and its bootloader for good.** RadioFoundry cannot put them
