@@ -815,6 +815,22 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		return status_only(out, DL_ST_UNAVAILABLE);
 #endif
 	}
+	case DL_STORAGE_OP_FACTORY_LOAD:
+	case DL_STORAGE_OP_FACTORY_RESTORE: {
+#if CONFIG_FACTORY_COPY
+		// The one path that writes the maker's range (settings-store.md 4.2): the checks and the job are the copy's
+		size_t n = 0;
+		if (cap < 1u + FACTORY_COPY_OP_OUT) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		out[0] = req[0] == DL_STORAGE_OP_FACTORY_LOAD ?
+			 factory_copy_load_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n) :
+			 factory_copy_restore_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n);
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
+	}
 	default:
 		return status_only(out, DL_ST_BAD_ARG);
 	}

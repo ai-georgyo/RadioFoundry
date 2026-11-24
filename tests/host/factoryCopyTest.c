@@ -5,7 +5,11 @@
 // every state of its parse (a record for another range among them), the window's states, the source order row by row
 // with an invented checker, the first-start write (only in a region of ours, only over a blank sector, once, a power
 // cut at every flash operation of it, the shared buffer taken, a flash failure), a configuration that doesn't fit the
-// map, and STORAGE op 3's reply (BUSY before and during the load). Every table and every byte here is invented.
+// map, and STORAGE op 3's reply (BUSY before and during the load). The restore (ops 4 and 5, the job): the load's
+// offsets and chunk sizes, BUSY in every state that waits, each refusal in order, the job's re-check under the lock,
+// its steps with a power cut at every flash operation and a failure at each (the held journal past the commit), a
+// second restore after a cut or a failure between window and record, changed() once per job past its checks, and
+// storage_factory_write refused off a listed range. Every table and every byte here is invented.
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +18,7 @@
 #include "storage/factory_copy.h"
 #include "support/sha256.h"
 #include "debuglink/dlog.h"
+#include "debuglink/dl_frame.h"
 #include "sim/sim_flash.h"
 
 #if STORAGE_FACTORY_KEEP != 1 || !CONFIG_FACTORY_COPY
@@ -71,6 +76,7 @@ static const hal_flash_map_t refused_list = {
 static unsigned checks;
 static bool busy_seen;		// factory_copy_info answered BUSY from inside the load
 static bool probe;		// ask factory_copy_info from the checker
+static bool check_no;		// the checker refuses everything (why 3)
 
 static uint8_t sum8(const uint8_t *b, uint32_t n)
 {
@@ -84,6 +90,11 @@ static uint8_t sum8(const uint8_t *b, uint32_t n)
 static bool check(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off)
 {
 	checks++;
+	if (check_no) {
+		*why = 3;
+		*off = 7;
+		return false;
+	}
 	if (probe) {
 		uint8_t o[FACTORY_COPY_INFO_LEN];
 		size_t len = 0;
@@ -102,8 +113,24 @@ static bool check(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off)
 	return true;
 }
 
+// The board's side of the restore: busy() as the test sets it, changed() counted
+static bool board_busy;
+static unsigned changes;
+
+static bool busy(void)
+{
+	return board_busy;
+}
+
+static void changed(void)
+{
+	changes++;
+}
+
 static uint8_t table[N];
-static factory_copy_cfg_t cfg = { .range = 0, .record_addr = REC, .check = check, .table = table };
+static factory_copy_cfg_t cfg = {
+	.range = 0, .record_addr = REC, .check = check, .busy = busy, .changed = changed, .table = table,
+};
 
 const board_t board = { .name = "test", .flash = &sim_flash, .power_count = 5, .factory_copy = &cfg };
 
@@ -133,6 +160,11 @@ static void put32(uint8_t *p, uint32_t v)
 static uint32_t get32(const uint8_t *p)
 {
 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint32_t get16(const uint8_t *p)
+{
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
 }
 
 // The record as the spec lays it out, built here field by field (not by the code under test)
@@ -177,6 +209,8 @@ static void fresh(const uint8_t *w, const uint8_t *r)
 	cfg.check = check;
 	cfg.table = table;
 	log_lines = 0;
+	board_busy = false;
+	check_no = false;
 }
 
 // Another radio's start on the same chip: storage_init, then the load as app.c runs it
@@ -248,6 +282,12 @@ static void test_busy_before_load(void)
 	CHECK(!s.loaded && s.source == FACTORY_COPY_SRC_NONE);
 	// A board without a factory copy: present 0, at any time
 	CHECK(factory_copy_info(NULL, o, &len) && len == 1 && o[0] == 0);
+	// The restore's ops wait for the load too
+	uint8_t req[12] = { 0 }, out[8];
+	sim_flash_create(FLASH_SIZE, &map);
+	CHECK(factory_copy_load_op(&cfg, req, 3, out, &len) == DL_ST_BUSY && len == 0);
+	CHECK(factory_copy_restore_op(&cfg, req, 10, out, &len) == DL_ST_BUSY && len == 0);
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_NONE);
 }
 
 // ---- The record ----
@@ -835,6 +875,672 @@ static void test_info(void)
 	CHECK(factory_copy_why_name(0xFF) == NULL && strcmp(factory_copy_rec_name(0x40), "?") == 0);
 }
 
+
+// ---- The restore: STORAGE ops 4 and 5, and the job (settings-store.md 4.2) ----
+
+#define CODEPLUG	0x3000u		// a codeplug sector beside the window's, for a journaled write of another sector
+
+static uint8_t op_out[8];
+static size_t op_len;
+
+static uint32_t crc(const uint8_t *b)
+{
+	return storage_crc32(0, b, N);
+}
+
+static uint32_t win_crc(void)
+{
+	return storage_crc32(0, &sim_flash_data[WIN], N);
+}
+
+// The window's sector beyond the range holds codeplug bytes (the open-firmware layout's own: they stay writable)
+static uint8_t rest_byte(uint32_t i)
+{
+	return (uint8_t)(0x3Cu ^ (i * 7u));
+}
+
+static bool sector_rest_ok(void)
+{
+	for (uint32_t i = WIN + N; i < WIN + S; i++) {
+		if (sim_flash_data[i] != rest_byte(i)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool maker_ok(void)
+{
+	for (uint32_t i = MAKER; i < MAKER + 2u * S; i++) {
+		if (sim_flash_data[i] != 0x6B) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// A fresh chip with the window's sector's codeplug bytes
+static void chip(const uint8_t *w, const uint8_t *r)
+{
+	fresh(w, r);
+	for (uint32_t i = WIN + N; i < WIN + S; i++) {
+		sim_flash_data[i] = rest_byte(i);
+	}
+}
+
+// A start whose radio init took the state (the board calls factory_copy_taken there)
+static factory_copy_state_t boot(void)
+{
+	factory_copy_state_t s = start();
+	factory_copy_taken();
+	return s;
+}
+
+// Op 4: offset at, k bytes from src
+static uint8_t load_op(uint32_t at, const uint8_t *src, uint32_t k)
+{
+	uint8_t req[2u + 64u];
+	put16(req, at);
+	memcpy(req + 2, src, k);
+	memset(op_out, 0xEE, sizeof(op_out));
+	return factory_copy_load_op(&cfg, req, (uint16_t)(2u + k), op_out, &op_len);
+}
+
+// The whole range from b in chunks of k bytes, as a host sends it
+static bool load_all(const uint8_t *b, uint32_t k)
+{
+	for (uint32_t at = 0; at < N; at += k) {
+		uint32_t n = N - at < k ? N - at : k;
+		if (load_op(at, b + at, n) != DL_ST_OK || op_len != 2 || get16(op_out) != at + n) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Op 5
+static uint8_t restore_op(uint32_t n, uint32_t bytes_crc, uint32_t window_crc)
+{
+	uint8_t req[10];
+	put16(req, n);
+	put32(req + 2, bytes_crc);
+	put32(req + 6, window_crc);
+	memset(op_out, 0xEE, sizeof(op_out));
+	return factory_copy_restore_op(&cfg, req, sizeof(req), op_out, &op_len);
+}
+
+// Op 5 refused with this reason: its reply, nothing posted, nothing written, no changed(), the result shown by op 3
+static bool refused_with(uint8_t reason, uint32_t n, uint32_t bytes_crc, uint32_t window_crc)
+{
+	uint32_t u = sim_flash_units();
+	unsigned c0 = changes;
+	uint8_t st = restore_op(n, bytes_crc, window_crc);
+	uint8_t o[FACTORY_COPY_INFO_LEN];
+	size_t len = 0;
+	bool ok = st == DL_ST_REFUSED && op_len == 4 && op_out[0] == reason && !storage_factory_job_busy();
+	ok = ok && sim_flash_units() == u && changes == c0 && factory_copy_result() == reason;
+	ok = ok && factory_copy_info(&cfg, o, &len) && o[21] == reason;
+	if (!ok) {
+		printf("  op 5: status %u reason %u, want refused %u\n", st, op_out[0], reason);
+	}
+	return ok;
+}
+
+// A chip whose window is blank (as on a radio whose table a codeplug write replaced), a start, b loaded, op 5 accepted
+static bool restore_posted(const uint8_t *b)
+{
+	chip(NULL, NULL);
+	(void)boot();
+	return load_all(b, FACTORY_COPY_LOAD_CHUNK) && restore_op(N, crc(b), win_crc()) == DL_ST_OK && op_out[0] == 0;
+}
+
+static void test_restore_ops(void)
+{
+	static uint8_t b[N], junk[64];
+	uint8_t o[FACTORY_COPY_INFO_LEN];
+	size_t len = 0;
+	good(b, 21);
+	memset(junk, 0x5A, sizeof(junk));
+
+	// No factory copy, or a configuration naming no range: unavailable
+	chip(NULL, NULL);
+	(void)start();
+	CHECK(factory_copy_load_op(NULL, junk, 3, op_out, &op_len) == DL_ST_UNAVAILABLE && op_len == 0);
+	CHECK(factory_copy_restore_op(NULL, junk, 10, op_out, &op_len) == DL_ST_UNAVAILABLE && op_len == 0);
+	cfg.range = 2;
+	CHECK(load_op(0, b, 8) == DL_ST_UNAVAILABLE && restore_op(N, 0, 0) == DL_ST_UNAVAILABLE);
+	cfg.range = 0;
+	// Loaded, but the board's radio init hasn't taken the state yet: BUSY
+	CHECK(load_op(0, b, 8) == DL_ST_BUSY && restore_op(N, 0, 0) == DL_ST_BUSY && op_len == 0);
+	factory_copy_taken();
+
+	// Op 4's length: an offset and 1-56 bytes
+	CHECK(factory_copy_load_op(&cfg, junk, 0, op_out, &op_len) == DL_ST_BAD_ARG);
+	CHECK(factory_copy_load_op(&cfg, junk, 2, op_out, &op_len) == DL_ST_BAD_ARG);
+	CHECK(load_op(0, b, 57) == DL_ST_BAD_ARG);
+	CHECK(factory_copy_info(&cfg, o, &len) && get16(o + 22) == 0);
+	CHECK(load_op(0, b, 1) == DL_ST_OK && op_len == 2 && get16(op_out) == 1);
+	CHECK(load_op(1, b + 1, 56) == DL_ST_OK && get16(op_out) == 57);
+	// Offset 0 starts over; any other must be the bytes loaded so far: a gap, an overlap refused, the count kept
+	CHECK(load_op(0, b, 56) == DL_ST_OK && get16(op_out) == 56);
+	CHECK(load_op(57, b + 57, 8) == DL_ST_BAD_ARG && load_op(55, b + 55, 8) == DL_ST_BAD_ARG);
+	CHECK(factory_copy_info(&cfg, o, &len) && get16(o + 22) == 56);
+	// Never past the range's end
+	CHECK(load_op(56, b + 56, 56) == DL_ST_OK);
+	uint32_t at = 112;
+	while (at + 56u <= N - 1u) {
+		CHECK(load_op(at, b + at, 56) == DL_ST_OK);
+		at += 56;
+	}
+	CHECK(load_op(at, b + at, N - at + 1u) == DL_ST_BAD_ARG);
+	CHECK(factory_copy_info(&cfg, o, &len) && get16(o + 22) == at);
+	CHECK(load_op(at, b + at, N - at) == DL_ST_OK && get16(op_out) == N);
+	CHECK(load_op(N, junk, 1) == DL_ST_BAD_ARG);
+
+	// Every chunk size from 1 to 56 loads the range exactly: op 5's stage and CRC checks pass (a wrong window CRC
+	// stops it at check 7, nothing posted)
+	for (uint32_t k = 1; k <= FACTORY_COPY_LOAD_CHUNK; k++) {
+		bool ok = load_all(b, k) && refused_with(FACTORY_COPY_RS_WINDOW_CRC, N, crc(b), win_crc() ^ 1u);
+		if (!ok) {
+			printf("FAIL %s:%d: chunks of %u\n", __FILE__, __LINE__, (unsigned)k);
+			failures++;
+		}
+	}
+	// Op 5's length, and its reply of four bytes
+	CHECK(factory_copy_restore_op(&cfg, junk, 9, op_out, &op_len) == DL_ST_BAD_ARG && op_len == 0);
+	CHECK(factory_copy_restore_op(&cfg, junk, 11, op_out, &op_len) == DL_ST_BAD_ARG);
+	CHECK(refused_with(FACTORY_COPY_RS_CRC, N, crc(b) ^ 1u, win_crc()));
+	CHECK(op_out[1] == 0 && op_out[2] == 0 && op_out[3] == 0);
+
+	// The names the view shows
+	CHECK(strcmp(factory_copy_result_name(FACTORY_COPY_RS_OK), "ok") == 0);
+	CHECK(strcmp(factory_copy_result_name(FACTORY_COPY_RS_WINDOW_DIFFERS), "window_differs") == 0);
+	CHECK(strcmp(factory_copy_result_name(FACTORY_COPY_RS_FLASH), "flash") == 0);
+	CHECK(strcmp(factory_copy_result_name(FACTORY_COPY_RS_PENDING), "pending") == 0);
+	CHECK(strcmp(factory_copy_result_name(FACTORY_COPY_RS_NONE), "none") == 0);
+	CHECK(strcmp(factory_copy_result_name(14), "?") == 0);
+}
+
+static void job(void *ctx)
+{
+	(void)ctx;
+}
+
+// Each refusal of op 5, in the order it checks them: a later check failing at the same time (the record holds another
+// table under every one before it), each fixed in turn
+static void test_restore_refusals(void)
+{
+	static uint8_t b[N], other[N], bad[N], r[RLEN];
+	good(b, 22);
+	good(other, 23);
+	memcpy(bad, b, N);
+	bad[N - 1] ^= 0x01;
+
+	// 1: another firmware's bytes in the ring: foreign
+	chip(other, NULL);
+	memset(&sim_flash_data[RING], 0x12, 0x100u);
+	(void)boot();
+	CHECK(storage_region() == STORAGE_REGION_FOREIGN);
+	board_busy = true;
+	CHECK(load_op(0, bad, 8) == DL_ST_OK);
+	CHECK(refused_with(FACTORY_COPY_RS_FOREIGN, N - 1u, 0, 0));
+	CHECK(storage_claim() && storage_ready());
+	// The record holds another valid table from here on (check 9 fails under every check before it)
+	spec_record(r, WIN, other, N);
+	memcpy(&sim_flash_data[REC], r, RLEN);
+	// 2: the board's busy(), a storage job pending, the shared buffer taken
+	CHECK(refused_with(FACTORY_COPY_RS_BUSY, N - 1u, 0, 0));
+	board_busy = false;
+	CHECK(storage_job_post(job, NULL));
+	CHECK(refused_with(FACTORY_COPY_RS_BUSY, N - 1u, 0, 0));
+	storage_job_poll();
+	uint8_t *held = storage_buffer_acquire();
+	CHECK(held != NULL && refused_with(FACTORY_COPY_RS_BUSY, N - 1u, 0, 0));
+	storage_buffer_release();
+	// 3: not every byte loaded; the request's n not the range's size
+	CHECK(refused_with(FACTORY_COPY_RS_STAGE, N, 0, 0));
+	CHECK(load_all(bad, FACTORY_COPY_LOAD_CHUNK));
+	CHECK(refused_with(FACTORY_COPY_RS_STAGE, N - 1u, 0, 0));
+	// 4: the loaded bytes' CRC
+	CHECK(refused_with(FACTORY_COPY_RS_CRC, N, crc(bad) ^ 0x80000000u, 0));
+	// 5: the bytes fail the board's check: why and off
+	CHECK(refused_with(FACTORY_COPY_RS_INVALID, N, crc(bad), 0));
+	CHECK(op_out[1] == 2 && get16(op_out + 2) == N - 1u);
+	// 6: the window's two reads differ, or one fails
+	CHECK(load_all(b, 50));
+	sim_flash_misread(WIN + 0x10u, 2);
+	CHECK(refused_with(FACTORY_COPY_RS_UNSTABLE, N, crc(b), 0));
+	sim_flash_misread(0, 0);
+	sim_flash_bad_read(WIN + 0x1F0u, 1);
+	CHECK(refused_with(FACTORY_COPY_RS_UNSTABLE, N, crc(b), 0));
+	sim_flash_bad_read(0, 0);
+	// 7: the window isn't the one the host read
+	CHECK(refused_with(FACTORY_COPY_RS_WINDOW_CRC, N, crc(b), crc(other) ^ 1u));
+	// 8: the window holds another valid table
+	CHECK(refused_with(FACTORY_COPY_RS_WINDOW_DIFFERS, N, crc(b), crc(other)));
+	// 9: a window it refuses, but the record holds another valid table
+	memcpy(&sim_flash_data[WIN], bad, N);
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_DIFFERS, N, crc(b), crc(bad)));
+	// 10: unknown bytes where the record goes: other, newer, unreadable
+	memset(&sim_flash_data[REC], 0x00, 16);
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_OTHER, N, crc(b), crc(bad)));
+	memset(&sim_flash_data[REC], 0xFF, RLEN);
+	sim_flash_data[REC + S - 1u] = 0x7F;
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_OTHER, N, crc(b), crc(bad)));
+	spec_record(r, WIN, other, N);
+	put16(r + 4, 2);
+	memcpy(&sim_flash_data[REC], r, RLEN);
+	sim_flash_data[REC + S - 1u] = 0xFF;
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_OTHER, N, crc(b), crc(bad)));
+	spec_record(r, WIN, b, N);
+	memcpy(&sim_flash_data[REC], r, RLEN);
+	sim_flash_bad_read(REC + 0x100u, 1);
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_OTHER, N, crc(b), crc(bad)));
+	sim_flash_bad_read(0, 0);
+	// A record of ours that fails a check (here the board's: the bytes refused) is ours to replace: accepted
+	spec_record(r, WIN, bad, N);
+	memcpy(&sim_flash_data[REC], r, RLEN);
+	CHECK(restore_op(N, crc(b), crc(bad)) == DL_ST_OK && op_len == 4 && op_out[0] == 0 && storage_factory_job_busy());
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && record_sector_is(b) && sector_rest_ok());
+	// A record of ours holding the same bytes: accepted too (the window then holds the record's table)
+	factory_copy_taken();
+	memcpy(&sim_flash_data[WIN], bad, N);
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), crc(bad)) == DL_ST_OK);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && record_sector_is(b));
+}
+
+// The job: BUSY from op 5 until the board took its outcome, every write in order, the state the flash now has
+static void test_restore_job(void)
+{
+	static uint8_t b[N], other[N];
+	uint8_t o[FACTORY_COPY_INFO_LEN];
+	size_t len = 0;
+	storage_stats_t st0, st1;
+	good(b, 24);
+	good(other, 25);
+
+	unsigned c0 = changes;
+	CHECK(restore_posted(b));
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_PENDING && factory_copy_info(&cfg, o, &len) && o[21] == 0xFE);
+	CHECK(get16(o + 22) == N);
+	// Nothing written before the job; ops 4 and 5 wait for it (the loaded bytes are the job's)
+	CHECK(sim_flash_data[WIN] == 0xFF && sector_blank(REC));
+	CHECK(load_op(0, other, 8) == DL_ST_BUSY && restore_op(N, crc(other), win_crc()) == DL_ST_BUSY);
+	storage_get_stats(&st0);
+	storage_job_poll();
+	storage_get_stats(&st1);
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && changes == c0 + 1u && !storage_factory_job_busy());
+	CHECK(window_is(b) && record_sector_is(b) && sector_rest_ok() && maker_ok());
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0 && sim_flash_granted() == UINT32_MAX);
+	CHECK(st1.factory_rewrites == st0.factory_rewrites + 1u && st1.factory_dropped == st0.factory_dropped);
+	// The state as the flash now is, and the board's table
+	factory_copy_state_t s;
+	factory_copy_get(&s);
+	CHECK(s.source == FACTORY_COPY_SRC_WINDOW && s.win == FACTORY_COPY_WIN_OK && s.rec == FACTORY_COPY_REC_OK);
+	CHECK(s.win_crc == crc(b) && s.rec_crc == crc(b) && s.wrote == FACTORY_COPY_WROTE_NO && s.why == 0 && table_is(b));
+	CHECK(factory_copy_info(&cfg, o, &len) && o[7] == FACTORY_COPY_SRC_WINDOW && o[21] == 0 && get32(o + 12) == crc(b));
+	CHECK(log_lines > 0 && strstr(log_last, "restored") != NULL);
+	// Waiting until the board took it; one changed() per job
+	CHECK(load_op(0, other, 8) == DL_ST_BUSY);
+	storage_job_poll();
+	CHECK(changes == c0 + 1u);
+	factory_copy_taken();
+	CHECK(load_op(0, other, 8) == DL_ST_OK);
+
+	// The next start: the window in use, its record ok, nothing written, no restore at this start
+	s = boot();
+	CHECK(s.source == FACTORY_COPY_SRC_WINDOW && s.rec == FACTORY_COPY_REC_OK && s.wrote == FACTORY_COPY_WROTE_NO);
+	CHECK(load_units == 0 && table_is(b) && factory_copy_result() == FACTORY_COPY_RS_NONE);
+	// The same bytes again: accepted, nothing erased or programmed, ok, changed() once more
+	uint32_t u = sim_flash_units();
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && sim_flash_units() == u && changes == c0 + 2u);
+	factory_copy_taken();
+	// Another table over the good one: refused, the window kept
+	CHECK(load_all(other, 56) && refused_with(FACTORY_COPY_RS_WINDOW_DIFFERS, N, crc(other), win_crc()));
+	CHECK(window_is(b));
+	// The record differing from a window it refuses: the record's own table wins
+	memcpy(&sim_flash_data[WIN], other, N);
+	sim_flash_data[WIN + 3u] ^= 0x01;
+	CHECK(refused_with(FACTORY_COPY_RS_RECORD_DIFFERS, N, crc(other), win_crc()));
+	// A table the record holds restores the window it lost
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && record_sector_is(b) && sector_rest_ok());
+}
+
+// The job's step 0: the checks again under the storage lock, after op 5 accepted. Anything that changed in between
+// ends it with that reason: nothing written, no changed(), no state to take
+static void test_restore_recheck(void)
+{
+	static uint8_t b[N], other[N];
+	good(b, 26);
+	good(other, 27);
+	for (unsigned k = 0; k < 5; k++) {
+		CHECK(restore_posted(b));
+		uint8_t want = 0;
+		uint8_t *held = NULL;
+		if (k == 0) {
+			board_busy = true;				// a transmission began
+			want = FACTORY_COPY_RS_BUSY;
+		} else if (k == 1) {
+			memcpy(&sim_flash_data[WIN], other, N);		// the window isn't the one the host read
+			want = FACTORY_COPY_RS_WINDOW_CRC;
+		} else if (k == 2) {
+			sim_flash_data[REC + 0x20u] = 0x00;		// unknown bytes where the record goes
+			want = FACTORY_COPY_RS_RECORD_OTHER;
+		} else if (k == 3) {
+			check_no = true;				// the bytes no longer pass
+			want = FACTORY_COPY_RS_INVALID;
+		} else {
+			held = storage_buffer_acquire();		// a CPS session took the shared buffer
+			want = FACTORY_COPY_RS_BUSY;
+		}
+		uint32_t u = sim_flash_units();
+		unsigned c0 = changes;
+		storage_job_poll();
+		bool ok = factory_copy_result() == want && sim_flash_units() == u && changes == c0 && !storage_factory_job_busy();
+		ok = ok && (k == 1 ? window_is(other) : sim_flash_data[WIN] == 0xFF) && sector_rest_ok();
+		ok = ok && (k == 2 || sector_blank(REC)) && table_blank();
+		if (held != NULL) {
+			storage_buffer_release();
+		}
+		board_busy = false;
+		check_no = false;
+		// Nothing to take: the next op runs at once
+		ok = ok && load_op(0, b, 8) == DL_ST_OK;
+		if (!ok) {
+			printf("FAIL %s:%d: re-check %u (result %u)\n", __FILE__, __LINE__, k, factory_copy_result());
+			failures++;
+		}
+	}
+}
+
+// A power cut at every unit point of every erase and program of the job, then a start: the window all old or all
+// new, never a mix, the sector's codeplug bytes and the maker's records untouched; then a second restore succeeds
+// (straight to the record, or nothing to write, when the window holds the bytes already)
+static void test_restore_cuts(void)
+{
+	static uint8_t b[N];
+	static uint32_t pt[2048];
+	good(b, 28);
+
+	CHECK(restore_posted(b));
+	sim_flash_ops_begin();
+	storage_job_poll();
+	uint32_t n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	// The window's kept rewrite (J1, J0, its kept block, the header, the target, done) and the record's write
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && n >= 40u);
+	unsigned olds = 0, news = 0, recs = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		CHECK(restore_posted(b));
+		unsigned c0 = changes;
+		sim_flash_cut_after(pt[i]);
+		storage_job_poll();
+		bool ok = factory_copy_result() != FACTORY_COPY_RS_OK && changes == c0 + 1u;
+		factory_copy_state_t s = boot();
+		bool old = true;
+		for (uint32_t k = 0; old && k < N; k++) {
+			old = sim_flash_data[WIN + k] == 0xFF;
+		}
+		bool fresh_win = window_is(b);
+		ok = ok && (old || fresh_win) && sector_rest_ok() && maker_ok() && storage_region() == STORAGE_REGION_OURS;
+		ok = ok && sim_flash_violations() == 0 && sim_flash_ungranted() == 0;
+		// The new window in use, its record written by now (the replay, or this start's first-start write); the old
+		// one blank, the record too
+		ok = ok && (fresh_win ? s.source == FACTORY_COPY_SRC_WINDOW && record_sector_is(b) && table_is(b) :
+			    s.source == FACTORY_COPY_SRC_NONE && sector_blank(REC) && table_blank());
+		olds += old;
+		news += fresh_win;
+		recs += fresh_win && s.wrote == FACTORY_COPY_WROTE_YES;
+		// A second restore
+		uint32_t e = sim_flash_erases(WIN);
+		ok = ok && load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK;
+		storage_job_poll();
+		ok = ok && factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && record_sector_is(b) && sector_rest_ok();
+		ok = ok && (!fresh_win || sim_flash_erases(WIN) == e) && maker_ok();
+		if (!ok) {
+			printf("FAIL %s:%d: restore cut after %u units\n", __FILE__, __LINE__, (unsigned)pt[i]);
+			failures++;
+		}
+	}
+	// Cuts on both sides of the window's commit point, and between the window and the record
+	CHECK(olds > 0 && news > 0 && recs > 0);
+}
+
+// A failure of each erase and program of the job, once: a result that says so, the state the flash has, and in the
+// same session a second restore that finishes (the held journal first, where the failure came past its commit)
+static void test_restore_failures(void)
+{
+	static uint8_t b[N];
+	good(b, 29);
+
+	CHECK(restore_posted(b));
+	uint32_t c0 = sim_flash_op_calls();
+	storage_job_poll();
+	uint32_t total = sim_flash_op_calls() - c0;
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && total >= 10u);
+	unsigned flash = 0, record = 0;
+	for (uint32_t k = 1; k <= total; k++) {
+		CHECK(restore_posted(b));
+		unsigned ch = changes;
+		sim_flash_fail_op(k);
+		storage_job_poll();
+		sim_flash_fail_op(0);
+		uint8_t res = factory_copy_result();
+		bool ok = (res == FACTORY_COPY_RS_FLASH || res == FACTORY_COPY_RS_RECORD) && changes == ch + 1u;
+		flash += res == FACTORY_COPY_RS_FLASH;
+		record += res == FACTORY_COPY_RS_RECORD;
+		// A record failure leaves the window restored, in use at once
+		factory_copy_state_t s;
+		factory_copy_get(&s);
+		ok = ok && (res != FACTORY_COPY_RS_RECORD || (window_is(b) && s.source == FACTORY_COPY_SRC_WINDOW && table_is(b)));
+		factory_copy_taken();
+		ok = ok && load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK;
+		storage_job_poll();
+		ok = ok && factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && record_sector_is(b) && sector_rest_ok();
+		ok = ok && maker_ok() && sim_flash_violations() == 0 && sim_flash_ungranted() == 0;
+		if (!ok) {
+			printf("FAIL %s:%d: restore with operation %u failing (result %u)\n", __FILE__, __LINE__, (unsigned)k, res);
+			failures++;
+		}
+	}
+	CHECK(flash > 0 && record > 0);
+}
+
+// A failure past the window's commit point that persists (the target's program fails after its erase): the journal
+// holds the only copies of the sector, so every journaled write is refused, a second restore included, until a
+// replay can finish the entry
+static void test_restore_held(void)
+{
+	static uint8_t b[N], sec[S], j[2u * S];
+	storage_stats_t st0, st1;
+	good(b, 30);
+
+	CHECK(restore_posted(b));
+	sim_flash_bad_range(WIN + 0x800u, 0x100u);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_FLASH && sim_flash_data[WIN + 0x800u] == 0xFF);
+	memcpy(j, &sim_flash_data[JOURNAL], sizeof(j));
+	factory_copy_taken();
+	storage_get_stats(&st0);
+	memset(sec, 0x21, S);
+	CHECK(!storage_sector_write(CODEPLUG, sec) && !storage_write(CODEPLUG + 0x10u, sec, 16));
+	// The window holds the bytes already (programmed before the worn part): the record's write is the one refused
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK);
+	storage_job_poll();
+	storage_get_stats(&st1);
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_RECORD && st1.factory_refused > st0.factory_refused);
+	CHECK(memcmp(&sim_flash_data[JOURNAL], j, sizeof(j)) == 0 && sector_blank(CODEPLUG) && sector_blank(REC));
+	// The flash works again: the next write finishes the entry first (the window's new bytes, the codeplug's too)
+	sim_flash_bad_range(0, 0);
+	CHECK(storage_sector_write(CODEPLUG, sec));
+	CHECK(window_is(b) && sector_rest_ok() && maker_ok() && sim_flash_data[CODEPLUG] == 0x21);
+	// The second restore goes straight to the record: the window holds the bytes
+	factory_copy_taken();
+	uint32_t e = sim_flash_erases(WIN);
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && record_sector_is(b) && sim_flash_erases(WIN) == e);
+}
+
+// The record's write failing (its sector worn): the window restored and in use at once, the record blank; a second
+// restore with the flash well goes straight to the record
+static void test_restore_record_failure(void)
+{
+	static uint8_t b[N];
+	good(b, 31);
+
+	CHECK(restore_posted(b));
+	sim_flash_bad_range(REC, S);
+	storage_job_poll();
+	sim_flash_bad_range(0, 0);
+	factory_copy_state_t s;
+	factory_copy_get(&s);
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_RECORD && window_is(b) && sector_blank(REC));
+	CHECK(s.source == FACTORY_COPY_SRC_WINDOW && s.rec == FACTORY_COPY_REC_BLANK && table_is(b));
+	factory_copy_taken();
+	uint32_t e = sim_flash_erases(WIN);
+	CHECK(load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK);
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && record_sector_is(b) && sim_flash_erases(WIN) == e);
+}
+
+// A marginal read of the window's sector beyond the range, in the job's first read of it or in the second read that
+// checks J1: the rewrite stops before its commit point, the sector untouched; a second restore succeeds
+static void test_restore_misread(void)
+{
+	static uint8_t b[N];
+	good(b, 33);
+	for (uint32_t nth = 1; nth <= 2; nth++) {
+		CHECK(restore_posted(b));
+		storage_stats_t st0, st1;
+		storage_get_stats(&st0);
+		uint32_t e = sim_flash_erases(WIN);
+		sim_flash_misread(WIN + 0x900u, nth);
+		storage_job_poll();
+		sim_flash_misread(0, 0);
+		storage_get_stats(&st1);
+		bool ok = factory_copy_result() == FACTORY_COPY_RS_FLASH && st1.factory_refused == st0.factory_refused + 1u;
+		ok = ok && sim_flash_erases(WIN) == e && sim_flash_data[WIN] == 0xFF && sector_rest_ok() && sector_blank(REC);
+		factory_copy_taken();
+		ok = ok && load_all(b, 56) && restore_op(N, crc(b), win_crc()) == DL_ST_OK;
+		storage_job_poll();
+		ok = ok && factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && sector_rest_ok() && record_sector_is(b);
+		if (!ok) {
+			printf("FAIL %s:%d: misread %u of the window's sector\n", __FILE__, __LINE__, (unsigned)nth);
+			failures++;
+		}
+	}
+}
+
+// storage_factory_write takes exactly one listed range, inside one sector that holds other bytes, in a region of ours
+static void test_factory_write(void)
+{
+	static uint8_t b[N], big[2u * S];
+	storage_stats_t st0, st1;
+	good(b, 32);
+	memset(big, 0x4D, sizeof(big));
+
+	chip(NULL, NULL);
+	(void)boot();
+	uint32_t u = sim_flash_units();
+	CHECK(!storage_factory_write(WIN, b, N - 1u) && !storage_factory_write(WIN, b, N + 1u));
+	CHECK(!storage_factory_write(WIN + 1u, b, N - 1u) && !storage_factory_write(WIN - 1u, b, N));
+	CHECK(!storage_factory_write(MAKER, big, 2u * S) && !storage_factory_write(MAKER, big, S));
+	CHECK(!storage_factory_write(CODEPLUG, b, N) && !storage_factory_write(WIN, NULL, N));
+	CHECK(sim_flash_units() == u && sim_flash_data[WIN] == 0xFF && maker_ok());
+	storage_get_stats(&st0);
+	CHECK(storage_factory_write(WIN, b, N) && window_is(b) && sector_rest_ok() && sim_flash_ungranted() == 0);
+	storage_get_stats(&st1);
+	CHECK(st1.factory_rewrites == st0.factory_rewrites + 1u && st1.factory_dropped == st0.factory_dropped);
+	u = sim_flash_units();
+	CHECK(storage_factory_write(WIN, b, N) && sim_flash_units() == u);	// holds them already: a skip
+	// Never in a region that isn't ours
+	chip(NULL, NULL);
+	memset(&sim_flash_data[RING], 0x12, 0x100u);
+	(void)boot();
+	u = sim_flash_units();
+	CHECK(!storage_factory_write(WIN, b, N) && sim_flash_units() == u && sim_flash_data[WIN] == 0xFF);
+	chip(NULL, NULL);
+	sim_flash.map = &refused_list;
+	sim_flash_power_on();
+	CHECK(!storage_init());
+	CHECK(!storage_factory_write(WIN, b, N) && sim_flash_data[WIN] == 0xFF);
+	sim_flash.map = &map;
+}
+
+// A board whose changed() takes the new state at once and asks again, still inside the job: the job hasn't ended (its
+// slot neither), so the ops wait
+static uint8_t inner_load, inner_restore;
+
+static void changed_and_ask(void)
+{
+	changes++;
+	factory_copy_taken();
+	uint8_t req[2u + 8u] = { 0 }, out[8];
+	size_t len = 0;
+	inner_load = factory_copy_load_op(&cfg, req, sizeof(req), out, &len);
+	inner_restore = factory_copy_restore_op(&cfg, req, 10, out, &len);
+}
+
+// The ops restore only through the configuration the load accepted: one that doesn't fit the map (a record sector
+// some other writer reaches, the maker's own, the window's; no checker; no table) or another configuration than the
+// loaded one answers UNAVAILABLE, nothing written. A board without changed() never holds the ops up after a job
+static void test_restore_config(void)
+{
+	static uint8_t b[N];
+	good(b, 34);
+	const uint32_t recs[] = { RING, JOURNAL + S, WIN, MAKER + S, REC + 0x100u };
+	for (unsigned i = 0; i < sizeof(recs) / sizeof(recs[0]) + 2u; i++) {
+		chip(NULL, NULL);
+		if (i < sizeof(recs) / sizeof(recs[0])) {
+			cfg.record_addr = recs[i];
+		} else if (i == sizeof(recs) / sizeof(recs[0])) {
+			cfg.check = NULL;
+		} else {
+			cfg.table = NULL;
+		}
+		factory_copy_state_t s = boot();
+		uint32_t u = sim_flash_units();
+		bool ok = s.why == FACTORY_COPY_WHY_CONFIG && storage_ready();
+		ok = ok && load_op(0, b, 8) == DL_ST_UNAVAILABLE && op_len == 0;
+		ok = ok && restore_op(N, crc(b), win_crc()) == DL_ST_UNAVAILABLE && op_len == 0;
+		ok = ok && !storage_factory_job_busy() && sim_flash_units() == u && factory_copy_result() == FACTORY_COPY_RS_NONE;
+		if (!ok) {
+			printf("FAIL %s:%d: configuration %u restored\n", __FILE__, __LINE__, i);
+			failures++;
+		}
+	}
+	// Another configuration than the one loaded, even an equal one
+	chip(NULL, NULL);
+	(void)boot();
+	factory_copy_cfg_t twin = cfg;
+	uint8_t req[2u + 8u] = { 0 };
+	CHECK(factory_copy_load_op(&twin, req, sizeof(req), op_out, &op_len) == DL_ST_UNAVAILABLE);
+	CHECK(factory_copy_restore_op(&twin, req, 10, op_out, &op_len) == DL_ST_UNAVAILABLE);
+	CHECK(load_op(0, b, 8) == DL_ST_OK);
+
+	// No changed(): the job's outcome waits for no one
+	cfg.changed = NULL;
+	unsigned c0 = changes;
+	CHECK(restore_posted(b));
+	storage_job_poll();
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && window_is(b) && changes == c0);
+	CHECK(load_op(0, b, 8) == DL_ST_OK);
+	// changed() taking the state at once: the ops still wait inside the job, and run once it ended
+	cfg.changed = changed_and_ask;
+	CHECK(restore_posted(b));
+	inner_load = inner_restore = 0;
+	storage_job_poll();
+	CHECK(changes == c0 + 1u && inner_load == DL_ST_BUSY && inner_restore == DL_ST_BUSY);
+	CHECK(factory_copy_result() == FACTORY_COPY_RS_OK && load_op(0, b, 8) == DL_ST_OK);
+	cfg.changed = changed;
+}
+
 int main(void)
 {
 	test_busy_before_load();
@@ -848,6 +1554,17 @@ int main(void)
 	test_cut_write();
 	test_config();
 	test_info();
+	test_restore_ops();
+	test_restore_refusals();
+	test_restore_job();
+	test_restore_recheck();
+	test_restore_cuts();
+	test_restore_failures();
+	test_restore_held();
+	test_restore_record_failure();
+	test_restore_misread();
+	test_factory_write();
+	test_restore_config();
 	sim_flash_free();
 	printf("# factoryCopyTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;

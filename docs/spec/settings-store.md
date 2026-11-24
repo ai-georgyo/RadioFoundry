@@ -188,7 +188,9 @@ The settings are written through `settings_save` (debounced, written by `setting
 storage jobs: `storage_job_post(fn, ctx)` hands a function to the housekeeping task, which runs it from
 `storage_job_poll` right after `settings_poll`. There is one slot: a second post while a job is pending is refused
 (the UI says so), and `storage.job_busy` on the debug link shows a pending job. A job runs with no UI lock held, so
-the UI keeps drawing during the flash write; the job reports back through `ui_notify`.
+the UI keeps drawing during the flash write; the job reports back through `ui_notify`. The factory copy's restore
+(4.2), posted from the debug link's task, has a slot of its own (`storage_factory_job_post`), run by the same
+`storage_job_poll` after this one, so the two posters never race for one slot.
 
 Factory reset (a job): `settings_defaults` into the live copy and save it at once, then `storage_native_erase`.
 That erases the native area only when its first word is the native magic `STORAGE_NATIVE_MAGIC` (0x4E52444F, bytes 4F 44 52 4E)
@@ -439,8 +441,8 @@ factory ranges, [build-config.md](../build-config.md)). The range is the **windo
 | `range` | the index of the copied range in `hal_flash_map_t.factory`; at most `FACTORY_COPY_MAX` (960) bytes |
 | `record_addr` | the record's sector: on the chip, clear of every area of the map and of every factory range, and where no CPS address maps |
 | `check` | the board's checker: true when the bytes pass every integrity rule the board knows of the maker's data; else a reason (1-0xEF, the board's numbering) and a byte offset. The board's stricter rules for its own use of a field never fail it |
-| `busy`, `changed` | for the restore; not used yet |
-| `table` | the board's RAM of the range's size: the bytes in use after the load, all 0xFF when there are none |
+| `busy`, `changed` | for the restore (below): a restore is refused while `busy()` is true (the board transmits); `changed()` after every restore job that reached the window's write, from the housekeeping task. It only raises a request: the board reads the state and its table on its own task, then calls `factory_copy_taken()`, and `busy()` holds until then |
+| `table` | the board's RAM of the range's size: the bytes in use after the load and after each restore job, all 0xFF when there are none |
 
 "Valid", for the window and for the record's bytes, means `check` passes: one predicate everywhere below.
 
@@ -494,10 +496,71 @@ never while foreign or none, so on a claim-first board not before the claim), th
 sector is blank. The whole sector (the record, then 0xFF) goes through `storage_sector_write`, a journaled write (4): a
 power cut before its commit point leaves the sector blank, and the next start writes it; one after it is finished by
 the replay. It is then read back twice and parsed, and counts as written only when it is `ok` and holds the window's
-bytes. A failure is shown and tried again at the next start, never in between. Nothing rewrites a record that isn't
-blank, and nothing of the copy writes the window.
+bytes. A failure is shown and tried again at the next start, never in between. Only the restore below rewrites a
+record that isn't blank, and only it writes the window. The board takes the load's state and table at its radio init
+(`factory_copy_taken()`).
 
 The debug link's STORAGE op 3 FACTORY_INFO (`debuglink.md` 3.13) reports all of it, BUSY until the load ran.
+
+**The restore** is the one way the window's bytes change: an owner writes back the table from a backup, on a radio
+whose window lost it. Debug link STORAGE ops 4 FACTORY_LOAD and 5 FACTORY_RESTORE (`debuglink.md` 3.13). A request
+holds 64 bytes at most, so op 4 loads the n bytes in chunks of up to 56, at contiguous offsets, into the copy's own
+RAM (`FACTORY_COPY_MAX` bytes). Op 5 names n, the CRC-32 of the loaded bytes and the CRC-32 of the window as the host
+read it (STORAGE READ is allowed in a factory range, 4.1). It checks, in this order, under the storage lock:
+
+| # | Reason | Refused when |
+|---|---|---|
+| 1 | `foreign` | the region isn't ours (`storage_ready()` false: foreign, none, no map) |
+| 2 | `busy` | the board's `busy()`, a storage job pending (3.0), the shared storage buffer taken (a CPS session) |
+| 3 | `stage` | the bytes loaded aren't n, or n isn't the range's size |
+| 4 | `crc` | the loaded bytes' CRC-32 isn't the request's (host and radio disagree on the bytes) |
+| 5 | `invalid` | the loaded bytes fail `check`: the reply carries its reason and offset |
+| 6 | `unstable` | two reads of the window differ, or one fails |
+| 7 | `window_crc` | the window's CRC-32 now isn't the request's: the host compared another window than this one |
+| 8 | `window_differs` | the window is valid and holds other bytes: a good table is never swapped for another radio's by accident |
+| 9 | `record_differs` | the record is `ok` and holds other bytes: the radio's own copy says otherwise |
+| 10 | `record_other` | the record's sector is `other`, `newer` or unreadable: the record write would overwrite unknown bytes |
+
+A record that is `bad` (ours, a check failing) or `blank` is written over. Reason numbers append only.
+
+Ops 4 and 5 answer BUSY, before any check, until the load ran at this start, while a restore job is pending or
+running, and until the board took the load's state or the job's outcome (`factory_copy_taken()`: once at the board's
+init, and after each `changed()`; a board without `changed()` holds nothing up after a job). So the loaded bytes never
+change under a job, and no job writes the board's table while the board reads it. They answer UNAVAILABLE on a board
+without a factory copy and for a configuration the load refused (`why=config`): the restore runs only with the
+checker, the table and the record sector the load accepted.
+
+Op 5 refused: nothing is posted, nothing written, the reason is the result. Accepted: the result is `pending` and a
+job is posted to the housekeeping task, in a slot of its own (`storage_factory_job_post`, run by `storage_job_poll`
+after the UI's slot). The job:
+
+| Step | Does | A failure |
+|---|---|---|
+| 0 | every check above again, under the storage lock, the loaded bytes' CRC included; the lock and the shared buffer are then held to the end, so no writer runs between the checks and the writes | that reason; nothing written, no `changed()` |
+| 1 | the window, unless it holds the bytes already: `storage_factory_write()`, the kept rewrite (4.1) of the window's sector with the loaded bytes for the range and the sector's other bytes from the flash | `flash` (13) |
+| 2 | the window read twice and compared with the bytes | `verify` (11); the record not touched |
+| 3 | the record (as in the first-start write): built from the bytes, written through `storage_sector_write`, read back and parsed | `record` (12); the window restored, in use at once; the next start writes the record, or a second restore does |
+| 4 | the state read again from the flash as it now is (the source order above; the first-start write's `wrote` kept), the board's table with it | |
+
+Then the result (0 `ok`, or the failure), and `changed()` after every job that got past step 0, whatever its result:
+the board then takes the window as it now is. The result lives in RAM: `none` after a start. There is no retry: the
+owner's tool shows the result, and the owner runs it again.
+
+`storage_factory_write(addr, bytes, len)` takes exactly one listed range, its address and size, inside one sector that
+holds other bytes too (a range across a sector end would take two rewrites, and a whole kept sector is never written),
+in a region of ours; else it returns false and writes nothing. It is built under `CONFIG_FACTORY_COPY` only, and the
+restore's job is its one caller. Its kept rewrite takes J1 from the window's sector with the new bytes over the range,
+the kept block's stream from J1, and checks J1 against a second read of the sector (the new bytes over the range) and
+the stream against the new bytes (the range) and the sector (any other range in it), all before the commit point: a
+marginal read stops it there (`factory_refused`, the result `flash`), the sector untouched. A power cut leaves the old window or the new one, never a mix, as for any kept
+rewrite (4.1); a failure past the commit point holds the journal, so every later journaled write, a second restore's
+included, first finishes that entry and is refused while it can't.
+
+What a second restore does after a cut or a failure: when the window already holds the bytes, step 1 is skipped and
+it goes straight to the record; when the record holds them too, nothing is written and the result is `ok`.
+
+The cost: the copy's RAM for the loaded bytes (`FACTORY_COPY_MAX`, 960 bytes) and the code, under `CONFIG_FACTORY_COPY`.
+The job runs on the housekeeping task, which does not watch the power knob during its erases (some 300 ms).
 
 ## 5. Foreign region guard
 
@@ -609,7 +672,7 @@ the other firmware's layout is known: the utility's channel step after it recogn
 | `tests/host/storageClaimFirstTest.c` | the store built with `STORAGE_CLAIM_FIRST=1`: a blank flash, a blank region with other data around it and a region with other bytes are all foreign, with no program or erase on any sector, every write refused and counted, RAM defaults; the claim touches the region only and leaves the mark, and the next start is ours; our journal header alone is ours and nothing is marked; a power cut at every flash operation of the claim and the save after it (ours once the mark is whole, else foreign with nothing written at that start, and a second claim works); once claimed, a cut at every operation of the saves that erase a ring sector (two laps of a two-sector ring) and inside both kinds of journal rewrite never makes the region foreign |
 | `tests/host/storageJournalLogTest.c` | the journal's flash operations pinned: a scripted run on a map with no factory ranges (sector writes and the skip, patches inside a sector, across a sector end and of the largest size, the sector path, an erase, the native area's erase, a foreign region and its claim, `storage_init` on every J0 and J1 shape of the format, a power cut at the start, one unit in, the middle and the end of every program and erase of each, then a start and one more write), every operation, result, stats and the flash hashed against a golden value taken from the storage.c before the factory ranges. Built as every board builds storage.c and again with `STORAGE_FACTORY_KEEP=1` (`storageJournalLogKeepTest`): one hash |
 | `tests/host/storageFactoryTest.c` | `STORAGE_FACTORY_KEEP=1`, a map with a range inside a sector, two whole kept sectors and a range across a sector end, on the simulated NOR counting erases and programs per sector and refusing those in a kept sector outside the grant: every rule of the list's checks (region none, not one read, program or erase, one log line) and lists that pass at each limit; `replace` with a list refused; `hal_flash_factory_unit` and `_bytes` at the edges; `storage_sector_write` with other bytes, with only factory bytes differing (a skip, dropped), with the radio's own factory bytes, on a whole kept sector (nothing touched), J0's kept block and the merged J1; `storage_write` of a record in a kept sector (the sector path, under the grant), reaching factory bytes, across into a whole kept sector, an erase, the sector path and an erase of everything; a power cut at the first, second, middle and last unit of every erase and program of a kept rewrite (the journal blank before, and holding another kept entry; the range as filled, all 0xFF and all 0x00), then a start: the factory bytes the stored ones, the rest of the sector all old or all new, the region ours, J0 never a foreign slot, the journal usable at once; a misread in the merge and in the second read (stopped before the commit point, nothing to replay); the held journal (a program failure after the target's erase, then every write refused, a skip too, the journal unchanged, until the failure is lifted; the held sector itself written; across a start; with the shared buffer taken; an earlier firmware's patch entry held at the start, not replayed while the shared buffer is taken); the replay of every J0 shape (this firmware's entry, also with a misread of J1, an earlier firmware's verbatim replay of it, another firmware's entry with the target intact and torn, a cut conversion, a block for another target or length, a whole kept sector, stale headers, a patch entry clear of factory bytes unstaged and staged, one reaching them); a power cut at every operation of the replays that write, for the three fills; a claim; the debug read inside a range; the staging and satellite areas. Then the STM32 glue on a fake SPI NOR driver: the backstop with and without a grant, a grant off a unit's start, both maps; built again with `SPI_NOR_ADDR4` (`storageFactoryAddr4Test`): the address 16 MB up, a grant of it included |
-| `tests/host/factoryCopyTest.c` | the factory copy (4.2) over `STORAGE_FACTORY_KEEP=1` storage, with an invented checker: the record's layout field by field; every record state, each field and check alone, a record for another range or size; every window state (a failed read, two reads differing on the first and the second read); the source order row by row; the first-start write: only in a region of ours (not foreign, not none, then after a claim), only over a blank sector (one byte anywhere in it), once, the shared buffer taken (nothing read), a program failure in the sector (finished by the next start's replay) and in the journal (written by the next start), a marginal read at each read of the sector, the journal held at start (a kept rewrite failed past its commit point and its replay failing again: refused, the journal unchanged; written once the replay finishes), and a power cut at every erase and program of it, then a start: the record whole and ok, the window and the maker's other ranges untouched; a configuration that doesn't fit the map (not read, nothing written); STORAGE op 3's reply byte by byte, BUSY before and during the load, present 0 without a configuration |
+| `tests/host/factoryCopyTest.c` | the factory copy (4.2) over `STORAGE_FACTORY_KEEP=1` storage, with an invented checker: the record's layout field by field; every record state, each field and check alone, a record for another range or size; every window state (a failed read, two reads differing on the first and the second read); the source order row by row; the first-start write: only in a region of ours (not foreign, not none, then after a claim), only over a blank sector (one byte anywhere in it), once, the shared buffer taken (nothing read), a program failure in the sector (finished by the next start's replay) and in the journal (written by the next start), a marginal read at each read of the sector, the journal held at start (a kept rewrite failed past its commit point and its replay failing again: refused, the journal unchanged; written once the replay finishes), and a power cut at every erase and program of it, then a start: the record whole and ok, the window and the maker's other ranges untouched; a configuration that doesn't fit the map (not read, nothing written; ops 4 and 5 unavailable, another configuration than the loaded one too); STORAGE op 3's reply byte by byte, BUSY before and during the load, present 0 without a configuration; the restore (ops 4 and 5): op 4's lengths, offsets (a gap, an overlap, past the end) and every chunk size from 1 to 56; BUSY before the load, before the board took the state, while a job is pending and until its outcome is taken; each refusal of op 5 in order, a later check failing at the same time, nothing posted or written; the job's re-check under the lock after op 5 (busy, the window changed, the record's sector changed, the bytes refused, the buffer taken); the job's writes, its state and `changed()` once per job past step 0 (none without `changed()`, and the ops not held up; a `changed()` that takes the state at once still finds them BUSY inside the job); a power cut at every erase and program of the job, then a start (the window all old or all new, its sector's other bytes and the maker's ranges untouched) and a second restore; a failure of each erase and program once, then a second restore in the same session; a failure past the window's commit point that persists (the held journal: every journaled write refused, a restore's included, until the replay finishes); the record's write failing, then a restore straight to the record; `storage_factory_write` refused off a listed range, outside one sector, over a whole kept sector, outside a region of ours; a marginal read of the window's sector in either read of the job's rewrite (stopped before the commit point, the sector untouched) |
 | `cpsKeepTest`, `cpsFastKeepTest`, `tftpKeepTest` | `cpsTest.c`, `cpsFastTest.c` and `tftpTest.c` built with `STORAGE_FACTORY_KEEP=1`: every test of the plain build on maps with no ranges, then a map with a range inside a codeplug sector and a whole kept sector. `X 1-3` with other bytes in the range (acknowledged, kept, the rest written), only the range's bytes (a skip, dropped), none of them, a power cut at every erase and program of `X 3` with the range filled, blank and zero, a foreign region (refused, nothing written) and its claim; direct `END`, SUMS and READ giving the radio's bytes, a block or a codeplug.bin differing only inside the ranges (a skip, dropped); a staged commit, `cps_fast_resume`, a TFTP commit and `tftp_codeplug_resume`, each with a power cut at every erase and program, then a start: the range the stored bytes, the rest all old or all new, the record erased, no erase or program of a kept sector outside the grant. The TFTP ID database refused before any erase where it would reach a kept sector (one record into its sector, or the header's sector) |
 | `tests/hil/test_cps.py` `test_storage_region` | on the radio: the region state matches the view, reads inside the window work and outside it are refused (skips with instructions when foreign) |
 | `tests/hil/test_cps.py` `test_settings_survive_restart` | opt-in `--allow-reboot`: the channel position survives a restart |

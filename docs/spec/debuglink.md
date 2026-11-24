@@ -625,7 +625,7 @@ RESET_COUNTERS also zeroes the data service's counters. `rfoundry_debug.py data 
 ### 3.13 STORAGE
 
 The settings ring / journal region (`settings-store.md` 5): its state, a read-only SPI flash window for dumping it,
-and the claim of a foreign region.
+the claim of a foreign region, and the factory copy with its restore (`settings-store.md` 4.2).
 
 | Op | Request | Reply after the status |
 |---|---|---|
@@ -633,6 +633,8 @@ and the claim of a foreign region.
 | 1 READ | address u32, length u16 (1-1000) | address u32, the bytes. Only inside one of the three ranges of INFO or, on a board built with `STORAGE_FACTORY_KEEP`, inside one factory range of the flash map (`hal_flash_map_t.factory`, `settings-store.md` 4.1; not after `storage_init` refused the list), else `DL_ST_REFUSED`. INFO doesn't list the factory ranges: a host takes them from the board registry. Taken under the storage lock |
 | 2 CLAIM | token u32: the chip UID's low word (INFO_CHIP offset 7) | reason u8. `DL_ST_REFUSED` with reason 1 (bad token) or 4 (no chip info); `DL_ST_UNAVAILABLE` when the region isn't foreign. On OK the housekeeping task erases the region (10 sector erases, up to about 4 s, during which it does not watch the power knob); poll `storage.region` |
 | 3 FACTORY_INFO | none | the factory copy (`settings-store.md` 4.2): present u8, then, when present is 1, 24 bytes (below). `DL_ST_BUSY` until the copy's load ran at this start; `DL_ST_UNAVAILABLE` in a build without `CONFIG_FACTORY_COPY` |
+| 4 FACTORY_LOAD | offset u16, then 1-56 bytes of the factory copy's range | loaded u16: the bytes loaded so far. Offset 0 starts over; any other offset must equal the bytes loaded so far, and the bytes must end inside the range, else `DL_ST_BAD_ARG` (the count kept) |
+| 5 FACTORY_RESTORE | n u16, the CRC-32 u32 of the loaded bytes, the CRC-32 u32 of the window as the host read it | reason u8, why u8, off u16. `DL_ST_OK` with reason 0: the restore's job is posted (poll op 3's result); `DL_ST_REFUSED` with the reason (below), why and off the checker's for reason 5 |
 
 Every op answers `DL_ST_UNAVAILABLE` on a radio with no flash map: a memory chip smaller than the board's map needs
 (the driver drops a map its chip is too small for), where nothing is stored. The web tools read that INFO answer as region "nomap", apart from region 0 in an OK answer (a map whose flash didn't start). A build without the
@@ -642,13 +644,33 @@ command answers `DL_ST_UNKNOWN_CMD`.
 address u32 and size u16, the source u8 (0 none, 1 the window, 2 the record), the window's state u8 (0 unread, 1
 blank, 2 zero, 3 refused, 4 ok), the reason u8 and offset u16 beside it, the window's CRC-32 u32 (0 when unread), the
 record's state u8 (0 unread, 1 blank, 2 ok, 3 bad, 4 newer, 5 other), the CRC-32 u32 of the record's bytes (when ok
-or bad, else 0), the last restore's result u8 (0xFF: none), the bytes a restore has loaded u16 (0), and whether the
-record was written at this start u8 (0 no, 1 written and read back, 2 the write failed). The CRCs are
+or bad, else 0), the last restore's result u8 (FACTORY_RESTORE below; 0xFF none at this start, 0xFE its job pending),
+the bytes op 4 has loaded u16, and whether the record was written at this start u8 (0 no, 1 written and read back, 2
+the write failed). After a restore's job the state is the flash's as the job left it. The CRCs are
 `storage_crc32`'s, the same as Python's `zlib.crc32`, so a host compares them with its backup's bytes. The reason
 numbers 1-0xEF are the board's checker's (its hardware page names them); the copy's own are 0xF0 `read` (no flash, a
 read failed), 0xF1 `unstable` (two reads differed), 0xF2 `conflict` (window and record both valid and different:
 neither used), 0xF3 `buffer` (the shared storage buffer was taken), 0xF4 `config` (the board's configuration doesn't
 fit its map). A firmware from before the op answers `DL_ST_BAD_ARG`.
+
+**FACTORY_LOAD, FACTORY_RESTORE** (ops 4 and 5): the one way the window's bytes change, an owner writing back the
+maker's table from a backup (`settings-store.md` 4.2). The host reads the window (READ, allowed in the range), loads
+the backup's bytes with op 4 in chunks, then sends op 5 with their CRC-32 and the window's. The radio checks, in
+order, and refuses with the first that fails: 1 `foreign` (the region isn't ours), 2 `busy` (the board's busy: a
+transmission; a storage job pending; the shared storage buffer taken by a CPS session), 3 `stage` (not n bytes loaded,
+or n not the range's size), 4 `crc` (the loaded bytes' CRC-32), 5 `invalid` (the bytes fail the board's checker: why
+and off), 6 `unstable` (two reads of the window differ, or one fails), 7 `window_crc` (the window isn't the one the
+host read), 8 `window_differs` (the window holds another valid table), 9 `record_differs` (the record holds another
+valid table), 10 `record_other` (the record's sector holds unknown bytes). Accepted, a job on the housekeeping task
+checks it all again under the storage lock, writes the window (journaled, keeping the sector's other bytes), reads it
+back twice, then writes the record; its result, in op 3, is 0 `ok` or a reason above (it changed nothing), 11
+`verify` (the window read back differs; the record not written), 12 `record` (the record's write failed; the window
+restored), 13 `flash` (the window's write failed). Reason numbers append only. Ops 4 and 5 answer `DL_ST_BUSY`
+until the load ran, while a job is pending or running and until the board took its outcome (on the radio task, at
+once); `DL_ST_UNAVAILABLE` in a build without `CONFIG_FACTORY_COPY`, on a board without a factory copy and when the
+load refused the board's configuration (op 3's why `config`). The job's
+erases (some 300 ms) run on the housekeeping task, which does not watch the power knob meanwhile. A firmware from
+before the ops answers `DL_ST_BAD_ARG`.
 
 **Claim first** (flags bit 0): the board builds with `STORAGE_CLAIM_FIRST` (`settings-store.md` 5). Its data flash
 holds another firmware's data in an unknown layout until the claim, the region is foreign on every unit until then,

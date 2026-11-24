@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "config.h"
 #include "board.h"
 
 #define STORAGE_SECTOR		4096u	// the erase unit the core works in (boards with another erase size: no writes)
@@ -86,6 +87,16 @@ storage_slot_t storage_slot_check(const uint8_t slot[STORAGE_SLOT_SIZE]);
 // flash already holds exactly that (in a kept sector: outside its factory bytes)
 bool storage_sector_write(uint32_t addr, const uint8_t *data);
 
+#if STORAGE_FACTORY_KEEP && CONFIG_FACTORY_COPY
+// The one write of a factory range's own bytes (the factory copy's restore, settings-store.md 4.2, is its one
+// caller): the kept rewrite of the range's sector with len bytes for the range, the sector's other bytes (other
+// ranges' included) carried over from the flash. addr and len must be one listed range exactly, inside one sector that
+// holds other bytes too; else false, nothing written. Skipped when the range holds the bytes already. As power safe as
+// any kept rewrite: a cut leaves the old bytes or the new ones, never a mix; a failure past the commit point holds the
+// journal. Takes the storage lock, not the shared buffer
+bool storage_factory_write(uint32_t addr, const uint8_t *bytes, uint32_t len);
+#endif
+
 // Write any range: each sector it touches is read into the shared buffer, merged and rewritten as above. False if
 // the shared buffer is taken (a CPS write in progress) or the flash fails. buf NULL erases the range (all 0xFF). Up
 // to 4072 bytes are one transaction over the one or two sectors they touch (settings-store.md 4); a range touching a
@@ -130,8 +141,15 @@ typedef void (*storage_job_fn)(void *ctx);
 // False while the last job is still pending or running
 bool storage_job_post(storage_job_fn fn, void *ctx);
 bool storage_job_busy(void);
-// The housekeeping task: run the pending job, if any
+// The housekeeping task: run the pending job, if any (and the factory copy's, after it)
 void storage_job_poll(void);
+#if STORAGE_FACTORY_KEEP && CONFIG_FACTORY_COPY
+// A slot of its own for the factory copy's restore job (posted from the debug link's task; the slot above has the
+// UI's task as its one poster), run by storage_job_poll after the other. False while its last job is pending or
+// running
+bool storage_factory_job_post(storage_job_fn fn, void *ctx);
+bool storage_factory_job_busy(void);
+#endif
 
 typedef struct {
 	uint32_t sector_writes;		// journaled rewrites done
