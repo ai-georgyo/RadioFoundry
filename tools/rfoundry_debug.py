@@ -224,7 +224,7 @@ PRESS, LONG, REPEAT, DOWN, UP = range(5)
 VIEW_SECTIONS = ["core", "channel", "dmr", "dmr_call", "dmr_stats", "hotspot", "link", "features", "dmr_data",
                  "storage", "dmr_ext", "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
                  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc", "net_link", "cps", "board", "audio", "t3",
-                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn",
+                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn", "board2",
                  "dmrip"]
 
 OP_CHANNEL_STEP, OP_ZONE_POS, OP_ZONE, OP_VFO, OP_VFO_SET, OP_VFO_STEP, OP_POWER, OP_SQUELCH, OP_BANDWIDTH, \
@@ -1169,6 +1169,17 @@ class DebugLink:
             kv.pop("section", None)
             out.update(kv)
             out.setdefault("ms", ms)
+        if "board" in sections and "board2" not in sections:
+            # A board whose keys outgrow one reply has their rest in board2, still board.<key> (debuglink.md 3.7);
+            # another radio, or an older firmware, has no such section and answers BAD_ARG
+            try:
+                _, _, kv = self.view_section("board2")
+            except DebugLinkError as e:
+                if e.status != ST_BAD_ARG:
+                    raise
+            else:
+                kv.pop("section", None)
+                out.update(kv)
         return out
 
     def screenshot_raw(self):
@@ -3442,6 +3453,37 @@ def self_test():
         rc, names, data, _ = claim(r)
         check(rc == 0 and r.claims == 1 and data is None and not r.reads and len(names) == 2,
               f"not claim first ({'flag clear' if flags == 0 else 'older firmware'}): the region dump, then the claim")
+
+    # GET_VIEW (debuglink.md 3.7): `board2` only on a board that splits its keys; on any other radio it answers BAD_ARG
+    # and the next links skip it
+    class FakeView(DebugLink):
+        def __init__(self, split):
+            self.split, self.asked = split, []
+
+        def request(self, cmd, payload=b"", **kw):
+            idx = payload[0]
+            self.asked.append(VIEW_SECTIONS[idx])
+            b2 = VIEW_SECTIONS.index("board2")
+            if idx == b2 and not self.split:
+                raise DebugLinkError("bad argument", ST_BAD_ARG)
+            # A build without CONFIG_DEBUGLINK_DMRIP: board2 is the last section there could be
+            nxt = idx + 1 if idx + 1 <= b2 else 0xFF
+            if nxt == b2 and not self.split:
+                nxt = 0xFF
+            text = {"board": "section=board\nboard.name=t\nboard.a=1\n",
+                    "board2": "section=board2\nboard.cal_table=ok src=window\n"}.get(VIEW_SECTIONS[idx],
+                                                                                    f"section={VIEW_SECTIONS[idx]}\n")
+            return 0, struct.pack("<IB", 5, nxt) + text.encode()
+
+    split, plain = FakeView(True), FakeView(False)
+    v, w = split.view(["board"]), plain.view(["board"])
+    check(v.get("board.a") == "1" and v.get("board.cal_table") == "ok src=window" and split.asked == ["board", "board2"],
+          "view --section board: board2's keys merged where the radio has it")
+    check(w.get("board.a") == "1" and "board.cal_table" not in w and plain.asked == ["board", "board2"],
+          "view --section board: a radio without board2 answers BAD_ARG, and the board keys stay")
+    split.asked, plain.asked = [], []
+    split.view(), plain.view()
+    check(split.asked[-1] == "board2" and "board2" not in plain.asked, "view: the next links reach board2 only where it is")
     # A detour's steps (debuglink.md 7.4): the RADIO and PTT requests the radio command would make, and waits
     items = detour_steps(["radio freq 461.0875", "wait 500", "ptt 2"])
     check(items == [(RADIO, bytes([5]) + struct.pack("<I", 461087500)), (0, 500), (PTT, struct.pack("<BH", 1, 2300)),

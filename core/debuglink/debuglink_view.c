@@ -560,22 +560,6 @@ static void cps_section(dl_text_t *t)
 #endif
 }
 
-// The board's name and its own keys, each prefixed "board." (bring-up readings a HIL test checks; docs/spec/debuglink.md
-// 3.7)
-static void board_section(dl_text_t *t)
-{
-	char line[80];
-
-	dl_text_kv_str(t, "board.name", board.name);
-	dl_text(t, "board.variant_mismatch=%u\n", board_variant_mismatch() ? 1u : 0u);
-	for (uint8_t i = 0; board.view_line != NULL && i < 0xFFu && !t->full; i++) {
-		if (!board.view_line(i, line, sizeof(line))) {
-			break;
-		}
-		dl_text(t, "board.%s\n", line);
-	}
-}
-
 // The voice frames captured, in order: 18 hex digits a frame, L a lost one
 static void voice_cap_section(dl_text_t *t)
 {
@@ -607,7 +591,7 @@ static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dm
 						  "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
 						  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc",
 						  "net_link", "cps", "board", "audio", "t3", "t3_svc", "t3_roam", "voice_cap", "t3_msg",
-						  "t3_ra", "p25", "p25_trunk", "nxdn",
+						  "t3_ra", "p25", "p25_trunk", "nxdn", "board2",
 #if CONFIG_DEBUGLINK_DMRIP
 						  "dmrip",
 #endif
@@ -615,12 +599,12 @@ static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dm
 
 const char *debuglink_view_name(uint8_t section)
 {
-	return (section < DL_VIEW_COUNT) ? section_names[section] : NULL;
+	return debuglink_view_present(section) ? section_names[section] : NULL;
 }
 
 void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t)
 {
-	if (section >= DL_VIEW_COUNT) {
+	if (!debuglink_view_present(section)) {
 		return;
 	}
 	dl_text(t, "section=%s\n", section_names[section]);
@@ -699,7 +683,10 @@ void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t
 		debuglink_view_watchdog(t);
 		break;
 	case DL_VIEW_BOARD:
-		board_section(t);
+		debuglink_view_board(0, t);
+		break;
+	case DL_VIEW_BOARD2:
+		debuglink_view_board(1, t);
 		break;
 	case DL_VIEW_RESET:
 		debuglink_view_reset(t);

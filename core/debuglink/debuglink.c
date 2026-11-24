@@ -421,13 +421,13 @@ static size_t cmd_get_view(const uint8_t *req, uint16_t len, uint8_t *out, size_
 	uint8_t section = len >= 1 ? req[0] : 0;
 	dl_text_t t;
 
-	if (section >= DL_VIEW_COUNT) {
-		return status_only(out, DL_ST_BAD_ARG);
+	if (!debuglink_view_present(section)) {
+		return status_only(out, DL_ST_BAD_ARG);	// past the last, or one this radio doesn't have (board2)
 	}
 	radio_get_view(&hostlink_view);
 	out[0] = DL_ST_OK;
 	put32(out + 1, hal_millis());
-	out[5] = (uint8_t)(section + 1u < DL_VIEW_COUNT ? section + 1u : 0xFFu);
+	out[5] = debuglink_view_next(section);
 	dl_text_init(&t, (char *)out + 6, cap - 6 - 16);	// room kept for the truncation mark
 	debuglink_view_section(section, &hostlink_view, &t);
 	if (t.full) {

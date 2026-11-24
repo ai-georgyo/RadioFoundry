@@ -1155,6 +1155,21 @@ run-taskStack: taskStackTest
 	./taskStackTest
 .PHONY: run-taskStack
 
+# The debug link's board view sections (core/debuglink/debuglink_view_board.c): `board` alone on a board without
+# view_split, and `board` plus `board2` on one that splits its lines
+BVIEW   := debuglinkBoardViewTest.c $(CORE)/debuglink/debuglink_view_board.c $(CORE)/debuglink/dl_fmt.c
+TESTS   += debuglinkBoardViewTest debuglinkBoardViewSplitTest
+debuglinkBoardViewTest: $(BVIEW) $(CORE)/debuglink/debuglink.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DBOARD_SPLIT=0 -o $@ $(BVIEW)
+debuglinkBoardViewSplitTest: $(BVIEW) $(CORE)/debuglink/debuglink.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DBOARD_SPLIT=3 -o $@ $(BVIEW)
+
+run: run-boardView
+run-boardView: debuglinkBoardViewTest debuglinkBoardViewSplitTest
+	./debuglinkBoardViewTest
+	./debuglinkBoardViewSplitTest
+.PHONY: run-boardView
+
 # The hardware watchdog's portable side: the idle task's feed, the longest idle gap, the bench starve (core/app/
 # watchdog.c), the debug link's watchdog section and DL_CMD_WATCHDOG (core/debuglink/debuglink_watchdog.c). The
 # platform, the clock, the radio's view and the log are faked; watchdog_stub/ holds the stand-in FreeRTOS headers
