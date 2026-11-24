@@ -103,7 +103,7 @@ accent = "#e07a1f"
 lens = [40, 32]
 
 # tests/hil: what the health checks expect (test_health.py). calibration: the generic check looks for a calibration the
-# radio uses; this one reads the maker's factory table and its copy but uses none of it yet, and its own test checks
+# radio uses; this one reads the maker's factory table and its copy and uses it in receive only; its test checks
 # them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table and cal_rec in board2)
 [hil]
 display = "160x128x4"

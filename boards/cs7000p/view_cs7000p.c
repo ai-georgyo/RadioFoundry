@@ -325,6 +325,17 @@ static void line_cal_rec(char *buf, uint8_t len)
 	cs7000p_cal_rec_line(buf, len);
 }
 
+// What receive takes from it (radio_cs7000p.c)
+static void line_ref(char *buf, uint8_t len)
+{
+	cs7000p_ref_line(buf, len);
+}
+
+static void line_rx_cal(char *buf, uint8_t len)
+{
+	cs7000p_rx_cal_line(buf, len);
+}
+
 // The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
 // `board2` section's (board.view_split), keys still board.<key>
 static void (*const lines[])(char *buf, uint8_t len) = {
@@ -338,9 +349,10 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	line_gps_baud, line_adc_restarts,
 	// board2
 	line_cal_table, line_cal_rec,
+	line_ref, line_rx_cal,
 };
 #define LINES	(sizeof(lines) / sizeof(lines[0]))
-_Static_assert(LINES == CS7000P_VIEW_SPLIT + 2u, "board.view_split counts the lines before board2's two");
+_Static_assert(LINES == CS7000P_VIEW_SPLIT + 4u, "board.view_split counts the lines before board2's");
 
 bool cs7000p_view_line(uint8_t i, char *buf, uint8_t len)
 {

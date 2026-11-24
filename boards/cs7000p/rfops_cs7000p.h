@@ -104,6 +104,9 @@ typedef struct {
 typedef struct {
 	const cs7000p_rf_io_t *io;
 	const cs7000p_cal_t *cal;
+	// The maker's table in use, as checked (makercal_cs7000p.h; NULL or not valid: none). The radio task's: set after
+	// cs7000p_rf_init, parsed anew only on that task. Receive only (the cs7000p_cal_*_m getters)
+	const cs7000p_maker_t *maker;
 	chainseq_ops_t ops;
 	chainseq_t seq;
 	// Bench state: the first LO's side, the tuning value in place of the table's (0: the table's), the modem's
@@ -113,6 +116,7 @@ typedef struct {
 	bool vco_rx_dir;
 	uint16_t tune_override;
 	int8_t ref_offset;
+	bool ref_override;		// ref_offset is the bench's (chip_reg 3:4), for the receive level too
 	uint8_t ref_coding;
 	int16_t trim_ppb;		// the reference trim, taken at the next tune
 	volatile bool safed;		// cs7000p_rf_safe() since the radio task's last request
@@ -132,6 +136,10 @@ typedef struct {
 	uint32_t vco_hz;
 	bool ak_ok;
 	uint16_t rx_tune;
+	// The receive values last given and their sources (CS7000P_SRC_*): the tune, the reference level's offset and
+	// why it is not trim A (CS7000P_RXREF_WHY_*)
+	uint8_t tune_src, ref_src, ref_why;
+	int8_t rx_ref;
 	uint32_t tx_refused, dac_refused;
 	uint8_t tx_refused_why;
 } cs7000p_rf_t;
@@ -189,6 +197,12 @@ bool cs7000p_rf_drive(cs7000p_rf_t *rf, uint16_t drive, uint32_t now_ms);
 uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level);
 // hal_radio_t.tx_drive_top: during an FM transmission the top level's drive at its frequency, else 0
 uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf);
+
+// The reference offset of the held level at a receive entry (the bias, 0x200 + it under the measured hold; the
+// signed level under the maker's coding): the bench's (chip_reg 3:4) while it is set, else cs7000p_cal_rx_ref_m (trim
+// A, bounded, else today's). Noted for the view. 4:0x04 in receive and in the FM transmit set-up stays ref_offset,
+// today's value. Radio task: the IF host asks it at its receive entries
+int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf);
 
 // The modem's callbacks (hrc6000_if_cfg_t). The pair: the table's; without one, 0 / 0 (an unmodulated carrier) for
 // an FM transmission admitted on the bench drive, and false otherwise

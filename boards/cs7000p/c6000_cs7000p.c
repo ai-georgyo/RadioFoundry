@@ -70,11 +70,17 @@ static bool mod_pair(void *ctx, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *m
 	return cs7000p_rf_mod_pair(&cs7000p_rf, hz, dmr, mod2, mod1);
 }
 
+// True only inside the FM transmit set-up, the one place the IF host asks ref_offset for 4:0x04 rather than for the
+// held level of a receive entry
+static bool fm_tx_setup;
+
+// A receive entry's held level: the bench's, else trim A within its receive bound, else today's (rfops_cs7000p.h).
+// The FM transmit set-up's 4:0x04: today's value, as the bench drive's key-up wrote it before the table was read
 static int8_t ref_offset(void *ctx, uint32_t hz)
 {
 	(void)ctx;
 	(void)hz;
-	return cs7000p_rf.ref_offset;
+	return fm_tx_setup ? cs7000p_rf.ref_offset : cs7000p_rf_rx_ref(&cs7000p_rf);
 }
 
 // The bench's choice of coding (chip_reg 3:5): the measured hold unless a receive test asks for the maker's state
@@ -86,8 +92,8 @@ static uint8_t ref_coding(void *ctx, uint8_t *adc_ctl)
 	return k == CS7000P_REF_HOLD ? HRC6000_IF_REF_MID : HRC6000_IF_REF_SIGNED;
 }
 
-// 4:0x04 in receive: the reference offset, as before the option. Whether 4:0x04 moves the held level under 0x0C is
-// not measured, so nothing else goes there while receiving
+// 4:0x04 in receive: the reference offset, as before the option, never trim A. Whether 4:0x04 moves the held level
+// under 0x0C is not measured, so nothing else goes there while receiving
 static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 {
 	(void)ctx;
@@ -180,7 +186,9 @@ bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
 {
 	uint32_t errors = host.errors;
 	stm32_i2s_pcm_fm_chip(NULL);
+	fm_tx_setup = true;
 	bool ok = hrc6000_if_fm_tx(&host, hz, wide, FM_MIC_GAIN);
+	fm_tx_setup = false;
 	if (ok && host.errors != errors) {
 		// A write of the set-up failed: not a modulator to key a carrier with
 		hrc6000_if_fm_tx_end(&host);
