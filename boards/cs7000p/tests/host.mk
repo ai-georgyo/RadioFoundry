@@ -149,3 +149,13 @@ cs7000pRadioTest: $(CS7000P_RADIO) $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/
 	$(CC) $(CFLAGS) $(CS7000P_INC) -I$(ROOT)/platform/stm32 -Wshadow -DCS7000P_STUB_MASK_HOOK -o $@ $(CS7000P_RADIO)
 run-boards:: cs7000pRadioTest
 	./cs7000pRadioTest
+
+# The reader of the maker's factory calibration table (makercal_cs7000p.c) on invented tables: the maker's
+# arithmetic, the integrity and use rules, the VCO switch windows, the settings, the trims and the RSSI line
+CS7000P_MAKERCAL := $(CS7000P_T)/cs7000pMakerCalTest.c $(CS7000P)/makercal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c \
+	$(CS7000P_RF_DRV)
+TESTS   += cs7000pMakerCalTest
+cs7000pMakerCalTest: $(CS7000P_MAKERCAL) $(CS7000P_H) $(CS7000P_RF_H)
+	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_MAKERCAL)
+run-boards:: cs7000pMakerCalTest
+	./cs7000pMakerCalTest
