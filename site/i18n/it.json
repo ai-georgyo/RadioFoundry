@@ -1044,6 +1044,8 @@
  "flash.restore.writing_codeplug": "Ripristino",
  "flash.restore.codeplug_done": "Canali e impostazioni ripristinati.",
  "flash.restore.codeplug_refused": "La radio ha rifiutato {n} parti su {total} (aree protette).",
+ "flash.restore.kept_differs": "I dati di fabbrica protetti della radio (tra cui la calibrazione del produttore) sono diversi da quelli di questo backup. Il ripristino ha mantenuto quelli della radio e non ha riscritto quelli del backup. Per confrontarli e riscrivere quelli del backup, esegui tools/rfoundry_debug.py storage factory --backup BACKUP.zip da un terminale.",
+ "flash.restore.kept_differs_link": "Come riscrivere la calibrazione",
  "flash.err.load": "L'utility di programmazione non si è caricata completamente. Ricarica la pagina.",
  "flash.err.no_device": "Nessuna radio è stata scelta. Riprova e scegli la radio nell'elenco del browser. Se non compare, controlla il cavo e che la radio sia accesa.",
  "flash.err.disconnected": "La radio è stata scollegata. Controlla il cavo e che la radio sia accesa, poi riprova.",
