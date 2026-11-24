@@ -42,6 +42,15 @@
                                                 On a claim-first board (storage info says so) it first saves the
                                                 whole data flash, read twice, and claims only when all of it came
                                                 back; --skip-full-backup leaves that out (you hold one already)
+    rfoundry_debug.py storage factory [--backup FILE [--restore [--no-identity]]]
+                                                the maker's data the board keeps in its data flash (its factory
+                                                copy): the range, the copy's state, CRC-32 and sha256 of the window
+                                                and the record, and of a backup's bytes (a backup .zip, a raw image
+                                                or the range alone), the board's other protected ranges compared
+                                                (exit 0 all the same, 1 a difference). --restore writes the backup's
+                                                bytes into the range through the radio's one restore path, only when
+                                                the backup's other protected ranges equal the radio's (--no-identity
+                                                overrides; the range alone needs it). Exit 0 restored, 2 refused
     rfoundry_debug.py aprobe OP [ARG...]             audio probe (CONFIG_AUDIO_PROBE builds; docs/spec/hardware-dm1701.md 21.3):
                                                 status | reg PAGE REG | wreg PAGE REG VAL | start [HZ [AMP [spk]]] |
                                                 stop | samples [-o FILE.raw] | ram PAGE ADDR LEN [-o FILE] |
@@ -161,8 +170,37 @@ APRS_FIELDS = {name: i for i, name in enumerate(
 APRS_REGIONS = {"na": 0, "eu": 1, "au": 2, "nz": 3, "jp": 4, "cn": 5, "custom": 6}
 APRS_POS_SRCS = {"auto": 0, "gps": 1, "host": 2, "fixed": 3}
 APRS_VIAS = {"rf": 0, "dmr": 1, "both": 2}
-STORAGE_OP_INFO, STORAGE_OP_READ, STORAGE_OP_CLAIM = range(3)
+STORAGE_OP_INFO, STORAGE_OP_READ, STORAGE_OP_CLAIM, STORAGE_OP_FACTORY_INFO, STORAGE_OP_FACTORY_LOAD, \
+    STORAGE_OP_FACTORY_RESTORE = range(6)
 STORAGE_FLAG_CLAIM_FIRST = 0x01   # INFO's flags byte (debuglink.md 3.13)
+# The factory copy (debuglink.md 3.13 FACTORY_INFO, settings-store.md 4.2): its states and reasons by number
+FACTORY_CHUNK = 56                  # bytes per FACTORY_LOAD request (op, offset u16 and the bytes in 64)
+FACTORY_SOURCES = {0: "none", 1: "window", 2: "record"}
+FACTORY_WINDOW = {0: "unread", 1: "blank", 2: "zero", 3: "refused", 4: "ok"}
+FACTORY_RECORD = {0: "unread", 1: "blank", 2: "ok", 3: "bad", 4: "newer", 5: "other"}
+FACTORY_WHY = {0: "none", 0xF0: "read", 0xF1: "unstable", 0xF2: "conflict", 0xF3: "buffer", 0xF4: "config"}
+FACTORY_WROTE = {0: "not written at this start", 1: "written at this start", 2: "its write at this start failed"}
+FACTORY_PENDING, FACTORY_NONE = 0xFE, 0xFF
+# FACTORY_RESTORE's reasons and its job's results (append only), each with what it means for the owner
+FACTORY_RESULTS = {
+    0: ("ok", "the window holds the file's bytes and the record was written"),
+    1: ("foreign", "the storage region isn't RadioFoundry's yet: claim it first (storage claim)"),
+    2: ("busy", "the radio is transmitting or armed, a storage job runs, or a CPS session holds the storage buffer: "
+                "try again"),
+    3: ("stage", "the radio holds another number of loaded bytes than the range's size"),
+    4: ("crc", "the radio received other bytes than the tool sent: try again"),
+    5: ("invalid", "the file's bytes fail the radio's checks of the table: not a table of this kind, or damaged"),
+    6: ("unstable", "two reads of the window on the radio differ"),
+    7: ("window_crc", "the window changed after the tool read it: run the command again"),
+    8: ("window_differs", "the window holds another valid table, which the radio never replaces"),
+    9: ("record_differs", "the radio's own copy of the table holds another valid table"),
+    10: ("record_other", "the record's sector holds bytes that aren't RadioFoundry's"),
+    11: ("verify", "the window read back after the write is not the file's bytes; the record was not written"),
+    12: ("record", "the window holds the file's bytes, the record's write failed: the next start writes it"),
+    13: ("flash", "the window's write failed"),
+    FACTORY_PENDING: ("pending", "the restore runs"),
+    FACTORY_NONE: ("none", "no restore at this start"),
+}
 FULL_BACKUP_BLOCK = 32768         # the longest CPS read reply (cps-protocol.md 2.2)
 AUDIO_PROBE = 0x10
 (PROBE_STATUS, PROBE_REG_READ, PROBE_REG_WRITE, PROBE_START, PROBE_STOP, PROBE_SAMPLES, PROBE_RAM_READ,
@@ -213,7 +251,7 @@ PRESS, LONG, REPEAT, DOWN, UP = range(5)
 VIEW_SECTIONS = ["core", "channel", "dmr", "dmr_call", "dmr_stats", "hotspot", "link", "features", "dmr_data",
                  "storage", "dmr_ext", "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
                  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc", "net_link", "cps", "board", "audio", "t3",
-                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn"]
+                 "t3_svc", "t3_roam", "voice_cap", "t3_msg", "t3_ra", "p25", "p25_trunk", "nxdn", "board2"]
 
 OP_CHANNEL_STEP, OP_ZONE_POS, OP_ZONE, OP_VFO, OP_VFO_SET, OP_VFO_STEP, OP_POWER, OP_SQUELCH, OP_BANDWIDTH, \
     OP_TONE, OP_MONITOR, OP_CLEAR_TEMP, OP_REPLY_CANCEL, OP_HOTSPOT_EXIT, OP_DMR_TARGET, OP_DMR_CONTACT, \
@@ -360,6 +398,8 @@ def changes_radio(a):
         return a.choice is not None
     if a.cmd == "reg":
         return a.value is not None
+    if a.cmd == "storage" and a.op == "factory":
+        return bool(getattr(a, "restore", False))     # a compare only reads
     return ops is not None and getattr(a, "op", None) not in ops
 
 
@@ -667,6 +707,33 @@ class DebugLink:
     def storage_claim(self, token):
         """Raises DebugLinkError (status 7 with the reason, or 4: not foreign) when refused"""
         self.request(STORAGE, struct.pack("<BI", STORAGE_OP_CLAIM, token))
+
+    def factory_info(self):
+        """STORAGE op 3 FACTORY_INFO (debuglink.md 3.13): the factory copy as a dict (decode_factory_info), None when
+        the board keeps none. Raises DebugLinkError: busy until the copy's load ran at this start, unavailable in a
+        build without it, bad argument from a firmware older than the op"""
+        _, r = self.request(STORAGE, bytes([STORAGE_OP_FACTORY_INFO]))
+        return decode_factory_info(r)
+
+    def factory_load(self, data):
+        """STORAGE op 4 FACTORY_LOAD: data into the factory copy's RAM from offset 0, FACTORY_CHUNK bytes a request.
+        Writes nothing to the flash. Returns the count the radio holds"""
+        loaded = 0
+        for at in range(0, len(data), FACTORY_CHUNK):
+            _, r = self.request(STORAGE, struct.pack("<BH", STORAGE_OP_FACTORY_LOAD, at) +
+                                bytes(data[at:at + FACTORY_CHUNK]))
+            (loaded,) = struct.unpack_from("<H", r)
+            if loaded != min(at + FACTORY_CHUNK, len(data)):
+                raise DebugLinkError(f"FACTORY_LOAD: the radio holds {loaded} bytes after offset {at}")
+        return loaded
+
+    def factory_restore(self, n, crc, window_crc):
+        """STORAGE op 5 FACTORY_RESTORE: n loaded bytes, their CRC-32, and the CRC-32 of the window as this host read
+        it (never the one FACTORY_INFO reports: the handshake says the host compared what it read). Returns (reason,
+        why, off) when the radio posted the restore's job; raises DebugLinkError (status 7, data: reason, why and off
+        u16) when it refused"""
+        _, r = self.request(STORAGE, struct.pack("<BHII", STORAGE_OP_FACTORY_RESTORE, n, crc, window_crc))
+        return struct.unpack_from("<BBH", r) if len(r) >= 4 else (0, 0, 0)
 
     def dump(self, addr, n, progress=None):
         out = bytearray()
@@ -1083,6 +1150,17 @@ class DebugLink:
             kv.pop("section", None)
             out.update(kv)
             out.setdefault("ms", ms)
+        if "board" in sections and "board2" not in sections:
+            # A board whose keys outgrow one reply has their rest in board2, still board.<key> (debuglink.md 3.7);
+            # another radio, or an older firmware, has no such section and answers BAD_ARG
+            try:
+                _, _, kv = self.view_section("board2")
+            except DebugLinkError as e:
+                if e.status != ST_BAD_ARG:
+                    raise
+            else:
+                kv.pop("section", None)
+                out.update(kv)
         return out
 
     def screenshot_raw(self):
@@ -2539,6 +2617,8 @@ def data_flash_backup(link, out_dir):
 
 
 def cmd_storage(link, a):
+    if a.op == "factory":
+        return cmd_storage_factory(link, a)
     if a.op != "info" and not a.out:
         print("rfoundry_debug: storage dump and claim need --out DIR (outside any git tree)", file=sys.stderr)
         return 2
@@ -2588,6 +2668,326 @@ def cmd_storage(link, a):
             return 0
     print("rfoundry_debug: the region is not ours after 20 s (see `log`)", file=sys.stderr)
     return 1
+
+
+# ── storage factory: the maker's data a board keeps, compared with a backup and restored (settings-store.md 4.2) ──
+
+def decode_factory_info(r):
+    """FACTORY_INFO's reply after the status (debuglink.md 3.13) as a dict, None for present 0 (no factory copy)"""
+    if not r or r[0] == 0:
+        return None
+    if len(r) < 25:
+        raise DebugLinkError(f"FACTORY_INFO answer of {len(r)} bytes, 25 expected")
+    addr, size, source, win, why, off, win_crc, rec, rec_crc, result, loaded, wrote = \
+        struct.unpack_from("<IHBBBHIBIBHB", r, 1)
+    return {"addr": addr, "size": size, "source": FACTORY_SOURCES.get(source, str(source)),
+            "window": FACTORY_WINDOW.get(win, str(win)), "why": why, "off": off, "window_crc": win_crc,
+            "record": FACTORY_RECORD.get(rec, str(rec)), "record_crc": rec_crc, "result": result, "loaded": loaded,
+            "wrote": wrote}
+
+
+def factory_why(why):
+    """A FACTORY_INFO reason by name: the copy's own (0xF0 up), else the board's checker's number, which its hardware
+    page names (the board's view key shows the name)"""
+    return FACTORY_WHY.get(why, f"the board's reason {why}")
+
+
+def factory_result(res):
+    """(name, what it means) of a restore's reason or result"""
+    return FACTORY_RESULTS.get(res, (str(res), "a reason newer than this tool"))
+
+
+def crc_sha(b):
+    """(CRC-32 as the firmware's storage_crc32 computes it, sha256 hex) of bytes"""
+    import hashlib
+    return zlib.crc32(b) & 0xFFFFFFFF, hashlib.sha256(b).hexdigest()
+
+
+def read_twice(link, addr, n, what):
+    """n bytes of the data flash at addr through STORAGE READ, read twice and compared"""
+    data = link.storage_read(addr, n)
+    if link.storage_read(addr, n) != data:
+        raise DebugLinkError(f"{what}: two reads of 0x{addr:06X}+0x{n:X} differ")
+    return data
+
+
+def factory_registry(link):
+    """(board id, its [[flash.protect]] entries) from the board registry, for the radio its VERSION names"""
+    pkg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rfoundry")
+    if pkg not in sys.path:
+        sys.path.insert(0, pkg)
+    from rfoundry import boards as rfoundryboards
+    name = link.version().get("board")
+    b = rfoundryboards.from_debuglink_name(name)
+    if b is None:
+        raise DebugLinkError(f"the board registry has no radio named {name!r}: the tool can't tell its protected ranges")
+    return b.id, list(getattr(b, "protect", None) or [])
+
+
+def factory_backup_bytes(path, addr, size):
+    """(kind, the range's bytes, the whole data flash image or None, the board the bundle names or None) from a
+    backup file: kind "zip" a backup bundle (its data flash part from address 0: spi-flash.bin), "image" a raw data
+    flash image from address 0 that reaches the range's end, "range" a file of exactly size bytes (the range itself)"""
+    import zipfile
+    board = None
+    if zipfile.is_zipfile(path):
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import backup_codeplug
+        try:
+            board, data, _ = backup_codeplug.read_bundle(path)
+        except backup_codeplug.BackupError as e:
+            raise DebugLinkError(str(e))
+        kind = "zip"
+    else:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            raise DebugLinkError(f"{path}: {e.strerror}")
+        if len(data) == size:
+            return "range", data, None, None
+        kind = "image"
+    if len(data) < addr + size:
+        raise DebugLinkError(f"{path}: {len(data)} bytes of data flash, short of the range's end 0x{addr + size:06X}: "
+                             f"give a backup .zip, a raw data flash image from address 0, or a file of exactly {size} "
+                             f"bytes (the range itself)")
+    return kind, bytes(data[addr:addr + size]), bytes(data), board
+
+
+def factory_identity(link, protect, rng, image):
+    """The other protected data ranges of the board than rng, each compared: [{entry, radio, file, note}], radio and
+    file the bytes (None: the radio doesn't open the range to reads, or the file doesn't hold it)"""
+    out = []
+    for p in sorted(protect, key=lambda p: p["start"]):
+        if p["mem"] != "data" or p is rng or (p["start"], p["end"]) == (rng["start"], rng["end"]):
+            continue
+        n = p["end"] - p["start"]
+        try:
+            radio, note = read_twice(link, p["start"], n, "a protected range"), ""
+        except DebugLinkError as e:
+            if e.status not in (ST_REFUSED, ST_UNAVAILABLE):
+                raise
+            radio, note = None, "the radio doesn't let the tool read it"
+        held = image is not None and len(image) >= p["end"]
+        if not held and not note:
+            note = "the file doesn't hold it"
+        out.append({"entry": p, "radio": radio, "file": image[p["start"]:p["end"]] if held else None, "note": note})
+    return out
+
+
+def factory_info_lines(info):
+    """FACTORY_INFO in words: the range, the source, the window's and the record's state, the last restore"""
+    win = info["window"]
+    if win != "ok" and info["why"]:
+        win += f" ({factory_why(info['why'])}" + (f" at 0x{info['off']:03X})" if info["off"] else ")")
+    elif info["why"] == 0xF2:
+        win += " (conflict: window and record both valid and different, neither used)"
+    name, what = factory_result(info["result"])
+    return [f"factory range   data flash 0x{info['addr']:06X}-0x{info['addr'] + info['size'] - 1:06X}, "
+            f"{info['size']} bytes",
+            f"in use          {info['source']}" + (" (why conflict: window and record differ)"
+                                                    if info["source"] == "none" and info["why"] == 0xF2 else ""),
+            f"window          {win}",
+            f"record          {info['record']}; {FACTORY_WROTE.get(info['wrote'], str(info['wrote']))}",
+            f"last restore    {name}" + ("" if info["result"] in (0, FACTORY_NONE) else f": {what}")]
+
+
+def cmd_storage_factory(link, a, registry=None, poll_s=0.2, wait_s=10.0):
+    """storage factory [--backup FILE] [--restore] [--no-identity] (settings-store.md 4.2). Without --backup: the
+    factory copy as the radio reports it, and the window read now. With it: the window, the record and the file
+    compared (exit 0 all the same, 1 a difference), and the board's other protected data ranges against the file's.
+    --restore writes the file's bytes into the window through the radio's one restore path, after the identity gate
+    (exit 0 restored, 2 refused or failed). registry: (board id, protect entries) instead of the board registry's
+    (tests)"""
+    fail = 2 if a.restore else 1
+    try:
+        info = link.factory_info()
+    except DebugLinkError as e:
+        why = {ST_UNAVAILABLE: "this firmware has no factory copy (built without CONFIG_FACTORY_COPY), or the radio has "
+                               "no flash map",
+               ST_BAD_ARG: "this firmware is older than the factory copy (no FACTORY_INFO)",
+               ST_BUSY: "the radio has not loaded its factory copy at this start yet: try again",
+               1: "this firmware has no STORAGE command"}.get(e.status, str(e))
+        print(f"rfoundry_debug: {why}", file=sys.stderr)
+        return fail
+    if info is None:
+        print("rfoundry_debug: this radio keeps no factory copy: no maker's data of its own in the data flash",
+              file=sys.stderr)
+        return fail
+    addr, size = info["addr"], info["size"]
+    for line in factory_info_lines(info):
+        print(line)
+    try:
+        window = read_twice(link, addr, size, "the window")
+    except DebugLinkError as e:
+        print(f"rfoundry_debug: the window could not be read: {e}", file=sys.stderr)
+        return fail
+    wcrc, wsha = crc_sha(window)
+    print(f"{'':16}CRC-32      sha256")
+    print(f"{'window':16}0x{wcrc:08x}  {wsha}  (read now, twice)")
+    if wcrc != info["window_crc"] and info["window"] != "unread":
+        print(f"{'':16}the radio's own read gave 0x{info['window_crc']:08x}: the window changed since")
+    has_rec = info["record"] in ("ok", "bad")
+    print(f"{'record':16}" + (f"0x{info['record_crc']:08x}  -  (the radio reports the record's CRC-32 only)"
+                              if has_rec else f"-           -  ({info['record']}: no copy of ours)"))
+    if not a.backup:
+        return 0
+
+    try:
+        board_id, protect = registry if registry is not None else factory_registry(link)
+    except (DebugLinkError, KeyError, RuntimeError) as e:
+        print(f"rfoundry_debug: {e}", file=sys.stderr)
+        return 2
+    ranges = [p for p in protect if p["mem"] == "data" and (p["start"], p["end"]) == (addr, addr + size)]
+    if not ranges:
+        print(f"rfoundry_debug: stop: the radio's factory range 0x{addr:06X}-0x{addr + size:06X} is not a "
+              f"[[flash.protect]] entry of {board_id} in the board registry: the tool and the firmware disagree",
+              file=sys.stderr)
+        return 2
+    rng = ranges[0]
+    try:
+        kind, fbytes, image, fboard = factory_backup_bytes(a.backup, addr, size)
+    except DebugLinkError as e:
+        print(f"rfoundry_debug: {e}", file=sys.stderr)
+        return 2
+    if fboard and fboard.lower().replace("-", "").replace("_", "") != board_id:
+        print(f"rfoundry_debug: stop: {a.backup} is a backup of a {fboard}, this radio is a {board_id}", file=sys.stderr)
+        return 2
+    fcrc, fsha = crc_sha(fbytes)
+    where = {"zip": "the backup's data flash", "image": "the image"}.get(kind)
+    print(f"{'file':16}0x{fcrc:08x}  {fsha}  ({a.backup}" +
+          (f", {where} at 0x{addr:06X})" if where else f": the range alone, {size} bytes)"))
+    print(f"what            {rng['what']}")
+    rec_same = has_rec and info["record_crc"] == fcrc
+    print(f"{'window / file':16}{'same' if window == fbytes else 'differs'}")
+    print(f"{'record / file':16}" + (("same (CRC-32)" if rec_same else "differs (CRC-32)") if has_rec else "no record"))
+    try:
+        others = factory_identity(link, protect, rng, image)
+    except DebugLinkError as e:
+        print(f"rfoundry_debug: a protected range could not be read: {e}", file=sys.stderr)
+        return fail
+    if others:
+        print("other ranges    the board's other protected ranges (no writer of RadioFoundry's changes them: a backup "
+              "of this radio holds the same bytes)")
+    for o in others:
+        p = o["entry"]
+        head = f"  data flash 0x{p['start']:06X}-0x{p['end'] - 1:06X} ({p['what']}):"
+        if o["radio"] is None or o["file"] is None:
+            print(f"{head} not compared: {o['note']}")
+            continue
+        rc, fc = crc_sha(o["radio"])[0], crc_sha(o["file"])[0]
+        print(f"{head} radio 0x{rc:08x}, file 0x{fc:08x}, {'same' if rc == fc and o['radio'] == o['file'] else 'differs'}")
+    differs = window != fbytes or (has_rec and not rec_same) or \
+        any(o["radio"] is not None and o["file"] is not None and o["radio"] != o["file"] for o in others)
+    for line in factory_diagnosis(info, window, fbytes, kind, others):
+        print(line)
+    if not a.restore:
+        return 1 if differs else 0
+    return factory_restore_run(link, a, info, window, fbytes, kind, others, poll_s, wait_s)
+
+
+def factory_diagnosis(info, window, fbytes, kind, others):
+    """Lines for the one case no restore path covers (settings-store.md 4.2, window_differs and record_differs): the
+    radio holds a valid table, in the window or the record, that differs from a whole backup whose other protected
+    ranges are this radio's. That table is then another radio's: a codeplug read from that radio and written here with
+    a build that kept nothing put it in the window, and the first start of a build with the copy took it into the
+    record. The restore refuses to replace a valid table, so the tool says so before the owner is sent elsewhere"""
+    if kind == "range" or not others or any(o["radio"] is None or o["file"] is None or o["radio"] != o["file"]
+                                             for o in others):
+        return []
+    fcrc = crc_sha(fbytes)[0]
+    held = ([f"the window (0x{crc_sha(window)[0]:08x})"] if info["window"] == "ok" and window != fbytes else []) + \
+        ([f"the record (0x{info['record_crc']:08x})"] if info["record"] == "ok" and info["record_crc"] != fcrc else [])
+    if not held:
+        return []
+    return ["diagnosis       the backup's other protected ranges are this radio's, but " + " and ".join(held) +
+            " hold" + ("s" if len(held) == 1 else "") + " another valid table: most likely another radio's, from a "
+            "codeplug read from that radio and written here with a build that kept nothing",
+            "                no restore path replaces a valid table (window_differs, record_differs): keep this "
+            "backup, don't arm transmission, and report it"]
+
+
+def factory_restore_run(link, a, info, window, fbytes, kind, others, poll_s, wait_s):
+    """--restore: the local refusals, the identity gate, then FACTORY_LOAD, FACTORY_RESTORE and the poll of its job's
+    result; the window read back and compared. 0 restored, 2 refused or failed"""
+    addr, size = info["addr"], info["size"]
+    fcrc = crc_sha(fbytes)[0]
+    if fbytes in (b"\xff" * size, b"\x00" * size):
+        print(f"rfoundry_debug: refused: the file's range is all 0x{fbytes[0]:02X}: it holds no table to restore",
+              file=sys.stderr)
+        return 2
+    if window == fbytes and info["record"] == "ok" and info["record_crc"] == fcrc:
+        print("nothing to restore: the window and the record hold the file's bytes already; nothing sent")
+        return 0
+    # The identity gate: a whole image of this radio holds the same bytes as the radio in every other protected range
+    # (nothing of ours writes them); another radio's backup almost surely doesn't. A file of the range alone is no
+    # evidence either way
+    if kind == "range":
+        if not a.no_identity:
+            print(f"rfoundry_debug: refused: a file of the range alone carries no evidence that it is this radio's. "
+                  f"Give the whole backup (.zip or image), or --no-identity if you are sure", file=sys.stderr)
+            return 2
+        print("--no-identity: the tool could not check that the file is this radio's")
+    else:
+        bad = [o for o in others if o["radio"] is None or o["file"] is None or o["radio"] != o["file"]]
+        if bad or not others:
+            if not a.no_identity:
+                for o in bad:
+                    p = o["entry"]
+                    got = (f"not compared: {o['note']}" if o["note"] else
+                           f"does not match: radio 0x{crc_sha(o['radio'])[0]:08x}, file 0x{crc_sha(o['file'])[0]:08x}")
+                    print(f"rfoundry_debug: refused: data flash 0x{p['start']:06X}-0x{p['end'] - 1:06X} "
+                          f"({p['what']}) {got}", file=sys.stderr)
+                if not others:
+                    print("rfoundry_debug: refused: the board has no other protected range to compare: the tool can't "
+                          "check that the file is this radio's", file=sys.stderr)
+                # A range that differs is evidence of another radio; one not compared is only the lack of evidence
+                why = ("the backup looks like another radio's" if any(not o["note"] for o in bad) else
+                       "the tool could not check that the backup is this radio's")
+                print(f"rfoundry_debug: {why}. Nothing was written; --no-identity overrides this check", file=sys.stderr)
+                return 2
+            print("--no-identity: the file's other protected ranges are not this radio's, or were not compared")
+    try:
+        link.factory_load(fbytes)
+        # the handshake: the CRC-32 of the window this tool read and compared, never the one FACTORY_INFO reported
+        link.factory_restore(size, fcrc, crc_sha(window)[0])
+    except DebugLinkError as e:
+        if e.status == ST_REFUSED and e.data:
+            reason, why, off = (struct.unpack_from("<BBH", e.data) if len(e.data) >= 4 else (e.data[0], 0, 0))
+            name, what = factory_result(reason)
+            extra = f" (the checker's reason {why} at offset 0x{off:03X})" if reason == 5 else ""
+            print(f"rfoundry_debug: the radio refused the restore: {name}: {what}{extra}. Nothing was written",
+                  file=sys.stderr)
+        elif e.status == ST_BUSY:
+            print("rfoundry_debug: the radio is busy (a restore runs, or its outcome is not taken yet): try again",
+                  file=sys.stderr)
+        else:
+            print(f"rfoundry_debug: the restore was not posted: {e}", file=sys.stderr)
+        return 2
+    print("restore accepted: the radio writes the window, reads it back and writes the record")
+    end = time.monotonic() + wait_s
+    try:
+        while True:
+            now = link.factory_info()
+            if now["result"] != FACTORY_PENDING:
+                break
+            if time.monotonic() > end:
+                print(f"rfoundry_debug: the restore is still pending after {wait_s:g} s (see `log`)", file=sys.stderr)
+                return 2
+            time.sleep(poll_s)
+        name, what = factory_result(now["result"])
+        print(f"result          {name}: {what}")
+        after = read_twice(link, addr, size, "the window")
+    except DebugLinkError as e:
+        print(f"rfoundry_debug: the restore's result could not be read: {e}", file=sys.stderr)
+        return 2
+    acrc, asha = crc_sha(after)
+    print(f"{'window now':16}0x{acrc:08x}  {asha}  {'same as the file' if after == fbytes else 'DIFFERS from the file'}")
+    print(f"{'record now':16}{now['record']}" + (f", 0x{now['record_crc']:08x}" if now["record"] in ("ok", "bad") else "") +
+          f"; in use: {now['source']}")
+    return 0 if now["result"] == 0 and after == fbytes else 2
 
 
 def tone_estimate(x, rate=8000):
@@ -3197,6 +3597,286 @@ def self_test():
         rc, names, data, _ = claim(r)
         check(rc == 0 and r.claims == 1 and data is None and not r.reads and len(names) == 2,
               f"not claim first ({'flag clear' if flags == 0 else 'older firmware'}): the region dump, then the claim")
+
+    # storage factory (settings-store.md 4.2): the window, the record and a backup compared; the restore only through
+    # ops 4 and 5, after the identity gate. Every table here is invented bytes, no unit's
+    F_ADDR, F_SIZE, F_OTHER = 0x1000, 0x200, (0x1E000, 0x20000)
+    F_TABLE = bytes((i * 37 + 11) & 0xFF for i in range(F_SIZE))
+    F_OTHER_BYTES = bytes((i * 13 + 5) & 0xFF for i in range(F_OTHER[1] - F_OTHER[0]))
+    F_REG = ("testradio", [{"mem": "data", "start": F_ADDR, "end": F_ADDR + F_SIZE, "what": "an invented table"},
+                           {"mem": "data", "start": F_OTHER[0], "end": F_OTHER[1], "what": "invented records"}])
+
+    class FakeFactory(DebugLink):
+        """STORAGE READ and ops 3-5 as core/debuglink and the factory copy answer them (debuglink.md 3.13), on a
+        128 KB data flash whose factory ranges are an invented table at 0x1000 and a whole sector pair at 0x1E000.
+        The checker passes any window that is neither blank nor zero. refuse: op 5's reason (else the copy's own
+        checks 4, 7 and 8); job: the job's result (0: the window and the record written); info_crc: the window CRC
+        op 3 reports, when it isn't the flash's (it never is the handshake)"""
+
+        def __init__(self, table=None, record=None, refuse=0, job=0, info=0, info_crc=None, other=F_OTHER_BYTES):
+            self.timeout, self.seq, self.buf, self.s = 0.05, 0, bytearray(), self
+            self.flash = bytearray(b"\xff" * 0x20000)
+            self.flash[F_OTHER[0]:F_OTHER[1]] = other
+            if table is not None:
+                self.flash[F_ADDR:F_ADDR + F_SIZE] = table
+            self.rec, self.refuse, self.job, self.info, self.info_crc = record, refuse, job, info, info_crc
+            self.result, self.loaded, self.offsets, self.restores, self.posted = FACTORY_NONE, bytearray(), [], [], False
+
+        def window(self):
+            return bytes(self.flash[F_ADDR:F_ADDR + F_SIZE])
+
+        def request(self, cmd, payload=b"", **kw):
+            op = payload[0]
+            if op == STORAGE_OP_READ:
+                addr, n = struct.unpack_from("<IH", payload, 1)
+                if not any(lo <= addr and addr + n <= hi for lo, hi in ((F_ADDR, F_ADDR + F_SIZE), F_OTHER)):
+                    raise DebugLinkError("refused", ST_REFUSED)
+                return 0, struct.pack("<I", addr) + bytes(self.flash[addr:addr + n])
+            if op == STORAGE_OP_FACTORY_INFO:
+                if self.info:
+                    raise DebugLinkError("status", self.info)
+                if self.posted and self.job != FACTORY_PENDING:      # the housekeeping task ran the job
+                    if self.job in (0, 12):
+                        self.flash[F_ADDR:F_ADDR + F_SIZE] = self.loaded
+                    if self.job == 0:
+                        self.rec = bytes(self.loaded)
+                    self.result, self.posted = self.job, False
+                w = self.window()
+                win = 1 if w == b"\xff" * F_SIZE else 2 if w == b"\x00" * F_SIZE else 4
+                rec = 1 if self.rec is None else 2
+                src = 1 if win == 4 else 2 if rec == 2 else 0
+                wcrc = self.info_crc if self.info_crc is not None else zlib.crc32(w)
+                return 0, b"\x01" + struct.pack("<IHBBBHIBIBHB", F_ADDR, F_SIZE, src, win, 0, 0, wcrc, rec,
+                                                 zlib.crc32(self.rec) if self.rec else 0, self.result,
+                                                 len(self.loaded), 0)
+            if op == STORAGE_OP_FACTORY_LOAD:
+                (at,) = struct.unpack_from("<H", payload, 1)
+                if at not in (0, len(self.loaded)) or not 0 < len(payload) - 3 <= FACTORY_CHUNK or \
+                        at + len(payload) - 3 > F_SIZE:
+                    raise DebugLinkError("bad argument", ST_BAD_ARG)
+                self.loaded = bytearray(self.loaded[:at]) + payload[3:]
+                self.offsets.append(at)
+                return 0, struct.pack("<H", len(self.loaded))
+            n, crc, wcrc = struct.unpack_from("<HII", payload, 1)
+            self.restores.append((n, crc, wcrc))
+            w = self.window()
+            reason = self.refuse or (4 if crc != zlib.crc32(self.loaded) else 7 if wcrc != zlib.crc32(w) else
+                                     8 if w not in (b"\xff" * F_SIZE, b"\x00" * F_SIZE) and w != self.loaded else 0)
+            if reason:
+                self.result = reason
+                raise DebugLinkError("refused", ST_REFUSED, struct.pack("<BBH", reason, 3 if reason == 5 else 0,
+                                                                        0x40 if reason == 5 else 0))
+            self.posted, self.result = True, FACTORY_PENDING
+            return 0, bytes(4)
+
+    fdir = tempfile.mkdtemp(prefix="rfoundry-factory-")
+
+    def fpath(name, data):
+        path = os.path.join(fdir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def image_with(table, other=F_OTHER_BYTES, size=0x20000):
+        img = bytearray(b"\xff" * size)
+        img[F_ADDR:F_ADDR + F_SIZE] = table
+        img[F_OTHER[0]:F_OTHER[1]] = other
+        return bytes(img)
+
+    def bundle(name, data, board="testradio", meta_extra=None):
+        import zipfile
+        path = os.path.join(fdir, name)
+        meta = {"format": "rfoundry-backup/1", "radio": {"board": board},
+                "parts": [{"file": "spi-flash.bin", "what": "spi-flash", "addr": "0x0"}]}
+        meta.update(meta_extra or {})
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("backup.json", json.dumps(meta))
+            z.writestr("spi-flash.bin", data)
+        return path
+
+    def factory(link, backup=None, restore=False, no_identity=False, registry=F_REG, wait_s=1.0):
+        out, err = io.StringIO(), io.StringIO()
+        a = argparse.Namespace(op="factory", out=None, backup=backup, restore=restore, no_identity=no_identity)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cmd_storage_factory(link, a, registry=registry, poll_s=0, wait_s=wait_s)
+        return rc, out.getvalue(), err.getvalue()
+
+    # The names are the firmware's (core/storage/factory_copy.c), in its order, when the tree is beside the tool
+    fc_src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core", "storage", "factory_copy.c")
+    if os.path.exists(fc_src):
+        import re
+        with open(fc_src, encoding="utf-8") as f:
+            text = f.read()
+
+        def c_names(fn):
+            body = text[text.index(f"const char *{fn}(uint8_t"):]
+            return re.findall(r'"([a-z_]+)"', body[:body.index("\n}")])
+
+        check(c_names("factory_copy_src_name") == list(FACTORY_SOURCES.values()) and
+              c_names("factory_copy_win_name") == list(FACTORY_WINDOW.values()) and
+              c_names("factory_copy_rec_name") == list(FACTORY_RECORD.values()) and
+              c_names("factory_copy_why_name")[:5] == [FACTORY_WHY[w] for w in range(0xF0, 0xF5)] and
+              c_names("factory_copy_result_name")[:14] == [FACTORY_RESULTS[r][0] for r in range(14)],
+              "storage factory: the states and reasons by the firmware's names and numbers")
+
+    try:
+        zipped, raw = bundle("b.zip", image_with(F_TABLE)), fpath("raw.bin", image_with(F_TABLE))
+        alone = fpath("table.bin", F_TABLE)
+        forms = [factory_backup_bytes(p, F_ADDR, F_SIZE) for p in (zipped, raw, alone)]
+        check([f[0] for f in forms] == ["zip", "image", "range"] and all(f[1] == F_TABLE for f in forms) and
+              forms[0][2] == forms[1][2] == image_with(F_TABLE) and forms[2][2] is None and forms[0][3] == "testradio",
+              "storage factory: a backup .zip's spi-flash.bin, a raw image and the range alone give the range's bytes")
+        for what, path in (("a file short of the range's end", fpath("short.bin", b"\xff" * 0x1100)),
+                           ("a zip that is no backup", bundle("nob.zip", b"", meta_extra={"format": "other/1"}))):
+            try:
+                factory_backup_bytes(path, F_ADDR, F_SIZE)
+                refused = False
+            except DebugLinkError:
+                refused = True
+            check(refused, f"storage factory: {what} refused")
+
+        # compare (read only): exit 0 all the same, 1 a difference; never a write op
+        r = FakeFactory(F_TABLE, record=F_TABLE)
+        rc, out, _ = factory(r, raw)
+        sha = crc_sha(F_TABLE)[1]
+        check(rc == 0 and out.count(sha) == 2 and f"0x{zlib.crc32(F_TABLE):08x}" in out and
+              "window / file   same" in out and "record / file   same (CRC-32)" in out and
+              "0x01E000-0x01FFFF" in out and not r.offsets and not r.restores,
+              "storage factory --backup: CRC-32 and sha256 of window and file, the record's CRC, the other range; "
+              "same: exit 0, nothing loaded")
+        rc, out, _ = factory(FakeFactory(), raw)
+        check(rc == 1 and "window / file   differs" in out and "no record" in out, "compare: a blank window differs: 1")
+        rc, out, _ = factory(FakeFactory(F_TABLE, record=F_TABLE, other=bytes(len(F_OTHER_BYTES))), raw)
+        check(rc == 1 and "differs" in out.split("0x01E000-0x01FFFF")[1].splitlines()[0],
+              "compare: another protected range that differs from the file's: 1")
+        rc, out, _ = factory(FakeFactory(F_TABLE), None)
+        check(rc == 0 and "window          ok" in out and crc_sha(F_TABLE)[1] in out,
+              "storage factory without --backup: the copy's state and the window read now")
+        rc, _, err = factory(FakeFactory(), raw, registry=("testradio", F_REG[1][1:]))
+        check(rc == 2 and "disagree" in err, "the radio's range is not the registry's [[flash.protect]] entry: stop")
+        rc, _, err = factory(FakeFactory(), bundle("o.zip", image_with(F_TABLE), board="otherradio"), restore=True)
+        check(rc == 2 and "otherradio" in err, "a bundle of another board: stop")
+        for st, rcs in ((ST_UNAVAILABLE, (1, 2)), (ST_BAD_ARG, (1, 2))):
+            got = (factory(FakeFactory(info=st), raw)[0], factory(FakeFactory(info=st), raw, restore=True)[0])
+            check(got == rcs, f"op 3 answering {STATUS[st]}: exit 1, 2 with --restore")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = cmd_storage(FakeFactory(info=ST_UNAVAILABLE), argparse.Namespace(op="factory", out=None, backup=None,
+                                                                                    restore=False, no_identity=False))
+        check(rc == 1 and "CONFIG_FACTORY_COPY" in out.getvalue(), "storage factory: routed without --out")
+        ns = argparse.Namespace(cmd="storage", op="factory", restore=False)
+        check(not changes_radio(ns) and changes_radio(argparse.Namespace(cmd="storage", op="factory", restore=True)),
+              "storage factory reads only; --restore writes")
+
+        # the restore: identity gate, then op 4 in chunks, op 5 with the file's CRC and the window as read, the poll
+        for what, path in (("a backup .zip", zipped), ("a raw image", raw)):
+            r = FakeFactory(info_crc=0x12345678)
+            rc, out, err = factory(r, path, restore=True)
+            check(rc == 0 and r.window() == F_TABLE and r.rec == F_TABLE and
+                  r.offsets == list(range(0, F_SIZE, FACTORY_CHUNK)) and bytes(r.loaded) == F_TABLE and
+                  r.restores == [(F_SIZE, zlib.crc32(F_TABLE), zlib.crc32(b"\xff" * F_SIZE))] and
+                  "result          ok" in out and "same as the file" in out,
+                  f"--restore from {what}: loaded in chunks, op 5 with the file's CRC and the window's as read, ok")
+        check(all(w != 0x12345678 for _, _, w in r.restores),
+              "--restore: the window CRC sent is the tool's own read, never FACTORY_INFO's")
+        r = FakeFactory()
+        rc, out, err = factory(r, fpath("other.bin", image_with(F_TABLE, bytes(len(F_OTHER_BYTES)))), restore=True)
+        check(rc == 2 and not r.offsets and not r.restores and "0x01E000-0x01FFFF" in err and
+              "another radio's" in err and r.window() == b"\xff" * F_SIZE,
+              "identity: a whole image whose other protected range differs: refused, the range named, nothing sent")
+        rc, out, err = factory(r, os.path.join(fdir, "other.bin"), restore=True, no_identity=True)
+        check(rc == 0 and r.window() == F_TABLE and "--no-identity" in out, "identity: --no-identity overrides it")
+        r = FakeFactory()
+        rc, out, err = factory(r, alone, restore=True)
+        check(rc == 2 and not r.offsets and not r.restores and "no evidence" in err,
+              "identity: the range alone needs --no-identity; nothing sent without it")
+        rc, out, err = factory(r, alone, restore=True, no_identity=True)
+        check(rc == 0 and r.window() == F_TABLE and "could not check that the file is this radio's" in out,
+              "identity: the range alone with --no-identity restores, and says the file was not checked")
+        rc, out, err = factory(FakeFactory(), raw, restore=True, registry=("testradio", F_REG[1][:1]))
+        check(rc == 2 and "no other protected range" in err, "identity: a board with no other range to compare")
+        r = FakeFactory()
+        rc, out, err = factory(r, fpath("part.bin", image_with(F_TABLE)[:0x10000]), restore=True)
+        check(rc == 2 and not r.offsets and not r.restores and "not compared: the file doesn't hold it" in err and
+              "could not check that the backup is this radio's" in err and "another radio's" not in err,
+              "identity: an image short of the other range: refused as not checked (not as another radio's), "
+              "nothing sent")
+
+        # refusals: the tool's own (nothing sent), the radio's by name, the job's result
+        r = FakeFactory()
+        rc, _, err = factory(r, fpath("blank.bin", image_with(b"\xff" * F_SIZE)), restore=True)
+        check(rc == 2 and not r.offsets and "no table" in err, "--restore of a blank range: refused, nothing sent")
+        r = FakeFactory(F_TABLE, record=F_TABLE)
+        rc, out, _ = factory(r, raw, restore=True)
+        check(rc == 0 and not r.offsets and not r.restores and "nothing to restore" in out,
+              "--restore when the window and the record hold the file's bytes: nothing sent")
+        r = FakeFactory(F_TABLE)
+        rc, out, _ = factory(r, raw, restore=True)
+        check(rc == 0 and r.restores and r.rec == F_TABLE, "--restore with the window right and no record: the record")
+        other_table = bytes(b ^ 0x5A for b in F_TABLE)
+        r = FakeFactory(other_table)
+        rc, out, err = factory(r, raw, restore=True)
+        check(rc == 2 and "window_differs" in err and r.window() == other_table,
+              "the radio refuses a valid window that differs: window_differs by name, the window unchanged")
+        check("diagnosis       " in out and "the window (0x" in out and "another radio's" in out and
+              "the record" not in out.split("diagnosis")[1],
+              "a valid window that differs, the other ranges this radio's: the diagnosis, the window named")
+        rc, out, _ = factory(FakeFactory(other_table, record=other_table), raw)
+        check(rc == 1 and "the window (0x" in out and "and the record (0x" in out and "hold another" in out,
+              "compare: window and record another valid table: the diagnosis names both")
+        theirs = fpath("other2.bin", image_with(F_TABLE, bytes(len(F_OTHER_BYTES))))
+        rc, out, _ = factory(FakeFactory(other_table), theirs)
+        check(rc == 1 and "diagnosis" not in out, "compare: the other ranges differ too (another radio's backup): "
+              "no diagnosis")
+        rc, out, _ = factory(FakeFactory(other_table), alone)
+        check(rc == 1 and "diagnosis" not in out, "compare: the range alone: no diagnosis")
+        check(all("diagnosis" not in factory(f, raw)[1] for f in (FakeFactory(), FakeFactory(F_TABLE))),
+              "compare: a blank window, or the file's own table: no diagnosis")
+        for reason, word in ((1, "claim it first"), (5, "the checker's reason 3 at offset 0x040"), (9, "record_differs"),
+                             (10, "record_other"), (2, "busy")):
+            rc, _, err = factory(FakeFactory(refuse=reason), raw, restore=True)
+            check(rc == 2 and word in err and "Nothing was written" in err, f"op 5 refused, reason {reason}: named")
+        for job, word in ((11, "verify"), (13, "flash"), (12, "record")):
+            r = FakeFactory(job=job)
+            rc, out, _ = factory(r, raw, restore=True)
+            check(rc == 2 and f"result          {word}" in out, f"the job's result {word}: exit 2")
+        r = FakeFactory(job=FACTORY_PENDING)
+        rc, _, err = factory(r, raw, restore=True, wait_s=0)
+        check(rc == 2 and "still pending" in err, "a job that stays pending: exit 2 after the wait")
+    finally:
+        for n in os.listdir(fdir):
+            os.remove(os.path.join(fdir, n))
+        os.rmdir(fdir)
+
+    # GET_VIEW (debuglink.md 3.7): `board2` only on a board that splits its keys; on any other radio it answers BAD_ARG
+    # and the next links skip it
+    class FakeView(DebugLink):
+        def __init__(self, split):
+            self.split, self.asked = split, []
+
+        def request(self, cmd, payload=b"", **kw):
+            idx = payload[0]
+            self.asked.append(VIEW_SECTIONS[idx])
+            b2 = VIEW_SECTIONS.index("board2")
+            if idx == b2 and not self.split:
+                raise DebugLinkError("bad argument", ST_BAD_ARG)
+            nxt = idx + 1 if idx + 1 < len(VIEW_SECTIONS) else 0xFF
+            if nxt == b2 and not self.split:
+                nxt = 0xFF
+            text = {"board": "section=board\nboard.name=t\nboard.a=1\n",
+                    "board2": "section=board2\nboard.cal_table=ok src=window\n"}.get(VIEW_SECTIONS[idx],
+                                                                                    f"section={VIEW_SECTIONS[idx]}\n")
+            return 0, struct.pack("<IB", 5, nxt) + text.encode()
+
+    split, plain = FakeView(True), FakeView(False)
+    v, w = split.view(["board"]), plain.view(["board"])
+    check(v.get("board.a") == "1" and v.get("board.cal_table") == "ok src=window" and split.asked == ["board", "board2"],
+          "view --section board: board2's keys merged where the radio has it")
+    check(w.get("board.a") == "1" and "board.cal_table" not in w and plain.asked == ["board", "board2"],
+          "view --section board: a radio without board2 answers BAD_ARG, and the board keys stay")
+    split.asked, plain.asked = [], []
+    split.view(), plain.view()
+    check(split.asked[-1] == "board2" and "board2" not in plain.asked, "view: the next links reach board2 only where it is")
     print("rfoundry_debug self-test:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 
@@ -3349,12 +4029,22 @@ def main(argv=None):
     p = sub.add_parser("split", help="split duplex: view, BS framing experiment variant (docs/spec/split-duplex.md 10.1)")
     p.add_argument("op", choices=["view", "variant"])
     p.add_argument("args", nargs="*", help="variant: N [REG=VAL ...] (hex or decimal)")
-    p = sub.add_parser("storage", help="the settings / journal region: info, dump, claim (docs/spec/settings-store.md 5)")
-    p.add_argument("op", choices=["info", "dump", "claim"])
+    p = sub.add_parser("storage", help="the settings / journal region: info, dump, claim (docs/spec/settings-store.md "
+                       "5); factory: the maker's data the board keeps, compared with a backup and restored (4.2)")
+    p.add_argument("op", choices=["info", "dump", "claim", "factory"])
     p.add_argument("--out", help="dump directory outside any git tree (required for dump and claim)")
     p.add_argument("--skip-full-backup", action="store_true",
                    help="claim: on a claim-first board, claim without first saving the whole data flash (only when "
                         "you already hold a complete backup of this radio's data flash)")
+    p.add_argument("--backup", metavar="FILE",
+                   help="factory: this radio's backup to compare with: a backup .zip (its spi-flash.bin), a raw data "
+                        "flash image from address 0, or a file of exactly the range's size")
+    p.add_argument("--restore", action="store_true",
+                   help="factory: write the backup's bytes into the radio's factory range (needs --backup; refused "
+                        "when the backup doesn't look like this radio's, or the radio holds another valid table)")
+    p.add_argument("--no-identity", action="store_true",
+                   help="factory --restore: restore although the tool could not check that the backup is this "
+                        "radio's (a file of the range alone needs it)")
     p = sub.add_parser("aprobe", help="audio probe: chip registers and PCM levels (CONFIG_AUDIO_PROBE builds)")
     p.add_argument("op", choices=["status", "reg", "wreg", "start", "stop", "samples", "ram", "wram", "watch", "music",
                                      "mod"])
@@ -3364,6 +4054,12 @@ def main(argv=None):
 
     if a.cmd == "ptt" and not 0 < a.seconds <= INJECT_MAX_S:
         ap.error(f"--seconds must be > 0 and <= {INJECT_MAX_S:g}")
+    if a.cmd == "storage" and (a.backup or a.restore or a.no_identity) and a.op != "factory":
+        ap.error("--backup, --restore and --no-identity are storage factory's")
+    if a.cmd == "storage" and a.restore and not a.backup:
+        ap.error("storage factory --restore needs --backup FILE")
+    if a.cmd == "storage" and a.no_identity and not a.restore:
+        ap.error("--no-identity goes with --restore")
     try:
         port = a.port if a.port else pick_port(None, changes_radio(a))
         with DebugLink(port, a.timeout) as link:

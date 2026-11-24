@@ -554,3 +554,37 @@ test("protected regions: an SPI restore keeps the radio's bytes there, erases an
 	await assert.rejects(s.writeImage(fb.f4stub.boards.dm1701.owned, [[APP_BASE, app(2, 0x30000)]]), /protected region/);
 	assert.ok(equal(radio.flash, flash), "nothing erased");
 });
+
+// A range the firmware keeps inside a sector (an invented table, off the erase boundaries): the direct writers erase
+// the chip themselves with no journal, so they leave every sector such a range touches out whole, never cut midway
+const TABLE = { mem: "data", start: 0x1100, end: 0x1300, what: "factory table (hardware-x.md 2.1)" };
+
+test("protected regions: an SPI restore leaves the sector of a range inside it out whole, and every other sector is written", async () => {
+	const { radio } = await running();
+	const s = await enter(radio);
+	s.board = { ...s.board, protect: [TABLE, { ...TABLE, start: 0x4FF0, end: 0x5010 }] };	// one across a sector end
+	const before = radio.spi.slice(0, 0x8000);
+	const data = before.slice();
+	data.fill(0x5A, 0x0000, 0x7000);	// every sector but the last differs, the ranges' sectors outside the ranges too
+	assert.deepEqual(await s.spiWrite(data, 0), { written: 4, same: 4 });
+	for (const a of [0x1000, 0x4000, 0x5000]) assert.ok(equal(radio.spi.subarray(a, a + 0x1000), before.subarray(a, a + 0x1000)), `sector 0x${a.toString(16)} kept whole`);
+	for (const a of [0x0000, 0x2000, 0x3000, 0x6000]) assert.ok(equal(radio.spi.subarray(a, a + 0x1000), data.subarray(a, a + 0x1000)), `sector 0x${a.toString(16)} written`);
+	// the check spiWrite makes again before each erase: the range's sector refused, any other passes
+	assert.throws(() => s.guard("data", 0x1000, 0x2000, "erase"), /protected region/);
+	s.guard("data", 0x2000, 0x3000, "erase");
+});
+
+test("the boot stub's last guard refuses the erase of a sector holding a range inside it, and a program into the range", () => {
+	const st = new Stub(null);
+	st.protect = [TABLE];
+	const erase = (op, a) => st.guard("q128", Uint8Array.of(op, a >> 16, (a >> 8) & 0xFF, a & 0xFF));
+	assert.throws(() => erase(0x20, 0x1000), /protected region/);	// its 4 KB sector
+	assert.throws(() => erase(0x20, 0x1FFF), /protected region/);	// any address in it
+	assert.throws(() => erase(0x52, 0x0000), /protected region/);	// the 32 KB and 64 KB blocks holding it
+	assert.throws(() => erase(0xD8, 0x8000), /protected region/);
+	erase(0x20, 0x2000);
+	erase(0x20, 0x0000);
+	assert.throws(() => st.guard("q128", Uint8Array.of(0x02, 0x00, 0x12, 0xFF, 0xAA, 0xBB)), /protected region/);	// a program into it
+	st.guard("q128", Uint8Array.of(0x02, 0x00, 0x13, 0x00, 0xAA));	// outside it: a program changes only the bytes it names
+	assert.throws(() => st.guard("q128", Uint8Array.of(0x60)), /protected regions/);
+});

@@ -790,12 +790,11 @@ A 128 x 64 monochrome screen.
 ## Connect Systems CS7000 M17 PLUS
 
 A UHF handheld with a keypad, a channel selector, a volume knob with the power switch, GPS and a 160 x 128 color
-screen. **In development, for testers.** On the first radio it starts, the display, the keys, USB and settings
-storage work, FM receive works with clear audio, and DMR calls are received and played with the voice codec.
-Transmitting has not been tried. Know these four things first:
+screen. **In development, for testers: one radio runs it so far, receive only.** On that radio FM receive works with
+clear audio, and DMR calls are received and played with the voice codec. Know these four things first:
 
-- **It does not transmit yet.** RadioFoundry has no power or modulation calibration for this radio and guesses none,
-  so it refuses every transmission, FM and DMR, until the values have been measured on a bench.
+- **It does not transmit yet.** RadioFoundry reads the maker's calibration but doesn't transmit on it yet, and it
+  guesses none, so it refuses every transmission, FM and DMR.
 - **DMR voice needs the radio's voice codec**, which the installer takes from Connect Systems' firmware file
   V9.00.96 on your computer. With it, received DMR calls play from the speaker (checked on one radio). Without the
   file the radio runs without DMR voice: DMR calls show on the screen without audio. DMR data and FM don't need a
@@ -818,12 +817,12 @@ first, then use these values.
 | Bootloader key | Hold **SK1**, the side key above PTT, while you turn the radio on with the volume knob. The screen lights up gray and stays blank. Release the key |
 | First installation | The installer removes the processor's read protection, which **erases the original firmware and its bootloader**, and waits until the erase is over (at least 60 s, until the radio has left USB). Leave the radio on and connected until then. Then it asks you to switch the radio off and hold SK1 again, and writes RadioFoundry. Should the bootloader come back by itself after the erase, rfoundry says so and installs at once. If the radio does not go off with the knob, take the battery off for a few seconds ([why](#cs7000-m17-plus-power-switch)). Removing the read protection erases the voice codec too, so give the installer the stock firmware file at this installation. Without it the radio is installed without DMR voice |
 | Backup | The original firmware can't be backed up: it can't be read. The web installer offers a backup of the memory chip (32 MB: the original channels, settings and factory data) right after the installation; nothing is written to the chip before that backup. Take it and keep the file: it is the only copy. rfoundry takes no backup: take it as the Memory chip row says |
-| Memory chip | Nobody knows where the original firmware keeps its data on it, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer |
+| Memory chip | Where the original firmware keeps most of its data on it is not known, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer. Two known pieces are kept: the factory calibration and the maker's records. Every write of RadioFoundry, a codeplug write from any programming tool included, leaves them as they are; the tool's bytes for them are dropped and the write succeeds. A codeplug write made with an earlier build of RadioFoundry may have replaced the factory calibration: compare it with your backup and write the backup's back with `tools/rfoundry_debug.py storage factory --backup BACKUP.zip` ([how](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)). On the first radio that ran RadioFoundry it was lost this way. Builds before the factory copy keep nothing: never write a codeplug with one (installing one again to compare, say). If you did, run the compare above once this build runs again. A codeplug file saved from another CS7000 M17 PLUS and written with such a build puts that radio's calibration into yours, and no restore replaces a valid calibration yet: the compare then prints a `diagnosis` line; don't transmit, keep the backup and report it. RadioFoundry also keeps its own checked copy of the calibration on the chip, written once at a start after the hand-over |
 | Original channels | Not brought over: the installer has no channel step for this radio, because the original firmware's codeplug format is not known. Program the radio in the [Codeplug Editor](04-programming.md#the-codeplug-editor) |
 | Tools | The web installer or rfoundry. Another DFU tool may leave the end of the firmware unwritten |
 | Bootloader USB device (Zadig) | The device with USB ID `0483` `DF11`, [driver steps](02-installing.md#windows-the-bootloader-driver) |
-| Updating | One pass, nothing erased but the firmware: the voice codec stays. Without the key: with RadioFoundry running and the cable in, the web installer's **Restart into Update Mode** or `rfoundry flash` restarts the radio into its bootloader ([how](02-installing.md#radios-installed-through-the-processors-own-bootloader)). **Untested: this restart has not been tried on a radio yet.** The radio refuses it on some channel selector positions: turn the selector four clicks either way and try again. The key (SK1 at power-on) stays the other way in, and the installer shows its steps. After an installation that was interrupted, the installer writes the codec again, and asks for the stock firmware file if it has no copy of the codec |
-| Going back | Connect Systems' recovery procedure, with its files and tools. Its bootloader key still works: the processor's bootloader can't be erased |
+| Updating | One pass, nothing erased but the firmware: the voice codec stays. Without the key: with RadioFoundry running and the cable in, the web installer's **Restart into Update Mode** or `rfoundry flash` restarts the radio into its bootloader ([how](02-installing.md#radios-installed-through-the-processors-own-bootloader)). The restart has reached the bootloader on one radio. The radio refuses it on some channel selector positions: turn the selector four clicks either way and try again. The key (SK1 at power-on) stays the other way in, and the installer shows its steps. After an installation that was interrupted, the installer writes the codec again, and asks for the stock firmware file if it has no copy of the codec |
+| Going back | Connect Systems' recovery procedure, with its files and tools. Its bootloader key still works: the processor's bootloader can't be erased. The original firmware checks nothing and transmits on whatever the chip holds, so put your backup's data back **first, in this order, while RadioFoundry still runs** (the original firmware has no way to do it): (1) `tools/rfoundry_debug.py storage factory --backup BACKUP.zip`, and if it says the calibration differs, the same with `--restore`, then the compare again until it says same; (2) the start of the chip, which holds the maker's device information beside RadioFoundry's callsign and DMR ID: unzip `spi-flash.bin` from the backup and write it with `tools/cps_client.py --regions codeplug write spi-flash.bin`; (3) only then the recovery. No tool writes the rest of the chip back yet. A radio whose calibration is blank would transmit on blank (0xFF) codes under the original firmware ([why](../spec/hardware-cs7000p.md#103-the-makers-data-and-the-claim)) |
 | Board name | `cs7000p` |
 
 From a terminal, with an image file (the web installer's build, or its manual kit): `rfoundry flash IMAGE --board cs7000p --unprotect --stock M17_PLUS_HOST_V9.00.96_20260303_1.bin` the first time, and `rfoundry flash IMAGE --board cs7000p` for an update. `--codec none` in place of `--stock FILE` installs without the voice codec. For an update, leave the radio on with RadioFoundry running: rfoundry restarts it into its bootloader, and asks for SK1 only if the radio refuses or does not appear. There is no release image for this radio yet, so `--release` doesn't work. rfoundry writes the firmware and the codec only and takes no backup of the memory chip.
@@ -842,10 +841,10 @@ From a terminal, with an image file (the web installer's build, or its manual ki
 | SK3 (side, lowest) | **Power level**: press for the next power level |
 | Top key (orange) | Hold: emergency. It transmits, so not before the radio is calibrated |
 | **PTT** | **PTT**. The accessory connector's PTT line is read as PTT too |
-| Channel selector | Does nothing yet: how the switch codes its 16 positions hasn't been measured. Use **Up** and **Down** |
+| Channel selector | Selects the channel: clockwise goes up. Its 16 positions were read on one radio; if yours steps the wrong way or skips, report it |
 
-Which of the six keys above the number keys is which (F1, F2, OK, BACK, Up, Down) was read on one radio. If they
-come out mixed up on yours, report what each key does: your radio may have another keypad board.
+The six keys above the number keys (F1, F2, OK, BACK, Up, Down) were checked on one radio. If they come out mixed
+up on yours, report what each key does.
 
 These are the defaults, and the same jobs as on the other radios ([Key roles](#key-roles)). **Settings > Keys** can
 give SK1, SK2, SK3, F1, F2 and the top key other jobs.
@@ -897,15 +896,12 @@ still work. Report it.
   is untested.
 - M17. RadioFoundry has no M17 mode.
 - Bluetooth, the man-down sensor and the vibrator: not used.
-- The channel selector, until its positions are measured.
 - A volume bar: the knob sets the volume in the audio path.
 - Beeps while the radio transmits or sleeps between receive checks, and all beeps in a build without DMR.
 - Roger beep, 1750 Hz burst and DTMF on FM; APRS on FM and APRS receive. APRS positions go over DMR only.
 - Single frequency repeating, the split duplex repeater, P25 and NXDN: not written for this radio.
 - The air band and broadcast receivers: the radio has neither.
 - Chinese as the radio's language: the screen is too small for its font.
-- Entering the bootloader from the radio's menu. The installer's restart into it is untested on a radio; if it
-  fails, hold SK1.
 
 ## Planned radios
 

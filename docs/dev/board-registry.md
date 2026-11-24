@@ -238,8 +238,9 @@ without `PIN_LED_RED` or `PIN_LED_GREEN` gets 255 (no LED) for it.
 
 #### Protected regions
 
-`[[flash.protect]]` lists flash that no tool erases or writes: factory data that can't be made again, the calibration
-first. One table per region:
+`[[flash.protect]]` lists flash whose bytes no tool changes: factory data that can't be made again, the calibration
+first. An entry is a byte range; how a tool keeps it depends on how the tool writes (the table below). One table per
+region:
 
 ```toml
 [[flash.protect]]
@@ -252,7 +253,7 @@ what = "factory calibration: the page tagged 2 in the stock codeplug area (hardw
 | Key | Meaning |
 |---|---|
 | `mem` | The memory: `progmem` (the MCU's program flash), `data` (the SPI NOR data flash), `nand` (the SPI NAND's main area, without spare bytes) or `secreg` (the SPI NOR flash's security registers) |
-| `start`, `end` | The range, `end` exclusive, as offsets in that memory: `progmem` from the platform's `flash_base`, `data` and `nand` from 0, `secreg` 256 bytes per register from register 1 at 0 |
+| `start`, `end` | The byte range, `end` exclusive, as offsets in that memory: `progmem` from the platform's `flash_base`, `data` and `nand` from 0, `secreg` 256 bytes per register from register 1 at 0 |
 | `what` | What lies there, with the spec section that establishes it in parentheses |
 
 `tools/boards.py check` refuses an entry:
@@ -261,28 +262,49 @@ what = "factory calibration: the page tagged 2 in the stock codeplug area (hardw
   `spi_nand_t` in the board's sources)
 - that runs past the memory's end
 - that isn't on the memory's erase boundaries: the platform's sectors (or 4 KB) for `progmem`, 4 KB for `data`, a
-  block for `nand`, a register for `secreg`
+  block for `nand`, a register for `secreg`. The one exception is a `data` entry that is a range of the board's flash
+  map (below)
 - that overlaps another entry, the application or the codec slot
 - whose `what` cites no section
+
+**Ranges the firmware keeps.** A board whose maker keeps data inside sectors the firmware writes (a calibration table
+in a codeplug sector) lists those bytes in its flash map, `hal_flash_map_t.factory`, and builds with
+`-DSTORAGE_FACTORY_KEEP=1` in its `board.mk` `MCU_DEFS`. The firmware then carries the stored bytes of each range over
+through every rewrite of its sector ([settings-store.md](../spec/settings-store.md) 4.1). Which boards:
+[feature-matrix.md](../feature-matrix.md). The registry reads the list from the board's sources, as
+`{ 0x001000u, 0x200u }` or `{ .addr = 0x001000u, .size = 0x200u }` entries of integer literals, and `check` refuses:
+
+- a list without the define, or the define without a list
+- more than `HAL_FLASH_FACTORY_MAX` (4) entries, a size 0 entry before a range, ranges out of order or touching
+- a list that isn't the board's `data` entries: each range is a `data` entry, and each `data` entry a range
+
+A board with `data` entries and no list keeps its entries on the 4 KB boundaries, as before.
 
 A region whose place moves (remapped by a bad-block table, for example) is protected over every place it can be. The
 registry carries the list as `protect` (`registry.json`, `radios.json` `flash`, `flash-boards.json` `boards`, `c7000`
 and `f4stub`).
 
 What the tools do with it. `tools/rfoundry/rfoundry/protect.py` and `site/static/js/flasher/protect.js` hold the one
-check each language uses:
+check each language uses. A direct writer erases the chip itself, with no journal, so a cut erase would lose the
+bytes: it works by whole erase units, and an entry off the unit boundaries counts as every unit it touches
+(`protect.widen`, `protect.carved_units`). A writer through the firmware sends sectors that the firmware merges with
+what the flash holds, so it leaves out exactly the entry's bytes (`protect.carve_bytes`):
 
 | Write | Behavior |
 |---|---|
-| An install, a test write, a single sector | Refused before anything is erased |
-| A restore of a whole memory (program flash backup through the stub, internal flash through DFU, SPI flash through the STM32 stub, codeplug through the CPS) | Carved: the protected sectors keep what the radio has, the rest is written |
+| An install, a test write, a single sector (direct) | Refused before anything is erased |
+| A restore of a whole memory, direct (program flash backup through the stub, internal flash through DFU, SPI flash through the STM32 stub) | Carved by erase units: the units an entry touches keep what the radio has, the rest is written |
+| A codeplug write through the CPS shim (`tools/cps_client.py write`, `tools/codeplug_port.py`) | The sector is written, but no byte of an entry is sent: the shim merges only the bytes it is sent into the sector it read from the flash, so the radio keeps its own there. A sector the entries cover whole isn't written; with a base (what the radio holds), a sector that differs only inside an entry isn't either. When the image holds bytes for an entry that are not blank (and differ from the base), one line on stderr names the entry. `verify` leaves the entries out. The board is `--board`, else the one the debug link `VERSION` names on the same port (`board=`, as `cps_fast.py` and the site find it), else (a radio whose `VERSION` names no board the registry knows: another or an older firmware) every board whose `[cps] radio_types` holds the type the radio reports (two boards can share one): the entries of each are kept |
+| A codeplug write through the fast protocol (`tools/cps_fast.py write`) | A block holding an entry is read from the radio first and sent with the radio's bytes there, as a block the regions fill only in part; a block that differs only inside an entry isn't written. The same stderr line. `verify` leaves the entries out |
 | A security register restore | Refused when a protected register differs (a register is written whole) |
 | A loader that erases a fixed area (the vendor IAP and serial loaders, the DFU updater in `tools/stm32_dfu.py`) | Refused when the area holds a protected region: those erases can't be carved |
 | A whole-chip erase | Refused on a memory with any protected region. No tool sends one |
 
-The stub tools check every erase and program command they send, not only the high-level writes. RadioFoundry's own
-firmware keeps its own rules for what it writes (the CPS shim refuses its areas,
-[cps-protocol.md](../spec/cps-protocol.md) 2.3).
+The stub tools check every erase and program command they send, not only the high-level writes. `[flash.stub]
+write_test` must miss every erase unit an entry touches. RadioFoundry's own firmware keeps its own rules for what it
+writes: the CPS shim refuses its areas ([cps-protocol.md](../spec/cps-protocol.md) 2.3), and a board's flash map
+ranges are kept by every rewrite of their sector whatever a tool sends, so the tools' rule is a second line, not the
+only one.
 
 ### [codec]
 

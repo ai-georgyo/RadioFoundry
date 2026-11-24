@@ -574,6 +574,12 @@ switch = "NAND_STORAGE"
 hardware = "SPI NAND data flash"
 spec = "docs/spec/nand-sectors.md"
 
+[feature.factory_copy]
+switch = "FACTORY_COPY"
+hardware = "maker's data the board keeps in its data flash (factory ranges, STORAGE_FACTORY_KEEP)"
+spec = "docs/spec/settings-store.md"
+source = ["core/storage/factory_copy.c", "core/storage/factory_copy.h"]
+
 [feature.codec_check]
 spec = "docs/spec/codec-placement.md"
 source = ["tools/rfoundry/rfoundry"]

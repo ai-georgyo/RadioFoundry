@@ -8,7 +8,8 @@
 // refusal counter, the synthesizer, the modem and its I2S direction probe.
 //
 // One key a line with a compound value, on purpose: a section's reply is one frame of about a thousand characters,
-// and a line that does not fit is dropped. The line that matters least is last.
+// and a line that does not fit is dropped. The line that matters least is last. The maker's factory table and its
+// copy are in a second section, `board2` (board.view_split), as the first is near its limit.
 #include "config.h"
 #if CONFIG_DEBUGLINK	// the whole file
 #include <string.h>
@@ -23,12 +24,14 @@
 #include "hrc/i2s_dir.h"
 #endif
 
-// The reserved board sector, read once at the first request (nothing in this image writes it): blank, a record of
-// the tree's own format (its first four bytes, hardware-cs7000p.md 13.3), or someone else's bytes
+// The board sector (0x01B000, the record of the tree's own copy of the maker's table, hardware-cs7000p.md 10.2), read
+// once at the first request (the factory copy writes it at most once, at start, before the debug link can ask):
+// blank, a record of the tree's own format (its first four bytes), or someone else's bytes. The record's own state is
+// cal_rec's
 static const char *store_state(void)
 {
 	static const char *const names[] = { "unread", "blank", "ours", "foreign" };
-	static const char magic[4] = { 'R', 'F', 'C', '1' };
+	static const char magic[4] = { 'R', 'F', 'F', 'C' };
 	static uint8_t state;	// an index into names; 0 until a whole read worked
 
 	if (state == 0 && stm32_spi_flash.read != NULL &&
@@ -184,10 +187,11 @@ static void line_bt_strap(char *buf, uint8_t len)
 static void line_flash(char *buf, uint8_t len)
 {
 	// Manufacturer, memory type and capacity as the probe read them (EF4019 is the fitted part; 000000: no answer,
-	// or a chip left busy or suspended and so not used)
+	// or a chip left busy or suspended and so not used), and the erases and programs the driver's backstop refused in
+	// a sector holding the maker's bytes outside core/storage's grant (0 unless a writer misses the rule)
 	const uint32_t id = stm32_spi_flash.jedec != NULL ? stm32_spi_flash.jedec() : 0u;
-	dl_fmt(buf, len, "flash=%06X size=0x%x addr4=%u", (unsigned)id, (unsigned)stm32_spi_flash.size,
-	       (unsigned)(SPI_NOR_ADDR4));
+	dl_fmt(buf, len, "flash=%06X size=0x%x addr4=%u refused=%u", (unsigned)id, (unsigned)stm32_spi_flash.size,
+	       (unsigned)(SPI_NOR_ADDR4), (unsigned)stm32_spi_flash_factory_refusals());
 }
 
 static void line_store(char *buf, uint8_t len)
@@ -310,6 +314,19 @@ static void line_adc_restarts(char *buf, uint8_t len)
 	dl_fmt(buf, len, "adc_restarts=%u", (unsigned)stm32_adc_scan_restarts());	// overrun recoveries: 0 is expected
 }
 
+// The maker's factory table in use and the factory copy's record (radio_cs7000p.c): the second section's
+static void line_cal_table(char *buf, uint8_t len)
+{
+	cs7000p_cal_table_line(buf, len);
+}
+
+static void line_cal_rec(char *buf, uint8_t len)
+{
+	cs7000p_cal_rec_line(buf, len);
+}
+
+// The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
+// `board2` section's (board.view_split), keys still board.<key>
 static void (*const lines[])(char *buf, uint8_t len) = {
 	line_clock, line_mcu_rev, line_rom_loader, line_rdp, line_exp, line_knob, line_hold, line_pow_det, line_vbat,
 	line_vdda, line_vol, line_vox, line_lcd_board, line_panel, line_keys, line_chsw_raw, line_chsw, line_phone_det,
@@ -319,11 +336,15 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	line_i2s,
 #endif
 	line_gps_baud, line_adc_restarts,
+	// board2
+	line_cal_table, line_cal_rec,
 };
+#define LINES	(sizeof(lines) / sizeof(lines[0]))
+_Static_assert(LINES == CS7000P_VIEW_SPLIT + 2u, "board.view_split counts the lines before board2's two");
 
 bool cs7000p_view_line(uint8_t i, char *buf, uint8_t len)
 {
-	if (i >= sizeof(lines) / sizeof(lines[0])) {
+	if (i >= LINES) {
 		return false;
 	}
 	lines[i](buf, len);

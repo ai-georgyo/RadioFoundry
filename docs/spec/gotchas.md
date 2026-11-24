@@ -375,9 +375,9 @@ interlock at the sink. One function writes the DAC and one writes the control li
 interrupt-masked section, and they refuse (a) a value above the PA floor unless both transmit lines are on (a drive)
 or both are off (a tuning voltage), and (b) turning a transmit line on while the DAC is above the floor. The floor is
 0 until a PA floor has been measured. The sequencer (`drivers/rf/chainseq`) keeps the order on top of that: the DAC
-at 0 and the loop open whenever the transmit rail changes, the transmit rail off whenever the receive VCO is
-selected, never a tuning value while the loop is closed, and every error path, a refused write included, ends in its
-safe state (`chainseqTest`). Built.
+at 0 and the loop open whenever the transmit rail changes, the VCO select line moving only with the transmit rail
+off and the loop open (3.23), never a tuning value while the loop is closed, and every error path, a refused write
+included, ends in its safe state (`chainseqTest`). Built.
 
 **3.22 A sub-audio output that reaches the reference oscillator must idle driven.** Where the CTCSS / DCS output (a
 PWM pin behind a filter) is summed into the reference oscillator's control voltage and the net has no pull resistor,
@@ -386,6 +386,19 @@ swing against the level the reference was set at. Rule: the PWM runs at 50 % dut
 never released. The sub-audio generator moves the duty around that mean, clamped so it reaches neither 0 nor the
 period. The carrier is measured with the pin at 0 %, 50 % and 100 % during bring-up. Only a board whose net holds a
 defined level when the pin is released, with the reference set at that level, may release it when idle. Built.
+
+**3.23 A VCO select line can be a frequency choice, not a direction.** Symptom: with the select line at its
+"receive" level the synthesizer locked on a first LO below about 430 MHz and not on one above it. Cause: a chain
+with two discrete VCOs behind one synthesizer (a SKY72310, `drivers/rf/chainseq`) may name its select line, or note
+it on the drawing, as "receive" and "transmit", while the maker's program picks the VCO by the frequency it will run
+at: one below a switch point, the other above, in receive (on the first LO) and in transmit (on the carrier) alike.
+Selecting by direction works only where the two rules happen to agree, and a factory calibration's per-frequency
+values were set on the maker's choice. Rule: the board's frequency plan gives the line's level per channel
+(`chainseq_ops_t.vco_line`), and the sequencer writes it where it wrote the direction. The safety rule is then "the
+line changes only with the transmit rail off and the loop open", not "the transmit rail off whenever the receive
+VCO is selected". A board without the op keeps the direction write for write (`chainseqTest`); a board that adopts
+it checks that its working channels write what they wrote before. Built; the switch points are not yet seen on a
+radio.
 
 ## 4. AMBE codec calling
 
@@ -671,6 +684,17 @@ transaction or its park failed. The STM32 glue calls them, and `spiNorAddr4Test`
 failed erase and a refused park included. With interrupts masked or the scheduler suspended,
 `stm32_spi_flash_quiesce()` parks only when no transaction holds the bus and never calls the RTOS lock, so the
 caller's interrupt mask is left as it was. Built.
+
+**10.9 A sector holding the maker's bytes is still the codeplug's.** A maker may keep a factory calibration inside a
+sector the open-firmware layout also uses for settings. Refusing writes to the whole sector takes those settings
+away; a writer that rewrites the sector from its own image loses the calibration (a codeplug write through an earlier
+build of ours did). Rule: the board lists the bytes (`hal_flash_map_t.factory`) and every rewrite of such a sector
+carries them over from the flash, the writer's bytes there dropped with success ([settings-store.md](settings-store.md)
+4.1). Two traps on the way: a record write that patches the sector holds the maker's bytes in one place only, so it
+takes the journaled sector path; and one read of the bytes can be wrong, so they are read again and compared before
+the commit point. A failure past the commit point holds the journal until a replay finishes it: the journal then
+holds the only copies. Which radios keep bytes: [feature-matrix.md](../feature-matrix.md). Built and host-tested
+(`storageFactoryTest`); not yet run on a radio.
 
 ## 11. Calibration
 

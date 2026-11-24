@@ -16,12 +16,22 @@ bool cs7000p_tx_band(uint32_t hz)
 	       (hz >= CS7000P_TX_GAP_HI_HZ && hz <= CS7000P_TX_MAX_HZ);
 }
 
+bool cs7000p_vco_low(uint32_t hz, bool tx, bool lo_high)
+{
+	if (!tx && lo_high) {
+		return true;
+	}
+	// 10 Hz units, as the maker compares: a channel up to 9 Hz past the point still takes the lower VCO
+	uint32_t sw = tx ? CS7000P_VCO_TX_SWITCH_HZ : CS7000P_VCO_RX_SWITCH_HZ;
+	return hz >= CS7000P_VCO_LOW_FROM_HZ && hz / 10u <= sw / 10u;
+}
+
 bool cs7000p_pll_plan(uint32_t hz, bool tx, bool lo_high, int16_t trim_ppb, cs7000p_pll_plan_t *p)
 {
 	if (tx ? !cs7000p_tx_band(hz) : !cs7000p_rx_band(hz)) {
 		return false;
 	}
-	// No multiplier anywhere: the transmit VCO is on the carrier, the receive VCO on the first LO
+	// No multiplier anywhere: in transmit the VCO is on the carrier, in receive on the first LO
 	uint32_t lo_hz = tx ? hz : lo_high ? hz + CS7000P_IF_HZ : hz - CS7000P_IF_HZ;
 	uint32_t vco_hz = ref_trim_tune_hz(lo_hz, trim_ppb);
 	// The smallest divider the part takes: 1 would put the ratio over its range, so 2 everywhere in this band

@@ -32,8 +32,9 @@ import { verify, segments, forDevBuild } from "./manifest.js";
 import { Dfu, DfuError, NormalModeError, WebUsbTransport, checkKey, usbSupported } from "./dfu.js";
 import { Link, LinkError, CableError, SerialStream, RFOUNDRY_USB, RFOUNDRY_NET, CABLES, probe, whyNoAnswer, noAnswerKey, serialSupported, serialApi, browserErrorKey, noDeviceChosen, knownRadioPort } from "./link.js";
 import { readRadio, makeBundle, openBundle, bundleFolder, notBundle, bundleName, describeFirmware, CODEPLUG_SPAN } from "./backup.js";
-import { targets, planInternal, planStock, codeplugSectors, writeCodeplug, codeplugLayout } from "./restore.js";
+import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug, codeplugLayout } from "./restore.js";
 import { Selection } from "./select.js";
+import { describe as describeProtected } from "./protect.js";
 import { codecPresent, decideCodec, DecisionError } from "./decide.js";
 import { tooBig } from "./buildfit.js";
 import { suggestPack, packCode, startCode, startLanguages, startLanguage, setStartLanguage } from "./langsuggest.js";
@@ -3025,11 +3026,18 @@ function afterRestore() {
 			}
 			const spi = S.bundle.parts.get("spi-flash");
 			const now = await link.cpsDump(1, 0, Math.min(spi.data.length, 0x120000), { progress: (d, n) => prog.set(d, n, t("flash.restore.comparing")) });
+			// the board's protected data keeps the radio's bytes: none of the backup's are sent there, and a sector that
+			// differs only inside a protected region isn't written
 			const sectors = codeplugSectors(spi.data, now.data, S.board?.protect);
+			const kept = keptDiffering(spi.data, now.data, S.board?.protect);
+			if (kept.length) diag.note("restore: protected data differs from the backup, the radio keeps its own", { regions: kept.map(describeProtected).join("; ") });
 			await prepareStorage(status);	// the radio refuses every codeplug write until its settings area is RadioFoundry's
 			const refused = await writeCodeplug(link, sectors, (d, n) => prog.set(d, n, t("flash.restore.writing_codeplug")));
 			status.append(notice(refused.length ? t("flash.restore.codeplug_refused", { n: refused.length, total: sectors.length })
 				: t("flash.restore.codeplug_done", { n: sectors.length }), refused.length ? "" : "ok"));
+			// never carved around silently: the backup's factory data that differs stays the radio's, and the one way to
+			// write it back is the debug link's factory restore (settings-store.md 4.2), from a terminal
+			if (kept.length) status.append(keptNotice());
 			S.forward(button(t("flash.nav.finish"), () => reset(), { primary: true }));
 		} catch (e) {
 			status.append(connectError(e), serialHelp());
@@ -3066,6 +3074,13 @@ function startHelp() {
 	S.recovering = false;
 	render();
 	app.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// A restore that kept the radio's protected data where the backup's differs: says so, and how to write it back
+function keptNotice() {
+	return notice(h("span", {}, t("flash.restore.kept_differs"), " ",
+		h("a", { href: `${HOME}docs/user/20-troubleshooting.html#the-factory-calibration-differs-from-the-backup`, target: "_blank", rel: "noopener" },
+			t("flash.restore.kept_differs_link"))), "action");
 }
 
 // Under every failure: troubleshooting, and the bug report

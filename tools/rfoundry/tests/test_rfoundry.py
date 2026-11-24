@@ -362,6 +362,27 @@ class Planning(unittest.TestCase):
         p = plan.make_plan(DM1701, [(DM1701.app_base, img)], plan.KEEP)
         self.assertEqual([s.index for s in p.erase], [3, 4, 5, 6, 7, 8, 9])
 
+    def test_data_byte_ranges_leave_the_plan_alone(self):
+        """A [[flash.protect]] entry is a byte range of its memory: data flash entries, a range the firmware keeps
+        inside a sector included, change nothing of a program flash plan; the program flash's own still refuse"""
+        import copy
+        from rfoundry import protect
+        img = app_image(220780)
+        b = copy.copy(DM1701)
+        b.protect = [{"mem": "data", "start": 0x1000, "end": 0x1200, "what": "test (x.md 2.1)"},
+                     {"mem": "data", "start": 0x1E000, "end": 0x20000, "what": "test (x.md 2.4)"}]
+        want = plan.make_plan(DM1701, [(DM1701.app_base, img)], plan.KEEP)
+        got = plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
+        self.assertEqual([(st.sector.index, st.action) for st in got.steps],
+                         [(st.sector.index, st.action) for st in want.steps])
+        self.assertEqual(protect.carved_units(b, "data", 0, 0x21000, 0x1000),
+                         [a for a in range(0, 0x21000, 0x1000) if a != 0x1000 and not 0x1E000 <= a < 0x20000])
+        sec = b.sectors[2]
+        b.protect = b.protect + [{"mem": "progmem", "start": sec.addr - b.rom_base + 0x100,
+                                  "end": sec.addr - b.rom_base + 0x200, "what": "test (x.md 1)"}]
+        with self.assertRaises(plan.PlanError):	# a sector holding part of a progmem entry is refused whole
+            plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
+
     def test_second_range_refused(self):
         """The firmware is one image from the base: a second range (as releases from before the codec moved carried for
         sector 9) is refused anywhere, in both modes and on every board."""

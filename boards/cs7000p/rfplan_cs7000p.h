@@ -5,9 +5,9 @@
 // no pins and no RTOS, so tests/cs7000pRfTest.c runs it unchanged. From the maker's schematic and the chips' data
 // sheets; nothing here has run on a radio.
 //
-// One synthesizer (SKY72310) on a 16.8 MHz reference with a receive and a transmit VCO. Receive: the first LO is an
-// IF away from the signal, the 49.95 MHz IF goes to the AK2365A, whose second LO is three times the reference
-// (50.4 MHz), and its 450 kHz output to the modem. Transmit: the VCO runs on the carrier.
+// One synthesizer (SKY72310) on a 16.8 MHz reference with two VCOs, one below and one above about 430 MHz. Receive:
+// the first LO is an IF away from the signal, the 49.95 MHz IF goes to the AK2365A, whose second LO is three times
+// the reference (50.4 MHz), and its 450 kHz output to the modem. Transmit: the VCO runs on the carrier.
 #ifndef RFPLAN_CS7000P_H
 #define RFPLAN_CS7000P_H
 
@@ -32,7 +32,7 @@
 #define CS7000P_TX_GAP_HI_HZ	406112500u	// the first one over it
 #define CS7000P_TX_MAX_HZ	512000000u
 
-// The side of the first LO, 0: below the signal (LO = f - IF, the receive VCO at 350.05 to 477.05 MHz), 1: above it.
+// The side of the first LO, 0: below the signal (LO = f - IF, the VCO at 350.05 to 477.05 MHz), 1: above it.
 // Low is what the VCO's tank values point to and nothing else says: open (docs/testing/cs7000p-bringup.md). The
 // bench flips it at run time (board chip_reg 3:3); this is the value a start begins with
 #ifndef CS7000P_LO_HIGH
@@ -48,6 +48,21 @@
 
 bool cs7000p_rx_band(uint32_t hz);
 bool cs7000p_tx_band(uint32_t hz);
+
+// The VCO select line (EXP_VCO_LOW), the maker's rule (docs/spec/calibration-cs7000p.md 5.12): set from 400.0 MHz up
+// to the switch point and 10 Hz past it (the channel and the point compared in 10 Hz units, hz / 10 <= switch / 10),
+// clear above, by the channel's frequency: f_rx in receive, f_tx in transmit. Both points put the VCO itself at
+// about 429-430 MHz: the receive LO at 479 MHz is 429.05 MHz, in transmit the VCO is on the carrier. So the line picks
+// the VCO by the frequency it runs at, not by direction. The calibration's per-point values were set on this choice
+#define CS7000P_VCO_LOW_FROM_HZ		400000000u
+#define CS7000P_VCO_RX_SWITCH_HZ	479000000u
+#define CS7000P_VCO_TX_SWITCH_HZ	430000000u
+// The line's level for a channel at hz. lo_high: the first LO above the signal (the bench's chip_reg 3:3), where
+// receive keeps the line set whatever the frequency, the rule this port ran before (that LO is above 430 MHz on
+// every channel, so this keeps the bench's known state, not a choice that suits it; the maker's LO-above variant
+// sets it in receive too, 5.12). Transmit follows f_tx whatever
+// lo_high says: the LO's side is receive's alone (cs7000p_pll_plan)
+bool cs7000p_vco_low(uint32_t hz, bool tx, bool lo_high);
 
 typedef struct {
 	uint32_t lo_hz;		// the synthesizer's nominal output: the first LO, or the carrier

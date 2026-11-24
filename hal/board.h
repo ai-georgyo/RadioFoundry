@@ -62,6 +62,31 @@ enum {
 	BOARD_HW_COUNT
 };
 
+// The factory copy (board_t.factory_copy; core/storage/factory_copy.h, docs/spec/settings-store.md 4.2): the maker's
+// data in one factory range of the flash map (hal_flash_map_t.factory), which the core copies, once and verified, into
+// a record sector of the board's, and reads from there when the range itself no longer holds it
+typedef struct {
+	uint8_t range;		// the index in hal_flash_map_t.factory: the range copied (at most FACTORY_COPY_MAX bytes)
+	// The record's sector (aligned): clear of every area and every factory range of the map, and where no CPS
+	// address maps, so that nothing but the factory copy writes it
+	uint32_t record_addr;
+	// True when the range's bytes b (n of them) pass every integrity rule the board knows of the maker's data: they
+	// are the maker's, undamaged. Else *why (1-0xEF, the board's own numbering) and *off (an offset in b) name the
+	// first rule that failed. The board's stricter rules for its own use of a field never fail it. Pure: no flash, no
+	// RTOS, no state
+	bool (*check)(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off);
+	// The restore (settings-store.md 4.2): refused while busy() is true (the board transmits, ...); changed() after
+	// every restore job that reached the range's write, from the housekeeping task, only raising a request the board
+	// takes on its own task: it reads the state and the table there, then calls factory_copy_taken(), and busy() holds
+	// from changed() until then. Either may be NULL; without changed() the board never takes a later state. Every
+	// board calls factory_copy_taken() once its init read the load's state and table: until then no restore runs
+	bool (*busy)(void);
+	void (*changed)(void);
+	// The board's RAM of the range's size: the bytes in use after the load and after each restore job (the range's,
+	// or the record's when the range fails check), all 0xFF when there are none
+	uint8_t *table;
+} factory_copy_cfg_t;
+
 // One band's power level names, where a board's levels give different powers per band (board_t.power_bands)
 typedef struct {
 	uint32_t lo_hz, hi_hz;		// the transmit frequencies it covers
@@ -119,7 +144,8 @@ typedef struct {
 	// Optional: zero the counters behind diag_line (the debug link's RESET_COUNTERS)
 	void (*diag_reset)(void);
 	// Optional: line i of the board's own debug link view keys as "key=value" (the debug link's `board` section adds
-	// the "board." prefix; the keys are listed in the radio's hardware spec); false past the last line
+	// the "board." prefix; the keys are listed in the radio's hardware spec); false past the last line. buf is
+	// room in the reply itself (len up to 255, less near its end): a line that fills it is dropped and ends the section
 	bool (*view_line)(uint8_t i, char *buf, uint8_t len);
 	// Optional: true when a marker the board reads suggests the radio is another hardware version than the image was
 	// built for (a build option such as POWER). Only a warning, since the marker may be wrong: the radio still
@@ -169,6 +195,13 @@ typedef struct {
 	const hal_hwopt_t *hwopts;
 	uint8_t hwopt_count;
 #endif
+	// Optional: a verified copy of the maker's data in one factory range of the flash map, kept by the core in a
+	// record sector of the board's (factory_copy_cfg_t above; CONFIG_FACTORY_COPY builds). NULL: none
+	const factory_copy_cfg_t *factory_copy;
+	// Optional: the first of view_line's lines that goes to a second view section, `board2`, as a `board` section
+	// holding them all would outgrow one reply and drop its last lines (docs/spec/debuglink.md 3.7; the keys keep
+	// their "board." prefix). 0: one section, and no board2. Last, so that no other field moves
+	uint8_t view_split;
 } board_t;
 
 extern const board_t board;

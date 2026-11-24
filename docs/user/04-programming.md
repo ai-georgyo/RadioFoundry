@@ -345,6 +345,34 @@ codeplug the Codeplug Editor can't read, or only part of, gets into it ([Radio r
 
 To carry a stock codeplug over while you install, see [Moving from the stock firmware](README.md#moving-from-the-stock-firmware).
 
+### The maker's calibration inside the codeplug's memory
+
+On some radios the maker's factory calibration sits in the same memory sectors as the codeplug (the `factory_copy`
+row of the [feature matrix](../feature-matrix.md) lists them). RadioFoundry keeps those bytes:
+
+- A codeplug write from any tool succeeds and leaves them as the radio holds them. The tool's bytes for them are not
+  sent, or the radio drops them. `tools/cps_client.py write` prints one line when the file held other bytes there.
+- A codeplug restore from a backup therefore doesn't bring them back either.
+- The radio keeps its own checked copy of the calibration, and uses it when the original is damaged.
+
+To compare the radio's calibration with your backup (the web installer's `.zip`, a raw image of the memory chip, or a
+file of the calibration alone), over the debug link:
+
+```
+tools/rfoundry_debug.py storage factory --backup BACKUP.zip
+```
+
+It prints a checksum (CRC-32 and SHA-256) of the radio's calibration, of its copy and of the backup's, and says
+whether they are the same. It writes nothing. If they differ, write the backup's calibration back:
+
+```
+tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore
+```
+
+The radio checks the bytes before it writes them, and refuses to replace a valid calibration with another one. The
+tool first checks that the backup is this radio's, by the maker's other data in it. [Troubleshooting](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)
+explains each refusal. The web installer's **Restore** doesn't write the calibration back yet: when the backup's differs from the radio's, it says so when it finishes and points to the command.
+
 ## Limits and notes
 
 - Writes are refused while the radio's settings area holds another firmware's data. See "Settings are not kept" in

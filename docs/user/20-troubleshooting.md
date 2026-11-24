@@ -91,6 +91,38 @@ Keep that backup: after the hand-over it is the only copy of what the original f
 
 Some settings are "not kept" by design today: see the Status column in [Settings](17-settings.md).
 
+## The factory calibration differs from the backup
+
+On radios that keep the maker's calibration in the codeplug's memory
+([Programming](04-programming.md#the-makers-calibration-inside-the-codeplugs-memory)), an earlier RadioFoundry build
+may have let a codeplug write replace it. Compare it with your backup of the memory chip, then write the backup's back:
+
+```
+tools/rfoundry_debug.py storage factory --backup BACKUP.zip              # compare: exit 0 same, 1 different
+tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore    # write the backup's calibration back
+```
+
+The restore needs RadioFoundry's settings area (hand it over first, [above](#settings-are-not-kept)) and nothing
+transmitting. The tool exits 0 when the radio holds the backup's calibration afterwards, 2 when it refused or the
+write failed. When the radio holds the backup's calibration already, it says "nothing to restore", sends nothing
+and exits 0. Nothing is written when it refuses:
+
+| Message | Meaning, and what to do |
+|---|---|
+| "the backup looks like another radio's" | The maker's other data in the backup isn't this radio's. Use this radio's own backup. `--no-identity` skips the check: only when you know the file is this radio's |
+| "a file of the range alone carries no evidence" | A file of the calibration alone can't be checked. Give the whole backup, or add `--no-identity` |
+| "the tool could not check that the backup is this radio's" | The backup doesn't hold the maker's other data (a partial read), or the radio doesn't let the tool read it. Give the whole backup, or add `--no-identity` |
+| "the file's range is all 0xFF" (or 0x00) | The backup holds no calibration either |
+| `window_differs` | The radio holds another valid calibration, and it never replaces one. Check which backup you used. When the compare prints a `diagnosis` line, the backup is this radio's and the calibration in the radio is another radio's: a codeplug saved from that radio and written with an earlier build put it there. No restore replaces it yet: don't transmit, keep the backup and report it |
+| `record_differs` | The radio's own copy holds another valid calibration: the same check and the same `diagnosis` |
+| `invalid` | The backup's bytes fail the radio's checks: a damaged file, or another kind of radio |
+| `foreign` | The settings area isn't RadioFoundry's yet |
+| `busy` | The radio was transmitting or programming. Try again |
+| `record_other` | The place of the radio's own copy holds data that isn't RadioFoundry's, which the radio never writes over. Keep the backup and report it |
+| `window_crc`, `crc`, `stage`, `unstable` | The bytes changed or were read differently during the command. Run it again |
+| `verify`, `flash` | The write failed. Run the command again, and keep the backup |
+| `record` | The calibration is back, but the radio's own copy wasn't written. The radio writes it at the next start |
+
 ## Diagnostics
 
 **OK**, **6**, **7** (Tools > Diagnostics) shows raw readings for bench checks: keys, receiver levels, the DMR

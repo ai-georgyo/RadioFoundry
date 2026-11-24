@@ -170,7 +170,8 @@ void gfx_read_rgb565(uint32_t off, uint8_t *out, size_t n)
 	for (size_t i = 0; i < n; i++, off++)
 		out[i] = off < sizeof fb ? ((const uint8_t *)fb)[off] : 0;
 }
-const char *debuglink_view_name(uint8_t s) { return s == 0 ? "core" : (s == 1 ? "net" : NULL); }
+// Section 2 is one this radio doesn't have (as board2 on most boards): no name, and a section after it
+const char *debuglink_view_name(uint8_t s) { return s == 0 ? "core" : (s == 1 ? "net" : (s == 3 ? "late" : NULL)); }
 void debuglink_view_section(uint8_t s, const radio_view_t *v, dl_text_t *t)
 {
 	(void)v;
@@ -265,7 +266,9 @@ static void test_http(void)
 	CHECK(strstr(j, "\"name\":\"a\\\"b\\\\c\"}") != NULL);
 	CHECK(http_get(&a, 51004, "GET /api/view?section=1 HTTP/1.0\r\n\r\n") > 0 && strstr(body_of(&a), "\"net\""));
 	CHECK(http_get(&a, 51005, "GET /api/view HTTP/1.0\r\n\r\n") > 0);
-	CHECK(strstr(body_of(&a), "{\"sections\":[\"core\",\"net\"]}") != NULL);
+	CHECK(strstr(body_of(&a), "{\"sections\":[\"core\",\"net\",\"late\"]}") != NULL);	// the absent one skipped
+	CHECK(http_get(&a, 51021, "GET /api/view?section=late HTTP/1.0\r\n\r\n") > 0 && strstr(body_of(&a), "\"late\""));
+	CHECK(http_get(&a, 51022, "GET /api/view?section=2 HTTP/1.0\r\n\r\n") > 0 && strstr((char *)a.rx, " 404 "));
 	CHECK(http_get(&a, 51006, "GET /api/view?section=nope HTTP/1.0\r\n\r\n") > 0 && strstr((char *)a.rx, " 404 "));
 	// Any page may read the status; nothing else is shared with other pages
 	CHECK(http_get(&a, 51130, "GET /status HTTP/1.0\r\n\r\n") > 0 &&

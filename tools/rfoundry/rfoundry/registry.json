@@ -108,7 +108,20 @@
    ],
    "protected": [],
    "mass_erase_max_s": 26,
-   "protect": [],
+   "protect": [
+    {
+     "mem": "data",
+     "start": 4096,
+     "end": 4608,
+     "what": "the maker's factory calibration table, 512 bytes, one copy, no checksum (calibration-cs7000p.md 2.1)"
+    },
+    {
+     "mem": "data",
+     "start": 122880,
+     "end": 131072,
+     "what": "the maker's records at 0x01E000, 0x01E400 and 0x01F000 (calibration-cs7000p.md 2.4)"
+    }
+   ],
    "keep_codec_supported": true,
    "first_stage": null,
    "codec_tool": "codec_extract",

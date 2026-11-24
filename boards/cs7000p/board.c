@@ -170,6 +170,7 @@ const board_t board = {
 #endif
 #if CONFIG_DEBUGLINK
 	.view_line = cs7000p_view_line,
+	.view_split = CS7000P_VIEW_SPLIT,	// the maker's table and its copy in a second section, board2
 	.chip_reg = cs7000p_chip_reg,	// the bench's way to the chips, a debug link request
 #endif
 #if CONFIG_DMR
@@ -200,6 +201,11 @@ const board_t board = {
 #endif
 #if CONFIG_GPS
 	.gps = &stm32_gps,
+#endif
+#if CONFIG_FACTORY_COPY
+	// The maker's factory table (the map's first factory range) and its copy in the board sector, 0x01B000
+	// (radio_cs7000p.c, hardware-cs7000p.md 10.3)
+	.factory_copy = &cs7000p_factory_copy,
 #endif
 };
 

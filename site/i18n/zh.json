@@ -1049,6 +1049,8 @@
  "flash.restore.writing_codeplug": "正在恢复",
  "flash.restore.codeplug_done": "信道和设置已恢复。",
  "flash.restore.codeplug_refused": "电台拒绝了 {total} 个部分中的 {n} 个（受保护区域）。",
+ "flash.restore.kept_differs": "电台受保护的出厂数据（包括厂家的校准）与这份备份中的不同。恢复保留了电台自己的数据，没有写回备份中的数据。要比较它们并写回备份中的数据，请在终端中运行 tools/rfoundry_debug.py storage factory --backup BACKUP.zip。",
+ "flash.restore.kept_differs_link": "如何写回校准",
  "flash.err.load": "电台编程工具未能完整加载。请重新加载页面。",
  "flash.err.no_device": "未选择电台。",
  "flash.err.disconnected": "电台已断开连接。请检查线缆并确认电台已开机，然后重试。",

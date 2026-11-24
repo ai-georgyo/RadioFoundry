@@ -24,6 +24,14 @@ static void wait_us(const chainseq_t *s, uint32_t us)
 	}
 }
 
+// The VCO select line's level for a channel at hz: the plan's, or by direction (on to receive). No wait: the burst
+// pieces ask it at interrupt level
+static bool vco_level(const chainseq_t *s, uint32_t hz, bool tx)
+{
+	const chainseq_ops_t *o = s->ops;
+	return o->vco_line != NULL ? o->vco_line(o->ctx, hz, tx) : !tx;
+}
+
 // --- Results ---
 
 static chainseq_err_t fail(chainseq_t *s, chainseq_err_t e)
@@ -97,7 +105,8 @@ static bool tx_down(chainseq_t *s)
 
 // The four writes of chainseq_safe. The DAC first: it acts at once, the loop takes its own time to open. Every step
 // runs whatever the one before answered, and none waits or reads the state, so this is good from a fault handler in
-// the middle of anything
+// the middle of anything. The VCO line is parked on, whatever a plan would say: a plan's level belongs to a
+// frequency, and the safe state has none
 static bool safe_writes(chainseq_t *s)
 {
 	bool ok = dac(s, 0u);
@@ -186,8 +195,11 @@ chainseq_err_t chainseq_rx(chainseq_t *s, uint32_t hz, bool wide)
 	}
 	s->rx_hz = hz;
 	s->wide = wide;
-	// The rail and the receive VCO before the words, so the loop locks onto the VCO it will use
-	if (!synth_rail(s, cold) || !o->synth(o->ctx, vco_hz)) {
+	// The rail and the VCO before the words, so the loop locks onto the VCO it will use. The safe writes parked the
+	// line on; a plan that wants the other level at hz moves it here, the transmit rail off and the loop open. By
+	// direction, or with the parked level, nothing more is written
+	if ((!vco_level(s, hz, false) && !set(s, CHAINSEQ_LINE_VCO_RX, false)) || !synth_rail(s, cold) ||
+	    !o->synth(o->ctx, vco_hz)) {
 		return bus_fail(s);
 	}
 	if (!wait_lock(s)) {
@@ -254,7 +266,8 @@ chainseq_err_t chainseq_tx(chainseq_t *s, uint32_t hz, uint8_t power)
 	if (!set(s, CHAINSEQ_LINE_RX_RAIL, false) || !synth_rail(s, cold)) {
 		return tx_fail(s, CHAINSEQ_BUS);
 	}
-	if (!set(s, CHAINSEQ_LINE_VCO_RX, false) || !o->synth(o->ctx, vco_hz)) {
+	// The VCO for the carrier: the line moves here, before the transmit rail and with the loop open
+	if (!set(s, CHAINSEQ_LINE_VCO_RX, vco_level(s, hz, true)) || !o->synth(o->ctx, vco_hz)) {
 		return tx_fail(s, CHAINSEQ_BUS);
 	}
 	if (!wait_lock(s)) {
@@ -359,9 +372,10 @@ bool chainseq_burst_tune(chainseq_t *s, uint32_t hz)
 	s->tx_hz = hz;
 	s->drive = 0;
 	s->floor = floor;
-	// The transmit rail last: the receive VCO is off by then, and the DAC is 0 with the loop open
+	// The transmit rail last: the VCO line is the carrier's by then, and the DAC is 0 with the loop open
 	if (!set(s, CHAINSEQ_LINE_RX_RAIL, false) || !set(s, CHAINSEQ_LINE_SYNTH_RAIL, true) ||
-	    !set(s, CHAINSEQ_LINE_VCO_RX, false) || !o->synth(o->ctx, vco_hz) || !set(s, CHAINSEQ_LINE_TX_RAIL, true)) {
+	    !set(s, CHAINSEQ_LINE_VCO_RX, vco_level(s, hz, true)) || !o->synth(o->ctx, vco_hz) ||
+	    !set(s, CHAINSEQ_LINE_TX_RAIL, true)) {
 		(void)bus_fail(s);
 		return false;
 	}
@@ -445,14 +459,14 @@ bool chainseq_burst_rx(chainseq_t *s)
 		(void)fail(s, CHAINSEQ_REFUSED_BAND);
 		return false;
 	}
-	// The transmit rail is off before the receive VCO comes on, and the loop open before the DAC tunes again
+	// The transmit rail is off and the loop open before the VCO line moves and before the DAC tunes again
 	if (!pa_off(s, keyed(s))) {
 		(void)bus_fail(s);
 		return false;
 	}
 	s->state = CHAINSEQ_ST_IDLE;
-	if (!set(s, CHAINSEQ_LINE_VCO_RX, true) || !o->synth(o->ctx, vco_hz) || !set(s, CHAINSEQ_LINE_RX_RAIL, true) ||
-	    !dac(s, tune)) {
+	if (!set(s, CHAINSEQ_LINE_VCO_RX, vco_level(s, s->rx_hz, false)) || !o->synth(o->ctx, vco_hz) ||
+	    !set(s, CHAINSEQ_LINE_RX_RAIL, true) || !dac(s, tune)) {
 		(void)bus_fail(s);
 		return false;
 	}

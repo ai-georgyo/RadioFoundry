@@ -4,7 +4,10 @@
 // layout: the LZ4 encoder and streaming decoder against a reference decoder and a second encoder, blank blocks, CRC
 // sums and DIFF, READ windows, the range refusals, direct and staged writes, the session time-out, power cuts all
 // through a staged commit and a direct write, the staging area shared with the TFTP server, and the settings area's
-// transfer rule applied by the radio.
+// transfer rule applied by the radio. Built a second time as a board that keeps the maker's bytes builds it
+// (-DSTORAGE_FACTORY_KEEP=1, cpsFastKeepTest): the same tests, then a map with factory ranges in codeplug blocks
+// (settings-store.md 4.1): direct END, a staged commit and cps_fast_resume, each with a power cut at every operation,
+// keep the stored bytes there and write the rest.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +20,7 @@
 #include "storage/storage.h"
 #include "net/tftp_codeplug.h"
 #include "debuglink/debuglink_proto.h"
+#include "debuglink/dlog.h"
 #include "sim/sim_flash.h"
 
 static int failures, checks;
@@ -27,6 +31,9 @@ void storage_lock(void) {}
 void storage_unlock(void) {}
 void storage_quick_lock(void) {}
 void storage_quick_unlock(void) {}
+#if CONFIG_DEBUGLINK
+void dlog(const char *fmt, ...) { (void)fmt; }
+#endif
 
 #define FLASH_SIZE	0x400000u
 #define BLOCK		4096u
@@ -996,6 +1003,230 @@ static void test_settings_area(void)
 	CHECK(memcmp(area - BLOCK, other, BLOCK) == 0);	// the sector before it: written as sent
 }
 
+#if STORAGE_FACTORY_KEEP
+// ---- The maker's bytes in codeplug blocks (hal_flash_map_t.factory, settings-store.md 4.1) ----
+
+// The DM-1701's areas with two factory ranges: one inside a codeplug block (the rest of it is the codeplug's) and one
+// whole block. Every byte here is invented
+#define KEEP_A		0x3100u
+#define KEEP_A_SIZE	0x200u
+#define KEEP_A_BLOCK	0x3000u
+#define KEEP_B		0x5000u
+#define PLAIN		0x7000u		// a block beside them, with no factory bytes
+static const hal_flash_map_t keep_map = {
+	.settings_addr = 0x11000u, .settings_size = 0x8000u, .journal_addr = 0x19000u,
+	.openfw_eeprom = 0, .openfw_flash = 0x20000u, .openfw_end = 0x1C0000u,
+	.calibration_addr = 0x10000u, .calibration_size = 0x200u,
+	.native_addr = 0x1C0000u, .native_size = 0x40000u,
+	.staging_addr = STAGING, .staging_size = 0x40000u,
+	.factory = { { KEEP_A, KEEP_A_SIZE }, { KEEP_B, BLOCK } },
+};
+static uint8_t maker_a[KEEP_A_SIZE], maker_b[BLOCK];
+static uint8_t k_old[BLOCK], k_new[BLOCK], k_merged[BLOCK], p_old[BLOCK], p_new[BLOCK], b_new[BLOCK];
+
+// A fresh chip with the keep map: old blocks at KEEP_A_BLOCK and PLAIN, the maker's bytes in the ranges
+static void keep_fresh(void)
+{
+	boot(&keep_map, true);
+	memcpy(&sim_flash_data[KEEP_A_BLOCK], k_old, BLOCK);
+	memcpy(&sim_flash_data[KEEP_A], maker_a, KEEP_A_SIZE);
+	memcpy(&sim_flash_data[KEEP_B], maker_b, BLOCK);
+	memcpy(&sim_flash_data[PLAIN], p_old, BLOCK);
+}
+
+static bool keep_intact(void)
+{
+	return memcmp(&sim_flash_data[KEEP_A], maker_a, KEEP_A_SIZE) == 0 &&
+	       memcmp(&sim_flash_data[KEEP_B], maker_b, BLOCK) == 0;
+}
+
+// The block at KEEP_A_BLOCK outside the range equals want's
+static bool keep_rest_is(const uint8_t *want)
+{
+	const uint8_t *f = &sim_flash_data[KEEP_A_BLOCK];
+	uint32_t lo = KEEP_A - KEEP_A_BLOCK, hi = lo + KEEP_A_SIZE;
+	return memcmp(f, want, lo) == 0 && memcmp(f + hi, want + hi, BLOCK - hi) == 0;
+}
+
+static void keep_blocks(void)
+{
+	codeplug_block(k_old, 50);
+	codeplug_block(k_new, 60);		// other bytes in the range too: another radio's image
+	codeplug_block(p_old, 20);
+	codeplug_block(p_new, 25);
+	random_block(maker_b);
+	memcpy(maker_a, maker_b + BLOCK - KEEP_A_SIZE, KEEP_A_SIZE);
+	codeplug_block(b_new, 15);		// (the test's encoder takes long over a random block)
+	memcpy(k_merged, k_new, BLOCK);
+	memcpy(k_merged + (KEEP_A - KEEP_A_BLOCK), maker_a, KEEP_A_SIZE);
+}
+
+// Direct END: acknowledged, the range stays, the rest is the host's; SUMS and READ give the radio's bytes; a block sent
+// with the radio's bytes in the range (a host that read it first) is a skip; the whole kept block is never touched
+static void test_keep_direct(void)
+{
+	static uint8_t got[BLOCK];
+	storage_stats_t s0, s1;
+	uint8_t fmt;
+	unsigned reqs;
+
+	keep_blocks();
+	keep_fresh();
+	CHECK(begin(CPSF_MODE_DIRECT) == DL_ST_OK);
+	storage_get_stats(&s0);
+	CHECK(write_block(KEEP_A_BLOCK, k_new, 61) == DL_ST_OK);
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_rest_is(k_new));
+	CHECK(s1.factory_rewrites == s0.factory_rewrites + 1 && s1.factory_dropped == s0.factory_dropped + 1);
+	CHECK(sums(KEEP_A_BLOCK, 1) == DL_ST_OK && g32(&rep[8]) == storage_crc32(0, k_merged, BLOCK));
+	CHECK(g32(&rep[8]) != storage_crc32(0, k_new, BLOCK));
+	CHECK(read_block(KEEP_A_BLOCK, got, &fmt, &reqs) && memcmp(got, k_merged, BLOCK) == 0);
+
+	storage_get_stats(&s0);
+	uint32_t erases = sim_flash_erases(KEEP_A_BLOCK);
+	CHECK(write_block(KEEP_A_BLOCK, got, 61) == DL_ST_OK);
+	storage_get_stats(&s1);
+	CHECK(sim_flash_erases(KEEP_A_BLOCK) == erases && s1.sector_skips == s0.sector_skips + 1);
+	CHECK(s1.factory_dropped == s0.factory_dropped);
+
+	// A block that differs from the stored one only inside the range: OK, a skip (no erase), the bytes dropped
+	memcpy(got + (KEEP_A - KEEP_A_BLOCK), k_new + (KEEP_A - KEEP_A_BLOCK), KEEP_A_SIZE);
+	storage_get_stats(&s0);
+	CHECK(write_block(KEEP_A_BLOCK, got, 61) == DL_ST_OK);
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_rest_is(k_new) && sim_flash_erases(KEEP_A_BLOCK) == erases);
+	CHECK(s1.sector_skips == s0.sector_skips + 1 && s1.factory_dropped == s0.factory_dropped + 1);
+	CHECK(s1.factory_rewrites == s0.factory_rewrites);
+
+	erases = sim_flash_erases(KEEP_B);
+	uint32_t programs = sim_flash_programs(KEEP_B);
+	storage_get_stats(&s0);
+	CHECK(write_block(KEEP_B, b_new, 61) == DL_ST_OK);
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && sim_flash_erases(KEEP_B) == erases && sim_flash_programs(KEEP_B) == programs);
+	CHECK(s1.factory_dropped == s0.factory_dropped + 1);
+	CHECK(write_block(PLAIN, p_new, 61) == DL_ST_OK && memcmp(&sim_flash_data[PLAIN], p_new, BLOCK) == 0);
+	CHECK(op(CPSF_OP_COMMIT) == DL_ST_OK);
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+	printf("# kept bytes, direct: END acknowledged, the range stays, SUMS and READ give the radio's bytes\n");
+}
+
+// A staged session of the three blocks: COMMIT, then the copy by ticks
+static void keep_staged(bool ticks)
+{
+	if (begin(CPSF_MODE_STAGED) != DL_ST_OK || write_block(KEEP_A_BLOCK, k_new, 61) != DL_ST_OK ||
+	    write_block(KEEP_B, b_new, 61) != DL_ST_OK || write_block(PLAIN, p_new, 61) != DL_ST_OK ||
+	    op(CPSF_OP_COMMIT) != DL_ST_OK) {
+		return;
+	}
+	if (ticks) {
+		tick_until_done(20);
+	}
+}
+
+static void keep_restart(void)
+{
+	sim_flash_cut_after(0);
+	sim_flash_power_on();
+	storage_buffer_release();
+	storage_init();
+}
+
+// The blocks after a restart: the range and the whole kept block the stored bytes, the others all old or all new,
+// the record gone
+static bool keep_after(bool *is_new)
+{
+	bool o = keep_rest_is(k_old) && memcmp(&sim_flash_data[PLAIN], p_old, BLOCK) == 0;
+	bool n = keep_rest_is(k_new) && memcmp(&sim_flash_data[PLAIN], p_new, BLOCK) == 0;
+	*is_new = n;
+	return keep_intact() && (o || n) && g32(&sim_flash_data[STAGING]) == 0xFFFFFFFFu &&
+	       sim_flash_violations() == 0 && sim_flash_ungranted() == 0;
+}
+
+// A staged commit naming the blocks: done, then a power cut at every operation of the session and its copy, each
+// followed by a restart (storage_init, cps_fast_resume)
+static void test_keep_staged(void)
+{
+	static uint32_t pt[1024];
+	storage_stats_t s0, s1;
+	bool is_new;
+
+	keep_blocks();
+	keep_fresh();
+	storage_get_stats(&s0);
+	sim_flash_ops_begin();
+	keep_staged(true);
+	uint32_t n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	storage_get_stats(&s1);
+	CHECK(state() == CPSF_ST_DONE && keep_after(&is_new) && is_new);
+	CHECK(s1.factory_rewrites == s0.factory_rewrites + 1 && s1.factory_dropped == s0.factory_dropped + 2);
+	int olds = 0, news = 0, bad = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		keep_fresh();
+		sim_flash_cut_after(pt[i]);
+		keep_staged(true);
+		bool was_cut = sim_flash_is_cut();
+		keep_restart();
+		cps_fast_resume();
+		if (!was_cut || !keep_after(&is_new)) {
+			printf("FAIL %s:%d: staged commit cut after %u units\n", __FILE__, __LINE__, (unsigned)pt[i]);
+			bad++;
+		}
+		olds += !is_new;
+		news += is_new;
+	}
+	failures += bad;
+	CHECK(n > 40 && olds > 0 && news > 0);
+	printf("# %u power cuts through a staged commit naming a kept block: %d old, %d new, the range always kept\n",
+	       (unsigned)n, olds, news);
+}
+
+// The record left for the boot (COMMIT, no copy yet: the power went), then a power cut at every operation of
+// cps_fast_resume and a second restart: the new blocks, the bytes kept, the record erased. Every resume that copies
+// the blocks again drops the range's bytes again (factory_dropped counts each)
+static void test_keep_resume(void)
+{
+	static uint32_t pt[1024];
+	static uint8_t snap[0x40000 + STAGING];
+	storage_stats_t s0, s1;
+	bool is_new;
+
+	keep_blocks();
+	keep_fresh();
+	keep_staged(false);
+	CHECK(g32(&sim_flash_data[STAGING]) == STORAGE_STAGE_MAGIC_CPSF);
+	memcpy(snap, sim_flash_data, sizeof(snap));
+	keep_restart();
+	sim_flash_ops_begin();
+	CHECK(cps_fast_resume());
+	uint32_t n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	CHECK(keep_after(&is_new) && is_new);
+	int again = 0, bad = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		memcpy(sim_flash_data, snap, sizeof(snap));
+		keep_restart();
+		sim_flash_cut_after(pt[i]);
+		bool first = cps_fast_resume();
+		bool was_cut = sim_flash_is_cut();
+		keep_restart();
+		storage_get_stats(&s0);
+		bool second = cps_fast_resume();
+		storage_get_stats(&s1);
+		// (the last cut tears the record's erase: the copy is done, the first word erased, nothing to resume)
+		if ((first && i + 1u != n) || !was_cut || !keep_after(&is_new) || !is_new ||
+		    (second && s1.factory_dropped < s0.factory_dropped + 2)) {
+			printf("FAIL %s:%d: cps_fast_resume cut after %u units\n", __FILE__, __LINE__, (unsigned)pt[i]);
+			bad++;
+		}
+		again += second;
+	}
+	failures += bad;
+	CHECK(n > 20 && again > 0);
+	printf("# %u power cuts through cps_fast_resume on a kept block: the new blocks, the range kept, the record "
+	       "gone\n", (unsigned)n);
+}
+#endif
+
 int main(void)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);	// the lines before a crash
@@ -1010,6 +1241,11 @@ int main(void)
 	test_settings_area();
 	test_foreign_reads();
 	CHECK(sim_flash_violations() == 0);
+#if STORAGE_FACTORY_KEEP
+	test_keep_direct();
+	test_keep_staged();
+	test_keep_resume();
+#endif
 	sim_flash_free();
 	printf("# cpsFastTest: %d checks, %s\n", checks, failures ? "FAILED" : "PASSED");
 	return failures ? 1 : 0;

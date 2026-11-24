@@ -154,6 +154,10 @@ APP_ASM := $(foreach d,$(APP_DIRS),$(sort $(wildcard $(d)/*.S)))
 ifeq ($(CONFIG_STUB_ENTRY)$(CONFIG_DEBUGLINK),yn)
 APP_SRC += core/debuglink/dl_frame.c
 endif
+# The factory copy's sha256 (core/storage/factory_copy.c): core/support is globbed with the support info only
+ifeq ($(CONFIG_FACTORY_COPY)$(CONFIG_SUPPORT_INFO),yn)
+APP_SRC += core/support/sha256.c
+endif
 # Accept invalid CRC's repeat check, shared by the DMR call, Tier III and P25 trunking: core/fec is globbed with the air
 # interface only
 ifeq ($(CONFIG_DMR)$(CONFIG_AIR),yn)

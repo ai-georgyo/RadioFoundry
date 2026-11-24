@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Receive / transmit ordering of a discrete RF chain: one synthesizer with a receive and a transmit VCO, an IF
+// Receive / transmit ordering of a discrete RF chain: one synthesizer with two VCOs behind a select line, an IF
 // receiver chip, switched synthesizer, receive and transmit rails, and a PA power (APC) loop whose reference DAC is
 // also the receive front end's tuning voltage. Pure C over an ops table: the board gives the lines (pins or expander
 // bits), the synthesizer, the IF chip, the DAC, the delays, and its frequency and calibration plan. Nothing in here
@@ -10,7 +10,8 @@
 // write:
 //
 //	1. the DAC is 0 (or at the floor) and the loop is open whenever the transmit rail changes;
-//	2. the transmit rail is off whenever the receive VCO is selected;
+//	2. the VCO select line changes only while the transmit rail is off and the loop is open. By direction (no
+//	   vco_line op) that is also: the transmit rail is off whenever the receive VCO is selected;
 //	3. the DAC never carries a receive tuning value while the loop is closed.
 //
 // The floor is the largest DAC value that gives no RF output (0 when the board has none): the loop is closed and
@@ -45,7 +46,9 @@ typedef enum {
 	CHAINSEQ_LINE_SYNTH_RAIL,	// the synthesizer's and the VCOs' supply
 	CHAINSEQ_LINE_RX_RAIL,		// the receiver's supply
 	CHAINSEQ_LINE_TX_RAIL,		// the transmitter's supply (drivers, antenna switch). Alone it keys no PA
-	CHAINSEQ_LINE_VCO_RX,		// on: the receive VCO, off: the transmit VCO
+	CHAINSEQ_LINE_VCO_RX,		// the VCO select line. By direction, on: the receive VCO, off: the transmit
+					// VCO. With a vco_line op the plan gives its level per frequency. The safe
+					// state parks it on
 	CHAINSEQ_LINE_APC_LOOP,		// the PA's power loop closed: a reference over the floor keys the PA
 	CHAINSEQ_LINE_IF_RUN,		// the IF chip out of power-down. Only ever turned on here: the chip keeps its
 					// set-up through sleep and transmit
@@ -76,6 +79,12 @@ typedef struct {
 	bool (*rx_plan)(void *ctx, uint32_t hz, uint32_t *vco_hz, uint16_t *tune_dac);
 	// False: no calibration
 	bool (*tx_plan)(void *ctx, uint32_t hz, uint8_t power, uint32_t *vco_hz, uint16_t *drive, uint16_t *floor);
+	// Optional: the VCO select line's level for a channel at hz, receiving or transmitting, for a board whose VCOs
+	// are chosen by frequency. Pure, no wait: also asked by the burst pieces at interrupt level. NULL: by
+	// direction, on to receive and off to transmit, as the line's name says. The line is written where the
+	// direction would be (the transmit rail off, the loop open), and in a receive set-up after the safe state's
+	// park only when the level differs from it
+	bool (*vco_line)(void *ctx, uint32_t hz, bool tx);
 	// Board timings. rail_settle_us: after the synthesizer rail in the first set-up since chainseq_init, and after
 	// the receive rail in every receive set-up. lock_timeout_us: the longest wait for the lock indication (under
 	// two poll times no wait can end locked: the reads are CHAINSEQ_LOCK_POLL_US apart); without one (locked NULL)
@@ -100,7 +109,7 @@ typedef enum {
 	CHAINSEQ_ST_RX,		// receiving on rx_hz
 	CHAINSEQ_ST_SLEEP,	// chainseq_sleep: the receive rail off, the rest kept
 	CHAINSEQ_ST_TX,		// FM transmit on tx_hz: the loop closed, the DAC at drive
-	CHAINSEQ_ST_BURST,	// tuned for bursts on tx_hz: the transmit VCO, the loop open, the DAC 0
+	CHAINSEQ_ST_BURST,	// tuned for bursts on tx_hz: the VCO for tx_hz, the loop open, the DAC 0
 	CHAINSEQ_ST_BURST_LOOP,	// in a burst: the loop closed, the DAC at the floor
 	CHAINSEQ_ST_BURST_ON	// in a burst: the DAC at drive, over the floor
 } chainseq_state_t;
@@ -116,7 +125,7 @@ void chainseq_init(chainseq_t *s, const chainseq_ops_t *ops);	// calls chainseq_
 
 // Every step runs whatever the one before answered, and none waits. The receive rail and the receiver's set-up stay
 // as they are and the DAC is left at 0: the chain receives again after the next chainseq_rx
-void chainseq_safe(chainseq_t *s);		// DAC 0, APC loop open, TX rail off, receive VCO: any context
+void chainseq_safe(chainseq_t *s);		// DAC 0, APC loop open, TX rail off, VCO line parked on: any context
 
 // For a board whose own fault path has just put all four in that state by a shorter way than the ops (the word of an
 // expander shifted in one piece, the DAC switched off): the state as chainseq_safe leaves it, and no write. A fault
@@ -125,14 +134,16 @@ void chainseq_safe(chainseq_t *s);		// DAC 0, APC loop open, TX rail off, receiv
 void chainseq_safed(chainseq_t *s);		// the state only, nothing written: any context
 
 // Out of band: refused, nothing written, and what the chain was doing goes on. Else from any state (a transmission is
-// brought down in order first): the writes of chainseq_safe, the synthesizer rail, the receive LO and its lock, the
-// receive rail and the IF chip, rail_settle_us, the IF set-up, the tuning value. A receive LO that does not lock is
-// counted (unlocked, last_err) and receive goes on: the result is CHAINSEQ_OK
+// brought down in order first): the writes of chainseq_safe, the VCO line when the plan wants the other level, the
+// synthesizer rail, the receive LO and its lock, the receive rail and the IF chip, rail_settle_us, the IF set-up,
+// the tuning value. A receive LO that does not lock is counted (unlocked, last_err) and receive goes on: the result
+// is CHAINSEQ_OK
 chainseq_err_t chainseq_rx(chainseq_t *s, uint32_t hz, bool wide);	// full receive set-up (always full: gotchas 3.14)
 
-// No calibration: refused, nothing written. Else: the DAC 0, the receive rail off, the transmit VCO on the carrier and
-// locked, the transmit rail, tx_rail_lead_us, the DAC at the floor, the loop, the ramp to the drive. Not locked, or a
-// write refused: chainseq_safe at once, then back to the last receive set-up (when there is one), and the error
+// No calibration: refused, nothing written. Else: the DAC 0, the receive rail off, the VCO line for hz (by direction
+// the transmit VCO) on the carrier and locked, the transmit rail, tx_rail_lead_us, the DAC at the floor, the loop,
+// the ramp to the drive. Not locked, or a write refused: chainseq_safe at once, then back to the last receive set-up
+// (when there is one), and the error
 chainseq_err_t chainseq_tx(chainseq_t *s, uint32_t hz, uint8_t power);	// FM key-up with lock check and apc_ramp.h ramp
 
 // Also ends a burst transmission (no ramp), and brings the receiver back after a transmission that failed on its way
@@ -156,7 +167,7 @@ bool chainseq_drive_now(chainseq_t *s, uint16_t drive);		// the PA sweep and tx_
 // has nothing for hz. A burst still up is ended first. The call has no power level, and takes only the VCO frequency
 // and the floor from the plan (each point brings its drive): it asks tx_plan for level CHAINSEQ_BURST_PLAN_POWER. The
 // plan for the level that is keyed is the caller's to check before it arms
-bool chainseq_burst_tune(chainseq_t *s, uint32_t hz);		// receiver off, transmit VCO, words, TX rail
+bool chainseq_burst_tune(chainseq_t *s, uint32_t hz);		// receiver off, the VCO line for hz, words, TX rail
 #define CHAINSEQ_BURST_PLAN_POWER	0u
 
 // drive / loop / PA supply points. At the PA point a synthesizer that is not locked ends the burst: chainseq_burst_off,
@@ -171,14 +182,13 @@ bool chainseq_burst_tune(chainseq_t *s, uint32_t hz);		// receiver off, transmit
 bool chainseq_burst_point(chainseq_t *s, uint8_t kind, uint16_t drive);
 #define CHAINSEQ_PT_LOOP	PA_KEYUP_PT_BOARD
 
-// The burst's end: the DAC to the floor, the loop open, the transmit rail off, the DAC 0. The transmit VCO stays
-// tuned for the next burst. Nothing while receiving, asleep or idle: the PA is off there, and the DAC may be the
-// receiver's
+// The burst's end: the DAC to the floor, the loop open, the transmit rail off, the DAC 0. The VCO stays tuned for
+// the next burst. Nothing while receiving, asleep or idle: the PA is off there, and the DAC may be the receiver's
 void chainseq_burst_off(chainseq_t *s);
 
-// The PA off, the receive VCO on the last receive LO, the receive rail, the tuning value: no lock wait and no IF
-// set-up (the IF chip keeps its own). True when the chain receives, also when it already did. False, nothing written:
-// asleep, under an FM transmission, or with no receive set-up to go back to
+// The PA off, the VCO line for the last receive set-up and its LO, the receive rail, the tuning value: no lock wait
+// and no IF set-up (the IF chip keeps its own). True when the chain receives, also when it already did. False,
+// nothing written: asleep, under an FM transmission, or with no receive set-up to go back to
 bool chainseq_burst_rx(chainseq_t *s);				// back to the receive LO, no waits
 #endif
 

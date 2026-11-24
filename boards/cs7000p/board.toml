@@ -39,9 +39,13 @@ summary = "Runs on a radio: the display, keys, channel selector, USB, the debug 
 release = "testing"
 
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
-# maker's in program flash (docs/dev/board-registry.md). No [[flash.protect]] entry: no region of the data flash is
-# known to hold factory data (docs/spec/hardware-cs7000p.md says so in those words), which is why the backup is the
-# whole 32 MB chip and the firmware writes nothing there until the owner claims it (board.mk STORAGE_CLAIM_FIRST)
+# maker's in program flash (docs/dev/board-registry.md). The maker's factory calibration table (data flash
+# 0x001000-0x0011FF) and its other records (0x000080-0x00021F, 0x01E000, 0x01E400, 0x01F000) are located in
+# docs/spec/calibration-cs7000p.md 2.1 and 2.4. The table and the records in the hole are the [[flash.protect]]
+# entries below, and the firmware keeps the same ranges through every rewrite of their sectors (store_cs7000p.c
+# .factory). The device information in sector 0 is not protected: it shares that sector with the open-firmware
+# callsign and DMR ID (hardware-cs7000p.md 10.3). The rest of the maker's data is not mapped, so the backup is the
+# whole 32 MB chip, and the firmware writes nothing there until the owner claims it (board.mk STORAGE_CLAIM_FIRST)
 [flash]
 family = "dfuse"
 keep_codec = true
@@ -72,6 +76,23 @@ steps = [
 vid = 0x0483
 pid = 0xDF11
 
+# Flash no tool changes (docs/dev/board-registry.md, "Protected regions"): mem, start and end (exclusive) as offsets
+# in that memory, what with the spec section that establishes it. Both are ranges of the board's flash map
+# (store_cs7000p.c .factory), so the table may sit inside a sector: the firmware keeps its bytes and writes the rest of
+# sector 1 (the open-firmware DTMF settings and APRS configurations). Tools writing through the firmware send no byte
+# of an entry; direct chip writers leave every 4 KB sector an entry touches as it is
+[[flash.protect]]
+mem = "data"
+start = 0x1000
+end = 0x1200
+what = "the maker's factory calibration table, 512 bytes, one copy, no checksum (calibration-cs7000p.md 2.1)"
+
+[[flash.protect]]
+mem = "data"
+start = 0x1E000
+end = 0x20000
+what = "the maker's records at 0x01E000, 0x01E400 and 0x01F000 (calibration-cs7000p.md 2.4)"
+
 # The radio's own AMBE+2 codec, merged on the user's machine from the maker's DMR program file V9.00.96 into sector 7
 # (docs/spec/codec-cs7000p.md). No other version is a source yet
 [codec]
@@ -85,8 +106,9 @@ body = "#2b2b2e"
 accent = "#e07a1f"
 lens = [40, 32]
 
-# tests/hil: what the health checks expect (test_health.py). calibration: no factory calibration is read on this
-# radio, so there is none to check
+# tests/hil: what the health checks expect (test_health.py). calibration: the generic check looks for a calibration the
+# radio uses; this one reads the maker's factory table and its copy but uses none of it yet, and its own test checks
+# them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table and cal_rec in board2)
 [hil]
 display = "160x128x4"
 calibration = false
@@ -96,7 +118,6 @@ battery_mv = [6000, 8400]
 # that the radio rules out without a switch; without these lines the checklist would call them "built, not yet
 # recorded"
 [features]
-channel_knob = { state = "unsupported", reason = "the selector's code table is not measured yet" }
 tone_burst_key = { state = "unsupported", reason = "the transmit tone path is not written for this radio" }
 
 # The open-firmware CPS radio type the radio reports (docs/spec/cps-protocol.md 2.2), as board.c's hal_cps_t has it:

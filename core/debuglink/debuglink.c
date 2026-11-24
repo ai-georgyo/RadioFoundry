@@ -27,6 +27,9 @@
 #include "input/input.h"
 #include "radio/radio.h"
 #include "storage/storage.h"
+#if CONFIG_FACTORY_COPY
+#include "storage/factory_copy.h"
+#endif
 #include "settings/settings.h"
 #include "ui/gfx.h"
 
@@ -431,13 +434,13 @@ static size_t cmd_get_view(const uint8_t *req, uint16_t len, uint8_t *out, size_
 	uint8_t section = len >= 1 ? req[0] : 0;
 	dl_text_t t;
 
-	if (section >= DL_VIEW_COUNT) {
-		return status_only(out, DL_ST_BAD_ARG);
+	if (!debuglink_view_present(section)) {
+		return status_only(out, DL_ST_BAD_ARG);	// past the last, or one this radio doesn't have (board2)
 	}
 	radio_get_view(&hostlink_view);
 	out[0] = DL_ST_OK;
 	put32(out + 1, hal_millis());
-	out[5] = (uint8_t)(section + 1u < DL_VIEW_COUNT ? section + 1u : 0xFFu);
+	out[5] = debuglink_view_next(section);
 	dl_text_init(&t, (char *)out + 6, cap - 6 - 16);	// room kept for the truncation mark
 	debuglink_view_section(section, &hostlink_view, &t);
 	if (t.full) {
@@ -796,6 +799,37 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		out[0] = DL_ST_OK;
 		out[1] = DL_REBOOT_OK;
 		return 2;
+	}
+	case DL_STORAGE_OP_FACTORY_INFO: {
+#if CONFIG_FACTORY_COPY
+		size_t n = 0;
+		if (len != 1) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		if (!factory_copy_info(board.factory_copy, out + 1, &n)) {
+			return status_only(out, DL_ST_BUSY);	// the load at start hasn't run yet
+		}
+		out[0] = DL_ST_OK;
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
+	}
+	case DL_STORAGE_OP_FACTORY_LOAD:
+	case DL_STORAGE_OP_FACTORY_RESTORE: {
+#if CONFIG_FACTORY_COPY
+		// The one path that writes the maker's range (settings-store.md 4.2): the checks and the job are the copy's
+		size_t n = 0;
+		if (cap < 1u + FACTORY_COPY_OP_OUT) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		out[0] = req[0] == DL_STORAGE_OP_FACTORY_LOAD ?
+			 factory_copy_load_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n) :
+			 factory_copy_restore_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n);
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
 	}
 	default:
 		return status_only(out, DL_ST_BAD_ARG);

@@ -283,7 +283,7 @@ ifneq ($(TSHARK),)
 endif
 
 clean:
-	rm -f mdnsTest.pcap tftpTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_*.bin
+	rm -f mdnsTest.pcap tftpTest.pcap tftpKeepTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_*.bin
 	rm -rf gen
 	rm -f $(TESTS) dmrDataTest.out ipGatewayTest.pcap ipGatewayTest16.pcap ipGatewayTest31.pcap ipGatewayTestShared.pcap ipGatewayTestAir440.pcap \
 		ipGatewayTest.expert
@@ -1094,6 +1094,21 @@ run-taskStack: taskStackTest
 	./taskStackTest
 .PHONY: run-taskStack
 
+# The debug link's board view sections (core/debuglink/debuglink_view_board.c): `board` alone on a board without
+# view_split, and `board` plus `board2` on one that splits its lines
+BVIEW   := debuglinkBoardViewTest.c $(CORE)/debuglink/debuglink_view_board.c $(CORE)/debuglink/dl_fmt.c
+TESTS   += debuglinkBoardViewTest debuglinkBoardViewSplitTest
+debuglinkBoardViewTest: $(BVIEW) $(CORE)/debuglink/debuglink.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DBOARD_SPLIT=0 -o $@ $(BVIEW)
+debuglinkBoardViewSplitTest: $(BVIEW) $(CORE)/debuglink/debuglink.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DBOARD_SPLIT=3 -o $@ $(BVIEW)
+
+run: run-boardView
+run-boardView: debuglinkBoardViewTest debuglinkBoardViewSplitTest
+	./debuglinkBoardViewTest
+	./debuglinkBoardViewSplitTest
+.PHONY: run-boardView
+
 # The hardware watchdog's portable side: the idle task's feed, the longest idle gap, the bench starve (core/app/
 # watchdog.c), the debug link's watchdog section and DL_CMD_WATCHDOG (core/debuglink/debuglink_watchdog.c). The
 # platform, the clock, the radio's view and the log are faked; watchdog_stub/ holds the stand-in FreeRTOS headers
@@ -1513,10 +1528,19 @@ mdnsTest: $(MDNST) $(CORE)/net/mdns.h $(CORE)/dmr/ipGateway.h
 tftpTest: $(TFTPT) $(CORE)/net/tftp.h $(CORE)/net/tftp_codeplug.h $(CORE)/net/tftp_iddb.h $(CORE)/codeplug/dmr_iddb.h $(CORE)/dmr/ipGateway.h $(ROOT)/hal/hal_flash.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_CPS_FAST=0 -o $@ $(TFTPT)
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then codeplug.bin over factory ranges, a power cut at every operation of the commit and of
+# tftp_codeplug_resume, and the ID database refused where it would reach one (its frames in tftpKeepTest.pcap, unchecked)
+tftpKeepTest: $(TFTPT) $(CORE)/net/tftp.h $(CORE)/net/tftp_codeplug.h $(CORE)/net/tftp_iddb.h $(CORE)/codeplug/dmr_iddb.h $(CORE)/dmr/ipGateway.h $(ROOT)/hal/hal_flash.h sim/sim_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 '-DTFTP_PCAP="tftpKeepTest.pcap"' -I$(ROOT)/hal -I. -Wshadow \
+		-DCONFIG_CPS_FAST=0 -o $@ $(TFTPT)
+TESTS   += tftpKeepTest
+
 run: run-net
-run-net: mdnsTest tftpTest
+run-net: mdnsTest tftpTest tftpKeepTest
 	./mdnsTest
 	./tftpTest
+	./tftpKeepTest
 ifneq ($(TSHARK),)
 	@"$(TSHARK)" -r mdnsTest.pcap -o ip.check_checksum:TRUE -o udp.check_checksum:TRUE -z expert,note -q > netTest.expert
 	@"$(TSHARK)" -r tftpTest.pcap -o ip.check_checksum:TRUE -o udp.check_checksum:TRUE -z expert,note -q >> netTest.expert
@@ -1540,10 +1564,57 @@ TESTS   += storageClaimFirstTest
 storageClaimFirstTest: storageClaimFirstTest.c $(STORE) $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h sim/sim_flash.h)
 	$(CC) $(CFLAGS) -DSTORAGE_CLAIM_FIRST=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageClaimFirstTest.c $(STORE)
 
+# The journal's flash operations pinned: a scripted run, every operation and its result hashed against a golden value
+# taken once from the storage.c before the factory ranges (docs/spec/settings-store.md 6). Built as every board builds
+# storage.c and as a board that keeps factory bytes does, on a map that lists none: one hash. JOURNAL_LOG_STORAGE
+# builds it on another storage.c (the golden's source, storageJournalLogTest.c)
+JOURNAL_LOG_STORAGE ?= $(CORE)/storage/storage.c
+TESTS   += storageJournalLogTest storageJournalLogKeepTest
+
+storageJournalLogTest: storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ storageJournalLogTest.c $(JOURNAL_LOG_STORAGE) sim/sim_flash.c
+
+storageJournalLogKeepTest: storageJournalLogTest.c $(CORE)/storage/storage.c sim/sim_flash.c $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -o $@ storageJournalLogTest.c \
+		$(CORE)/storage/storage.c sim/sim_flash.c
+
+# core/storage and the STM32 data flash glue as a board that keeps factory bytes builds them (STORAGE_FACTORY_KEEP,
+# docs/spec/settings-store.md 4.1): the list's checks, the kept rewrite of every writer (a power cut at every flash
+# operation, a misread, the held journal), the replay of every journal shape, the debug read, the staging and
+# satellite areas, the glue's backstop and its grant (on a fake SPI NOR driver). Again with SPI_NOR_ADDR4: also the
+# address 16 MB up
+FACTORY_SRC := storageFactoryTest.c $(CORE)/storage/storage.c sim/sim_flash.c $(ROOT)/platform/stm32/spi_flash/spi_flash.c \
+	$(CORE)/satellite/store.c $(CORE)/satellite/orbit.c $(CORE)/satellite/frequency.c
+FACTORY_DEPS := $(FACTORY_SRC) $(wildcard $(CORE)/storage/*.h $(CORE)/satellite/*.h sim/sim_flash.h stubs/stm32flash/*.h) \
+	$(wildcard $(ROOT)/platform/stm32/spi_flash/*.h) $(ROOT)/hal/hal_flash.h
+FACTORY_FLAGS := -DSTORAGE_FACTORY_KEEP=1 -DCONFIG_SATELLITE_TLE=1 -Istubs/stm32flash -I$(ROOT)/platform/stm32/spi_flash \
+	-I$(ROOT)/hal -I. -Wshadow
+TESTS   += storageFactoryTest storageFactoryAddr4Test
+
+storageFactoryTest: $(FACTORY_DEPS)
+	$(CC) $(CFLAGS) $(FACTORY_FLAGS) -o $@ $(FACTORY_SRC)
+
+storageFactoryAddr4Test: $(FACTORY_DEPS)
+	$(CC) $(CFLAGS) $(FACTORY_FLAGS) -DSPI_NOR_ADDR4=1 -o $@ $(FACTORY_SRC)
+
+# The factory copy (core/storage/factory_copy.c, docs/spec/settings-store.md 4.2) over core/storage as a board that keeps
+# factory bytes builds it: the record and its states, the source order, the first-start write with a power cut at every
+# flash operation, STORAGE op 3's reply
+FCOPY   := factoryCopyTest.c $(CORE)/storage/factory_copy.c $(CORE)/storage/storage.c $(CORE)/support/sha256.c sim/sim_flash.c
+TESTS   += factoryCopyTest
+
+factoryCopyTest: $(FCOPY) $(wildcard $(CORE)/storage/*.h sim/sim_flash.h) $(CORE)/support/sha256.h $(ROOT)/hal/hal_flash.h $(ROOT)/hal/board.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -o $@ $(FCOPY)
+
 run: run-settings
-run-settings: settingsTest storageClaimFirstTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
+run-settings: settingsTest storageClaimFirstTest storageJournalLogTest storageJournalLogKeepTest storageFactoryTest storageFactoryAddr4Test factoryCopyTest spiNorTest spiNorAddr4Test spiNandTest nandSectorsTest
 	./settingsTest
 	./storageClaimFirstTest
+	./storageJournalLogTest
+	./storageJournalLogKeepTest
+	./storageFactoryTest
+	./storageFactoryAddr4Test
+	./factoryCopyTest
 	./spiNorTest
 	./spiNorAddr4Test
 	./spiNandTest
@@ -1737,9 +1808,17 @@ TESTS   += cpsTest
 cpsTest: cpsTest.c $(CPS) $(wildcard $(CORE)/cps/*.h $(CORE)/codeplug/*.h $(CORE)/settings/*.h $(CORE)/storage/*.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -o $@ cpsTest.c $(CPS)
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then X 1-3 on a map with factory ranges in the EEPROM image, a power cut at every operation of a commit
+TESTS   += cpsKeepTest
+
+cpsKeepTest: cpsTest.c $(CPS) $(wildcard $(CORE)/cps/*.h $(CORE)/codeplug/*.h $(CORE)/settings/*.h $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -o $@ cpsTest.c $(CPS)
+
 run: run-cps
-run-cps: cpsTest
+run-cps: cpsTest cpsKeepTest
 	./cpsTest
+	./cpsKeepTest
 .PHONY: run-cps
 
 # The fast codeplug protocol (core/cps/cps_fast.c, docs/spec/cps-fast.md): LZ4 both ways, blank blocks, CRC compare,
@@ -1750,9 +1829,19 @@ TESTS   += cpsFastTest
 cpsFastTest: cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -o $@ cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c
 
+# The same as a board that keeps the maker's bytes builds it (STORAGE_FACTORY_KEEP, settings-store.md 4.1): every test
+# above, then blocks holding factory ranges written direct and staged, a power cut at every operation of a staged
+# commit and of cps_fast_resume
+TESTS   += cpsFastKeepTest
+
+cpsFastKeepTest: cpsFastTest.c $(CPS) $(CPSF) $(CORE)/net/tftp_codeplug.c $(wildcard $(CORE)/cps/*.h $(CORE)/net/tftp*.h $(CORE)/storage/*.h sim/sim_flash.h) $(ROOT)/hal/hal_flash.h
+	$(CC) $(CFLAGS) -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -Wshadow -DCONFIG_TFTP_IDDB=0 -o $@ cpsFastTest.c $(CPS) $(CPSF) \
+		$(CORE)/net/tftp_codeplug.c
+
 run: run-cpsfast
-run-cpsfast: cpsFastTest
+run-cpsfast: cpsFastTest cpsFastKeepTest
 	./cpsFastTest
+	./cpsFastKeepTest
 .PHONY: run-cpsfast
 
 # app.c's start-up order on a region that isn't ours, the staging area holding another firmware's bytes: the two

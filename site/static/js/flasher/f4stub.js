@@ -429,9 +429,9 @@ export class F4Stub extends Stub {
 	}
 
 	// Write data (whole 4 KB sectors) into the SPI flash from start: only the sectors whose CRC differs are erased and
-	// programmed (blank pieces skipped), each read back by the stub, then all checked again. A restore: the board's
-	// protected regions are carved out, so the radio keeps its own bytes there. Returns {written, same}; protected
-	// sectors count as same.
+	// programmed (blank pieces skipped), each read back by the stub, then all checked again. A restore: every sector a
+	// protected region touches is left out whole (one inside a sector too: an erase cut short would lose it), so the
+	// radio keeps its own bytes there. Returns {written, same}; protected sectors count as same.
 	async spiWrite(data, start = 0, { progress = () => {}, signal } = {}) {
 		this.needSpi();
 		if (start % BLOCK || data.length % BLOCK || start + data.length > this.info.spiSize) throw new StubError("SPI flash writes are whole 4 KB sectors inside the chip");

@@ -2,11 +2,13 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // The CS7000 M17 PLUS RF chain (rfops_cs7000p.c under drivers/rf/chainseq) on a fake expander and DAC that carry
 // the board's own interlock (exp_cs7000p.h), a fake synthesizer and IF chip. Checked at every write: the transmit
-// rail only changes with the DAC at or under the floor and the loop open, it is never on with the receive VCO
-// selected, and the interlock's rule holds. Then the orders of receive, FM transmit and a burst, and every way a
-// transmission is refused: no calibration (nothing is written), the bench drive's conditions one by one, the
-// reference's settle time, the battery, the power's off state, an unlocked synthesizer, a refused write, a safe
-// request from outside.
+// rail only changes with the DAC at or under the floor and the loop open, the VCO line only moves with the transmit
+// rail off and the loop open, with the transmit rail on it is the line cs7000p_vco_low gives the carrier, and the
+// interlock's rule holds. Then the orders of receive, FM transmit and a burst, and every way a transmission is
+// refused: no calibration (nothing is written), the bench drive's conditions one by one, the reference's settle
+// time, the battery, the power's off state, an unlocked synthesizer, a refused write, a safe request from outside.
+// Last the VCO line by frequency: the owner's 433.5 MHz receive set-up and bench key-up write for write as before
+// the rule, and the line on both sides of each switch point.
 #include <stdio.h>
 #include <string.h>
 #include "rfops_cs7000p.h"
@@ -61,8 +63,12 @@ static void rules(uint32_t before)
 	if (((before ^ shadow) & EXP_TX_RAIL) != 0u && (dac_now > il_floor || ((before | shadow) & EXP_APC_LOOP) != 0u)) {
 		inv_fail++;	// the transmit rail moved under a reference or a closed loop
 	}
-	if ((shadow & EXP_TX_RAIL) != 0u && (shadow & EXP_VCO_RX) != 0u) {
-		inv_fail++;	// the transmitter powered with the receive VCO selected
+	if (((before ^ shadow) & EXP_VCO_LOW) != 0u && ((before | shadow) & EXP_TX_BITS) != 0u) {
+		inv_fail++;	// the VCO line moved with the transmit rail on or the loop closed
+	}
+	if ((shadow & EXP_TX_RAIL) != 0u && rf.admit_hz != 0u &&
+	    ((shadow & EXP_VCO_LOW) != 0u) != cs7000p_vco_low(rf.admit_hz, true, false)) {
+		inv_fail++;	// the transmitter powered with another VCO than the carrier's
 	}
 	if ((shadow & EXP_APC_LOOP) != 0u && ((shadow & EXP_TX_RAIL) == 0u || dac_now > drive_cap)) {
 		inv_fail++;	// the loop closed without its rail, or on something that is no drive
@@ -252,7 +258,7 @@ static bool tx_bits_ever(void)
 
 static bool is_safe(void)
 {
-	return (shadow & EXP_TX_BITS) == 0u && (shadow & EXP_VCO_RX) != 0u;
+	return (shadow & EXP_TX_BITS) == 0u && (shadow & EXP_VCO_LOW) != 0u;
 }
 
 // --- Start-up and receive ---
@@ -260,7 +266,7 @@ static bool is_safe(void)
 static void test_start(void)
 {
 	shadow = EXP_RESET_WORD | EXP_TX_RAIL | EXP_APC_LOOP;	// whatever a fault left: the init makes it safe
-	shadow &= ~EXP_VCO_RX;
+	shadow &= ~EXP_VCO_LOW;
 	dac_now = 0;
 	il_floor = 0;
 	drive_cap = CS7000P_DAC_MAX;
@@ -269,7 +275,7 @@ static void test_start(void)
 	cs7000p_rf_init(&rf, &io, &cs7000p_cal_model);
 	CHECK(is_safe() && dac_now == 0 && rf.seq.state == CHAINSEQ_ST_OFF);
 	CHECK(find_exp(0, EXP_APC_LOOP, false) < find_exp(0, EXP_TX_RAIL, false));	// the loop opens before its rail goes
-	CHECK(find_exp(0, EXP_TX_RAIL, false) < find_exp(0, EXP_VCO_RX, true));
+	CHECK(find_exp(0, EXP_TX_RAIL, false) < find_exp(0, EXP_VCO_LOW, true));
 	CHECK(!rf.lo_high && rf.ref_offset == CS7000P_REF_OFFSET && !rf.synth_on);
 	// The synthesizer rail, its settle time, and from when the reference counts as settling
 	clear_log();
@@ -290,11 +296,11 @@ static void test_receive(void)
 
 	CHECK(cs7000p_rf_rx(&rf, 446u * MHZ, true));
 	CHECK(rf.seq.state == CHAINSEQ_ST_RX && inv_fail == 0 && trips == 0);
-	// The order: safe first (the DAC is about to be a tuning voltage), the receive VCO, the first LO on the low
+	// The order: safe first (the DAC is about to be a tuning voltage), the VCO line, the first LO on the low
 	// side with the divider 2, the receive rail and the IF chip, 1 ms, the IF set-up, the tuning value, the audio rail
 	int i_dac0 = find_ev(0, EV_DAC);
 	int i_loop = find_exp(0, EXP_APC_LOOP, false), i_txr = find_exp(0, EXP_TX_RAIL, false);
-	int i_vco = find_exp(0, EXP_VCO_RX, true), i_synth = find_ev(0, EV_SYNTH);
+	int i_vco = find_exp(0, EXP_VCO_LOW, true), i_synth = find_ev(0, EV_SYNTH);
 	int i_rxr = find_exp(0, EXP_RX_RAIL, true), i_run = find_exp(0, EXP_AK_RUN, true);
 	int i_if = find_ev(0, EV_IF), i_tune = find_dac_over(0, 0), i_aud = find_exp(0, EXP_AUDIO_RAIL, true);
 	CHECK(i_dac0 == 0 && ev[0].a == 0);
@@ -626,8 +632,9 @@ static void test_fm_tx(void)
 	us_total = 0;
 	CHECK(cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK);
 	CHECK(rf.seq.state == CHAINSEQ_ST_TX && inv_fail == 0 && trips == 0);
-	// The transmit VCO on the carrier, locked, the rail, 500 us, the floor, the loop, then the ramp to the drive
-	int i_vco = find_exp(0, EXP_VCO_RX, false), i_synth = find_ev(0, EV_SYNTH);
+	// The VCO line for the carrier (clear over 430 MHz), the synthesizer on it, locked, the rail, 500 us, the
+	// floor, the loop, then the ramp to the drive
+	int i_vco = find_exp(0, EXP_VCO_LOW, false), i_synth = find_ev(0, EV_SYNTH);
 	int i_txr = find_exp(0, EXP_TX_RAIL, true), i_floor = find_dac_over(0, 0);
 	int i_loop = find_exp(0, EXP_APC_LOOP, true), i_ramp = find_dac_over(0, cal_ok.floor);
 	CHECK(i_vco >= 0 && i_vco < i_synth && i_synth < i_txr && i_txr < i_floor && i_floor < i_loop && i_loop < i_ramp);
@@ -649,14 +656,14 @@ static void test_fm_tx(void)
 		}
 	}
 	CHECK(steps == (int)CHAINSEQ_RAMP_STEPS && dac_now == 3000 && last == 3000);
-	CHECK((shadow & EXP_TX_BITS) == EXP_TX_BITS && (shadow & (EXP_VCO_RX | EXP_RX_RAIL)) == 0u);
+	CHECK((shadow & EXP_TX_BITS) == EXP_TX_BITS && (shadow & (EXP_VCO_LOW | EXP_RX_RAIL)) == 0u);
 	CHECK(cs7000p_rf_drive_top(&rf) == 3000);
 
 	// The end: down the ramp to the floor, the loop, the rail, the DAC off, then the whole receive set-up
 	clear_log();
 	cs7000p_rf_tx_off(&rf, false);
 	int o_loop = find_exp(0, EXP_APC_LOOP, false), o_txr = find_exp(0, EXP_TX_RAIL, false);
-	int o_vco = find_exp(0, EXP_VCO_RX, true), o_if = find_ev(0, EV_IF);
+	int o_vco = find_exp(0, EXP_VCO_LOW, true), o_if = find_ev(0, EV_IF);
 	CHECK(o_loop > 0 && o_loop < o_txr && o_txr < o_vco && o_vco < o_if);
 	last = 3000;
 	for (int i = 0; i < o_loop; i++) {
@@ -893,10 +900,11 @@ static void test_bursts(void)
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
 	cs7000p_rf_burst_drives(&rf, &d, &top, &fl);
 	CHECK(d == 3000 && top == 3000 && fl == 300);
-	// The tune: receiver off, the transmit VCO on the carrier, the rail; the DAC off and the loop open. The
-	// sequencer asks the plan for level 0 here, and the plan answers for the admitted transmission all the same
+	// The tune: receiver off, the VCO line for the carrier, the synthesizer on it, the rail; the DAC off and the
+	// loop open. The sequencer asks the plan for level 0 here, and the plan answers for the admitted transmission
+	// all the same
 	CHECK(chainseq_burst_tune(&rf.seq, 441u * MHZ));
-	int i_rxr = find_exp(0, EXP_RX_RAIL, false), i_vco = find_exp(0, EXP_VCO_RX, false);
+	int i_rxr = find_exp(0, EXP_RX_RAIL, false), i_vco = find_exp(0, EXP_VCO_LOW, false);
 	int i_synth = find_ev(0, EV_SYNTH), i_txr = find_exp(0, EXP_TX_RAIL, true);
 	CHECK(ev[0].type == EV_DAC && ev[0].a == 0 && i_rxr > 0 && i_rxr < i_vco && i_vco < i_synth && i_synth < i_txr);
 	CHECK(ev[i_synth].b == 441u * MHZ && dac_now == 0 && (shadow & EXP_TX_BITS) == EXP_TX_RAIL);
@@ -905,7 +913,7 @@ static void test_bursts(void)
 	CHECK(!chainseq_burst_tune(&rf.seq, 442u * MHZ));
 
 	// Two bursts: the loop closes on the floor before any drive, then the drive; the end takes all of it away and
-	// leaves the transmit VCO tuned
+	// leaves the synthesizer on the carrier
 	for (int n = 0; n < 2; n++) {
 		clear_log();
 		CHECK(burst(0, d));
@@ -915,7 +923,7 @@ static void test_bursts(void)
 		CHECK(dac_now == 3000 && (shadow & EXP_TX_BITS) == EXP_TX_BITS && rf.seq.state == CHAINSEQ_ST_BURST_ON);
 		chainseq_burst_off(&rf.seq);
 		chainseq_burst_off(&rf.seq);	// the timed drop, then the glue's switch back
-		CHECK(dac_now == 0 && (shadow & (EXP_TX_BITS | EXP_VCO_RX)) == 0u && rf.seq.state == CHAINSEQ_ST_BURST);
+		CHECK(dac_now == 0 && (shadow & (EXP_TX_BITS | EXP_VCO_LOW)) == 0u && rf.seq.state == CHAINSEQ_ST_BURST);
 		CHECK(find_ev(0, EV_SYNTH) < 0 && find_ev(0, EV_DELAY) < 0);
 	}
 	// With a boost: it comes after the loop point, and the PA's point carries it
@@ -991,6 +999,184 @@ static void test_bursts(void)
 }
 #endif
 
+// --- The VCO line by frequency ---
+
+#define F_OWNER	433500000u
+
+// A receive set-up from the start, the same channel again at the other width, and a key-up on the bench drive with
+// its end; with DMR also a bench burst transmission and its way back
+static void owner_run(int part)
+{
+	cs7000p_tx_req_t q = req(F_OWNER, 0, false);
+	q.limit_list = true;
+	if (part == 0) {
+		bring_up(&cs7000p_cal_model, 0);
+		CHECK(cs7000p_rf_rx(&rf, F_OWNER, true));
+		CHECK(cs7000p_rf_rx(&rf, F_OWNER, false));
+		drive_cap = 600;
+		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+		CHECK(cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK);
+		cs7000p_rf_tx_off(&rf, false);
+		return;
+	}
+#if CONFIG_DMR
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	q.dmr = true;
+	q.bench_dmr = true;
+	drive_cap = 500;
+	CHECK(cs7000p_rf_drive(&rf, 500, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	CHECK(chainseq_burst_tune(&rf.seq, F_OWNER) && burst(0, 500));
+	chainseq_burst_off(&rf.seq);
+	CHECK(chainseq_burst_rx(&rf.seq));
+	cs7000p_rf_tx_off(&rf, false);
+#endif
+}
+
+// What owner_run wrote before the VCO line came from the frequency plan (taken from the code then, by direction):
+// the same writes in the same order, each level, value and wait, now that it does. 433.5 MHz receives with the
+// line set and transmits with it clear under both rules
+typedef struct { uint8_t type; uint32_t a, b; } owner_ev_t;
+#define GS(bit)	{ EV_EXP, (bit), 0 }
+#define GC(bit)	{ EV_EXP, 0, (bit) }
+#define GD(v)	{ EV_DAC, (v), 0 }
+#define GW(us)	{ EV_DELAY, (us), 0 }
+#define GP(hz)	{ EV_SYNTH, 2, (hz) }
+#define GI(w)	{ EV_IF, (w), 0 }
+// The receive set-up after its safe writes (the line set), from the words on; and the IF chip's width
+#define G_RX_LO	GP(383550000u), GW(100), GW(100), GS(EXP_RX_RAIL), GS(EXP_AK_RUN), GW(1000)
+#define G_SAFE	GD(0), GC(EXP_APC_LOOP), GC(EXP_TX_RAIL)
+
+static const owner_ev_t owner_fm[] = {
+	// The first receive set-up: the synthesizer rail's settle time
+	G_SAFE, GS(EXP_VCO_LOW), GS(EXP_SYNTH_RAIL), GW(1000), G_RX_LO, GI(1), GD(2048), GS(EXP_AUDIO_RAIL),
+	// Again, 12.5 kHz
+	G_SAFE, GS(EXP_VCO_LOW), GS(EXP_SYNTH_RAIL), G_RX_LO, GI(0), GD(2048), GS(EXP_AUDIO_RAIL),
+	// The key-up on the bench drive: tx_begin, then the line clear before the words, the lock, the rail, the loop
+	GD(0), GC(EXP_RX_RAIL),
+	G_SAFE, GC(EXP_RX_RAIL), GS(EXP_SYNTH_RAIL), GC(EXP_VCO_LOW), GP(433500000u), GW(100), GW(100),
+	GS(EXP_TX_RAIL), GW(500), GS(EXP_APC_LOOP),
+	GD(26), GW(250), GD(94), GW(250), GD(190), GW(250), GD(300), GW(250), GD(410), GW(250), GD(506), GW(250),
+	GD(574), GW(250), GD(600),
+	// The end: the ramp down, the PA off, the whole receive set-up
+	GD(574), GW(250), GD(506), GW(250), GD(410), GW(250), GD(300), GW(250), GD(190), GW(250), GD(94), GW(250),
+	GD(26), GW(250), GD(0),
+	G_SAFE, G_SAFE, GS(EXP_VCO_LOW), GS(EXP_SYNTH_RAIL), G_RX_LO, GI(0), GD(2048),
+};
+#if CONFIG_DMR
+static const owner_ev_t owner_dmr[] = {
+	// The burst tune: the line clear, the words, the transmit rail; the burst; its end
+	G_SAFE, GC(EXP_RX_RAIL), GS(EXP_SYNTH_RAIL), GC(EXP_VCO_LOW), GP(433500000u), GS(EXP_TX_RAIL),
+	GS(EXP_TX_RAIL), GS(EXP_APC_LOOP), GD(500), G_SAFE,
+	// The way back: the line set, the receive LO, the receive rail, the tuning value; then the whole set-up
+	G_SAFE, GS(EXP_VCO_LOW), GP(383550000u), GS(EXP_RX_RAIL), GD(2048),
+	G_SAFE, GS(EXP_VCO_LOW), GS(EXP_SYNTH_RAIL), G_RX_LO, GI(1), GD(2048),
+};
+#endif
+
+static void owner_match(const owner_ev_t *want, int n, int line)
+{
+	bool ok = ev_n == n;
+	for (int i = 0; ok && i < n; i++) {
+		ok = ev[i].type == want[i].type && ev[i].a == want[i].a && ev[i].b == want[i].b;
+	}
+	if (!ok) {
+		printf("FAIL %s:%d: the 433.5 MHz log differs (%d events, %d expected)\n", __FILE__, line, ev_n, n);
+		for (int i = 0; i < ev_n || i < n; i++) {
+			if (i < ev_n && (i >= n || ev[i].type != want[i].type || ev[i].a != want[i].a || ev[i].b != want[i].b)) {
+				printf("  %3d got %u 0x%lx 0x%lx\n", i, ev[i].type, (unsigned long)ev[i].a, (unsigned long)ev[i].b);
+				break;
+			}
+		}
+		failures++;
+	}
+}
+
+// The line where a receive set-up leaves it, and where a bench key-up has it with the transmit rail on. Each starts
+// a new log
+static bool rx_line(uint32_t hz)
+{
+	clear_log();
+	CHECK(cs7000p_rf_rx(&rf, hz, true) && rf.seq.state == CHAINSEQ_ST_RX);
+	return (shadow & EXP_VCO_LOW) != 0u;
+}
+
+static bool fm_line(uint32_t hz)
+{
+	cs7000p_tx_req_t q = req(hz, 0, false);
+	q.limit_list = true;
+	drive_cap = 600;
+	clear_log();
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	CHECK(cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK);
+	CHECK(rf.seq.state == CHAINSEQ_ST_TX && (shadow & EXP_TX_BITS) == EXP_TX_BITS);
+	bool on = (shadow & EXP_VCO_LOW) != 0u;
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX);
+	return on;
+}
+
+static void test_vco_rule(void)
+{
+	// The owner's channel, write for write as before
+	owner_run(0);
+	owner_match(owner_fm, (int)(sizeof(owner_fm) / sizeof(owner_fm[0])), __LINE__);
+	CHECK(inv_fail == 0 && trips == 0);
+#if CONFIG_DMR
+	owner_run(1);
+	owner_match(owner_dmr, (int)(sizeof(owner_dmr) / sizeof(owner_dmr[0])), __LINE__);
+	CHECK(inv_fail == 0 && trips == 0);
+#endif
+
+	// Receive: set up to 479 MHz, clear above. Over the switch the safe writes park the line and the set-up clears
+	// it before the synthesizer rail and the words
+	bring_up(&cs7000p_cal_model, 0);
+	CHECK(rx_line(F_OWNER) && rx_line(479u * MHZ) && !rx_line(480u * MHZ) && !rx_line(527u * MHZ));
+	clear_log();
+	CHECK(!rx_line(480u * MHZ));
+	int i_park = find_exp(0, EXP_VCO_LOW, true), i_clr = find_exp(0, EXP_VCO_LOW, false);
+	CHECK(i_park > find_exp(0, EXP_TX_RAIL, false) && i_park < i_clr && i_clr < find_exp(0, EXP_SYNTH_RAIL, true));
+	CHECK(i_clr < find_ev(0, EV_SYNTH) && ev[find_ev(0, EV_SYNTH)].b == 480u * MHZ - CS7000P_IF_HZ);
+	CHECK(find_exp(i_clr + 1, EXP_VCO_LOW, true) < 0 && find_exp(i_clr + 1, EXP_VCO_LOW, false) < 0);
+	// Transmit: set up to 430 MHz, clear above, whatever the receiver had. Each key-up here starts and ends on the
+	// receiver over 479 MHz (the line clear): the line moves on the way up and back, with the transmit rail off
+	CHECK(fm_line(420u * MHZ) && fm_line(430u * MHZ) && !fm_line(430000010u) && !fm_line(F_OWNER));
+	CHECK(!fm_line(446500000u) && !fm_line(512u * MHZ));
+	CHECK((shadow & EXP_VCO_LOW) == 0u && rf.seq.rx_hz == 480u * MHZ && inv_fail == 0 && trips == 0);
+
+	// 3:6, receive by direction: set over 479 MHz too. Transmit follows its frequency all the same
+	rf.vco_rx_dir = true;
+	CHECK(rx_line(480u * MHZ) && rx_line(527u * MHZ));
+	CHECK(fm_line(420u * MHZ) && !fm_line(446500000u));
+	rf.vco_rx_dir = false;
+	CHECK(!rx_line(480u * MHZ));
+	// The LO above the signal (3:3): receive by direction, as the bench ran it before; transmit by its frequency
+	rf.lo_high = true;
+	CHECK(rx_line(F_OWNER) && rx_line(480u * MHZ));
+	CHECK(fm_line(420u * MHZ) && !fm_line(F_OWNER));
+	rf.lo_high = false;
+	CHECK(inv_fail == 0 && trips == 0);
+
+#if CONFIG_DMR
+	// Bursts across the switches, at interrupt level: from a receiver at 480 MHz (clear) to bursts at 420 MHz (set),
+	// and the way back clears it before the words
+	bring_up(&cs7000p_cal_model, 480u * MHZ);
+	CHECK((shadow & EXP_VCO_LOW) == 0u);
+	cs7000p_tx_req_t q = req(420u * MHZ, 0, true);
+	q.limit_list = true;
+	q.bench_dmr = true;
+	drive_cap = 500;
+	CHECK(cs7000p_rf_drive(&rf, 500, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	CHECK(chainseq_burst_tune(&rf.seq, 420u * MHZ) && (shadow & EXP_VCO_LOW) != 0u);
+	CHECK(burst(0, 500) && (shadow & EXP_VCO_LOW) != 0u && dac_now == 500);
+	chainseq_burst_off(&rf.seq);
+	clear_log();
+	CHECK(chainseq_burst_rx(&rf.seq) && (shadow & EXP_VCO_LOW) == 0u && find_ev(0, EV_DELAY) < 0);
+	CHECK(find_exp(0, EXP_VCO_LOW, false) >= 0 && find_exp(0, EXP_VCO_LOW, false) < find_ev(0, EV_SYNTH));
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(rf.seq.state == CHAINSEQ_ST_RX && (shadow & EXP_VCO_LOW) == 0u && inv_fail == 0 && trips == 0);
+#endif
+}
+
 int main(void)
 {
 	test_start();
@@ -1006,6 +1192,7 @@ int main(void)
 #if CONFIG_DMR
 	test_bursts();
 #endif
+	test_vco_rule();
 	printf("# cs7000pRadioSeqTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

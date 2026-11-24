@@ -8,17 +8,51 @@ channel decoded from the read matches the radio view, a settings save after a ch
 --allow-codeplug-write backs the codeplug up, writes one channel name, reads it back, restores the backup and
 verifies it; --allow-reboot checks the channel position survives a restart. test_cps_write_dry_run checks the backup and
 restore steps without writing; run it (and look at its output) before the first --allow-codeplug-write run on a
-radio. Backups go to --codeplug-backup-dir (default the test's tmp directory)."""
+radio. Backups go to --codeplug-backup-dir (default the test's tmp directory).
+
+A board's protected data flash regions (board.toml [[flash.protect]]: the maker's factory data, some of it inside the
+codeplug's sectors) are never written by these tests: every write goes through cps_client.write_image, which sends no
+byte of a region, and the CRC-32 of each region the write's sectors hold is read before the write and compared after
+it and after the restore."""
 import contextlib
 import os
 import time
+import zlib
 
 import pytest
 
-from rfoundry_hil import DebugLinkError, as_int, board_entry, board_id, skip
+from rfoundry_hil import DebugLinkError, as_int, board_entry, board_id, board_protect, skip
 import cps_client
 
 QDMR = cps_client.REGIONS["qdmr"]
+
+
+def protected(radio):
+    """(the board's protected regions, their image addresses the CPS reaches: cps_client.kept_ranges)"""
+    entries = board_protect(radio.version().get("board"))
+    offset = as_int(storage(radio).get("cps.openfw_eeprom"), 0)
+    return entries, [(s, e) for s, e in cps_client.kept_ranges(entries, offset) if e <= cps_client.IMAGE_SIZE]
+
+
+def kept_crcs(radio, regions):
+    """{(start, end): CRC-32} of each protected region in a sector the regions touch, read through the CPS (area 1
+    reads the stored bytes); {} when there is none"""
+    _, keep = protected(radio)
+    sec = cps_client.SECTOR
+    near = [(s, e) for s, e in keep if any(s < -(-r1 // sec) * sec and r0 - r0 % sec < e for r0, r1 in regions)]
+    if not near:
+        return {}
+    img = cps_session(radio, lambda c: c.read_image(near))
+    return {(s, e): zlib.crc32(bytes(img[s:e])) for s, e in near}
+
+
+def assert_kept(radio, regions, before, when):
+    """The protected regions near the regions hold what they held before (kept_crcs)"""
+    if before:
+        after = kept_crcs(radio, regions)
+        assert after == before, (f"{when}: a protected region changed: " +
+                                 ", ".join(f"{s:#x}-{e:#x} {before[(s, e)]:#010x} -> {after.get((s, e), 0):#010x}"
+                                           for s, e in before if after.get((s, e)) != before[(s, e)]))
 
 
 def cps_session(radio, fn):
@@ -161,33 +195,41 @@ def codeplug_edited(radio, backup_dir, edit, tag, regions=QDMR):
     edit(edited)
     changed = cps_client.compare(backup, edited, regions, skip=())
     assert changed, "the edit changes nothing"
+    entries, keep = protected(radio)
     check = regions                             # what is read back after the write and after the restore
     if os.environ.get("RFOUNDRY_HIL_CODEPLUG_IMAGE"):
-        # Only the sectors the edit writes are read: they must hold the file's bytes, else the file is stale
+        # Only the sectors the edit writes are read: they must hold the file's bytes, else the file is stale (the
+        # protected regions aside: no write sends their bytes)
         spans = [(max(s, n * cps_client.SECTOR), min(e, (n + 1) * cps_client.SECTOR))
-                 for n, s, e in cps_client.plan_write(edited, regions, backup)]
+                 for n, s, e in cps_client.plan_write(edited, regions, backup, keep)]
         radio_now = cps_session(radio, lambda c: c.read_image(spans))
-        stale = cps_client.compare(backup, radio_now, spans)
+        stale = cps_client.compare(backup, radio_now, spans, skip=keep)
         assert not stale, f"--codeplug-image {path} differs from the radio at {len(stale)} bytes: not writing"
         print(f"codeplug backup: {path} (--codeplug-image; the {len(spans)} sectors to write match the radio)")
         check = spans
+    kept = kept_crcs(radio, regions)
     try:
-        cps_session(radio, lambda c: c.write_image(edited, regions, reboot=False, base=backup))
+        cps_session(radio, lambda c: c.write_image(edited, regions, reboot=False, base=backup, protect=entries))
+        assert_kept(radio, regions, kept, "after the write")
         back = cps_session(radio, lambda c: c.read_image(check))
-        d = cps_client.compare(edited, back, check)
+        d = cps_client.compare(edited, back, check, skip=keep)
         assert not d, f"read back differs at {len(d)} bytes, first {[(hex(x), y, z) for x, y, z in d[:4]]}"
         yield backup, edited
     finally:
         # With --codeplug-image the radio holds the edit (checked above), so only the edited sectors go back
         restore_backup(radio, backup, path, fallback=edited, check=check,
-                       now=edited if os.environ.get("RFOUNDRY_HIL_CODEPLUG_IMAGE") else None, regions=regions)
+                       now=edited if os.environ.get("RFOUNDRY_HIL_CODEPLUG_IMAGE") else None, regions=regions,
+                       kept=kept)
 
 
-def restore_backup(radio, backup, path, fallback, check=None, now=None, regions=QDMR):
+def restore_backup(radio, backup, path, fallback, check=None, now=None, regions=QDMR, kept=None):
     """Write backup over whatever the radio holds now (only the sectors that differ) and verify the regions in check
-    byte for byte; fallback is the image to plan from when the radio can't be read first (None: write every sector).
-    now, when given, is what the radio is known to hold, so it isn't read."""
+    byte for byte, the protected regions aside, whose CRC-32 must still be kept's (kept_crcs before the test's write;
+    None: read now, before this write); fallback is the image to plan from when the radio can't be read first (None:
+    write every sector). now, when given, is what the radio is known to hold, so it isn't read."""
     check = regions if check is None else check
+    entries, keep = protected(radio)
+    kept = kept_crcs(radio, regions) if kept is None else kept
     if now is None:
         try:
             now = cps_session(radio, lambda c: c.read_image(regions))
@@ -196,15 +238,16 @@ def restore_backup(radio, backup, path, fallback, check=None, now=None, regions=
     changed = cps_client.compare(backup, now, regions, skip=()) if now is not None else "an unknown number of"
     for attempt in range(3):                    # a radio busy just after a test can miss the session's first command
         try:
-            cps_session(radio, lambda c: c.write_image(backup, regions, reboot=False, base=now))
+            cps_session(radio, lambda c: c.write_image(backup, regions, reboot=False, base=now, protect=entries))
             break
         except cps_client.CpsError:
             if attempt == 2:
                 raise
             time.sleep(3)
     restored = cps_session(radio, lambda c: c.read_image(check))
-    d = cps_client.compare(backup, restored, check)
+    d = cps_client.compare(backup, restored, check, skip=keep)
     assert not d, f"RESTORE FAILED at {len(d)} bytes: write {path} back with tools/cps_client.py"
+    assert_kept(radio, regions, kept, "after the restore")
     print(f"codeplug restored and verified ({len(changed) if now is not None else changed} bytes had been changed)")
 
 

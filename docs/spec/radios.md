@@ -161,14 +161,15 @@ A forum thread reports a 2023+ HD1 v2 on the HR_C7000, but posters contradict ea
 - Codec: the AMBE+2 codec of the maker's DMR program V9.00.96, merged from the maker's file on the user's machine
   into the last sector of flash bank 1 ([codec-cs7000p.md](codec-cs7000p.md)); it decodes received voice on one
   radio, encode is untested.
-- No calibration source: the maker's tuning data is somewhere in the data flash, in a format nobody has documented.
-- **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7` builds and passes its host tests. On one radio
-  the image starts, the display, keys, channel selector, USB, debug link and settings storage work, FM receive works
-  with clear audio, and DMR calls are received and played with the merged codec; no HIL run is recorded yet
+- Calibration: the maker's factory table is 512 bytes in the data flash, at 0x001000 inside the open-firmware
+  EEPROM image ([calibration-cs7000p.md](calibration-cs7000p.md)). The port keeps those bytes, reads and checks the
+  table, keeps its own verified copy and can restore it from a backup; it transmits on none of it yet.
+- **RadioFoundry:** `boards/cs7000p` on the new `platform/stm32h7`. One radio runs it: display, keys, the channel
+  selector, USB, the debug link, settings storage, FM receive, and DMR receive with voice played by the merged codec
   ([hardware-cs7000p.md](hardware-cs7000p.md), [cs7000p-bringup.md](../testing/cs7000p-bringup.md)).
-  Transmit is refused until the PA and the modulation are calibrated on a bench, so DMR voice transmit is
-  untested. It reuses `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`,
-  `drivers/display/st7735` and `drivers/flash/spi_nor`, and the STM32 code the two families share (`platform/stm32`). New shared code:
+  Transmit is refused until the PA and the modulation are calibrated, so DMR voice transmit is untested. It reuses
+  `drivers/modem/hrc6000`, `drivers/rf/sky72310`, `drivers/rf/ak2365a`, `drivers/display/st7735`
+  and `drivers/flash/spi_nor`, and the STM32 code the two families share (`platform/stm32`). New shared code:
   `drivers/io/hc595`, `drivers/bus/wire3_gpio`, `drivers/rf/chainseq`, `drivers/modem/hrc6000/if_host`,
   `platform/stm32/dmr_keyup`, `lcd8080_gpio` and `gpio_keypad`, 4-byte addresses in `drivers/flash/spi_nor`, and
   the claim-first rule of the settings store. Out of scope for now: M17, Bluetooth, the accelerometer, the vibrator.
