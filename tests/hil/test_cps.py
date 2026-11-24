@@ -21,7 +21,7 @@ import zlib
 
 import pytest
 
-from rfoundry_hil import DebugLinkError, as_int, board_entry, board_id, skip
+from rfoundry_hil import DebugLinkError, as_int, board_entry, board_id, board_protect, skip
 import cps_client
 
 QDMR = cps_client.REGIONS["qdmr"]
@@ -29,7 +29,7 @@ QDMR = cps_client.REGIONS["qdmr"]
 
 def protected(radio):
     """(the board's protected regions, their image addresses the CPS reaches: cps_client.kept_ranges)"""
-    entries = board_entry(board_id(radio.version().get("board"))).get("protect", [])
+    entries = board_protect(radio.version().get("board"))
     offset = as_int(storage(radio).get("cps.openfw_eeprom"), 0)
     return entries, [(s, e) for s, e in cps_client.kept_ranges(entries, offset) if e <= cps_client.IMAGE_SIZE]
 

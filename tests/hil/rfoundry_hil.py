@@ -408,6 +408,14 @@ def board_entry(board):
     return _ENTRIES[board]
 
 
+def board_protect(name):
+    """The [[flash.protect]] entries of the board a VERSION board name means, from the registry the tools read
+    (dicts mem, start, end, what, in memory and address order), [] for no board. Not board_entry()'s "protect":
+    `boards.py get` keeps them under "flash", so a top-level key there is always missing"""
+    b = _registry().from_debuglink_name(name or "")
+    return [dict(p) for p in (b.protect if b else [])]
+
+
 def board_hil(board):
     """A board's HIL expectations (board.toml [hil]), {} for none."""
     return dict(board_entry(board).get("hil", {}))
