@@ -5,8 +5,10 @@
 // factory_copy_cfg_t in board.h). Read once at start (factory_copy_load, from app.c after the codeplug and before the
 // radio): the range and the record, each twice; the source of the bytes in use is the range when it passes the board's
 // check, else the record when it does, and neither when both pass and differ. The record is written once, by the
-// firmware itself: when the storage region is ours, the range passes and the record sector is blank. Nothing here
-// writes the range. CONFIG_FACTORY_COPY builds only; no RTOS, so the host tests run it
+// firmware itself: when the storage region is ours, the range passes and the record sector is blank. The one way the
+// range itself is written is the restore (STORAGE ops 4 and 5): bytes the host loaded, checked, then a job on the
+// housekeeping task that checks again under the storage lock and writes the range, verifies it and writes the record.
+// CONFIG_FACTORY_COPY builds only; no RTOS, so the host tests run it
 #ifndef RFOUNDRY_FACTORY_COPY_H
 #define RFOUNDRY_FACTORY_COPY_H
 
@@ -86,6 +88,47 @@ typedef struct {
 void factory_copy_load(const factory_copy_cfg_t *c);
 bool factory_copy_loaded(void);
 void factory_copy_get(factory_copy_state_t *s);
+// The board took the state (factory_copy_get) and c->table as the table in use: at its radio init, and after every
+// changed(). Until then STORAGE ops 4 and 5 answer BUSY, so no restore job writes c->table while the board reads it
+void factory_copy_taken(void);
+
+// The restore's result (STORAGE op 3's byte 21, the board's view): op 5's refusals in the order it checks them, then
+// the job's own failures. Numbers append only
+enum {
+	FACTORY_COPY_RS_OK,
+	FACTORY_COPY_RS_FOREIGN,	// 1 the storage region isn't ours (foreign, none, no map)
+	FACTORY_COPY_RS_BUSY,		// 2 the board's busy(), a storage job pending, the shared storage buffer taken
+	FACTORY_COPY_RS_STAGE,		// 3 the bytes loaded aren't the request's n, or n isn't the range's size
+	FACTORY_COPY_RS_CRC,		// 4 the loaded bytes' CRC-32 isn't the request's
+	FACTORY_COPY_RS_INVALID,	// 5 the loaded bytes fail the board's check (why, off)
+	FACTORY_COPY_RS_UNSTABLE,	// 6 two reads of the window differ, or one failed
+	FACTORY_COPY_RS_WINDOW_CRC,	// 7 the window's CRC-32 now isn't the one the host read
+	FACTORY_COPY_RS_WINDOW_DIFFERS,	// 8 the window passes check and holds other bytes
+	FACTORY_COPY_RS_RECORD_DIFFERS,	// 9 the record is ok and holds other bytes
+	FACTORY_COPY_RS_RECORD_OTHER,	// 10 the record's sector is other, newer or unreadable: unknown bytes
+	FACTORY_COPY_RS_VERIFY,		// 11 the job: the window read back isn't the loaded bytes; the record not written
+	FACTORY_COPY_RS_RECORD,		// 12 the job: the record's write or its read back failed; the window restored
+	FACTORY_COPY_RS_FLASH,		// 13 the job: the window's write failed
+	FACTORY_COPY_RS_PENDING = 0xFE,	// a job posted, not ended
+	FACTORY_COPY_RS_NONE = 0xFF,	// no restore at this start
+};
+// The last restore's result now (FACTORY_COPY_RS_*), and its name ("ok", "window_differs", "pending", "none", ...)
+uint8_t factory_copy_result(void);
+const char *factory_copy_result_name(uint8_t result);
+
+// STORAGE op 4 FACTORY_LOAD and op 5 FACTORY_RESTORE (debuglink.md 3.13), from the debug link's task, its one caller.
+// req and len: the request after the op byte. The reply after the status byte goes to out (at least
+// FACTORY_COPY_OP_OUT bytes), its length to *olen; the status (DL_ST_*) is returned. Op 4: offset u16, then 1 to
+// FACTORY_COPY_LOAD_CHUNK bytes of the range (offset 0 starts over, any other offset is the bytes loaded so far) ->
+// loaded u16. Op 5: n u16, the loaded bytes' CRC-32 u32, the CRC-32 of the window as the host read it u32 -> reason
+// u8 (FACTORY_COPY_RS_*), why u8, off u16; OK: the job is posted (op 3 shows its result), REFUSED: the reason. Both
+// answer UNAVAILABLE without a usable configuration and BUSY before the load, while a job is pending or running and
+// until the board took its outcome (factory_copy_taken)
+#define FACTORY_COPY_LOAD_CHUNK	56u
+#define FACTORY_COPY_OP_OUT	4u
+uint8_t factory_copy_load_op(const factory_copy_cfg_t *c, const uint8_t *req, uint16_t len, uint8_t *out, size_t *olen);
+uint8_t factory_copy_restore_op(const factory_copy_cfg_t *c, const uint8_t *req, uint16_t len, uint8_t *out,
+				size_t *olen);
 
 // The names the view shows (NULL for a reason of the board's own)
 const char *factory_copy_src_name(uint8_t src);

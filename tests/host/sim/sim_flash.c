@@ -15,6 +15,7 @@ static uint32_t bad_addr, bad_len;
 static uint32_t unread_addr, unread_len;
 static uint32_t misread_addr, misread_left;	// the misread_left-th read covering misread_addr flips a bit there
 static uint32_t grant = UINT32_MAX, ungranted;
+static uint32_t fail_left, op_calls;	// the fail_left-th erase or program call from now fails
 static sim_flash_log_fn log_fn;
 // The erases and programs of a recorded run (sim_flash_ops_begin): where each starts, in units after the start, and its
 // units
@@ -139,9 +140,16 @@ static void record(uint32_t n)
 	}
 }
 
+// The failing operation's turn (sim_flash_fail_op): true for the one that fails
+static bool fails_now(void)
+{
+	op_calls++;
+	return fail_left != 0 && --fail_left == 0;
+}
+
 static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 {
-	bool ok = write_op(addr, buf, len);
+	bool ok = !fails_now() && write_op(addr, buf, len);
 	if (ok) {
 		record(len);
 	}
@@ -153,7 +161,7 @@ static bool sim_write(uint32_t addr, const void *buf, uint32_t len)
 
 static bool sim_erase(uint32_t addr)
 {
-	bool ok = erase_op(addr);
+	bool ok = !fails_now() && erase_op(addr);
 	if (ok) {
 		record(1);
 	}
@@ -188,6 +196,7 @@ void sim_flash_create(uint32_t size, const hal_flash_map_t *map)
 	bad_len = 0;
 	unread_len = 0;
 	misread_left = 0;
+	fail_left = 0;
 	grant = UINT32_MAX;
 	ungranted = 0;
 }
@@ -234,6 +243,13 @@ void sim_flash_bad_read(uint32_t addr, uint32_t len)
 	unread_addr = addr;
 	unread_len = len;
 }
+
+void sim_flash_fail_op(uint32_t nth)
+{
+	fail_left = nth;
+}
+
+uint32_t sim_flash_op_calls(void) { return op_calls; }
 
 void sim_flash_misread(uint32_t addr, uint32_t nth)
 {

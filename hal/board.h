@@ -75,12 +75,15 @@ typedef struct {
 	// first rule that failed. The board's stricter rules for its own use of a field never fail it. Pure: no flash, no
 	// RTOS, no state
 	bool (*check)(const uint8_t *b, uint32_t n, uint8_t *why, uint16_t *off);
-	// The restore (settings-store.md 4.2): refused while busy() is true (the board transmits, ...); changed() after a
-	// restore job wrote, only raising a request the board takes on its own task. Either may be NULL
+	// The restore (settings-store.md 4.2): refused while busy() is true (the board transmits, ...); changed() after
+	// every restore job that reached the range's write, from the housekeeping task, only raising a request the board
+	// takes on its own task: it reads the state and the table there, then calls factory_copy_taken(), and busy() holds
+	// from changed() until then. Either may be NULL; without changed() the board never takes a later state. Every
+	// board calls factory_copy_taken() once its init read the load's state and table: until then no restore runs
 	bool (*busy)(void);
 	void (*changed)(void);
-	// The board's RAM of the range's size: the bytes in use after the load (the range's, or the record's when the
-	// range fails check), all 0xFF when there are none
+	// The board's RAM of the range's size: the bytes in use after the load and after each restore job (the range's,
+	// or the record's when the range fails check), all 0xFF when there are none
 	uint8_t *table;
 } factory_copy_cfg_t;
 

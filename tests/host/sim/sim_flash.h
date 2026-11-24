@@ -34,6 +34,10 @@ uint32_t sim_flash_reads(void);
 void sim_flash_bad_range(uint32_t addr, uint32_t len);
 // An unreadable range: reads that touch it fail. len 0 clears it
 void sim_flash_bad_read(uint32_t addr, uint32_t len);
+// A failing operation: the nth erase or program call from now (1 = the next) fails with nothing changed, once (0
+// clears it). And the erase and program calls so far, to count a run's
+void sim_flash_fail_op(uint32_t nth);
+uint32_t sim_flash_op_calls(void);
 // A marginal read: the nth read from now (1 = the next) that covers addr returns the byte there with bit 0 flipped,
 // once. nth 0 clears it
 void sim_flash_misread(uint32_t addr, uint32_t nth);
