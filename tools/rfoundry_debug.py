@@ -3110,9 +3110,32 @@ def cmd_storage_factory(link, a, registry=None, poll_s=0.2, wait_s=10.0):
         print(f"{head} radio 0x{rc:08x}, file 0x{fc:08x}, {'same' if rc == fc and o['radio'] == o['file'] else 'differs'}")
     differs = window != fbytes or (has_rec and not rec_same) or \
         any(o["radio"] is not None and o["file"] is not None and o["radio"] != o["file"] for o in others)
+    for line in factory_diagnosis(info, window, fbytes, kind, others):
+        print(line)
     if not a.restore:
         return 1 if differs else 0
     return factory_restore_run(link, a, info, window, fbytes, kind, others, poll_s, wait_s)
+
+
+def factory_diagnosis(info, window, fbytes, kind, others):
+    """Lines for the one case no restore path covers (settings-store.md 4.2, window_differs and record_differs): the
+    radio holds a valid table, in the window or the record, that differs from a whole backup whose other protected
+    ranges are this radio's. That table is then another radio's: a codeplug read from that radio and written here with
+    a build that kept nothing put it in the window, and the first start of a build with the copy took it into the
+    record. The restore refuses to replace a valid table, so the tool says so before the owner is sent elsewhere"""
+    if kind == "range" or not others or any(o["radio"] is None or o["file"] is None or o["radio"] != o["file"]
+                                             for o in others):
+        return []
+    fcrc = crc_sha(fbytes)[0]
+    held = ([f"the window (0x{crc_sha(window)[0]:08x})"] if info["window"] == "ok" and window != fbytes else []) + \
+        ([f"the record (0x{info['record_crc']:08x})"] if info["record"] == "ok" and info["record_crc"] != fcrc else [])
+    if not held:
+        return []
+    return ["diagnosis       the backup's other protected ranges are this radio's, but " + " and ".join(held) +
+            " hold" + ("s" if len(held) == 1 else "") + " another valid table: most likely another radio's, from a "
+            "codeplug read from that radio and written here with a build that kept nothing",
+            "                no restore path replaces a valid table (window_differs, record_differs): keep this "
+            "backup, don't arm transmission, and report it"]
 
 
 def factory_restore_run(link, a, info, window, fbytes, kind, others, poll_s, wait_s):
@@ -4037,9 +4060,23 @@ def self_test():
         check(rc == 0 and r.restores and r.rec == F_TABLE, "--restore with the window right and no record: the record")
         other_table = bytes(b ^ 0x5A for b in F_TABLE)
         r = FakeFactory(other_table)
-        rc, _, err = factory(r, raw, restore=True)
+        rc, out, err = factory(r, raw, restore=True)
         check(rc == 2 and "window_differs" in err and r.window() == other_table,
               "the radio refuses a valid window that differs: window_differs by name, the window unchanged")
+        check("diagnosis       " in out and "the window (0x" in out and "another radio's" in out and
+              "the record" not in out.split("diagnosis")[1],
+              "a valid window that differs, the other ranges this radio's: the diagnosis, the window named")
+        rc, out, _ = factory(FakeFactory(other_table, record=other_table), raw)
+        check(rc == 1 and "the window (0x" in out and "and the record (0x" in out and "hold another" in out,
+              "compare: window and record another valid table: the diagnosis names both")
+        theirs = fpath("other2.bin", image_with(F_TABLE, bytes(len(F_OTHER_BYTES))))
+        rc, out, _ = factory(FakeFactory(other_table), theirs)
+        check(rc == 1 and "diagnosis" not in out, "compare: the other ranges differ too (another radio's backup): "
+              "no diagnosis")
+        rc, out, _ = factory(FakeFactory(other_table), alone)
+        check(rc == 1 and "diagnosis" not in out, "compare: the range alone: no diagnosis")
+        check(all("diagnosis" not in factory(f, raw)[1] for f in (FakeFactory(), FakeFactory(F_TABLE))),
+              "compare: a blank window, or the file's own table: no diagnosis")
         for reason, word in ((1, "claim it first"), (5, "the checker's reason 3 at offset 0x040"), (9, "record_differs"),
                              (10, "record_other"), (2, "busy")):
             rc, _, err = factory(FakeFactory(refuse=reason), raw, restore=True)

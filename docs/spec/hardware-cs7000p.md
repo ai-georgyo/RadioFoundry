@@ -1186,8 +1186,21 @@ log a line, `cal: maker table ok src=window crc=0x... rec=... fields=0x...`, or 
 first claimed start, that table is in the record now: compare `cal_table`'s CRC with the backup's 0x1000-0x11FF before
 the first start of such a firmware. Nothing receives or transmits on the table yet.
 
+**Another radio's table has no way out yet.** A CPS read through the shim of an earlier build includes 0x1000-0x11FF,
+so a codeplug file saved from radio A and written to radio B with such a build puts A's valid table into B's window,
+and B's first start with the copy writes it into B's record. The restore then refuses B's own backup
+(`window_differs`, and `record_differs` after it), as policy asks: a valid table is never swapped by accident. The
+identity gate passes (the maker's records at 0x01E000 are B's), so `storage factory --backup` prints a `diagnosis`
+line when the backup's other ranges match the radio but a valid window or record differs from the file. No path
+writes B's table back in that state; the arm's handshake (the backup's CRC against the table in use) keeps such a
+radio from transmitting. A way back (an override of the two refusals behind the identity gate and the chip's UID) is
+the owner's decision and not written.
+
 **A table already lost stays lost until it is restored.** An earlier build of the port kept nothing: a CPS write of
 part 1 after the claim replaced the table with the PC's bytes, and installing such a build again ends the protection.
+Builds before the factory copy keep nothing, so a codeplug is never written with one; after one was, compare with
+`storage factory --backup` once this build runs again. The record at 0x01B000 outlives such a build, and a blank or
+damaged window comes back from it or from the backup, but not a window that then holds another valid table (above).
 The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF): the reader
 refuses it, nothing is copied from it (`cal_table=blank src=none`), and the record stays blank. The owner's
 whole-chip backup still holds the table. The firmware's one path back is the factory copy's restore, debug link
