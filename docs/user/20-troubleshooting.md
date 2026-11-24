@@ -113,8 +113,8 @@ and exits 0. Nothing is written when it refuses:
 | "a file of the range alone carries no evidence" | A file of the calibration alone can't be checked. Give the whole backup, or add `--no-identity` |
 | "the tool could not check that the backup is this radio's" | The backup doesn't hold the maker's other data (a partial read), or the radio doesn't let the tool read it. Give the whole backup, or add `--no-identity` |
 | "the file's range is all 0xFF" (or 0x00) | The backup holds no calibration either |
-| `window_differs` | The radio holds another valid calibration. It never replaces one: check which backup you used |
-| `record_differs` | The radio's own copy holds another valid calibration: the same check |
+| `window_differs` | The radio holds another valid calibration, and it never replaces one. Check which backup you used. When the compare prints a `diagnosis` line, the backup is this radio's and the calibration in the radio is another radio's: a codeplug saved from that radio and written with an earlier build put it there. No restore replaces it yet: don't transmit, keep the backup and report it |
+| `record_differs` | The radio's own copy holds another valid calibration: the same check and the same `diagnosis` |
 | `invalid` | The backup's bytes fail the radio's checks: a damaged file, or another kind of radio |
 | `foreign` | The settings area isn't RadioFoundry's yet |
 | `busy` | The radio was transmitting or programming. Try again |
