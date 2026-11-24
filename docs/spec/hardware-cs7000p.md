@@ -55,7 +55,8 @@ of it.
 The calibration and the maker's data on the flash are now known in part, from
 [calibration-cs7000p.md](calibration-cs7000p.md): the maker's factory table is at 0x001000-0x0011FF, one per unit;
 the maker's device information is at 0x000080-0x00021F, and its records at 0x01E000, 0x01E400 and 0x01F000 (that
-page's 2.1 and 2.4). The rest of the maker's data (its codeplug, fonts, voice prompts) is not mapped. The firmware
+page's 2.1 and 2.4). The rest of the maker's data (its codeplug, fonts, voice prompts) is not mapped. Every write
+of the firmware keeps the table's bytes and the records; the device information is not kept (10.3). The firmware
 does not read the table yet (section 13.1).
 
 The OEM model is Shenzhen Covalue's DR7810S-2. The service manual and the FCC filing describe that model and its
@@ -1110,35 +1111,79 @@ codeplug tool's addresses hold.
 
 | Area | Address | Size | Note |
 |---|---|---|---|
-| Open-firmware "EEPROM" image | 0x000000 | 64 KB | |
+| Open-firmware "EEPROM" image | 0x000000 | 64 KB | sector 1 holds the maker's table: kept (below) |
 | Settings ring | 0x011000 | 8 sectors | foreign-guarded |
 | Journal | 0x019000 | 2 sectors | foreign-guarded |
-| **Board sector** | 0x01E000 | 1 sector | reserved for a per-unit calibration record (section 13.3), in the hole no CPS address maps to. **Not free**: it holds two of the maker's records, and the maker's program writes and erases it (10.3). Nothing of ours has written it; the record moves to a blank sector before anything does |
+| **Board sector** | 0x01B000 | 1 sector | for the tree's own verified copy of the maker's table (a record with the magic `RFFC`), in the hole no CPS address maps to. Blank on the unit seen; no constant-address flash call of the maker's program falls there ([calibration-cs7000p.md](calibration-cs7000p.md) 2.4). Nothing writes it yet |
+| Unit record | 0x01C000 | 1 sector | reserved for the record of values the tree measures itself (13.3). Nothing reads or writes it yet |
+| The maker's records | 0x01E000 | 2 sectors | kept whole (10.3). Never erased or programmed |
 | Open-firmware "flash" image | 0x020000 to 0xE00000 | | |
 | Native codeplug | 0xE00000 | 1 MB | |
 | Staging | 0xF00000 | 256 KB | |
 | 0x1000000 to 0x1FFFFFF | not in the map | 16 MB | read for the backup only |
 | CPS calibration window | none | | `calibration_size` 0. That window is a copy an open-firmware CPS may write ([cps-protocol.md](cps-protocol.md) 2.3), so the maker's factory table, inside the EEPROM image (10.3), is not one |
 
+The map's factory ranges (`hal_flash_map_t.factory`, [settings-store.md](settings-store.md) 4.1; the board builds
+with `-DSTORAGE_FACTORY_KEEP=1`):
+
+| Range | Holds | Kind |
+|---|---|---|
+| 0x001000-0x0011FF | the maker's factory table | 512 bytes of sector 1. The rest of the sector, the open-firmware DTMF settings (0x1400-0x1477) and APRS configurations (0x1588-0x1787), stays writable |
+| 0x01E000-0x01FFFF | the maker's records at 0x01E000, 0x01E400 and 0x01F000 | two whole kept sectors |
+
+`board.toml` has the same two ranges as `[[flash.protect]] mem = "data"` entries; `tools/boards.py check` compares
+the two lists.
+
 ### 10.3 The maker's data, and the claim
 
 The maker's firmware has used this chip. What it keeps there is known in part
 ([calibration-cs7000p.md](calibration-cs7000p.md) 2):
 
-| Range | The maker's | Against the map |
-|---|---|---|
-| 0x000080-0x00021F | device information | sector 0 of the open-firmware EEPROM image, with that image's device info, callsign and DMR ID |
-| 0x001000-0x0011FF | the **factory calibration table**, 512 bytes, one copy, no checksum (section 13.1) | sector 1 of the EEPROM image, with its DTMF settings (0x1400) and APRS configurations (0x1588); inside CPS EEPROM part 1 |
-| 0x01E000, 0x01E400 | two 0x33-byte records; the maker's program reads, writes and erases the sector | the board sector (10.2) |
-| 0x01F000 | a 0x80-byte record | the same hole as the board sector |
+| Range | The maker's | Against the map | Kept |
+|---|---|---|---|
+| 0x000080-0x00021F | device information | sector 0 of the open-firmware EEPROM image, with that image's device info, callsign and DMR ID | **no** (below) |
+| 0x001000-0x0011FF | the **factory calibration table**, 512 bytes, one copy, no checksum (section 13.1) | sector 1 of the EEPROM image, with its DTMF settings (0x1400) and APRS configurations (0x1588); inside CPS EEPROM part 1 | yes: its bytes |
+| 0x01E000, 0x01E400 | two 0x33-byte records; the maker's program reads, writes and erases the sector | the hole no CPS address maps to | yes: the whole sector |
+| 0x01F000 | a 0x80-byte record | the same hole | yes: the whole sector |
 
-Where it keeps its codeplug (that page's 5.12 names one record of it), fonts and voice data is not mapped. The
-registry lists no protected region yet (`[[flash.protect]]` has no entry), and nothing in the firmware keeps these
-ranges from being written after the claim: a CPS write of EEPROM part 1 from an image made on another radio, or built
-fresh, replaces the table (that page's 2.4). A DTMF or APRS edit keeps the table's bytes but erases and programs the
-whole sector again; the journal ([settings-store.md](settings-store.md) 4) finishes a rewrite cut by a power loss at
-the next start, so a cut loses the table only if the journal's copy is lost too. The port protects the chip another
-way:
+Where it keeps its codeplug (that page's 5.12 names one record of it), fonts and voice data is not mapped.
+
+**The table's bytes are kept.** Every writer of the core reaches sector 1 through the kept rewrite of
+[settings-store.md](settings-store.md) 4.1: the table's 512 bytes are carried over from the flash, the rest of the
+sector comes from the writer, and the write succeeds. This holds for a DTMF or APRS edit (a whole-sector rewrite,
+never a patch transaction: neither record leaves sector 1), a CPS write of EEPROM part 1 through the open-firmware
+shim, the fast codeplug protocol and its resume, a TFTP codeplug commit and its resume, "start a new codeplug" and the
+journal's replay at a start, an entry an earlier build left for sector 1 included (its bytes for the table never
+land). Bytes a tool sends for the range are dropped: a CPS that writes part 1 from another radio's image, or a fresh
+one, sees success, and the table stays (the view's `storage.factory` counts the drop, [debuglink.md](debuglink.md)
+3.7). A write that differs from the flash only inside the range erases nothing. A CPS that verifies its write reads
+the radio's own bytes there. A power cut anywhere in such a rewrite leaves the table in the journal as well as in the
+sector, and the next start finishes it. The two sectors of the maker's records are never erased or programmed: a
+write to them succeeds and changes nothing. The STM32 flash driver refuses an erase or a program in any of these
+sectors that the storage layer did not open for one kept rewrite (`board.flash` `refused=`, section 15). The in-tree
+tools agree through the `[[flash.protect]]` entries: the CPS tools send no byte of a range, and the web flasher's
+codeplug editor and Restore keep them ([board-registry.md](../dev/board-registry.md), "Protected regions").
+
+**A table already lost stays lost until it is restored.** An earlier build of the port kept nothing: a CPS write of
+part 1 after the claim replaced the table with the PC's bytes, and installing such a build again ends the protection.
+The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF). The owner's
+whole-chip backup still holds the table. The firmware's restore path for it is not written yet: until then nothing
+writes the window, and the kept rewrite keeps whatever it holds, blank bytes included. A codeplug restore of the
+backup does not bring the table back either: the CPS tools and the web flasher's Restore send none of its bytes (the
+web flasher names the range in its log). Compare before relying on it:
+the CPS read of the codeplug regions (`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and
+its sha256 against the backup's says whether the table is still there.
+
+**Not kept: the maker's device information** at 0x000080-0x00021F. It shares sector 0 with the open-firmware layout's
+own fields (device info 0x0080, callsign 0x00E0, DMR ID 0x00E8), so the owner can change the callsign and the DMR ID,
+and "start a new codeplug" clears them. Going back to the maker's firmware therefore needs the whole backup written
+back first: the maker's program checks nothing in the table (that page's 2.2) and would transmit on whatever it holds,
+and a radio whose window is blank would transmit on codes of 255. The order: the table restored while RadioFoundry
+still runs (the maker's program has no command an owner can use for it), then sector 0 through the CPS (a codeplug
+write of the backup's EEPROM image), then the maker's recovery. No tool in the tree writes the whole chip back yet;
+the site offers no stock target for this radio.
+
+The port also protects the chip another way:
 
 - The board builds with `-DSTORAGE_CLAIM_FIRST=1` ([settings-store.md](settings-store.md) 5). The settings region is
   **foreign on every unit, at every start, whether or not it is blank**, until the owner claims it over the debug
@@ -1160,14 +1205,13 @@ way:
 - Both whole-chip backups read the chip through CPS area 1. The firmware lays the live VFO A record over 0x7590 to
   0x75C7 only while the region is its own ([open-firmware-cps.md](open-firmware-cps.md) 2.2), so a backup before the
   claim holds the chip's own bytes there too.
-- After the claim the core may write anywhere in the map. Whatever the maker's firmware kept there is then at risk,
-  and the backup is the only copy.
+- After the claim the core may write anywhere in the map but the kept ranges. Whatever else the maker's firmware kept
+  there (its device information, and the data not mapped) is then at risk, and the backup is the only copy.
 - A valid record of RadioFoundry's proves one claim. A radio that went back to the maker's firmware and returns is
   "ours" at the first start if a record survived: the backup is then the owner's job again.
 - Nothing writes the board sector yet. A writer may touch it only when it is blank or carries the tree's own magic,
-  a rule the maker's records there fail. The firmware does not interpret the maker's table yet (a backup reads it as
-  bytes), and no code of ours aims a write at its range; the risks above come from writes into the same sector: a
-  CPS write of EEPROM part 1 and the storage layer's whole-sector rewrites.
+  a rule the bytes of any other firmware fail. The firmware does not interpret the maker's table yet (a backup reads
+  it as bytes).
 
 One thing the maker's documents do show: its programming software loads a repeater database to 0x780000 through
 0xFB3FFF of this chip ("Loading the GPS Database"). 0x780000 to 0xF3FFFF of that range is inside the map's
@@ -1279,10 +1323,10 @@ Everything in section 7.5 about the first transmission applies.
 
 Per-unit values the tree measures itself (a power meter's corrections, for one) will go in a record of the tree's own,
 not in a vendor format: the magic `RFC1`, a version, a length, a CRC-16, then byte rows read with
-`drivers/cal/calblock`, in the board sector (`CS7000P_STORE_CAL_ADDR`). A unit record will win over the model table.
-The sector reserved today, 0x01E000, is the maker's (10.3): the record moves to a blank sector in the hole before
-anything writes it. The reader and the writer (a bench tool over a debug link board-record command) come with the
-first measured radio; the field widths are fixed then.
+`drivers/cal/calblock`, in its own sector of the hole, 0x01C000 (10.2). A unit record will win over the model table.
+The board sector, 0x01B000 (`CS7000P_STORE_CAL_ADDR`), is for the copy of the maker's table instead; the maker's
+records at 0x01E000 are kept and never written (10.3). The reader and the writer (a bench tool over a debug link
+board-record command) come with the first measured radio; the field widths are fixed then.
 
 ---
 
@@ -1318,8 +1362,8 @@ readings.
 | `keys_raw` | the five scan bytes, ten hex digits (9.4) |
 | `chsw_raw`, `chsw` | the selector's four lines (`0xf` all open); `unverified` or the position |
 | `phone_det`, `bt_strap` | PA13, PA14 (`0` / `1`, through `GPIOA->IDR`) |
-| `flash` | JEDEC ID, size, `addr4`: `EF4019 size=0x2000000 addr4=1` |
-| `store` | the board sector: `blank` / `ours` / `foreign` / `unread` (no chip, or the read failed; asked again at the next request). Read once, at the first request |
+| `flash` | JEDEC ID, size, `addr4`, and `refused=`, the erases and programs the driver refused in a sector holding the maker's bytes outside the storage layer's grant (10.3; 0 unless a writer misses the rule): `EF4019 size=0x2000000 addr4=1 refused=0` |
+| `store` | the board sector at 0x01B000 (10.2): `blank` / `ours` (the magic `RFFC`) / `foreign` / `unread` (no chip, or the read failed; asked again at the next request). Read once, at the first request |
 | `cal` | `none` / `model` |
 | `tx_refused` | the count and `why=`, the last reason (13.2) |
 | `dac` | the shared DAC's code now (0 = off) and `refused=`, the refused DAC writes and refused expander writes together |
@@ -1364,7 +1408,7 @@ the source comments use.
 | 18 | Software entry to the ROM loader from a running image: the supply is already configured; the loader's USART pins are PA2 (an op-amp output here) and PB10 (a selector contact to ground) on every loader but 0x91 (0x92: not stated), PA9 and PB14 (the chip's data output) on 0x91. Whether the HR_C6000 releases its data output while deselected. Whether the backup register keeps the request with the RTC's kernel clock off. (A plain software reset with SK1 held would reach the same loader on the same pins: every one waits for SK1's release first, 2.5) | updates without the key | On by default under the rule (`board_rom_entry_ok()`, `romentry_cs7000p.h`): loader 0x91, or PB10 high. To check on a radio: that the entry reaches the loader at all, PB10 and PB12 as section 4.2 step 5. SK1 at power-on stays available |
 | 19 | The ROM's Leave into the image (the stack pointer rule, peripherals as the loader left them); a normal power-on with the first sector erased starts nothing (2.5) | the radio needs a power cycle after flashing; an install cut short needs the loader and the same install | Observe. The tools already say to switch the radio off and on, and write the vector table last |
 | 20 | **Read Unprotect erases the maker's bootloader and programs.** Whether anything unit-specific is in the MCU's flash is not stated (the maker's recovery reloads a bootloader, programs, a default codeplug and a language file, which suggests not). The factory calibration is not: the maker's program reads it from the data flash only ([calibration-cs7000p.md](calibration-cs7000p.md) 2.1) | a radio that cannot go back to stock, or lost calibration, before RadioFoundry is of use | All before the first RadioFoundry install: the owner saves the codeplug with the maker's CPS and notes Radio Info while the stock firmware runs (and saves the tuning data, if the maker's tuner software can export it: no document says), runs the maker's documented recovery once (it loads the maker's default codeplug), confirms the radio works on the maker's firmware, and writes the saved codeplug back |
-| 21 | The maker's data in the 32 MB flash: the calibration table, the device information and three records are located (10.3); the codeplug, fonts and voice data are not | a claim of the settings region can overwrite it | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
+| 21 | The maker's data in the 32 MB flash: the calibration table, the device information and three records are located (10.3); the codeplug, fonts and voice data are not | a claim of the settings region can overwrite what the map does not keep: the device information and the data not mapped (the table and the records are kept, 10.3) | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
 | 22 | The state the maker's firmware leaves the flash chip in (`ADP`, block protection, a suspended operation); whether the write enable latch stays set after `C5h` | `ADP` set: the part starts in 4-byte mode (handled). Block protection: writes fail. A suspended operation: the part is not used until a power cycle | `board.flash`; the status registers through the debug link's flash info |
 | 23 | The GPS module's rate and sentences; the antenna shared with the radio | no position | `board.gps_baud` |
 | 24 | PHONE_DET, BAT_DET, IC611, the unlabeled expander output, Bluetooth, the accelerometer, the motor | none: not used | recorded for later work |

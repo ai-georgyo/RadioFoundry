@@ -22,6 +22,10 @@ MCU_DEFS   += -DSPI_NOR_ADDR4=1
 # It held another firmware's data and nothing says where: the settings region is foreign until the owner claims it
 # (core/storage, docs/spec/settings-store.md 5)
 MCU_DEFS   += -DSTORAGE_CLAIM_FIRST=1
+# The maker's factory table and records lie inside the map (docs/spec/calibration-cs7000p.md 2): the map lists them
+# (store_cs7000p.c .factory), and every rewrite of their sectors keeps their bytes (core/storage,
+# docs/spec/settings-store.md 4.1)
+MCU_DEFS   += -DSTORAGE_FACTORY_KEEP=1
 # The modem's interrupt lines: timeslot PC0, system PC3, RF TX PC2 (platform/stm32/hrc/hrc_lines.h)
 MCU_DEFS   += -DSTM32_HRC_LINE_SYS=3 -DSTM32_HRC_LINE_RFTX=2
 # Its I2S data input is on the SPI3 pad that is SDI by default (hardware-cs7000p.md 6): the half file proves the

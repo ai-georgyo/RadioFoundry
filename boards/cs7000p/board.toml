@@ -40,9 +40,11 @@ release = "testing"
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
 # maker's in program flash (docs/dev/board-registry.md). The maker's factory calibration table (data flash
 # 0x001000-0x0011FF) and its other records (0x000080-0x00021F, 0x01E000, 0x01E400, 0x01F000) are located in
-# docs/spec/calibration-cs7000p.md 2.1 and 2.4, but no [[flash.protect]] entry covers them yet; the rest of the maker's
-# data is not mapped. So the backup is the whole 32 MB chip and the firmware writes nothing there until the owner
-# claims it (board.mk STORAGE_CLAIM_FIRST)
+# docs/spec/calibration-cs7000p.md 2.1 and 2.4. The table and the records in the hole are the [[flash.protect]]
+# entries below, and the firmware keeps the same ranges through every rewrite of their sectors (store_cs7000p.c
+# .factory). The device information in sector 0 is not protected: it shares that sector with the open-firmware
+# callsign and DMR ID (hardware-cs7000p.md 10.3). The rest of the maker's data is not mapped, so the backup is the
+# whole 32 MB chip, and the firmware writes nothing there until the owner claims it (board.mk STORAGE_CLAIM_FIRST)
 [flash]
 family = "dfuse"
 keep_codec = false
@@ -71,6 +73,23 @@ steps = [
 [flash.dfu]
 vid = 0x0483
 pid = 0xDF11
+
+# Flash no tool changes (docs/dev/board-registry.md, "Protected regions"): mem, start and end (exclusive) as offsets
+# in that memory, what with the spec section that establishes it. Both are ranges of the board's flash map
+# (store_cs7000p.c .factory), so the table may sit inside a sector: the firmware keeps its bytes and writes the rest of
+# sector 1 (the open-firmware DTMF settings and APRS configurations). Tools writing through the firmware send no byte
+# of an entry; direct chip writers leave every 4 KB sector an entry touches as it is
+[[flash.protect]]
+mem = "data"
+start = 0x1000
+end = 0x1200
+what = "the maker's factory calibration table, 512 bytes, one copy, no checksum (calibration-cs7000p.md 2.1)"
+
+[[flash.protect]]
+mem = "data"
+start = 0x1E000
+end = 0x20000
+what = "the maker's records at 0x01E000, 0x01E400 and 0x01F000 (calibration-cs7000p.md 2.4)"
 
 # No codec route: the third shape of this table, a reason and nothing else (board.vocoder is NULL)
 [codec]

@@ -51,14 +51,17 @@ run-boards:: cs7000pPowerTest
 	./cs7000pPowerTest
 
 # The data flash map under core/storage and core/settings as the board builds them (4-byte addresses, claimed before
-# the first write), on spiNorTest.c's model of the 32 MB part
+# the first write, the maker's bytes kept), on spiNorTest.c's model of the 32 MB part; with the codeplug and the
+# open-firmware CPS shim for the writers of the sector that holds the maker's table
 CS7000P_STORE := $(CS7000P_T)/cs7000pStoreTest.c $(ROOT)/drivers/flash/spi_nor/spi_nor.c $(CORE)/storage/storage.c \
-	$(CORE)/settings/settings.c $(CS7000P)/store_cs7000p.c
+	$(CORE)/settings/settings.c $(CORE)/codeplug/codeplug.c $(CORE)/codeplug/codeplug_kv.c \
+	$(CORE)/codeplug/codeplug_tag.c $(CORE)/cps/cps_openfw.c $(CS7000P)/store_cs7000p.c
 TESTS   += cs7000pStoreTest
 cs7000pStoreTest: $(CS7000P_STORE) spiNorTest.c $(ROOT)/drivers/flash/spi_nor/spi_nor.h $(CS7000P)/store_cs7000p.h \
-                  $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h)
-	$(CC) $(CFLAGS) -DSPI_NOR_ADDR4=1 -DSTORAGE_CLAIM_FIRST=1 -I$(ROOT)/hal -I. -I$(CS7000P) -Wshadow -o $@ \
-		$(CS7000P_STORE)
+                  $(ROOT)/hal/hal_flash.h $(wildcard $(CORE)/storage/*.h $(CORE)/settings/*.h $(CORE)/codeplug/*.h \
+                  $(CORE)/cps/*.h)
+	$(CC) $(CFLAGS) -DSPI_NOR_ADDR4=1 -DSTORAGE_CLAIM_FIRST=1 -DSTORAGE_FACTORY_KEEP=1 -I$(ROOT)/hal -I. -I$(CS7000P) \
+		-Wshadow -o $@ $(CS7000P_STORE)
 run-boards:: cs7000pStoreTest
 	./cs7000pStoreTest
 
