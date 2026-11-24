@@ -85,6 +85,12 @@ n is 4 to 825. The data has at least one byte after the type, so the packet is a
 reflectors' own CONN and ACKN length, and they tell packets apart by length). A packet received is kept when its LSF
 CRC and its data CRC hold.
 
+What arrives is less than Part II allows. The IP gateway takes IP datagrams of at most 586 bytes over the USB network
+and 584 over PPP, and drops IP fragments ([usb-network.md](usb-network.md) 3.2, [ppp.md](ppp.md) 2). Less the IP and
+UDP headers (28 bytes) and the 34 before the type, n is at most 524 over the USB network and 522 over PPP. A longer
+packet is dropped before the client sees it, and no `m17net` counter moves. A packet that arrives is cut to the SMS
+slot (`M17_NET_SMS_MAX`, 160 bytes of type and data) and marked cut. Ours are never longer than the slot.
+
 ## 5. The link
 
 States (`m17_net.h`, `M17_NET_*`):
@@ -107,7 +113,8 @@ States (`m17_net.h`, `M17_NET_*`):
 | Host link down | | WAIT; linking again as soon as it is back. Nothing is sent while it is down: a Link asked then, or while the radio is in serial mode, waits in WAIT (`no_net`); an Unlink then is OFF at once, with no DISC |
 
 Anything received from the reflector counts as its life, not only PING. Our own sends don't. Linking to another target
-while linked sends one DISC to the old reflector (not waited for), then CONN to the new one. Unlink while not linked
+while linked sends one DISC to the old reflector (not waited for), then CONN to the new one. Unlink stops a link or
+its retries (CONNECTING, LINKED or WAIT to OFF) and keeps the target, so the page still opens on it; Unlink while OFF
 forgets the last target.
 
 A PING while CONNECTING is not answered: the link waits for ACKN. Streams and packets are taken only while LINKED.
@@ -131,19 +138,22 @@ Linked to talk (not listen only) and on an M17 channel (`radio_m17.c`):
 
 | Item | Behavior |
 |---|---|
-| PTT | `tx_prepare` takes the network path: a new stream ID (the random pool where the build has one), the LSD from the channel (DST the talk target, SRC our callsign, TYPE voice 3200 or 1600 on the TX CAN, META zero). The radio core keys no transmitter (`radio_air_mode_t.tx_elsewhere`); the TX state, the TX timer and the time-out run as on the air. The voice path encodes the microphone; the radio task hands each 16-byte frame to the host link task as it comes (FN from 0); PTT released or the time-out: a last silent frame with the end bit |
-| Refused | A channel set to encrypt (`TXDENY_REFUSED`: the network path doesn't encrypt, and never sends in the clear what was meant to be encrypted). The shared refusals and M17's own (no callsign, a signing key asked for and missing) as on the air |
+| PTT | `tx_prepare` takes the network path: a new stream ID (the random pool where the build has one), the LSD from the channel (DST the talk target, SRC our callsign, TYPE voice 3200 or 1600 on the TX CAN, META zero). The radio core keys no transmitter (`radio_air_mode_t.tx_elsewhere`); the TX state, the TX timer and the time-out run as on the air. The voice path encodes the microphone; the radio task hands each 16-byte frame to the host link task as it comes (FN from 0); PTT released or the time-out: a last silent frame with the end bit. A ring with no room for it keeps the TX state on and offers it again each tick, for up to 1 s (a voice frame with no room is lost). Leaving the channel while it runs sends that frame once |
+| The link goes under it | Lost, unlinked, the host link down, or linked again or elsewhere (`m17_net_link_gen` changes with every link made): the transmission ends at once with no last frame, and a PTT still held is refused until released (`TXDENY_NET_LOST`), never put on the air or sent to the new link mid-over |
+| Refused | A channel set to encrypt (`TXDENY_NET_ENC`: the network path doesn't encrypt, and never sends in the clear what was meant to be encrypted). The shared refusals and M17's own (no callsign, a signing key asked for and missing) as on the air |
 | Not done over the network | Signing (the stream goes unsigned), META (text, position) |
 | Reflector streams | Played through the voice path while the engine hears nothing on the air and nothing is sent. Voice streams in the clear only (3200 and 1600); data streams and encrypted ones are dropped; a signed stream's tail frames are not played and not checked |
-| Jitter | A stream starts with 3 frames in hand (or fewer after 200 ms), then the radio task releases one every 40 ms; more than 5 in hand releases one more each tick. A stream with no frame for 500 ms has ended |
-| The air first | A call on the air takes the voice path at once; reflector frames meanwhile are dropped. The two never write the voice path's queue together: each side says it is on, then looks at the other (`air_rx`, `net_pushing`); a hook that finds a hand-over under way keeps its start for its next frame and drops that frame; an air call's end needs no wait (a hand-over that began after its start saw `air_rx` and writes nothing) |
+| Jitter | A stream starts with 3 frames in hand (or fewer after 200 ms), then the radio task releases one every 40 ms; more than 5 in hand releases one more each tick, never two (the voice path holds 4). A stream with no frame for 500 ms has ended |
+| Late and repeated packets | UDP may deliver a packet twice or out of order. After a stream's last frame, a packet with its SID is dropped for 1 s (`rx_late`), never taken as a new stream (a second call); after that the SID starts a stream again. The host link task's `rx` and `tx` also end 1 s after a stream's last packet when its end bit never came |
+| The air first | A call on the air takes the voice path at once; reflector frames meanwhile are dropped. The two never write the voice path's queue together: each side says it is on, then looks at the other (`air_rx`, `net_pushing`); a hook that finds a hand-over under way keeps its start for its next frame and drops that frame; an air call's end needs no wait (a hand-over that began after its start saw `air_rx` and writes nothing). A reflector stream's end refused while an air call held the queue is owed: once the queue is clear, a call still open in the voice path is the network's and is ended (an air call whose start was kept and that ended before its first frame never replaced it); a reflector call started first settles it |
 | View | A reflector call shows as a reception: `RADIO_M17_RX` and `PLAYED`, the caller as SRC and originator, the module as `via`, a new `call_seq`; its details and the heard list get it at its end |
 | SMS | Sent to the reflector at once (no channel access), into the inbox as sent; one received is kept when it is ours ([m17.md](m17.md) 17.5), with the module form taken as broadcast |
 | Listen only, or not linked | PTT, SMS and BERT on the air as without the client; a listen-only link still plays the reflector |
 
 The rings between the tasks (`m17_net.h`): 8 frames from the reflector (320 ms), 4 of ours (160 ms), one SMS each
 way. Frames the radio task has no room for are counted (`rx_dropped`, `tx_full`); what waits to go out when the link
-drops is dropped (`tx_dropped`).
+drops is dropped (`tx_dropped`), and so is an SMS of a bad length. The SMS slots are packet mode's: built without
+`CONFIG_M17_PACKET`, an M17P from the reflector is checked, counted (`pkt_rx`) and ignored.
 
 ### 7.1 On the screen
 
@@ -187,6 +197,7 @@ owner has not agreed to contact one (AGENTS.md rule 8), so every row below is **
 | A signature check of reflector streams | Not done; their tail is skipped |
 | Reflector-to-reflector links, the one-hop byte | Reflector side only |
 | `M17H` / `M17D` | GAP 7 |
+| A packet over 524 bytes of type, data and CRC (522 over PPP) | The IP gateway's frames hold one IP datagram of at most 586 bytes and it takes no fragments (section 4); dropped before the client, not counted |
 
 ## 10. Debug link
 
@@ -195,7 +206,7 @@ Section `m17net` ([debuglink.md](debuglink.md) 3.7): `m17net.built` (0 without `
 `reflector`, `module`, `listen`, `ip`, `port`, `rx`, `tx` (a stream coming in, going out), `rx_src` (its caller, a space
 as `_`), and the counters `rx_packets tx_packets conns ackns nacks pings pongs discs_tx discs_rx links losses
 rx_streams rx_frames tx_streams tx_frames pkt_rx pkt_tx bad crc_alt unknown foreign rx_dropped tx_full tx_dropped
-send_busy`.
+send_busy rx_late`.
 
 RADIO op 44 sub-op 7: u8 0 unlink (2 bytes in all); 1 link, 2 link listen only, then the IPv4 address (4 bytes, big
 endian), the port (u16 little endian, 0: 17000) and the designation and module as text (`M17-XYZ C`, 3 to 9 bytes).
@@ -206,18 +217,19 @@ for it yet; the HIL test sends it raw.
 
 | Test | Checks |
 |---|---|
-| `m17NetTest` | The codecs against packets built in the test from sections 3 and 4 with its own address encoder and CRC; every state and timer of section 5 against a fake gateway; streams and SMS both ways through a fake reflector that sends ours back re-addressed; unknown MAGICs and wrong lengths; the rings; the `m17net` keys and their widest reply |
-| `radioCoreTestM17Net` | The whole radio core with the gateway built and the real `m17_net.c`: PTT to the reflector with nothing keyed (FN, end bit, SID, DST, SRC, TYPE, CRC of every packet), a new SID per PTT, a reflector stream played and shown, the gap end, the air first, SMS both ways, an encrypting channel refused, listen only and unlinked back on the air. Every other M17 radio core test runs in it too |
+| `m17NetTest` | The codecs against packets built in the test from sections 3 and 4 with its own address encoder and CRC; every state and timer of section 5 against a fake gateway; streams and SMS both ways through a fake reflector that sends ours back re-addressed; a repeated last frame and a frame after it dropped as late, the SID a stream again after 1 s; `tx` ending without a last frame, and not while a new stream's first frame waits for the endpoint; the link count; unknown MAGICs and wrong lengths; the rings; the `m17net` keys and their widest reply |
+| `m17NetTestNoPacket` | The same built without packet mode: M17P counted and ignored, never `rx_dropped` |
+| `radioCoreTestM17Net` | The whole radio core with the gateway built and the real `m17_net.c`: PTT to the reflector with nothing keyed (FN, end bit, SID, DST, SRC, TYPE, CRC of every packet), a new SID per PTT, the last frame kept until a stalled host link task makes room, the link lost and linked elsewhere under PTT, also between two radio ticks (`TXDENY_NET_LOST`, nothing keyed, no frame to the new link), a reflector stream played and shown, a repeated or late frame opening no second call, the gap end, a burst released one ahead a tick, the air first, an air call started inside a hand-over that ends before its first frame, or inside the next stream's first take (where the linker has `--wrap`), SMS both ways, an encrypting channel refused (`TXDENY_NET_ENC`), listen only (PTT on the air, the reflector played) and unlinked (the air, nothing played). Every other M17 radio core test runs in it too |
 | `uiFlowTest` | The page opens (`screen=m17-reflector`), each entry and its refusals, Link (CONN, LSTN), linked, refused, closed by the reflector, Unlink, no callsign, Home's place line, the picker's rows |
 | `uiM17NetOff` | The UI's files with the client on and each M17 part off |
 | `debuglinkM17TestNet` | RADIO op 44 sub-op 7 on the real client: link, listen only, unlink, and each refusal (length, kind, text, address, no callsign) |
-| `tests/hil/test_m17_reflector.py` | Opt-in: links to the reflector the tester names (`RFOUNDRY_HIL_M17_REFLECTOR`), never a default host |
+| `tests/hil/test_m17_reflector.py` | Opt-in: links to the reflector the tester names (`RFOUNDRY_HIL_M17_REFLECTOR`), never a default host, and stays linked past the reflector's 30 s silence timeout, its PINGs still coming at the end: a pass settles gaps 2 and 3 (a CONN accepted, our PONGs keeping the link) for that reflector |
 
 ## 12. Cost
 
-About 9.1 KB of flash on a Cortex-M4 radio and 10.1 KB on a C-SKY one (the client 4.9 KB, the radio core's network
-path 2.3 KB, the screens 1.6 KB with their text in every language, the debug link 0.4 KB), and 1.2 to 1.3 KB of RAM
-(the rings and slots 0.8 KB, the client's state and counters, the page's text), measured 2026-11-23. On by default
-where M17 and the IP gateway are and the image keeps the room a default keeps
+About 9.1 to 9.4 KB of flash on a Cortex-M4 radio and 10.7 to 10.8 KB on a C-SKY one (the client 4.9 KB, the radio
+core's network path 2.3 KB, the screens 1.6 KB with their text in every language, the debug link 0.4 KB), and 1.2 to 1.3
+KB of RAM (the rings and slots 0.8 KB, the client's state and counters, the page's text), measured 2026-11-23. On by
+default where M17 and the IP gateway are and the image keeps the room a default keeps
 ([build-config.md](../build-config.md#room-to-grow)); the figures per radio and where it is off are in
 [feature-matrix.md](../feature-matrix.md#m17-on-each-radio).

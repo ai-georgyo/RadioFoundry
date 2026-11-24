@@ -2476,21 +2476,29 @@ run-fix-sec: hrc7000ChipUidTest
 
 # The M17 reflector client (core/net/m17_net.c; docs/spec/m17-ip.md) against a fake IP gateway and reflector: the
 # packet codecs against hand-made packets, the link's state machine and timers, streams and SMS both ways, the MAGICs
-# ignored, the debug link's m17net section. No network
+# ignored, the debug link's m17net section. No network. m17NetTestNoPacket: the same without packet mode (M17P counted
+# and ignored, no SMS slots), as an image with CONFIG_M17_PACKET=n has it
 M17NET  := m17NetTest.c $(CORE)/net/m17_net.c $(CORE)/m17/m17_frame.c $(CORE)/m17/m17_addr.c $(FEC) \
            $(CORE)/debuglink/dl_fmt.c
 M17NETF := -DCONFIG_M17=1 -DCONFIG_NET_M17=1 -DCONFIG_DMR_IP_GATEWAY=1
-TESTS   += m17NetTest
+TESTS   += m17NetTest m17NetTestNoPacket
 m17NetTest: $(M17NET) $(CORE)/net/m17_net.h $(wildcard $(CORE)/m17/*.h) $(CORE)/dmr/ipGateway.h $(CORE)/config.h
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(M17NETF) -o $@ $(M17NET)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(M17NETF) -DCONFIG_M17_PACKET=1 -o $@ $(M17NET)
+m17NetTestNoPacket: $(M17NET) $(CORE)/net/m17_net.h $(wildcard $(CORE)/m17/*.h) $(CORE)/dmr/ipGateway.h $(CORE)/config.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(M17NETF) -DCONFIG_M17_PACKET=0 -o $@ $(M17NET)
 run: run-m17-net
-run-m17-net: m17NetTest
+run-m17-net: m17NetTest m17NetTestNoPacket
 	./m17NetTest
+	./m17NetTestNoPacket
 .PHONY: run-m17-net
 # M17's radio core with the reflector linked (radioCoreTest.c's test_m17_net): the whole radio core as
-# radioCoreTestM17 with the IP gateway built (its services left out) and the real m17_net.c on a fake gateway
+# radioCoreTestM17 with the IP gateway built (its services left out) and the real m17_net.c on a fake gateway. Where
+# the linker has --wrap (M17WRAP above), the voice path's frame hand-over and the reflector ring's take are wrapped so
+# the test can start an air call inside the network's hand-over, or end one inside a take, as the provider's task
+# preempting the radio task would
 RCM17NET := $(sort $(RCM17) $(CORE)/net/m17_net.c)
 TESTS   += radioCoreTestM17Net
+radioCoreTestM17Net: CFLAGS += $(if $(M17WRAP),-DM17_TEST_WRAP=1 -Wl$(M17WRAP_C)--wrap=m17_voice_rx_frame$(M17WRAP_C)--wrap=m17_net_rx_take)
 radioCoreTestM17Net: $(RCM17NET) $(RM17H) $(CORE)/net/m17_net.h
 	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=1 -DCONFIG_USB_NETWORK=1 -DCONFIG_NET_TCP=0 \
 		-DCONFIG_NET_USRP=0 -DCONFIG_MDNS=0 -DCONFIG_TFTP=0 -DCONFIG_SNMP=0 -DCONFIG_NET_RADIO_UDP=0 \

@@ -5,7 +5,8 @@
 // encoder and a CRC of this file's own, from m17.md's rules), the link's state machine (CONN and its retries, ACKN,
 // NACK, PING and PONG, the 30 s loss, DISC and its retries, the reflector's DISC, the host link going down), stream
 // packets and SMS both ways through a fake reflector that sends ours back as a reflector would, the MAGICs that are
-// ignored, the radio task's rings, and the debug link's m17net section. No network: every datagram is the fake's
+// ignored, the radio task's rings, and the debug link's m17net section. No network: every datagram is the fake's.
+// Built twice: with packet mode (m17NetTest) and without (m17NetTestNoPacket: M17P counted and ignored, no SMS slots)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -544,7 +545,10 @@ static void test_link(void)
 	CHECK(m17_net_linked() && !m17_net_talks());
 	m17_net_frame_t f;
 	memset(&f, 0, sizeof f);
-	CHECK(!m17_net_tx_frame(&f) && m17_net_sms_slot() == NULL);
+	CHECK(!m17_net_tx_frame(&f));
+#if CONFIG_M17_PACKET
+	CHECK(m17_net_sms_slot() == NULL);
+#endif
 	unlink_now();
 
 	// Unknown MAGICs are ignored, the link kept; a known MAGIC at a length it doesn't have counts as bad
@@ -613,13 +617,15 @@ static void test_streams(void)
 {
 	m17_net_target_t t = target();
 	m17_net_frame_t f, g;
-	m17_net_stats_t st;
+	m17_net_stats_t st, st2;
 	int mark;
 
 	m17_net_start();
 	memset(&f, 0, sizeof f);
 	CHECK(!m17_net_tx_frame(&f));	// not linked: refused
+	uint8_t gen = m17_net_link_gen();
 	link_to(&t);
+	CHECK(m17_net_link_gen() == (uint8_t)(gen + 1u));	// a link made: a transmission of the last one ends (radio_m17.c)
 
 	// Ours to the reflector: a stream to everyone goes to the module ("M17-XYZ C", GAP 5), one to a station as it is
 	mark = nsent;
@@ -665,6 +671,28 @@ static void test_streams(void)
 	usb_busy = false;
 	poll();
 	CHECK(count_sent(mark, "M17 ", 54) == 1);
+	// ... and a stream of ours that never sends its last frame (the radio left the channel) is over after a second
+	m17_net_status(&s);
+	CHECK(s.tx);
+	run(1100);
+	m17_net_status(&s);
+	CHECK(!s.tx && m17_net_state() == M17_NET_LINKED);
+	// A new stream whose first frame finds the endpoint busy, over a second after our last: one stream, still on
+	m17_net_stats(&st);
+	mark = nsent;
+	usb_busy = true;
+	f.sid = 0x0304u;
+	CHECK(m17_net_tx_frame(&f));
+	poll();
+	now += 5;
+	poll();
+	usb_busy = false;
+	now += 5;
+	poll();
+	m17_net_status(&s);
+	m17_net_stats(&st2);
+	CHECK(count_sent(mark, "M17 ", 54) == 1 && st2.tx_streams == st.tx_streams + 1 && s.tx);
+	run(1100);
 
 	// Round trip: the reflector sends ours back to us (re-addressed to us): every frame in order, its fields
 	m17_net_rx_flush();
@@ -707,6 +735,24 @@ static void test_streams(void)
 	poll();
 	m17_net_status(&s);
 	CHECK(!s.rx && m17_net_rx_count() == 1);
+	// UDP may deliver its last frame twice, or a frame after the last one: neither is a new stream of that SID
+	m17_net_stats(&st);
+	streams = st.rx_streams;
+	from_refl(p, 54);
+	hand_stream(p, 0x7777u, 0, b40("W1AW"), 0x0005u, 8, 8, 0);
+	from_refl(p, 54);
+	poll();
+	m17_net_status(&s);
+	m17_net_stats(&st2);
+	CHECK(!s.rx && m17_net_rx_count() == 1 && st2.rx_streams == streams && st2.rx_late == st.rx_late + 2);
+	// ... for a while: a second later that SID is a stream again
+	run(1000);
+	from_refl(p, 54);
+	poll();
+	m17_net_status(&s);
+	m17_net_stats(&st2);
+	CHECK(s.rx && m17_net_rx_count() == 2 && st2.rx_streams == streams + 1 && st2.rx_late == st.rx_late + 2);
+	m17_net_rx_flush();
 	hand_stream(p, 0x7778u, 0, b40("W1AW"), 0x0005u, 0, 0, 0);
 	from_refl(p, 54);
 	poll();
@@ -723,7 +769,6 @@ static void test_streams(void)
 	from_refl(p, 54);
 	hand_stream(p, 0x7779u, 0, b40("W1AW"), 0x0005u, 1, 1, 4);
 	from_refl(p, 54);
-	m17_net_stats_t st2;
 	m17_net_stats(&st2);
 	CHECK(st2.bad == st.bad + 1 && st2.crc_alt == st.crc_alt + 1 && m17_net_rx_count() == 1);
 	m17_net_rx_flush();
@@ -732,6 +777,7 @@ static void test_streams(void)
 	from(OTHER_IP, 17000, p, 54);
 	CHECK(m17_net_rx_count() == 0);
 
+#if CONFIG_M17_PACKET
 	// SMS to the reflector: M17P, the LSF to the module when it is to everyone, the payload's CRC
 	mark = nsent;
 	m17_net_sms_t *o = m17_net_sms_slot();
@@ -785,14 +831,28 @@ static void test_streams(void)
 	q[n - 1] ^= 1;
 	from_refl(q, n);
 	CHECK(m17_net_sms_peek() == NULL);
+#else
+	// Without packet mode an M17P is checked, counted and ignored: no slot holds it, so none is "dropped"
+	uint8_t q[80];
+	int n = hand_packet(q, b40("M17-XYZ C"), b40("W1AW"), 0, (const uint8_t *)"\x05hello", 7);
+	m17_net_stats(&st);
+	from_refl(q, n);
+	from_refl(q, n);
+	q[n - 1] ^= 1;
+	from_refl(q, n);
+	m17_net_stats(&st2);
+	CHECK(st2.pkt_rx == st.pkt_rx + 2 && st2.rx_dropped == st.rx_dropped && st2.bad == st.bad + 1);
+#endif
 
 	// Unlinked: what waits to go out is dropped, nothing is sent
 	f.fn = 0;
 	CHECK(m17_net_tx_frame(&f));
-	o = m17_net_sms_slot();
-	CHECK(o != NULL);
-	o->len = 4;
+#if CONFIG_M17_PACKET
+	m17_net_sms_t *o2 = m17_net_sms_slot();
+	CHECK(o2 != NULL);
+	o2->len = 4;
 	m17_net_sms_post();
+#endif
 	m17_net_unlink(M17_NET_FROM_UI);
 	mark = nsent;
 	poll();
@@ -837,7 +897,7 @@ static void test_view(void)
 		"m17net.rx_streams=1\n", "m17net.rx_frames=1\n", "m17net.tx_streams=0\n", "m17net.tx_frames=0\n",
 		"m17net.pkt_rx=0\n", "m17net.pkt_tx=0\n", "m17net.bad=0\n", "m17net.crc_alt=0\n", "m17net.unknown=0\n",
 		"m17net.foreign=1\n", "m17net.rx_dropped=0\n", "m17net.tx_full=0\n", "m17net.tx_dropped=0\n",
-		"m17net.send_busy=0\n",
+		"m17net.send_busy=0\n", "m17net.rx_late=0\n",
 	};
 	size_t total = 0;
 	for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {

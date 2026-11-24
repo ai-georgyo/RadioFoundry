@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "config.h"
 #include "hal_audio.h"
 #include "m17.h"
 #include "../codec2/codec2.h"
@@ -103,6 +104,11 @@ void m17_voice_set_mixer(m17_voice_mixer_t mixer);
 void m17_voice_rx_start(c2_mode_t mode);
 void m17_voice_rx_frame(const uint8_t stream[M17_STREAM_BYTES], uint8_t errs);
 void m17_voice_rx_end(void);
+#if CONFIG_NET_M17
+// A call started and not yet ended (the producer's view: its frames may still be playing). The receive queue's second
+// producer (the reflector's path, radio_m17.c) asks it while the first is quiet
+bool m17_voice_rx_open(void);
+#endif
 bool m17_voice_tx_frame(uint8_t stream[M17_STREAM_BYTES]);
 // 16 STREAM bytes of silence in a mode (c2_silence_* twice, or once and 8 zero bytes)
 const uint8_t *m17_voice_silence(c2_mode_t mode);

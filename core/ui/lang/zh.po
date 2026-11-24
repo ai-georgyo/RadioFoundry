@@ -5655,6 +5655,16 @@ msgid "Signing key damaged"
 msgstr "Sig 密钥无效"
 
 #: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NET_ENCRYPTED"
+msgid "{Encrypted: not to the reflector|Encrypted: no reflector}"
+msgstr "{加密：不能经服务器发送|加密：不经服务器}"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NET_LINK_LOST"
+msgid "Reflector link lost"
+msgstr "服务器连接断开"
+
+#: core/ui/ui_screens.c
 msgctxt "DENY_WHY_P25T_NO_CC"
 msgid "No control channel"
 msgstr "未找到网络"

@@ -72,12 +72,12 @@ CONFIG_M17_AES ?= n
 # flash: DMR AES voice encryption (CONFIG_DMR_AES, 4,592 B here) left the default 1,532 B over the app region with
 # the next parts on. They go in M17's flash trade order: without M17_SCRAMBLER (1,120 B) it is still 412 B over,
 # without M17_BERT too (2,880 B) 2,468 B stay free, under the 3 KB a default keeps, and without HEARD_LIST too
-# (1,884 B) 4,352 B (2026-11-23)
+# (1,884 B) 4,352 B (2026-11-23). After the reflector client's fixes the default leaves 4,636 B
 CONFIG_M17_SCRAMBLER ?= n
 CONFIG_M17_BERT ?= n
 CONFIG_HEARD_LIST ?= n
-# flash: the M17 reflector client (NET_M17) would leave the default image 4,200 B over the app region (it takes about
-# 9.1 KB; 2026-11-23), and ci's maximal image, which has M17 with every part, more
+# flash: the M17 reflector client (NET_M17) would leave the default image 4,724 B over the app region (it takes
+# 9,360 B; 2026-11-23), and ci's maximal image, which has M17 with every part, more
 CONFIG_NET_M17 ?= n
 MAXIMAL_SKIP += NET_M17
 # flash: the web pages stored without gzip are larger: beside M17 that image is 17,608 B over the app region

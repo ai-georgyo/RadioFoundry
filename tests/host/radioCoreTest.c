@@ -11067,13 +11067,86 @@ void hostlink_net_air_start(void) { }
 void hostlink_net_air_tick(uint32_t own_id, uint32_t now_ms) { (void)own_id; (void)now_ms; }
 bool hostlink_net_passthrough_active(void) { return false; }
 
-// The radio and the host link task, in turn
-static void nrun(uint32_t ms)
+// The radio and the host link task, in turn; nrun_down: the host link down
+static void nrun_up(uint32_t ms, bool up)
 {
 	for (uint32_t t = 0; t < ms; t += 5) {
 		run(5);
-		m17_net_poll(now, true);
+		m17_net_poll(now, up);
 	}
+}
+
+static void nrun(uint32_t ms)
+{
+	nrun_up(ms, true);
+}
+
+static void nrun_down(uint32_t ms)
+{
+	nrun_up(ms, false);
+}
+
+#ifndef M17_TEST_WRAP
+#define M17_TEST_WRAP 0
+#endif
+#if M17_TEST_WRAP
+// The voice path's frame hand-over, wrapped (the Makefile's --wrap): ninject starts an air call inside the next one,
+// as the provider's task preempting the radio task inside the network's hand-over would. The radio's engine is the one
+// on board.air (fair[0]): the provider's ctx is its session
+void __real_m17_voice_rx_frame(const uint8_t stream[M17_STREAM_BYTES], uint8_t errs);
+void __wrap_m17_voice_rx_frame(const uint8_t stream[M17_STREAM_BYTES], uint8_t errs);
+static bool ninject;
+
+static m17_engine_t *nengine(void)
+{
+	return (m17_engine_t *)(void *)((char *)fair[0].ctx - offsetof(m17_engine_t, session));
+}
+
+void __wrap_m17_voice_rx_frame(const uint8_t stream[M17_STREAM_BYTES], uint8_t errs)
+{
+	if (ninject) {
+		m17_engine_t *e = nengine();
+		m17_call_t c;
+
+		ninject = false;
+		memset(&c, 0, sizeof c);
+		c.type = m17_type(true, M17_DATA_VOICE, M17_ENC_NONE, M17_META_TEXT, 0, false);
+		e->hooks.rx_start(&c, e->ctx);
+	}
+	__real_m17_voice_rx_frame(stream, errs);
+}
+
+// The network path's take from the reflector's ring, wrapped too: ninject_end ends the air call inside the next one,
+// after the radio task looked for an owed end this tick and before the frame it takes is handed over
+bool __real_m17_net_rx_take(m17_net_frame_t *out);
+bool __wrap_m17_net_rx_take(m17_net_frame_t *out);
+static bool ninject_end;
+
+bool __wrap_m17_net_rx_take(m17_net_frame_t *out)
+{
+	if (ninject_end) {
+		m17_engine_t *e = nengine();
+
+		ninject_end = false;
+		e->hooks.rx_end(e->ctx);
+	}
+	return __real_m17_net_rx_take(out);
+}
+#endif
+
+// The "M17 " packets sent since mark with the end bit, and whether the last of them has it
+static int nsent_ends(int mark, bool *last_end)
+{
+	int c = 0;
+
+	*last_end = false;
+	for (int i = mark; i < n_sent; i++) {
+		if (memcmp(nsent[i].d, "M17 ", 4) != 0 || nsent[i].len != M17_NET_STREAM_LEN)
+			continue;
+		*last_end = (nsent[i].d[34] & 0x80u) != 0;
+		c += *last_end;
+	}
+	return c;
 }
 
 static void nfrom(const uint8_t *p, int n)
@@ -11090,14 +11163,14 @@ static int nsent_count(int mark, const char *magic, int len)
 	return c;
 }
 
-static void nlink(bool listen)
+static void nlink_to(char module, bool listen)
 {
 	m17_net_target_t t;
 
 	memset(&t, 0, sizeof t);
 	t.ip = NREFL_IP;
 	strcpy(t.name, "M17-XYZ");
-	t.module = 'C';
+	t.module = module;
 	t.listen = listen;
 	t.own = m17a("W1AW");
 	CHECK(m17_net_link(M17_NET_FROM_UI, &t));
@@ -11105,6 +11178,11 @@ static void nlink(bool listen)
 	nfrom((const uint8_t *)"ACKN", 4);
 	nrun(10);
 	CHECK(m17_net_linked() && m17_net_talks() == !listen);
+}
+
+static void nlink(bool listen)
+{
+	nlink_to('C', listen);
 }
 
 static void nunlink(void)
@@ -11188,6 +11266,84 @@ static void test_m17_net(void)
 	req(RREQ_PTT, 0);
 	nrun(100);
 	CHECK(nsent_count(mark, "M17 ", 54) >= 5 && (uint16_t)(nsent[mark].d[4] << 8 | nsent[mark].d[5]) != sid);
+	bool last_end;
+
+	// The host link task stalls while PTT is held, so the ring of four fills: at the release the last frame waits for
+	// room (the TX state still on), then goes, once, last
+	mark = n_sent;
+	req(RREQ_PTT, 1);
+	nrun(300);
+	run(300);
+	req(RREQ_PTT, 0);
+	run(30);
+	CHECK(sm.view.state == RS_TX && v->tx == AIR_TX_ON);
+	nrun(100);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed && nsent_ends(mark, &last_end) == 1 && last_end);
+
+	// The link lost under a PTT held (the host link down): the transmission ends at once, nothing keyed, and PTT is
+	// refused with why until released, never put on the air instead
+	mark = n_sent;
+	req(RREQ_PTT, 1);
+	nrun(300);
+	CHECK(sm.view.state == RS_TX);
+	nrun_down(30);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_NET_LOST && !hw.keyed &&
+	      hw.tx_calls == tx_calls && v->tx == AIR_TX_IDLE);
+	nrun_down(300);
+	CHECK(sm.view.state == RS_TX_DENIED && !hw.keyed && hw.tx_calls == tx_calls);
+	req(RREQ_PTT, 0);
+	nrun_down(30);
+	CHECK(sm.view.state == RS_IDLE);
+	// ... the host back, linked again: none of that stream's frames goes, and the next PTT isn't refused
+	int m2 = n_sent;
+	nrun(10);
+	nfrom((const uint8_t *)"ACKN", 4);
+	nrun(100);
+	CHECK(m17_net_talks() && nsent_count(m2, "M17 ", 54) == 0);
+	req(RREQ_PTT, 1);
+	nrun(200);
+	CHECK(sm.view.state == RS_TX && !hw.keyed);
+	req(RREQ_PTT, 0);
+	nrun(100);
+	CHECK(sm.view.state == RS_IDLE);
+	// Linked elsewhere under a PTT held (another module): the stream ends there, never reaches the new module
+	req(RREQ_PTT, 1);
+	nrun(300);
+	m17_net_target_t t2;
+	memset(&t2, 0, sizeof t2);
+	t2.ip = NREFL_IP;
+	strcpy(t2.name, "M17-XYZ");
+	t2.module = 'D';
+	t2.own = m17a("W1AW");
+	CHECK(m17_net_link(M17_NET_FROM_UI, &t2));
+	nrun(10);
+	m2 = n_sent;
+	nfrom((const uint8_t *)"ACKN", 4);
+	nrun(200);
+	CHECK(m17_net_talks() && nsent_count(m2, "M17 ", 54) == 0);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_NET_LOST && !hw.keyed);
+	req(RREQ_PTT, 0);
+	nrun(30);
+	CHECK(sm.view.state == RS_IDLE);
+	// ... and linked elsewhere between two of the radio task's ticks, so it never sees the link down: the link count
+	// changed, and that ends it the same way
+	req(RREQ_PTT, 1);
+	nrun(300);
+	CHECK(sm.view.state == RS_TX);
+	t2.module = 'E';
+	CHECK(m17_net_link(M17_NET_FROM_UI, &t2));
+	m17_net_poll(now, true);
+	m2 = n_sent;
+	nfrom((const uint8_t *)"ACKN", 4);
+	m17_net_poll(now, true);
+	CHECK(m17_net_talks());
+	nrun(200);
+	CHECK(nsent_count(m2, "M17 ", 54) == 0);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_NET_LOST && !hw.keyed);
+	req(RREQ_PTT, 0);
+	nrun(30);
+	CHECK(sm.view.state == RS_IDLE);
+	nlink(false);
 
 	// A reflector stream: it plays (the voice path takes its frames), the view shows it from N0CALL via the module
 	m17_voice_stats(&vs0);
@@ -11204,6 +11360,16 @@ static void test_m17_net(void)
 	CHECK(radio_heard_get(0, &h) && h.mode == RADIO_MODE_M17 && m17_addr_get(h.addr) == m17a("N0CALL"));
 	radio_m17_details_t d;
 	CHECK(radio_m17_details(&d) && addr_is(d.src, "N0CALL") && d.played && d.end_ms != 0);
+	// Its last frame again, and a frame after it (UDP may deliver twice, or out of order): no second call
+	uint16_t heard0 = h.count;
+	seq = v->call_seq;
+	m17_voice_stats(&vs0);
+	nstream(0x5150u, 24 | M17_FN_END);
+	nstream(0x5150u, 23);
+	nrun(800);
+	m17_voice_stats(&vs1);
+	CHECK(v->call_seq == seq && !(v->flags & RADIO_M17_RX) && vs1.rx_in == vs0.rx_in);
+	CHECK(radio_heard_get(0, &h) && h.count == heard0);
 	// ... and while it plays the radio core shows a reception
 	nstream(0x5151u, 0);
 	nstream(0x5151u, 1);
@@ -11214,6 +11380,65 @@ static void test_m17_net(void)
 	// A stream that loses its last frame ends by the gap
 	nrun(700);
 	CHECK(!(v->flags & RADIO_M17_RX) && sm.view.state == RS_IDLE);
+	// A burst while one plays (the network held frames back): one frame ahead of its time a tick at most, so the
+	// voice path's few entries never overflow
+	for (uint16_t fn = 0; fn < 5; fn++) {
+		nstream(0x5152u, fn);
+		nrun(40);
+	}
+	for (uint16_t fn = 5; fn < 12; fn++)
+		nstream(0x5152u, fn);
+	m17_voice_stats(&vs0);
+	uint32_t in0 = vs0.rx_in, most = 0;
+	for (int i = 0; i < 80; i++) {
+		nrun(5);
+		m17_voice_stats(&vs1);
+		most = vs1.rx_in - in0 > most ? vs1.rx_in - in0 : most;
+		in0 = vs1.rx_in;
+	}
+	CHECK(most >= 1 && most <= 2 && vs1.rx_overflows == vs0.rx_overflows);
+	nrun(700);
+	CHECK(!(v->flags & RADIO_M17_RX));
+#if M17_TEST_WRAP
+	// An air call starts inside the network's hand-over (its start kept for its first frame) and ends before that
+	// frame: the reflector stream's end, refused meanwhile, is handed over later; no call stays open in the voice path
+	for (uint16_t fn = 0; fn < 3; fn++)
+		nstream(0x5153u, fn);
+	nrun(100);
+	CHECK((v->flags & RADIO_M17_RX) && m17_voice_rx_open());
+	ninject = true;
+	nstream(0x5153u, 3);
+	nrun(40);
+	CHECK(!ninject);
+	nstream(0x5153u, 4 | M17_FN_END);
+	nrun(40);
+	CHECK(!(v->flags & RADIO_M17_RX));
+	nengine()->hooks.rx_end(nengine()->ctx);	// the provider's task: no frame came
+	nrun(20);
+	CHECK(!m17_voice_rx_open());
+	// The same, but that air call ends inside the next reflector stream's first take, after this tick's look for the
+	// owed end: the new stream's start settles what was owed, and its call isn't ended a tick later
+	for (uint16_t fn = 0; fn < 3; fn++)
+		nstream(0x5154u, fn);
+	nrun(100);
+	ninject = true;
+	nstream(0x5154u, 3);
+	nrun(40);
+	nstream(0x5154u, 4 | M17_FN_END);
+	nrun(40);
+	CHECK(!ninject && !(v->flags & RADIO_M17_RX));
+	ninject_end = true;
+	for (uint16_t fn = 0; fn < 3; fn++)
+		nstream(0x5155u, fn);
+	nrun(10);
+	CHECK(!ninject_end && (v->flags & RADIO_M17_RX));
+	nrun(20);
+	CHECK(m17_voice_rx_open());
+	nrun(700);
+	CHECK(!(v->flags & RADIO_M17_RX) && !m17_voice_rx_open());
+#else
+	printf("# radioCoreTestM17Net: no --wrap in this linker: the air call inside a network hand-over isn't checked\n");
+#endif
 
 	// The air first: a call heard on the channel plays, the reflector's frames meanwhile are dropped
 	mfar_begin("K1ABC", 0, false);
@@ -11273,7 +11498,7 @@ static void test_m17_net(void)
 	mark = n_sent;
 	req(RREQ_PTT, 1);
 	nrun(200);
-	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_REFUSED && !hw.keyed);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_NET_ENC && !hw.keyed);
 	req(RREQ_PTT, 0);
 	nrun(100);
 	CHECK(nsent_count(mark, "M17 ", 54) == 0);
@@ -11281,7 +11506,7 @@ static void test_m17_net(void)
 	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &cp);
 	m17_reenter();
 
-	// Listen only: PTT on the air
+	// Listen only: PTT on the air, and the reflector still plays
 	nunlink();
 	nlink(true);
 	mark = n_sent;
@@ -11292,8 +11517,21 @@ static void test_m17_net(void)
 	for (int i = 0; i < 100 && hw.keyed; i++)
 		nrun(10);
 	CHECK(!hw.keyed && nsent_count(mark, "M17 ", 54) == 0);
+	nrun(300);
+	m17_voice_stats(&vs0);
+	seq = v->call_seq;
+	nstream_send(0x7001u, 10);
+	nrun(100);
+	m17_voice_stats(&vs1);
+	CHECK(vs1.rx_in - vs0.rx_in >= 9 && v->call_seq != seq && addr_is(v->src, "N0CALL"));
 	// Unlinked: the air, and no reflector frame plays
 	nunlink();
+	m17_voice_stats(&vs0);
+	seq = v->call_seq;
+	nstream_send(0x7002u, 10);
+	nrun(100);
+	m17_voice_stats(&vs1);
+	CHECK(vs1.rx_in == vs0.rx_in && v->call_seq == seq);
 	req(RREQ_PTT, 1);
 	nrun(300);
 	CHECK(sm.view.state == RS_TX && hw.keyed);

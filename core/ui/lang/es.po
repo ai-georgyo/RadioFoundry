@@ -5653,6 +5653,16 @@ msgid "Signing key damaged"
 msgstr "Clave de firma dañada"
 
 #: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NET_ENCRYPTED"
+msgid "{Encrypted: not to the reflector|Encrypted: no reflector}"
+msgstr "{Cifrado: no va al reflector|Cifrado: sin reflector}"
+
+#: core/ui/ui_screens.c
+msgctxt "DENY_WHY_NET_LINK_LOST"
+msgid "Reflector link lost"
+msgstr "Enlace al reflector perdido"
+
+#: core/ui/ui_screens.c
 msgctxt "DENY_WHY_P25T_NO_CC"
 msgid "No control channel"
 msgstr "Sin canal de control"

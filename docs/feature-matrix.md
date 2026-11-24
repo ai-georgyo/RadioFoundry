@@ -355,7 +355,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | M17 scrambler | `M17_SCRAMBLER` | 1,352* | — | Needs `M17`; off in the amateur variant. Off by default on the MD-9600 for flash |
 | M17 AES encryption | `M17_AES` | — | — | Needs `M17`; off in the amateur variant. About 2.4 KB with the random pool, on the AES DMR AES uses too ([M17 on each radio](#m17-on-each-radio)). Off by default on the MD-9600 for flash |
 | Heard list: the stations heard | `HEARD_LIST` | 2,368* | — | Needs `M17`, its only source so far. RAM: 304 B. Off by default on the MD-9600 for flash |
-| M17 reflector client: an M17 channel's calls and SMS through a reflector over the USB network or PPP | `NET_M17` | 9,120* | — | Needs `M17` and `DMR_IP_GATEWAY` ([m17-ip.md](spec/m17-ip.md)). DM-1701: on top of M17 with its packets and heard list, `SATELLITE_TLE=n` and `LANG_ES=n`. RAM: 1,272 B. On where M17 and the gateway are and it fits; off on the MD-9600 (4,200 B over), the DM-1701 and the MD-UV380 (M17 off). Not checked against a real reflector |
+| M17 reflector client: an M17 channel's calls and SMS through a reflector over the USB network or PPP | `NET_M17` | 9,120* | — | Needs `M17` and `DMR_IP_GATEWAY` ([m17-ip.md](spec/m17-ip.md)). DM-1701: on top of M17 with its packets and heard list, `SATELLITE_TLE=n` and `LANG_ES=n`. RAM: 1,272 B. On where M17 and the gateway are and it fits; off on the MD-9600 (4,724 B over), the DM-1701 and the MD-UV380 (M17 off), and with the IP gateway on the RT10 (`NET_PPP` off by default). Not checked against a real reflector |
 | Basic privacy (Motorola / Anytone BP) | `DMR_PRIVACY` | 1,936 | 1,992 |  |
 | AES-256 DMR voice, PI header and late-entry signaling | `DMR_AES` | 4,656 | — | Requires `DMR_PRIVACY`. DM-1701: 4,656 B flash and 496 B RAM with `DMR_AES` on versus off, the AES cipher (`core/crypto/aes.c`, shared with M17) included. TX to a receiver of another make needs the modem driver's burst F field (`set_burst_f`, [dmr-voice.md](spec/dmr-voice.md) 5.1): only the HR_C7000 driver has it (DM-32UV); on the HR_C6000 and other radios our AES overs reach radios running RadioFoundry only (#864). |
 | Talker alias receive and send | `DMR_TALKER_ALIAS` | 984 | 1,300 |  |
@@ -401,12 +401,17 @@ turned on (its parts off, as their `config.mk` sets them) minus the default, and
 | `M17_BERT` | 3,176 / 80 | 3,180 / 72 | 3,176 / 72 | 2,896 / 72 | 2,916 / 80 | 3,188 / 72 | 3,168 / 72 |
 | `HEARD_LIST` | 2,496 / 296 | 2,492 / 296 | 2,492 / 296 | 2,396 / 296 | 1,884 / 296 | 2,368 / 304 | 2,348 / 304 |
 | `M17_PACKET` | 5,024 / 840 | 5,024 / 840 | 5,004 / 840 | 4,808 / 840 | 4,808 / 840 | 5,012 / 856 | 4,980 / 856 |
-| `NET_M17` | 10,096 / 1,224 | 10,096 / 1,232 | 10,068 / 1,232 | — | 8,852 / 1,280 | 9,120 / 1,272 | — |
+| `NET_M17` | 10,756 / 1,248 | 10,756 / 1,256 | 10,724 / 1,256 | 10,160 / 1,264 | 9,360 / 1,304 | 9,120 / 1,272 | — |
 
 - `NET_M17` (the reflector client, [m17-ip.md](spec/m17-ip.md)): the image with it minus the image without. On by
   default on the DM-32UV, the DM-1801 Pro and the DB25-D PRO. Off on the MD-9600: its figure is the default with it
-  turned on, 4,200 B over the app region. The DM-1701's is on top of M17 with its packets and heard list,
-  `SATELLITE_TLE=n` and `LANG_ES=n`, with 1,188 B of RAM left; the MD-UV380 is not measured. The RT10 has no IP gateway.
+  turned on, 4,724 B over the app region. The DM-1701's is on top of M17 with its packets and heard list,
+  `SATELLITE_TLE=n` and `LANG_ES=n`, with 1,188 B of RAM left; the MD-UV380 is not measured. Off on the RT10 with its
+  IP gateway: `NET_PPP` is off by default there (`BOARD_DEFAULT_OFF`, the cable lock-up), so the gateway and the client
+  follow. A build with `NET_PPP=y` gets both; its figure is that build with the client minus without. The DM-1701's
+  was measured before the client's late-frame, link-loss and end-frame fixes (2026-11-23), the others after them (the
+  DM-32UV's, DM-1801 Pro's and DB25-D PRO's from the image with the client against the one without it measured
+  before; the fixes are all inside `NET_M17`).
 - MD-9600: `M17_SIG`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT` and `HEARD_LIST` are off by default for flash (with every
   part the image is 23,316 B over its app region; DMR AES takes 4,444 B of it); its `M17` and `M17_PACKET` rows are the
   default without them, its other rows the image with that part on minus the default.
@@ -586,21 +591,22 @@ defaults is at least 3 KB and 1.5 KB ([build-config.md](build-config.md#room-to-
 
 | Radio | App region / RAM region | Default | Maximal |
 |---|---:|---:|---:|
-| DM-32UV | 901,120 / 211,456 | 19,904 / 6,072 | 30,512 / 9,888 |
+| DM-32UV | 901,120 / 211,456 | 19,244 / 6,048 | 30,512 / 9,888 |
 | DM-1701 | 737,280 / 131,068 | 32,668 / 3,604 | 3,368 / 3,236 |
-| DM-1801 Pro | 901,120 / 211,456 | 61,448 / 27,752 | 7,672 / 28,608 |
-| DB25-D PRO | 897,024 / 216,576 | 72,004 / 36,976 | 17,504 / 37,840 |
+| DM-1801 Pro | 901,120 / 211,456 | 60,788 / 27,728 | 7,672 / 28,608 |
+| DB25-D PRO | 897,024 / 216,576 | 71,348 / 36,952 | 17,504 / 37,840 |
 | MD-380 | 868,352 / 131,068 | 292,112 / 20,380 | 237,464 / 19,292 |
 | MD-UV380 | 737,280 / 131,068 | 31,708 / 2,932 | 2,400 / 2,564 |
-| MD-9600 | 737,280 / 131,068 | 4,352 / 7,812 | 2,468 / 7,500 |
-| RT10 | 901,120 / 211,456 | 313,312 / 72,264 | 194,556 / 50,056 |
+| MD-9600 | 737,280 / 131,068 | 4,636 / 7,812 | 2,624 / 7,500 |
+| RT10 | 901,120 / 211,456 | 313,300 / 72,264 | 183,716 / 48,792 |
 
-The DM-32UV's default keeps 6,072 B of RAM: M17 with every part takes 2,984 B of it, the reflector client
-(`NET_M17`) 1,224 B. The DM-32UV's, DM-1801 Pro's and DB25-D PRO's defaults are measured with the reflector client
+The DM-32UV's default keeps 6,048 B of RAM: M17 with every part takes 2,984 B of it, the reflector client
+(`NET_M17`) 1,248 B. The DM-32UV's, DM-1801 Pro's and DB25-D PRO's defaults are measured with the reflector client
 (2026-11-23); their maximal flash figures too (ci's build), their maximal RAM figures predate it (about 1.2 KB less
 with it). The DM-32UV's maximal configuration and the DM-1701's and MD-UV380's leave M17 out (their
 `config.mk`); the MD-9600's leaves satellite tracking, the languages and the reflector client out, so it has M17 with
-every part.
+every part. The MD-9600's and RT10's rows, both columns, are measured after the client's fixes (2026-11-23); the
+RT10's maximal turns `NET_PPP` on, so it has the IP gateway and the reflector client.
 
 ### DM-1701 and MD-380
 

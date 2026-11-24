@@ -9,9 +9,13 @@ CONFIG_NET_M17. Contacts nothing.
 test_m17_reflector_link (opt-in: RFOUNDRY_HIL_M17_REFLECTOR="ADDRESS[:PORT] NAME MODULE", e.g. "192.0.2.10 M17-XYZ C",
 a reflector the tester chooses; there is no default host): the radio in USB network or PPP mode with the host routing
 for it (skipped while `m17net.why` says `no_net`), M17 running on the channel on view, our M17 callsign set. Links
-(sub-op 7), waits for `m17net.state=linked`, stays LINK_S and sees the reflector's PINGs answered (`m17net.pings`,
-`m17net.pongs` up, no `losses`), then unlinks and waits for `off`. This contacts a network service: run it only against
-a reflector whose operator agrees.
+(sub-op 7), waits for `m17net.state=linked`, then stays linked past the reflector's 30 s silence timeout (Part II: it
+drops a client it hears nothing from for 30 s, and PINGs every 3 s). A reflector that ignored our PONGs (gap 2, our
+callsign without a module letter, or gap 3, PONG's callsign checked against CONN's: m17-ip.md 8) would have dropped us
+by then and stopped its PINGs, which our side would notice only 30 s later: so the test reads the counters at
+LATE_FROM_S and again at LATE_TO_S and wants PINGs between the two, PONGs sent, the link still up, no `losses` and no
+DISC from the reflector. A pass settles gaps 2 and 3 for that reflector. Then it unlinks and waits for `off`. About a
+minute. This contacts a network service: run it only against a reflector whose operator agrees.
 """
 import os
 import socket
@@ -26,11 +30,13 @@ from test_m17 import M17On, m17_view
 ENV = "RFOUNDRY_HIL_M17_REFLECTOR"
 SUB_NET = 7
 LINK_WAIT_S = 15.0      # five CONNs two seconds apart, and a margin
-LINK_S = 12.0           # four of the reflector's 3 s PINGs at least
+SILENCE_S = 30.0        # a reflector drops a client it heard nothing from this long (Part II)
+LATE_FROM_S = SILENCE_S + 6.0   # after the linked state: past the reflector's timeout, with a margin ...
+LATE_TO_S = LATE_FROM_S + 9.0   # ... and three of its 3 s PINGs later
 KEYS = ("state", "why", "reflector", "module", "listen", "ip", "port", "rx", "tx", "rx_src", "rx_packets",
         "tx_packets", "conns", "ackns", "nacks", "pings", "pongs", "discs_tx", "discs_rx", "links", "losses",
         "rx_streams", "rx_frames", "tx_streams", "tx_frames", "pkt_rx", "pkt_tx", "bad", "crc_alt", "unknown",
-        "foreign", "rx_dropped", "tx_full", "tx_dropped", "send_busy")
+        "foreign", "rx_dropped", "tx_full", "tx_dropped", "send_busy", "rx_late")
 
 
 def net_view(radio):
@@ -80,14 +86,22 @@ def test_m17_reflector_link(radio):
             if v.get("m17net.why") == "no_net":
                 skip("state", "the radio's network link is down: USB network or PPP mode with the host routing for it")
             assert v["m17net.state"] == "linked", f"not linked to {name}: {v.get('m17net.why')}"
-            time.sleep(LINK_S)
+            linked = time.monotonic()
+            time.sleep(max(0.0, linked + LATE_FROM_S - time.monotonic()))
+            a = radio.view(["m17net"])
+            time.sleep(max(0.0, linked + LATE_TO_S - time.monotonic()))
             v = radio.view(["m17net"])
-            assert v["m17net.state"] == "linked", v
-            assert as_int(v["m17net.pings"]) > as_int(c0["m17net.pings"]), "no PING from the reflector"
-            assert as_int(v["m17net.pongs"]) > as_int(c0["m17net.pongs"]), "no PONG sent"
-            assert as_int(v["m17net.losses"]) == as_int(c0["m17net.losses"]), "the link was lost"
-            print(f"\nm17net: linked to {v['m17net.reflector']} {v['m17net.module']}, {v['m17net.pings']} PINGs, "
-                  f"bad {v['m17net.bad']}, crc_alt {v['m17net.crc_alt']}, unknown {v['m17net.unknown']}")
+            for x in (a, v):
+                assert x["m17net.state"] == "linked", x
+                assert as_int(x["m17net.losses"]) == as_int(c0["m17net.losses"]), "the link was lost"
+                assert as_int(x["m17net.discs_rx"]) == as_int(c0["m17net.discs_rx"]), "the reflector disconnected us"
+            assert as_int(a["m17net.pongs"]) > as_int(c0["m17net.pongs"]), "no PONG sent"
+            # Still PINGed past its timeout: the reflector kept us, our PONGs counted (gaps 2 and 3)
+            assert as_int(v["m17net.pings"]) > as_int(a["m17net.pings"]), \
+                f"no PING from the reflector after {LATE_FROM_S:.0f} s: it dropped us (gap 2 or 3, m17-ip.md 8)"
+            print(f"\nm17net: linked to {v['m17net.reflector']} {v['m17net.module']} for {LATE_TO_S:.0f} s, "
+                  f"{v['m17net.pings']} PINGs, bad {v['m17net.bad']}, crc_alt {v['m17net.crc_alt']}, "
+                  f"unknown {v['m17net.unknown']}")
         finally:
             radio.link.m17(SUB_NET, bytes([0]))
         radio.wait_for(lambda x: x.get("m17net.state") == "off", 10.0, sections=("m17net",), what="unlinked")

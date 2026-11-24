@@ -1448,6 +1448,13 @@ static const char *deny_reason(const radio_view_t *v, char *buf, size_t len)
 	case TXDENY_SIG_NO_KEY: sb_str(&b, TR(DENY_WHY_NO_SIGNING_KEY, "Signing on, no key")); break;
 	case TXDENY_SIG_KEY_BAD: sb_str(&b, TR(DENY_WHY_KEY_DAMAGED, "Signing key damaged")); break;
 #endif
+#if CONFIG_NET_M17
+	case TXDENY_NET_ENC:
+		sb_str(&b, TR(DENY_WHY_NET_ENCRYPTED, TEXT_ALT_OPEN "Encrypted: not to the reflector" TEXT_ALT_NEXT
+			"Encrypted: no reflector" TEXT_ALT_CLOSE));
+		break;
+	case TXDENY_NET_LOST: sb_str(&b, TR(DENY_WHY_NET_LINK_LOST, "Reflector link lost")); break;
+#endif
 #endif
 #if CONFIG_P25_TRUNK || CONFIG_DMR_TRUNK
 	case TXDENY_TRUNK:
@@ -1511,6 +1518,10 @@ static const char *deny_action(const radio_view_t *v)
 		return TR(DENY_FIX_SIGNING_OFF, TEXT_ALT_OPEN "Turn signing off or add a key" TEXT_ALT_NEXT
 			"Signing off or add key" TEXT_ALT_CLOSE);
 	case TXDENY_SIG_KEY_BAD: return TR(DENY_FIX_REWRITE_KEY, "Write the key again");
+#endif
+#if CONFIG_NET_M17
+	case TXDENY_NET_ENC: return TR(DENY_FIX_PRIVACY_OFF, "Turn privacy off: * 6");	// (or unlink: the air encrypts)
+	case TXDENY_NET_LOST: return TR(DENY_FIX_RELEASE_PTT, "Release PTT to talk again");
 #endif
 #endif
 #if CONFIG_P25_TRUNK || CONFIG_DMR_TRUNK

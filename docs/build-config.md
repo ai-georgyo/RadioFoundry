@@ -296,8 +296,8 @@ mode's spec gives the order its parts go in. M17 ([m17.md](spec/m17.md) 16):
 
 | Short of | Order |
 |---|---|
-| Flash | `M17_SIG`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT`, `HEARD_LIST`, `M17_PACKET`, then `M17` itself |
-| RAM | `M17_PACKET`, `HEARD_LIST`, `M17_AES`, then `M17` itself |
+| Flash | `M17_SIG`, `NET_M17`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT`, `HEARD_LIST`, `M17_PACKET`, then `M17` itself |
+| RAM | `NET_M17`, `M17_PACKET`, `HEARD_LIST`, `M17_AES`, then `M17` itself |
 
 When even the mode alone misses the rule, the board gets `CONFIG_M17 ?= n` with the reason, and the project lead picks
 another trade or keeps it off ([feature-matrix.md](feature-matrix.md#m17-trades) has the measured candidates). The

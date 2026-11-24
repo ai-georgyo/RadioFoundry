@@ -22,6 +22,9 @@
 _Static_assert(M17_NET_PKT_MIN == 4u + M17_LSF_BYTES + 4u, "M17P: MAGIC, LSF, type, one byte, CRC");
 _Static_assert(4u + M17_LSF_BYTES + M17_NET_SMS_MAX + 2u <= IPGW_UDP_PAYLOAD_MAX, "an SMS fits one datagram");
 
+// A stream with no packet this long is over, either way (its last one lost); a packet of one that ended is late as long
+#define STREAM_IDLE_MS	1000u
+
 static const uint8_t MAGIC_STREAM[4] = { 'M', '1', '7', ' ' };
 static const uint8_t MAGIC_PACKET[4] = { 'M', '1', '7', 'P' };
 
@@ -227,6 +230,7 @@ static m17_net_status_t pub;
 static uint8_t pub_seq;
 static uint8_t state_byte;		// pub.state, readable alone
 static uint8_t talks_byte;		// linked, not listen only
+static uint8_t gen_byte;		// lk.gen, readable alone
 
 // The host link task's own
 static struct {
@@ -244,12 +248,17 @@ static struct {
 	bool pong_due;			// a PING to answer
 	bool disc_due;			// the reflector's DISC to act on
 	bool dirty;			// pub needs a rewrite
+	uint8_t gen;			// links made (m17_net_link_gen)
 	uint16_t rx_sid;		// the stream coming in
 	uint64_t rx_src, rx_dst;
 	bool rx_on;
 	uint32_t rx_frame_ms;
+	bool done;			// a stream ended by its last frame ...
+	uint16_t done_sid;		// ... this one ...
+	uint32_t done_ms;		// ... at this time
 	uint16_t tx_sid;
 	bool tx_on;
+	uint32_t tx_frame_ms;
 } lk;
 
 static m17_net_stats_t st;
@@ -259,9 +268,11 @@ static m17_net_frame_t rx_ring[M17_NET_RX_RING];
 static uint8_t rx_head, rx_tail;
 static m17_net_frame_t tx_ring[M17_NET_TX_RING];
 static uint8_t tx_head, tx_tail;
+#if CONFIG_M17_PACKET
 // SMS slots: full set by the producer once the slot is written, cleared by the consumer once it is read
 static m17_net_sms_t sms_out, sms_in;
 static uint8_t sms_out_full, sms_in_full;
+#endif
 
 // Packets are built in the IP gateway's own frame buffer (ipGatewayUdpPayload), sent before anything else uses it
 #define OUT()		ipGatewayUdpPayload()
@@ -345,6 +356,11 @@ bool m17_net_linked(void)
 	return LOAD(state_byte) == M17_NET_LINKED;
 }
 
+uint8_t m17_net_link_gen(void)
+{
+	return LOAD(gen_byte);
+}
+
 bool m17_net_rx_take(m17_net_frame_t *out)
 {
 	uint8_t t = rx_tail;
@@ -379,6 +395,7 @@ bool m17_net_tx_frame(const m17_net_frame_t *f)
 	return true;
 }
 
+#if CONFIG_M17_PACKET
 m17_net_sms_t *m17_net_sms_slot(void)
 {
 	return m17_net_talks() && !LOAD(sms_out_full) ? &sms_out : NULL;
@@ -398,6 +415,7 @@ void m17_net_sms_done(void)
 {
 	STORE(sms_in_full, 0);
 }
+#endif
 
 // --- The host link task ---
 static void publish(void)
@@ -415,13 +433,14 @@ static void publish(void)
 	BARRIER();
 	STORE(pub_seq, (uint8_t)(pub_seq + 1u));
 	STORE(state_byte, lk.state);
+	STORE(gen_byte, lk.gen);	// before talks_byte: a new link is never seen talking under the old count
 	STORE(talks_byte, (uint8_t)(lk.state == M17_NET_LINKED && !lk.t.listen));
 }
 
 static void set_state(uint8_t s, uint8_t why)
 {
 	if (s != M17_NET_LINKED) {
-		lk.rx_on = lk.tx_on = false;
+		lk.rx_on = lk.tx_on = lk.done = false;
 	}
 	lk.state = s;
 	lk.why = why;
@@ -561,6 +580,12 @@ static void stream_in(const uint8_t *p, size_t n)
 		st.crc_alt++;
 	st.rx_frames++;
 	sid = (uint16_t)(p[4] << 8 | p[5]);
+	// UDP keeps no order and may deliver twice: a copy of a stream's last frame, or a frame it overtook, would
+	// otherwise be a new stream of the same SID, a second call for the radio task
+	if (lk.done && sid == lk.done_sid && lk.now - lk.done_ms < STREAM_IDLE_MS) {
+		st.rx_late++;
+		return;
+	}
 	if (!lk.rx_on || sid != lk.rx_sid) {
 		lk.rx_on = true;
 		lk.rx_sid = sid;
@@ -584,12 +609,15 @@ static void stream_in(const uint8_t *p, size_t n)
 	STORE(rx_head, (uint8_t)(h + 1u));
 	if (f->fn & M17_FN_END) {
 		lk.rx_on = false;
+		lk.done = true;
+		lk.done_sid = sid;
+		lk.done_ms = lk.now;
 		lk.dirty = true;
 	}
 }
 
 // A packet-mode packet: its LSF and payload checked, then into the SMS slot for the radio task (any data type: the
-// radio core counts what it doesn't keep)
+// radio core counts what it doesn't keep). Without packet mode nothing takes it: counted (pkt_rx) and ignored
 static void packet_in(const uint8_t *p, size_t n)
 {
 	const uint8_t *lsf, *data;
@@ -600,6 +628,7 @@ static void packet_in(const uint8_t *p, size_t n)
 		return;
 	}
 	st.pkt_rx++;
+#if CONFIG_M17_PACKET
 	if (LOAD(sms_in_full)) {
 		st.rx_dropped++;
 		return;
@@ -613,6 +642,7 @@ static void packet_in(const uint8_t *p, size_t n)
 	sms_in.len = sms_in.cut ? (uint16_t)M17_NET_SMS_MAX : len;
 	memcpy(sms_in.data, data, sms_in.len);
 	STORE(sms_in_full, 1);
+#endif
 }
 
 static bool magic_is(const uint8_t *p, const char *m)
@@ -638,6 +668,7 @@ static void udp_in(bool air, uint32_t src, uint16_t sport, uint32_t dst, uint16_
 		if (lk.state == M17_NET_CONNECTING) {
 			st.ackns++;
 			st.links++;
+			lk.gen++;
 			lk.pong_ms = lk.now;
 			set_state(M17_NET_LINKED, M17_NET_WHY_NONE);
 		}
@@ -692,6 +723,7 @@ static void send_frames(void)
 			if (!lk.tx_on || f->sid != lk.tx_sid) {
 				lk.tx_on = true;
 				lk.tx_sid = f->sid;
+				lk.tx_frame_ms = lk.now;	// its first frame may wait (busy): not over by our last stream's time
 				lk.dirty = true;
 				st.tx_streams++;
 			}
@@ -704,6 +736,7 @@ static void send_frames(void)
 			if (!send_to(&lk.t, OUT(), M17_NET_STREAM_LEN))
 				return;
 			st.tx_frames++;
+			lk.tx_frame_ms = lk.now;
 			if (f->fn & M17_FN_END) {
 				lk.tx_on = false;
 				lk.dirty = true;
@@ -713,6 +746,7 @@ static void send_frames(void)
 	}
 }
 
+#if CONFIG_M17_PACKET
 static void send_sms(void)
 {
 	uint8_t lsf[M17_LSF_BYTES];
@@ -738,6 +772,12 @@ static void send_sms(void)
 	st.pkt_tx++;
 	STORE(sms_out_full, 0);
 }
+#else
+static void send_sms(void)
+{
+	// no packet mode: no SMS of ours
+}
+#endif
 
 void m17_net_poll(uint32_t now_ms, bool up)
 {
@@ -785,8 +825,12 @@ void m17_net_poll(uint32_t now_ms, bool up)
 				lk.pong_ms = now_ms;
 				send_ctl(&lk.t, "PONG");
 			}
-			if (lk.rx_on && now_ms - lk.rx_frame_ms >= 1000u) {
+			if (lk.rx_on && now_ms - lk.rx_frame_ms >= STREAM_IDLE_MS) {
 				lk.rx_on = false;	// its last frame never came
+				lk.dirty = true;
+			}
+			if (lk.tx_on && now_ms - lk.tx_frame_ms >= STREAM_IDLE_MS) {
+				lk.tx_on = false;	// ours ended without its last frame (the radio left the channel)
 				lk.dirty = true;
 			}
 			send_frames();
@@ -821,8 +865,8 @@ static const char *const STATE_NAMES[] = { "off", "wait", "connecting", "linked"
 static const char *const WHY_NAMES[] = { "none", "user", "refused", "no_answer", "lost", "disc", "no_net", "no_port" };
 _Static_assert(sizeof STATE_NAMES / sizeof STATE_NAMES[0] == M17_NET_UNLINKING + 1u &&
 	       sizeof WHY_NAMES / sizeof WHY_NAMES[0] == M17_NET_WHY_NO_PORT + 1u, "a name for each state and reason");
-_Static_assert(offsetof(m17_net_stats_t, rx_packets) == 0 && offsetof(m17_net_stats_t, send_busy) == 24u * 4u &&
-	       sizeof(m17_net_stats_t) == 25u * 4u, "m17_net_stats_t: the words the view walks, in this order");
+_Static_assert(offsetof(m17_net_stats_t, rx_packets) == 0 && offsetof(m17_net_stats_t, rx_late) == 25u * 4u &&
+	       sizeof(m17_net_stats_t) == 26u * 4u, "m17_net_stats_t: the words the view walks, in this order");
 
 // An address as one word: a callsign (a space inside as '_'), "-" none, "ALL" broadcast, else 12 hex digits
 static void addr_word(uint64_t a, char out[M17_ADDR_TEXT])
@@ -843,7 +887,7 @@ void m17_net_view(dl_text_t *t)
 {
 	static const char COUNTERS[] = "rx_packets\0tx_packets\0conns\0ackns\0nacks\0pings\0pongs\0discs_tx\0discs_rx\0"
 		"links\0losses\0rx_streams\0rx_frames\0tx_streams\0tx_frames\0pkt_rx\0pkt_tx\0bad\0crc_alt\0unknown\0"
-		"foreign\0rx_dropped\0tx_full\0tx_dropped\0send_busy\0";
+		"foreign\0rx_dropped\0tx_full\0tx_dropped\0send_busy\0rx_late\0";
 	m17_net_status_t s;
 	m17_net_stats_t c;
 	char src[M17_ADDR_TEXT];

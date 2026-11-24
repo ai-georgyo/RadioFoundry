@@ -64,7 +64,9 @@ typedef enum {
 // CALLSIGN_BAD the stored one is not a standard address, ENC_NOT_BUILT the channel encrypts with what this build lacks
 // (never sent in the clear instead), ENC_NO_KEY its traffic key is missing, ENC_NOT_READY no AES nonce could be
 // promised new (entropy_nonce), SIG_NO_KEY Sign M17 calls is on without a usable signing key, SIG_KEY_BAD the key
-// check found d * G != Q. The order is the debug link's (deny_key): append only
+// check found d * G != Q. Linked to a reflector (CONFIG_NET_M17, docs/spec/m17-ip.md 7): NET_ENC the channel encrypts
+// (the network path sends in the clear only), NET_LOST the link went while PTT was held (the transmission ended; never
+// put on the air instead). The order is the debug link's (deny_key): append only
 typedef enum {
 	TXDENY_NONE, TXDENY_RX_ONLY, TXDENY_BAND, TXDENY_TIMEOUT, TXDENY_NO_FREQ, TXDENY_MODE,
 	TXDENY_NO_CODEC, TXDENY_NO_DMR, TXDENY_BUSY, TXDENY_NO_REPEATER, TXDENY_REJECTED, TXDENY_HOTSPOT, TXDENY_NO_ID,
@@ -75,6 +77,7 @@ typedef enum {
 	// M17
 	TXDENY_NO_CALLSIGN, TXDENY_CALLSIGN_BAD, TXDENY_ENC_NOT_BUILT, TXDENY_ENC_NO_KEY, TXDENY_ENC_NOT_READY,
 	TXDENY_SIG_NO_KEY, TXDENY_SIG_KEY_BAD,
+	TXDENY_NET_ENC, TXDENY_NET_LOST,
 } tx_deny_t;
 
 // Busy channel lockout (FM): CARRIER refuses PTT while anything is heard on the channel; WRONG_TONE only while a

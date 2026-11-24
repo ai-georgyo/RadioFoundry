@@ -403,10 +403,16 @@ static const m17_engine_hooks_t hooks = { h_start, NULL, h_voice, h_end, h_tx };
 #define NET_PRIME_MS		200u	// ... or fewer once the first has waited this long
 #define NET_AHEAD		5u	// more in hand than this: one more each tick until it is back (a burst after a gap)
 #define NET_GAP_MS		500u	// no frame this long: the stream is over (its last frame lost)
-enum { NTX_OFF, NTX_ON, NTX_DONE };
+#define NET_END_MS		1000u	// our last frame waits this long at most for room in the ring
+// NTX_ENDING: PTT released, the last frame not yet taken by the ring (the TX state still on)
+enum { NTX_OFF, NTX_ON, NTX_ENDING, NTX_DONE };
 static struct {
 	uint8_t tx;		// NTX_*: the transmission tx_prepare sent to the reflector
 	uint8_t tx_mode;	// c2_mode_t
+	uint8_t tx_gen;		// m17_net_link_gen() at its start: the link it goes to
+	uint8_t cut;		// TXDENY_NET_LOST once the link went under it, until the radio core asks (tx_deny)
+	uint32_t cut_tick;	// run.ticks when its end was cleared: the radio core asks in that tick, PTT still held
+	uint32_t tx_end_ms;	// NTX_ENDING since
 	uint16_t tx_sid, tx_fn, last_sid;
 	uint16_t tx_type;
 	uint8_t tx_src[M17_ADDR_BYTES], tx_dst[M17_ADDR_BYTES];
@@ -423,8 +429,10 @@ static struct {
 	uint32_t last_ms;	// the latest frame taken
 	uint32_t end_ms;	// when the reflector call the view shows ended (0: running)
 	bool view;		// the view shows a reflector call (the engine's call is no longer the view's)
+	bool end_owed;		// our call's end wasn't handed over (an air call held the queue): net_end_owed
 } net;
 #define NET_VIEW()	(net.view)
+static void net_tx_end(void);
 #else
 #define NET_VIEW()	false
 #endif
@@ -838,6 +846,9 @@ void radio_m17_end(void)
 {
 	if (mem == NULL)
 		return;
+#if CONFIG_NET_M17
+	net_tx_end();		// a transmission to the reflector ends with its last frame, as at PTT release (once)
+#endif
 	m17_engine_end(&mem->eng);	// the provider calls nothing after its close; every secret in it is wiped
 	m17_voice_scratch_return();	// (none is lent between ticks; a request not answered is withdrawn)
 	m17_voice_end();
@@ -1331,8 +1342,8 @@ static OWN_FRAME void gnss_poll(m17_engine_t *e, uint32_t now)
 #if CONFIG_NET_M17
 // --- The network path's work, each tick (docs/spec/m17-ip.md 7) ---
 
-// One frame of ours to the reflector (the ring full or the link gone: counted there)
-static void net_tx_send(const uint8_t stream[M17_STREAM_BYTES], uint16_t fn)
+// One frame of ours to the reflector; false: the ring full or the link gone (counted there)
+static bool net_tx_send(const uint8_t stream[M17_STREAM_BYTES], uint16_t fn)
 {
 	m17_net_frame_t f;
 
@@ -1342,7 +1353,7 @@ static void net_tx_send(const uint8_t stream[M17_STREAM_BYTES], uint16_t fn)
 	memcpy(f.src, net.tx_src, M17_ADDR_BYTES);
 	memcpy(f.dst, net.tx_dst, M17_ADDR_BYTES);
 	memcpy(f.stream, stream, M17_STREAM_BYTES);
-	(void)m17_net_tx_frame(&f);
+	return m17_net_tx_frame(&f);
 }
 
 // The encoder's frames, as they come (one every 40 ms; the engine takes none: it sends nothing now)
@@ -1351,20 +1362,51 @@ static void net_tx_pump(void)
 	uint8_t st[M17_STREAM_BYTES];
 
 	while (net.tx == NTX_ON && m17_voice_tx_frame(st)) {
-		net_tx_send(st, net.tx_fn);
+		(void)net_tx_send(st, net.tx_fn);	// a voice frame the ring has no room for is lost (tx_full)
 		net.tx_fn = (uint16_t)((net.tx_fn + 1u) & M17_FN_MASK);
 	}
 }
 
-// PTT released, or the time-out: what the encoder has, then a silent last frame (FN with its end bit)
+// The link the transmission goes to is still there (not lost, unlinked, or linked again or elsewhere)
+static bool net_tx_link(void)
+{
+	return m17_net_talks() && m17_net_link_gen() == net.tx_gen;
+}
+
+// The last frame (FN with its end bit, silent), offered until the ring takes it: without it the reflector and its
+// listeners wait for their time-outs. Given up when the link goes, or after NET_END_MS (the host link task stalled)
+static void net_tx_ending(void)
+{
+	if (net.tx != NTX_ENDING)
+		return;
+	if (!net_tx_link() || hal_millis() - net.tx_end_ms >= NET_END_MS ||
+	    net_tx_send(m17_voice_silence((c2_mode_t)net.tx_mode), (uint16_t)(net.tx_fn | M17_FN_END)))
+		net.tx = NTX_DONE;	// the radio core ends the TX state at the next tick (tx_state)
+}
+
+// PTT released, or the time-out: what the encoder has, then the last frame
 static void net_tx_end(void)
 {
 	if (net.tx != NTX_ON)
 		return;
 	net_tx_pump();
 	m17_voice_tx(false, C2_MODE_3200);
-	net_tx_send(m17_voice_silence((c2_mode_t)net.tx_mode), (uint16_t)(net.tx_fn | M17_FN_END));
-	net.tx = NTX_DONE;	// the radio core ends the TX state at the next tick (tx_state)
+	net.tx = NTX_ENDING;
+	net.tx_end_ms = hal_millis();
+	net_tx_ending();
+}
+
+// The link went under a transmission: it ends at once with no last frame (nowhere to send it), and a PTT still held
+// is refused until released (tx_deny: TXDENY_NET_LOST) rather than going on the air, or to another reflector, mid-over
+static void net_tx_watch(void)
+{
+	if ((net.tx != NTX_ON && net.tx != NTX_ENDING) || net_tx_link())
+		return;
+	if (net.tx == NTX_ON) {
+		m17_voice_tx(false, C2_MODE_3200);
+		net.cut = TXDENY_NET_LOST;
+	}
+	net.tx = NTX_DONE;
 }
 
 // A reflector stream the voice path plays: voice (3200 or 1600), in the clear
@@ -1386,6 +1428,7 @@ static bool net_push(const uint8_t *stream, bool start, bool end)
 
 		if (start || calls != net.air_calls) {
 			net.air_calls = calls;	// (an air call came between our frames: ours starts again)
+			net.end_owed = false;	// a new call replaces whatever was left open: nothing to end later
 			m17_voice_rx_start((c2_mode_t)net.rx_mode);
 		}
 		if (stream != NULL)
@@ -1450,7 +1493,8 @@ static void net_rx_stop(radio_m17_view_t *n, uint32_t now)
 	if (!net.rx)
 		return;
 	net.rx = false;
-	(void)net_push(NULL, false, true);
+	if (!net_push(NULL, false, true))
+		net.end_owed = true;	// an air call holds the queue
 	if (net.view) {		// (an air call may have taken the view first)
 		net.end_ms = now != 0 ? now : 1u;
 		net_det(n, net.rx_type);
@@ -1467,6 +1511,20 @@ static void net_rx_stop(radio_m17_view_t *n, uint32_t now)
 	if (m17_addr_get(h.addr) != 0)
 		radio_heard_add(&h);
 #endif
+}
+
+// An end net_rx_stop couldn't hand over. An air call that started in the voice path replaced our call, and its own
+// end closed it; one whose start was kept (air_pending) and that ended before its first frame never did, and our call
+// would stay open (concealment, the speaker on) until the next call. Once the queue is clear, a call still open is ours
+static void net_end_owed(void)
+{
+	SC_STORE(net_pushing, 1);
+	if (SC_LOAD(air_rx) == 0) {
+		net.end_owed = false;
+		if (m17_voice_rx_open())
+			m17_voice_rx_end();
+	}
+	SC_STORE(net_pushing, 0);
 }
 
 // One frame from the reflector, in its turn
@@ -1506,7 +1564,10 @@ static void net_frame(radio_m17_view_t *n, const m17_net_frame_t *f, uint32_t no
 static OWN_FRAME void net_rx(radio_m17_view_t *n, const m17_engine_view_t *ev, uint32_t now)
 {
 	m17_net_frame_t f;
+	bool ahead = false;	// a frame taken before its time this tick
 
+	if (net.end_owed)
+		net_end_owed();
 	if (ev->rx_active || ev->tx != AIR_TX_IDLE || net.tx != NTX_OFF || run.tx_kind != 0xFFu || !m17_net_linked()) {
 		net_rx_stop(n, now);
 		m17_net_rx_flush();
@@ -1531,14 +1592,16 @@ static OWN_FRAME void net_rx(radio_m17_view_t *n, const m17_engine_view_t *ev, u
 				net.wait_ms = 0;
 				net.rel_ms = now;
 				due = true;
-			} else if (net.rx && !due && q <= NET_AHEAD) {
-				break;
+			} else if (net.rx && !due && (q <= NET_AHEAD || ahead)) {
+				break;	// one ahead of time a tick at most: the voice path's queue holds a few only
 			}
 			if (!m17_net_rx_take(&f))
 				break;
 			net_frame(n, &f, now);
 			if (due)
 				net.rel_ms += M17_FRAME_MS;
+			else
+				ahead = true;
 		}
 	}
 	if (net.rx)
@@ -1628,7 +1691,7 @@ static bool net_tx_start(m17_engine_t *e)
 	const m17_engine_cfg_t *c = &e->cfg;
 
 	if (c->tx_enc != M17_ENC_NONE) {
-		run.prep_deny = TXDENY_REFUSED;
+		run.prep_deny = TXDENY_NET_ENC;
 		return false;
 	}
 	net.tx_sid = net_sid();
@@ -1638,6 +1701,8 @@ static bool net_tx_start(m17_engine_t *e)
 			       M17_ENC_NONE, M17_META_TEXT, c->tx_can, false);
 	m17_addr_put(net.tx_src, c->src);
 	m17_addr_put(net.tx_dst, c->dst);
+	net.tx_gen = m17_net_link_gen();
+	net.cut = TXDENY_NONE;
 	net.tx = NTX_ON;
 	run.tx_kind = M17_TX_STREAM;
 	run.tx_aborted = false;
@@ -1672,7 +1737,9 @@ bool radio_m17_poll(radio_m17_view_t *v)
 	m17_engine_view(e, &ev);
 	m17_voice_poll();
 #if CONFIG_NET_M17
+	net_tx_watch();		// first: no frame of ours goes to a link it didn't start on
 	net_tx_pump();		// what the encoder made since the last tick, to the reflector
+	net_tx_ending();
 #endif
 	if (run.masked) {
 		if (!ev.rx_active || ev.rx_calls != run.masked_calls)
@@ -1692,7 +1759,7 @@ bool radio_m17_poll(radio_m17_view_t *v)
 	n.tx_phase = ev.tx_phase;
 #if CONFIG_NET_M17
 	if (net.tx != NTX_OFF) {
-		n.tx = net.tx == NTX_ON ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;	// our stream to the reflector
+		n.tx = net.tx != NTX_DONE ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;	// our stream to the reflector
 		n.tx_phase = net.tx == NTX_ON ? (uint8_t)M17_TXP_DATA : (uint8_t)M17_TXP_EOT;
 	}
 #endif
@@ -1842,6 +1909,15 @@ uint8_t radio_m17_tx_deny(void)
 		return TXDENY_NONE;	// air_key refuses first: no engine
 	if (ch_now.own == 0)
 		return ch_now.own_bad ? TXDENY_CALLSIGN_BAD : TXDENY_NO_CALLSIGN;
+#if CONFIG_NET_M17
+	if (net.cut != TXDENY_NONE) {
+		uint8_t d = net.cut;
+
+		net.cut = TXDENY_NONE;	// said once: to the PTT held as the transmission ended, never to a later one
+		if (net.cut_tick == run.ticks)
+			return d;
+	}
+#endif
 	if (run.prep_deny != TXDENY_NONE) {
 		uint8_t d = run.prep_deny;
 
@@ -2049,7 +2125,7 @@ static uint8_t m17_tx_state(void)
 {
 #if CONFIG_NET_M17
 	if (net.tx != NTX_OFF)
-		return net.tx == NTX_ON ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;
+		return net.tx != NTX_DONE ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;
 #endif
 	return mem != NULL ? (uint8_t)m17_engine_tx_state(&mem->eng) : (uint8_t)AIR_TX_IDLE;
 }
@@ -2061,6 +2137,7 @@ static void m17_tx_clear(void)
 #if CONFIG_NET_M17
 	if (net.tx != NTX_OFF) {
 		net.tx = NTX_OFF;
+		net.cut_tick = run.ticks;
 		m17_voice_tx(false, C2_MODE_3200);
 		run.tx_kind = 0xFFu;
 		return;

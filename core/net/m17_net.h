@@ -20,6 +20,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "config.h"
 #include "m17/m17.h"
 #include "debuglink/dl_fmt.h"
 
@@ -32,7 +33,7 @@
 #define M17_NET_CTL_LEN		10u	// PING, PONG, DISC: MAGIC, from
 #define M17_NET_ACK_LEN		4u	// ACKN, NACK, the DISC acknowledgment: MAGIC alone
 #define M17_NET_PKT_MIN		38u	// "M17P": MAGIC, the LSF with its CRC, type, at least one data byte, CRC
-#define M17_NET_PKT_PAYLOAD_MAX	825u	// type, data and CRC
+#define M17_NET_PKT_PAYLOAD_MAX	825u	// type, data and CRC (Part II); less gets through the IP gateway (m17-ip.md 4)
 
 // Timing (docs/spec/m17-ip.md 5)
 #define M17_NET_CONN_RETRY_MS	2000u	// CONN again when no ACKN or NACK came ...
@@ -91,15 +92,18 @@ typedef struct {
 	uint32_t links, losses;			// links made; links lost to silence
 	uint32_t rx_streams, rx_frames;		// streams and stream packets received
 	uint32_t tx_streams, tx_frames;		// streams and stream packets sent
-	uint32_t pkt_rx, pkt_tx;		// M17P received (any type), sent
+	uint32_t pkt_rx, pkt_tx;		// M17P received (any type; ignored without CONFIG_M17_PACKET), sent
 	uint32_t bad;				// a length, CRC or field check failed (dropped)
 	uint32_t crc_alt;			// stream packets whose CRC held only without the MAGIC (GAP 1)
 	uint32_t unknown;			// MAGICs not known (ignored)
 	uint32_t foreign;			// datagrams from another address or port (dropped)
 	uint32_t rx_dropped;			// stream frames or SMS the radio task had no room for
 	uint32_t tx_full;			// ours the radio task couldn't hand over: the ring full, or not linked
-	uint32_t tx_dropped;			// ours dropped here: the link went down before they went out
+	uint32_t tx_dropped;			// ours dropped here: the link went down before they went out, or an SMS
+						// of a bad length
 	uint32_t send_busy;			// sends that found the USB IN endpoint busy (tried again)
+	uint32_t rx_late;			// stream packets of a stream that had ended (a copy, or overtaken by its
+						// last): dropped, never a new stream
 } m17_net_stats_t;
 
 // One stream frame between the link and the radio task, either way
@@ -120,7 +124,8 @@ typedef struct {
 typedef struct {
 	uint64_t src, dst;
 	uint8_t can;
-	bool cut;		// longer than M17_NET_SMS_MAX: data holds its start
+	bool cut;		// longer than M17_NET_SMS_MAX: data holds its start (a packet too long for the IP
+				// gateway never arrives at all, m17-ip.md 4)
 	uint16_t len;
 	uint8_t data[M17_NET_SMS_MAX];
 } m17_net_sms_t;
@@ -156,8 +161,8 @@ bool m17_net_target_ok(const m17_net_target_t *t);
 // Who asks: each has a request slot of its own, so two tasks never write one slot at once (no compare-and-swap on
 // every CPU). One poll takes the UI's before the debug link's: the later one wins
 enum { M17_NET_FROM_UI, M17_NET_FROM_DEBUG, M17_NET_FROM_COUNT };
-// Link to t (another link first ends: one DISC to the old reflector). False: t isn't valid. Unlink: DISC; while not
-// linked, the last target is forgotten
+// Link to t (another link first ends: one DISC to the old reflector). False: t isn't valid. Unlink stops a link (DISC)
+// or its retries: OFF, the target kept for the page; Unlink while OFF forgets the last target
 bool m17_net_link(uint8_t from, const m17_net_target_t *t);
 void m17_net_unlink(uint8_t from);
 // The state, a consistent copy (a task below or at the host link task's priority: it may wait for a write to end)
@@ -173,20 +178,24 @@ void m17_net_reset_stats(void);
 bool m17_net_talks(void);
 // Linked at all: the reflector's streams and SMS come in
 bool m17_net_linked(void);
+// A count of links made: a transmission started on one link ends when it changes (linked again, or elsewhere)
+uint8_t m17_net_link_gen(void);
 // The next frame from the reflector; false: none
 bool m17_net_rx_take(m17_net_frame_t *out);
 uint8_t m17_net_rx_count(void);
 void m17_net_rx_flush(void);
-// One frame of ours (fn M17_FN_END on the last); false: no room, or not linked (counted in tx_dropped)
+// One frame of ours (fn M17_FN_END on the last); false: no room, or not linked (counted in tx_full)
 bool m17_net_tx_frame(const m17_net_frame_t *f);
+#if CONFIG_M17_PACKET	// the radio core's only user (radio_m17.c): without packet mode M17P is counted and ignored
 // An SMS to the reflector, in place: the slot to fill (NULL: one is still waiting, or not linked to talk), then post
-// it (len 2 .. M17_NET_SMS_MAX, else it is dropped and counted bad)
+// it (len 2 .. M17_NET_SMS_MAX, else it is dropped and counted in tx_dropped)
 m17_net_sms_t *m17_net_sms_slot(void);
 void m17_net_sms_post(void);
 // An SMS from the reflector, in place (NULL: none), then done with it. A message to the linked module ("M17-XYZ C")
 // comes with dst broadcast: to everyone on it
 const m17_net_sms_t *m17_net_sms_peek(void);
 void m17_net_sms_done(void);
+#endif
 
 // --- The host link task (core/net/net.c) ---
 void m17_net_start(void);

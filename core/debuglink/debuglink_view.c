@@ -72,8 +72,12 @@ static const char *deny_key(uint8_t d)
 #if CONFIG_M17	// only radio_m17_tx_deny gives these: without M17 their names would take flash for nothing
 					     "no_call", "call_bad", "enc_build", "enc_key", "enc_ready", "sig_key", "sig_bad",
 #endif
+#if CONFIG_NET_M17	// the reflector's (radio_m17.c's network path)
+					     "net_enc", "net_lost",
+#endif
 	};
-	_Static_assert(sizeof(names) / sizeof(names[0]) == (CONFIG_M17 ? TXDENY_SIG_KEY_BAD : TXDENY_AES_WAIT) + 1u,
+	_Static_assert(sizeof(names) / sizeof(names[0]) == (CONFIG_NET_M17 ? TXDENY_NET_LOST : CONFIG_M17 ?
+		       TXDENY_SIG_KEY_BAD : TXDENY_AES_WAIT) + 1u,
 		       "a name for every tx_deny_t this build can give");
 	return d < sizeof(names) / sizeof(names[0]) ? names[d] : "?";
 }

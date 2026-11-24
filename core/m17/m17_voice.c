@@ -153,6 +153,13 @@ void m17_voice_rx_end(void)
 	STORE(vs.rx_end_seq, vs.rx_seq);
 }
 
+#if CONFIG_NET_M17
+bool m17_voice_rx_open(void)
+{
+	return LOAD(vs.rx_end_seq) != LOAD(vs.rx_seq);
+}
+#endif
+
 bool m17_voice_tx_frame(uint8_t stream[M17_STREAM_BYTES])
 {
 	if (LOAD(vs.mem) == NULL) {
