@@ -157,14 +157,17 @@ def test_keys_and_selector_read(radio):
 
 @pytest.mark.feature("settings_store", optional=True)
 def test_data_flash(radio):
-    """The 32 MB part answers on SPI4 with 4-byte addresses, and the reserved board sector was read."""
+    """The 32 MB part answers on SPI4 with 4-byte addresses, the driver refused no write of the maker's bytes, and the
+    board sector was read."""
     b = board_view(radio)
     jedec, f = fields(b["flash"])
     assert jedec == "EF4019", f"data flash ID {jedec}: not the W25Q256JV (000000: no answer, or left busy / suspended)"
     assert int(f["size"], 0) == 0x2000000 and f["addr4"] == "1", b["flash"]
+    # the driver's backstop: no erase or program reached a sector holding the maker's bytes outside storage's grant
+    assert f.get("refused", "0") == "0", f"a writer missed the kept-bytes rule: {b['flash']}"
     assert b["store"] in ("blank", "ours", "foreign"), f"board sector {b['store']}"
     if b["store"] == "foreign":
-        print("the board sector at 0x01E000 holds someone else's bytes: note it, it is not usable for the unit record")
+        print("the board sector at 0x01B000 holds someone else's bytes: note it, it is not usable for the table's copy")
     s = radio.view(["storage"])
     assert s["storage.region"] in ("ours", "foreign"), s["storage.region"]
 

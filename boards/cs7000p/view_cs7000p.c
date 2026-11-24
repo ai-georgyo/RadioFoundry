@@ -23,12 +23,13 @@
 #include "hrc/i2s_dir.h"
 #endif
 
-// The reserved board sector, read once at the first request (nothing in this image writes it): blank, a record of
-// the tree's own format (its first four bytes, hardware-cs7000p.md 13.3), or someone else's bytes
+// The board sector (0x01B000, the record of the tree's own copy of the maker's table, hardware-cs7000p.md 10.2), read
+// once at the first request (nothing in this image writes it): blank, a record of the tree's own format (its first
+// four bytes), or someone else's bytes
 static const char *store_state(void)
 {
 	static const char *const names[] = { "unread", "blank", "ours", "foreign" };
-	static const char magic[4] = { 'R', 'F', 'C', '1' };
+	static const char magic[4] = { 'R', 'F', 'F', 'C' };
 	static uint8_t state;	// an index into names; 0 until a whole read worked
 
 	if (state == 0 && stm32_spi_flash.read != NULL &&
@@ -184,10 +185,11 @@ static void line_bt_strap(char *buf, uint8_t len)
 static void line_flash(char *buf, uint8_t len)
 {
 	// Manufacturer, memory type and capacity as the probe read them (EF4019 is the fitted part; 000000: no answer,
-	// or a chip left busy or suspended and so not used)
+	// or a chip left busy or suspended and so not used), and the erases and programs the driver's backstop refused in
+	// a sector holding the maker's bytes outside core/storage's grant (0 unless a writer misses the rule)
 	const uint32_t id = stm32_spi_flash.jedec != NULL ? stm32_spi_flash.jedec() : 0u;
-	dl_fmt(buf, len, "flash=%06X size=0x%x addr4=%u", (unsigned)id, (unsigned)stm32_spi_flash.size,
-	       (unsigned)(SPI_NOR_ADDR4));
+	dl_fmt(buf, len, "flash=%06X size=0x%x addr4=%u refused=%u", (unsigned)id, (unsigned)stm32_spi_flash.size,
+	       (unsigned)(SPI_NOR_ADDR4), (unsigned)stm32_spi_flash_factory_refusals());
 }
 
 static void line_store(char *buf, uint8_t len)

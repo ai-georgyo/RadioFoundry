@@ -2,8 +2,9 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS data flash: a Winbond W25Q256JV, 32 MB, on SPI4 (PE2 SCK, PE5 MISO, PE6 MOSI, AF5), mode 0, chip
 // select PE4 (docs/spec/hardware-cs7000p.md 10), through the shared driver (platform/stm32/spi_flash). The board
-// builds that driver with 4-byte addresses and core/storage as a flash that must be claimed before its first write
-// (board.mk); the map and the reserved board sector are in store_cs7000p.{h,c}. Unverified on a radio.
+// builds that driver with 4-byte addresses and core/storage as a flash that must be claimed before its first write and
+// whose maker's bytes every rewrite keeps (board.mk); the map, its factory ranges and the board sector are in
+// store_cs7000p.{h,c}. Unverified on a radio.
 #include "cs7000p.h"
 #include "pins.h"
 #include "store_cs7000p.h"
