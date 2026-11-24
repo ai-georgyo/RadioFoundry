@@ -5,6 +5,7 @@ keeps its maker's data in the data flash. Read only for the flash:
 
 - FACTORY_INFO answers, its range is a [[flash.protect]] entry of the board in the registry, its window CRC is the
   CRC-32 of the window read now through STORAGE READ (twice, the same), and its source follows the source order.
+- The storage view's storage.factory has its four counts and no refusal.
 - FACTORY_LOAD (RAM only) at an offset other than the bytes loaded so far, and past the range's end, is refused.
 - FACTORY_RESTORE with a wrong CRC of the loaded bytes is refused with reason 4 (crc), and with a wrong window CRC
   with reason 7 (window_crc); the window's CRC is the same afterwards. Reason 7 needs bytes that pass the board's
@@ -89,6 +90,22 @@ def test_factory_info(radio, factory):
     w = window(radio, info)
     assert zlib.crc32(w) == info["window_crc"], \
         f"the window's CRC now 0x{zlib.crc32(w):08x}, FACTORY_INFO's 0x{info['window_crc']:08x}"
+
+
+@pytest.mark.feature("factory_copy")
+def test_factory_counters(radio, factory):
+    """The storage view's storage.factory (debuglink.md 3.7, settings-store.md 4.1) on a board that keeps factory
+    bytes: four counts, rewrites,dropped,replays,refused, and no refusal (a journal entry left pending, a second read
+    that differed, a write refused while the journal is held)"""
+    s = radio.view(["storage"])
+    assert "storage.factory" in s, \
+        "no storage.factory on a board with a factory copy: not built with STORAGE_FACTORY_KEEP, or the storage " \
+        "section's reply was full and dropped its last line"
+    parts = s["storage.factory"].split(",")
+    assert len(parts) == 4 and all(p.isdigit() for p in parts), s["storage.factory"]
+    rewrites, dropped, replays, refused_n = (int(p) for p in parts)
+    print(f"kept rewrites {rewrites}, dropped writes {dropped}, replays {replays}, refused {refused_n}")
+    assert refused_n == 0, f"the storage layer refused a write of a kept sector: {s['storage.factory']}; keep the log"
 
 
 @pytest.mark.feature("factory_copy")
