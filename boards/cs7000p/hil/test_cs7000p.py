@@ -332,6 +332,19 @@ def test_receive_calibration_sources(radio):
         assert r["why"] == "none" and abs(int(r["d_a"])) <= REF_RX_BOUND, b["ref"]
     if r["why"] == "rx_bound":
         assert r["src"] == "default" and abs(int(r["d_a"])) > REF_RX_BOUND, b["ref"]
+    # The IF chip's words (chip_reg 3:7) and the maker's squelch thresholds, shown only. The reader checked their
+    # order at each point; an extension past the end points need not keep it, so only the codes' range is checked
+    if "ifw" in c:
+        assert c["ifw"] in ("port", "maker"), b["rx_cal"]
+    if "sq_maker" in b:
+        state, q = fields(b["sq_maker"])
+        assert state in ("ok", "none"), b["sq_maker"]
+        if t["src"] == "none":
+            assert state == "none" and q["why"] == "table", b["sq_maker"]
+        if state == "ok":
+            assert all(0 <= int(q[k]) <= 255 for k in ("o1", "c1", "o9", "c9")), b["sq_maker"]
+        else:
+            assert q["why"] in ("table", "group", "band", "switch", "math"), b["sq_maker"]
     # chip_reg 3:4 reads 0x100 while no bench offset is set, and the level is the bench's while one is
     assert (radio.link.chip_reg(BOARD_CHIP, REF_OFFSET) == REF_RELEASE) == (r["src"] != "bench"), b["ref"]
     if coding != "hold" or fields(b["hrc"])[0] != "1":

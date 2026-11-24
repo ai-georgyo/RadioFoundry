@@ -336,6 +336,12 @@ static void line_rx_cal(char *buf, uint8_t len)
 	cs7000p_rx_cal_line(buf, len);
 }
 
+// ... and what it holds that nothing applies yet
+static void line_sq_maker(char *buf, uint8_t len)
+{
+	cs7000p_sq_maker_line(buf, len);
+}
+
 // The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
 // `board2` section's (board.view_split), keys still board.<key>
 static void (*const lines[])(char *buf, uint8_t len) = {
@@ -350,9 +356,10 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	// board2
 	line_cal_table, line_cal_rec,
 	line_ref, line_rx_cal,
+	line_sq_maker,
 };
 #define LINES	(sizeof(lines) / sizeof(lines[0]))
-_Static_assert(LINES == CS7000P_VIEW_SPLIT + 4u, "board.view_split counts the lines before board2's");
+_Static_assert(LINES == CS7000P_VIEW_SPLIT + 5u, "board.view_split counts the lines before board2's");
 
 bool cs7000p_view_line(uint8_t i, char *buf, uint8_t len)
 {

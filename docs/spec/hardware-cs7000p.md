@@ -809,6 +809,21 @@ receive rail comes on before the set-up. The set-up's words and their order are 
 (`ak2365a_setup_words`); the board writes them, with the 500 us ahead of control 2 (`rfplan_cs7000p.h`,
 `cs7000pRfTest`).
 
+For a receive test of the maker's squelch and RSSI points under the words they were set under, `chip_reg` 3:7 = 1
+(14) writes the maker's words instead ([calibration-cs7000p.md](calibration-cs7000p.md) 5.13), one configuration per
+mode (`cs7000p_if_cfg_maker_fm`, `_dmr`):
+
+| Register | FM wide | FM narrow | DMR |
+|---|---|---|---|
+| control 1 | 0xF5 (filter F2) | 0xE9 | 0xE5 (narrow level, filter F2) |
+| control 2 | 0x1F | 0x1F | 0x1F |
+| control 3 to 5 | the port's | the port's | the port's |
+
+Control 2 is the maker's AGC setting, 0x1E, with the calibration start (0x01): this port's set-up begins with a
+software reset, after which the discriminator needs its calibration. The maker's control 3 to 5 are not known. The
+chip only receives, so the knob neither refuses nor changes a transmission; a mode change with it on asks for a
+receive set-up (the DMR word). `cs7000pRadioTest` reads the words off the chip's pins for each.
+
 ### 7.4 Buses
 
 | Chip | Lines | Half period | Notes |
@@ -1340,7 +1355,7 @@ model's. The last column is the maker's field for the same value:
 | FM and DMR modulation pairs (4:0x45 / 0x46) | unset | deviation on a service monitor or the SDR bench ([dmr-bench.md](../testing/dmr-bench.md)) | FM 0x0C4 / 0x0CC, DMR 0x0B4 / 0x0BC, at f_tx, one pair for both bandwidths: 5.3 |
 | Reference offset and bias | 0, unverified; the receive level trim A within 32 steps (6.5) | a frequency counter on the carrier, then the reference trim for the unit | trim A 0x0DC (receive, FM transmit) and trim B 0x174 (DMR transmit, and the bias in two DMR receive paths), offset binary. Under the port's 4:0x25 hold the bias equivalent is inferred, and the coding under the maker's 0x0E is open: 5.2 |
 | Front-end tuning DAC per frequency | the maker's row, else mid scale | a sensitivity sweep with `chip_reg` 3:0 | 0x044 at f_rx: 5.1 |
-| Squelch thresholds, RSSI offset | the plain mappings; the RSSI the maker's points | a signal generator | squelch 0x04C-0x064 (levels 1 and 9, open and close), RSSI 0x040 / 0x041: 5.7, 5.8 |
+| Squelch thresholds, RSSI offset | the plain mappings, the maker's thresholds shown (`board.sq_maker`); the RSSI the maker's points | a signal generator | squelch 0x04C-0x064 (levels 1 and 9, open and close), RSSI 0x040 / 0x041: 5.7, 5.8 |
 | Sub-audio depth | `CS7000P_CTCSS_DEPTH`, one value | deviation on a service monitor | CTCSS 0x084 / 0x08C, DCS 0x094: 5.5 |
 | DMR key-up constants | a fixed lead | `tools/bench/pa_cal.py`, after the PA rows, the DMR modulation pair and the reference offset are built in (it stops while the view's `tx_drive` is 0), with `CS7000P_BENCH_DMR_TX=1` | burst timing 0x0EC-0x14C, from the RF TX interrupt; the time base and the place of the interrupt are not established: 5.4 |
 
@@ -1379,7 +1394,9 @@ for write, `cs7000pRadioSeqTest` the chain's (a bench key-up's own writes are to
 the table), `cs7000pCalTest` the getters on invented tables. On the radio, 3:0 and 3:4 are the owner's A/B: `reg 3 4 0`
 is today's level (`CS7000P_REF_OFFSET` 0, the default), `reg 3 4 0x100` the table's again; `reg 3 0 2048` today's
 tune, `reg 3 0 0` the table's (both at the next status poll). Squelch stays the port's (the noise reading); the
-maker's thresholds are not applied.
+maker's thresholds are read, checked (a damaged squelch row makes the table not valid) and shown at the receive
+frequency (`board.sq_maker`, 15), not applied: how the radio's squelch levels map to the maker's 1 to 9 is not
+decided. They were set under the maker's IF words, which `chip_reg` 3:7 gives for the comparison (7.3).
 
 ### 13.2 What is refused, and the bench override
 
@@ -1444,14 +1461,14 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 | 0 | HR_C6000, pages 1 and 4 (2 and 3 are FIFOs a read would drain). Every receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again (and 0x26 with 3:5 = 2) | read / write; a write is followed by the register read back |
 | 1 | SKY72310, page 0, registers 0 to 14, values to 0xFFF. The driver's next tune overwrites the divider registers | write only (the value written is returned) |
 | 2 | AK2365A, 0x01 to 0x04, 0x0B and 0x0C (the registers the data sheet names; it forbids access to the others). Page 0 reads with the data line pulled down, page 1 pulled up: a value that is the same both ways came from the chip. Where the read bits fall is from the data sheet's drawing and unverified | read / write; a write is followed by a read back |
-| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back (the maker's row, else the model's) at the next status poll; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte), for the receive level over trim A and for 4:0x04 (6.5); 0x100 releases it (the level back to trim A or the default, 4:0x04 to the default); a read gives 0x100 while none is set. 5: the reference DAC's coding in receive (6.5), 0 the measured hold (4:0x25 = 0x0C, the default), 1 the maker's state (0x0E, the level the signed offset), 2 the same with 4:0x26 = 0x7D; not 0 refuses every transmission (`why=14`); nothing keeps it over a restart. 6: the receive VCO rule, 0 by frequency (the maker's, the default), 1 by direction (the line set in every receive set-up, as before the rule: for a receive test across 479 MHz); transmit follows f_tx either way, and nothing keeps it over a restart. 3, 4, 5, 6 and 0's release take effect at the radio task's next status poll (a receive set-up) | read / write |
+| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back (the maker's row, else the model's) at the next status poll; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte), for the receive level over trim A and for 4:0x04 (6.5); 0x100 releases it (the level back to trim A or the default, 4:0x04 to the default); a read gives 0x100 while none is set. 5: the reference DAC's coding in receive (6.5), 0 the measured hold (4:0x25 = 0x0C, the default), 1 the maker's state (0x0E, the level the signed offset), 2 the same with 4:0x26 = 0x7D; not 0 refuses every transmission (`why=14`); nothing keeps it over a restart. 6: the receive VCO rule, 0 by frequency (the maker's, the default), 1 by direction (the line set in every receive set-up, as before the rule: for a receive test across 479 MHz); transmit follows f_tx either way, and nothing keeps it over a restart. 7: the IF chip's words in receive (7.3), 0 the port's (the default), 1 the maker's for the mode (for a receive test of the table's squelch and RSSI points); transmit is neither refused nor changed, and nothing keeps it over a restart. 3, 4, 5, 6, 7 and 0's release take effect at the radio task's next status poll (a receive set-up) | read / write |
 | 0xFF (`soc`) | The SoC's own registers ([debuglink.md](debuglink.md) 3.24). **Never DAC1 (0x40007400-0x400077FF) or GPIOE (0x58021000-0x580213FF)**: a write there bypasses the interlock (4.3) and can key the PA | read / write; a write is refused only while transmitting |
 
 ---
 
 ## 15. Debug link view keys
 
-`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last four, which are in section 39
+`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last five, which are in section 39
 (`board2`, `board_t.view_split`: `board` is near the size of one reply; [debuglink.md](debuglink.md) 3.7). The
 diagnostics page shows the bring-up readings.
 
@@ -1485,7 +1502,8 @@ diagnostics page shows the bring-up readings.
 | `cal_table` (`board2`) | the maker's table as taken at start (10.3, 13.1): the window's state `unread` / `blank` / `zero` / `refused` / `ok`; `src=` the table in use, `window` / `record` / `none`; `crc=` the CRC-32 of the window's 512 bytes (Python's `zlib.crc32`; 0 when unread), the figure to compare with the backup's 0x1000-0x11FF; `why=` the window's first failed rule (the reader's names), `read` / `unstable` when unread, `conflict` when window and record are both valid and differ; `off=` the byte it failed at; `fields=` the field groups of the table in use that passed (`CS7000P_MK_F_*`, 0 with none in use); `bat=` its battery byte. `cal_table=blank src=none crc=0x... why=blank off=0x000 fields=0x0000 bat=0x00` on a radio whose table was lost |
 | `cal_rec` (`board2`) | the copy's record at 0x01B000: `unread` / `blank` / `ok` / `bad` / `newer` / `other` ([settings-store.md](settings-store.md) 4.2), `off` in a build without `CONFIG_FACTORY_COPY`; `crc=` of its 512 bytes (`-` when it holds none of ours); `wrote=` 1 when this start wrote it, 2 when it tried and failed (tried again at the next start), else 0; `restore=` the last restore's result now: `none` (no restore at this start), `pending` while its job runs, `ok` or the reason's name (`window_differs`, `flash`, ...; settings-store.md 4.2). The record's state and CRC are the table in use's, taken at the status poll after a restore's job |
 | `ref` (`board2`) | the receive reference (6.5): the coding 3:5 asks for, `hold` / `maker` / `maker7d`; `bias=` the level the last receive entry wrote in it (0x200 + the offset under the hold); `r04=` 4:0x04 in receive; `d_a=`, `d_b=` the table's trims as d (`-` with none); `src=` the level's offset, `maker` (trim A) / `default` / `bench` (3:4); `why=` when it is not trim A, `table` (none valid) / `group` / `rx_bound` (over 32 steps), else `none`. `ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none` |
-| `rx_cal` (`board2`) | the tune's source, `maker` / `default` / `bench` (3:0); `rssi=` `maker` / `sheet`; `vco=` the VCO line now, `low` / `high`; `vco_rule=` `freq` / `dir` (3:6) |
+| `rx_cal` (`board2`) | the tune's source, `maker` / `default` / `bench` (3:0); `rssi=` `maker` / `sheet`; `vco=` the VCO line now, `low` / `high`; `vco_rule=` `freq` / `dir` (3:6); `ifw=` the IF chip's words, `port` / `maker` (3:7) |
+| `sq_maker` (`board2`) | the maker's squelch thresholds at the receive frequency, shown and never applied (13.1): `ok o1= c1= o9= c9=`, open and close at levels 1 and 9 as 8-bit noise codes (the scale of `noise_raw` >> 4; [calibration-cs7000p.md](calibration-cs7000p.md) 5.7), by the receive rows' lookup (inside the 479 MHz switch segment the end value on the frequency's VCO side; past the end points extended, where their order need not hold); `none why=` the lookup's reason, `table` (none valid) / `group` / `band` (out of the receive band, or no receive yet) / `switch` / `math`. `sq_maker=ok o1=120 c1=130 o9=40 c9=50` |
 
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
 through STORAGE READ (and an ok record's bytes with `cal_rec`'s). It never transmits or writes.

@@ -111,9 +111,11 @@ typedef struct {
 	chainseq_t seq;
 	// Bench state: the first LO's side, the tuning value in place of the table's (0: the table's), the modem's
 	// reference offset, the VCO line in receive by direction (chip_reg 3:6) instead of by frequency, the reference
-	// DAC's coding in receive (CS7000P_REF_HOLD and the others, chip_reg 3:5)
+	// DAC's coding in receive (CS7000P_REF_HOLD and the others, chip_reg 3:5), the maker's IF chip words in receive
+	// instead of the port's (chip_reg 3:7, the radio's if_setup callback: rfplan_cs7000p.h)
 	bool lo_high;
 	bool vco_rx_dir;
+	bool if_maker;
 	uint16_t tune_override;
 	int8_t ref_offset;
 	bool ref_override;		// ref_offset is the bench's (chip_reg 3:4), for the receive level too
