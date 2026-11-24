@@ -84,6 +84,10 @@ The map is in [hardware-cs7000p.md](hardware-cs7000p.md) 10.2.
 | **The board sector 0x01E000 is not free.** It holds two 0x33-byte records of the maker's, at 0x01E000 and 0x01E400, and was not blank on the unit seen. The maker's program reads, writes and erases that sector. Sector 0x01F000 holds a 0x80-byte record of the maker's, also not blank on the unit seen | seen; read |
 | 0x006000-0x01DFFF was blank on the unit seen, and no constant-address flash call of the maker's program falls in it. Flash calls with computed addresses were not traced | seen; read |
 
+The rows marked "the port" describe it as it was when this page was written. Since then the port keeps the table's
+bytes and the two sectors of records through every write, and its board sector is at 0x01B000
+([hardware-cs7000p.md](hardware-cs7000p.md) 10.2 and 10.3, [settings-store.md](settings-store.md) 4.1).
+
 ## 3. Layout
 
 Offsets are from 0x001000. A **TX row** or an **RX row** is 8 bytes, one per frequency point of section 4,
