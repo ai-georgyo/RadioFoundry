@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // The CS7000 M17 PLUS frequency plan (rfplan_cs7000p.c) on the real synthesizer and IF receiver drivers: the bands
-// and the transmit gap, the reference divider and the divide ratio across the band on both sides of the first LO,
-// the reference trim, and the IF receiver's words for both channel widths.
+// and the transmit gap, the VCO select rule at its switch points, the reference divider and the divide ratio across
+// the band on both sides of the first LO, the reference trim, and the IF receiver's words for both channel widths.
 #include <stdio.h>
 #include "rfplan_cs7000p.h"
 #include "rf/sky72310/sky72310.h"
@@ -51,6 +51,48 @@ static void test_bands(void)
 	CHECK(cs7000p_pll_plan(406050000u, false, false, 0, &p));	// receive in the gap
 }
 
+// The VCO line by the channel's frequency (calibration-cs7000p.md 5.12): set from 400.0 MHz to 10 Hz past the switch,
+// 479 MHz in receive and 430 MHz in transmit. With the LO above the signal receive keeps it set; transmit does not
+// care about the LO's side
+static void test_vco(void)
+{
+	CHECK(CS7000P_VCO_LOW_FROM_HZ == 400000000u);
+	CHECK(CS7000P_VCO_RX_SWITCH_HZ == 479000000u && CS7000P_VCO_TX_SWITCH_HZ == 430000000u);
+	static const struct { uint32_t hz; bool rx, tx; } pt[] = {
+		{ 399990000u, false, false },	// 399.99
+		{ 399999999u, false, false },
+		{ 400000000u, true, true },	// 400.0
+		{ 420000000u, true, true },	// the maker's own example: 420 MHz transmit sets the line
+		{ 429999990u, true, true },	// 429.99999
+		{ 430000000u, true, true },	// 430.0
+		{ 430000009u, true, true },	// still 43000000 in 10 Hz units
+		{ 430000010u, true, false },	// 430.00001
+		{ 433500000u, true, false },	// the first radio's channel: receive set, transmit clear, as before
+		{ 478990000u, true, false },	// 478.99
+		{ 479000000u, true, false },	// 479.0
+		{ 479000009u, true, false },
+		{ 479000010u, false, false },	// 479.00001
+		{ 480000000u, false, false },
+		{ 512000000u, false, false },
+		{ 527000000u, false, false },	// 527
+	};
+	for (unsigned i = 0; i < sizeof(pt) / sizeof(pt[0]); i++) {
+		CHECK(cs7000p_vco_low(pt[i].hz, false, false) == pt[i].rx);
+		CHECK(cs7000p_vco_low(pt[i].hz, true, false) == pt[i].tx);
+		// The LO above the signal: receive by direction (set), transmit by frequency as ever
+		CHECK(cs7000p_vco_low(pt[i].hz, false, true));
+		CHECK(cs7000p_vco_low(pt[i].hz, true, true) == pt[i].tx);
+	}
+	// Over the whole band on a 6.25 kHz raster: one switch each, nowhere else
+	for (uint32_t hz = CS7000P_RX_MIN_HZ; hz <= CS7000P_RX_MAX_HZ; hz += 6250u) {
+		CHECK(cs7000p_vco_low(hz, false, false) == (hz < 479000010u));
+		CHECK(cs7000p_vco_low(hz, true, false) == (hz < 430000010u));
+	}
+	// Both switches put the VCO itself at about 430 MHz: the receive LO under the receive switch is below it
+	CHECK(CS7000P_VCO_RX_SWITCH_HZ - CS7000P_IF_HZ == 429050000u);
+	CHECK(CS7000P_LO_HIGH == 0 && 433500000u - CS7000P_IF_HZ < CS7000P_VCO_TX_SWITCH_HZ);
+}
+
 // One plan against the part: the divider, the ratio in its range, and the frequency the words give
 static void check_plan(uint32_t hz, bool tx, bool lo_high, uint32_t want_lo)
 {
@@ -80,11 +122,11 @@ static void test_plan(void)
 	CHECK(CS7000P_IF2_LO_HZ == 50400000u && CS7000P_IF2_LO_HZ - CS7000P_IF_HZ == 450000u);
 	CHECK(CS7000P_LO_HIGH == 0);	// the side the board starts on
 	for (uint32_t hz = CS7000P_RX_MIN_HZ; hz <= CS7000P_RX_MAX_HZ; hz += 6250u) {
-		// Low side: the receive VCO at 350.05 to 477.05 MHz. High side: 449.95 to 576.95 MHz
+		// Low side: the LO at 350.05 to 477.05 MHz. High side: 449.95 to 576.95 MHz
 		check_plan(hz, false, false, hz - CS7000P_IF_HZ);
 		check_plan(hz, false, true, hz + CS7000P_IF_HZ);
 		if (cs7000p_tx_band(hz)) {
-			check_plan(hz, true, false, hz);	// the transmit VCO is on the carrier
+			check_plan(hz, true, false, hz);	// in transmit the VCO is on the carrier
 			check_plan(hz, true, true, hz);		// and the LO side is receive's alone
 		}
 	}
@@ -202,6 +244,7 @@ static void test_if_words(void)
 int main(void)
 {
 	test_bands();
+	test_vco();
 	test_plan();
 	test_trim();
 	test_pll_words();

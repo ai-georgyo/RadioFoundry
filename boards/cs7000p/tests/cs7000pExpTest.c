@@ -277,7 +277,7 @@ static const struct { uint8_t chip, q; const char *net; uint32_t bit; } nets[] =
 	{ 0, 2, "MOT-C", EXP_MOTOR },		{ 0, 3, "RF_APC_SW", EXP_APC_LOOP },
 	{ 0, 4, "BLPOWER_ON", EXP_BT_ON },	{ 0, 5, "EXT-MIC-C", EXP_MIC_EXT },
 	{ 0, 6, "A-PDN", EXP_AK_RUN },		{ 0, 7, "DMR_SLEEP", EXP_DMR_SLEEP },
-	{ 1, 0, "VCOVCC_SW", EXP_VCO_RX },	{ 1, 1, "5TC", EXP_TX_RAIL },
+	{ 1, 0, "VCOVCC_SW", EXP_VCO_LOW },	{ 1, 1, "5TC", EXP_TX_RAIL },
 	{ 1, 2, "MIC-C", EXP_MIC_INT },		{ 1, 3, "SAVE", EXP_SYNTH_RAIL },
 	{ 1, 4, "RX_LED", EXP_LED_GREEN },	{ 1, 5, "TX_LED", EXP_LED_RED },
 	{ 1, 6, "AFCO", EXP_AMP },		{ 1, 7, "5RC", EXP_RX_RAIL },
@@ -308,8 +308,8 @@ static void test_reset_word(void)
 	const uint32_t w = EXP_RESET_WORD;
 
 	CHECK(w == 0x2A0181u);
-	// No RF: the transmitter's rail and the PA loop off, the receive VCO selected, the other rails off
-	CHECK((w & EXP_TX_RAIL) == 0 && (w & EXP_APC_LOOP) == 0 && (w & EXP_VCO_RX) != 0);
+	// No RF: the transmitter's rail and the PA loop off, the VCO line parked (the lower VCO), the other rails off
+	CHECK((w & EXP_TX_RAIL) == 0 && (w & EXP_APC_LOOP) == 0 && (w & EXP_VCO_LOW) != 0);
 	CHECK((w & (EXP_RX_RAIL | EXP_SYNTH_RAIL | EXP_AUDIO_RAIL)) == 0);
 	// The supply is NOT held: a reset with the knob off ends with the radio off
 	CHECK((w & EXP_POWER_HOLD) == 0);
@@ -332,8 +332,8 @@ static void test_rf_safe_word(void)
 
 	for (uint32_t s = 0; s <= MASK24; s++) {	// every shadow
 		uint32_t w = exp_rf_safe_word(s);
-		bad += (w & EXP_TX_BITS) != 0 || (w & EXP_VCO_RX) == 0 ||
-		       ((w ^ s) & ~(EXP_TX_BITS | EXP_VCO_RX)) != 0;
+		bad += (w & EXP_TX_BITS) != 0 || (w & EXP_VCO_LOW) == 0 ||
+		       ((w ^ s) & ~(EXP_TX_BITS | EXP_VCO_LOW)) != 0;
 	}
 	CHECK(bad == 0);
 	CHECK(exp_rf_safe_word(EXP_RESET_WORD) == EXP_RESET_WORD);
@@ -494,7 +494,7 @@ static void test_interlock_at_the_sink(void)
 	// No transmit bit comes on under it, alone, together, or among other bits; nothing is written
 	latches = hw.latches;
 	CHECK(!set(EXP_TX_RAIL, 0) && !set(EXP_APC_LOOP, 0) && !set(EXP_TX_BITS, 0));
-	CHECK(!set(EXP_TX_RAIL | EXP_LED_RED, EXP_VCO_RX));
+	CHECK(!set(EXP_TX_RAIL | EXP_LED_RED, EXP_VCO_LOW));
 	CHECK(hw.latches == latches && hw.out == EXP_RESET_WORD && cs7000p_apc_dac_get() == tune);
 	check_state();
 	// "DAC 0": the data register to 0 with the buffer on, the settle time, then the channel off. All of it masked
@@ -506,7 +506,7 @@ static void test_interlock_at_the_sink(void)
 	// Off already: nothing at all (a write of 0 would switch the channel on)
 	CHECK(apc(0) && dac.waits == waits + 1 && dac.offs == offs + 1 && (fake_dac.CR & DAC_CR_EN1) == 0);
 	// Now the transmit rail may come on. With one transmit bit there is no value above the floor
-	CHECK(set(EXP_TX_RAIL, EXP_VCO_RX | EXP_RX_RAIL));
+	CHECK(set(EXP_TX_RAIL, EXP_VCO_LOW | EXP_RX_RAIL));
 	CHECK(!apc(drive) && !apc(4095) && cs7000p_apc_dac_get() == 0 && (fake_dac.CR & DAC_CR_EN1) == 0);
 	if (FLOOR > 0) {
 		// At and under the floor no RF comes out: allowed in any state
@@ -528,7 +528,7 @@ static void test_interlock_at_the_sink(void)
 	// Both cleared in one write: the rule holds with the value as it is (nothing drives the PA)
 	CHECK(set(EXP_APC_LOOP, 0) && apc(drive));
 	offs = dac.offs;
-	CHECK(set(EXP_VCO_RX, EXP_TX_BITS | EXP_LED_RED) && dac.offs == offs && cs7000p_apc_dac_get() == drive);
+	CHECK(set(EXP_VCO_LOW, EXP_TX_BITS | EXP_LED_RED) && dac.offs == offs && cs7000p_apc_dac_get() == drive);
 	check_state();
 	CHECK(apc(0) && hw.out == EXP_RESET_WORD);
 	check_state();
@@ -546,7 +546,7 @@ static void race_apc(void)
 
 static void race_tx_rail(void)
 {
-	race_ok = cs7000p_exp_set(EXP_TX_RAIL, EXP_VCO_RX);
+	race_ok = cs7000p_exp_set(EXP_TX_RAIL, EXP_VCO_LOW);
 }
 
 static void test_check_inside_the_mask(void)
@@ -558,9 +558,9 @@ static void test_check_inside_the_mask(void)
 	race_drive = drive;
 	race = race_apc;
 	race_ok = false;
-	const bool set_ok = set(EXP_TX_RAIL, EXP_VCO_RX);
+	const bool set_ok = set(EXP_TX_RAIL, EXP_VCO_LOW);
 	CHECK(race == NULL && race_ok && !set_ok);
-	CHECK(cs7000p_apc_dac_get() == drive && (hw.out & EXP_TX_BITS) == 0u && (hw.out & EXP_VCO_RX) != 0u);
+	CHECK(cs7000p_apc_dac_get() == drive && (hw.out & EXP_TX_BITS) == 0u && (hw.out & EXP_VCO_LOW) != 0u);
 	check_state();
 	// The DAC at 0 again. A reference above the floor is asked for while an interrupt sets one transmit bit:
 	// refused
@@ -571,7 +571,7 @@ static void test_check_inside_the_mask(void)
 	CHECK(race == NULL && race_ok && !apc_ok);
 	CHECK(cs7000p_apc_dac_get() == 0u && (hw.out & EXP_TX_BITS) == EXP_TX_RAIL);
 	check_state();
-	CHECK(set(EXP_VCO_RX, EXP_TX_RAIL) && hw.out == EXP_RESET_WORD);
+	CHECK(set(EXP_VCO_LOW, EXP_TX_RAIL) && hw.out == EXP_RESET_WORD);
 	check_state();
 }
 
@@ -579,7 +579,7 @@ static void rise_probe_shadow(int n)
 {
 	// The shadow is the safe word before the first bit of it is out
 	if (n == 1) {
-		CHECK((cs7000p_exp_get() & EXP_TX_BITS) == 0 && (cs7000p_exp_get() & EXP_VCO_RX) != 0);
+		CHECK((cs7000p_exp_get() & EXP_TX_BITS) == 0 && (cs7000p_exp_get() & EXP_VCO_LOW) != 0);
 		CHECK(cs7000p_apc_dac_get() == 0 && (fake_dac.CR & DAC_CR_EN1) == 0);	// and the DAC went first
 	}
 }
@@ -589,8 +589,8 @@ static void test_rf_safe(void)
 	const uint32_t others = EXP_POWER_HOLD | EXP_SYNTH_RAIL | EXP_LED_RED | EXP_AMP;
 	const uint16_t drive = (uint16_t)(FLOOR + 2000u);
 
-	// From a transmission: both bits, the transmit VCO, a drive on the DAC
-	CHECK(set(others | EXP_TX_RAIL, EXP_VCO_RX) && set(EXP_APC_LOOP, 0) && apc(drive));
+	// From a transmission: both bits, the upper VCO, a drive on the DAC
+	CHECK(set(others | EXP_TX_RAIL, EXP_VCO_LOW) && set(EXP_APC_LOOP, 0) && apc(drive));
 	int calls = radio.calls, waits = dac.waits;
 	on_rise = rise_probe_shadow;
 	board_rf_safe();
@@ -605,12 +605,12 @@ static void test_rf_safe(void)
 	CHECK(set(EXP_LED_GREEN, EXP_LED_RED) && (hw.out & EXP_TX_BITS) == 0);
 	// From each state with one transmit bit, and from receive with a tuning value: the same end
 	for (unsigned k = 0; k < 3; k++) {
-		CHECK(apc(0) && set(k == 0 ? EXP_TX_RAIL : k == 1 ? EXP_APC_LOOP : 0u, k == 2 ? 0u : EXP_VCO_RX));
+		CHECK(apc(0) && set(k == 0 ? EXP_TX_RAIL : k == 1 ? EXP_APC_LOOP : 0u, k == 2 ? 0u : EXP_VCO_LOW));
 		if (k == 2) {
 			CHECK(apc(drive));
 		}
 		board_rf_safe();
-		CHECK((hw.out & EXP_TX_BITS) == 0 && (hw.out & EXP_VCO_RX) != 0 && cs7000p_apc_dac_get() == 0);
+		CHECK((hw.out & EXP_TX_BITS) == 0 && (hw.out & EXP_VCO_LOW) != 0 && cs7000p_apc_dac_get() == 0);
 		check_state();
 	}
 	board_rf_safe();	// any number of times
@@ -636,7 +636,7 @@ static void test_rf_safe_cuts_a_write(void)
 	static const int at[] = { 1, 7, 13, 24 };
 
 	for (volatile unsigned i = 0; i < sizeof(at) / sizeof(at[0]); i++) {	// volatile: it lives across the longjmp
-		CHECK(set(EXP_TX_RAIL, EXP_VCO_RX));
+		CHECK(set(EXP_TX_RAIL, EXP_VCO_LOW));
 		fault_at = at[i];
 		hw.n_shown = 0;
 		if (setjmp(fault_env) == 0) {
@@ -678,7 +678,7 @@ static void test_any_order(void)
 			uint32_t s = (rnd >> 4) & (rnd >> 9) & MASK24, c = (rnd >> 7) & (rnd >> 13) & MASK24;
 			if (op == 0) {
 				s = (rnd & 0x100u) ? EXP_TX_RAIL : EXP_APC_LOOP;
-				c = (rnd & 0x200u) ? EXP_VCO_RX : 0u;
+				c = (rnd & 0x200u) ? EXP_VCO_LOW : 0u;
 			} else if (op == 1) {
 				s = 0;
 				c &= EXP_TX_BITS | EXP_LED_RED;
@@ -775,7 +775,7 @@ static void test_prepare_hooks(void)
 static int reset_with_sk1(int release_at, int bounce_at, uint32_t moder_d)
 {
 	const uint32_t on = EXP_POWER_HOLD | EXP_SYNTH_RAIL | EXP_RX_RAIL | EXP_AMP | EXP_TX_RAIL;
-	CHECK(set(on, EXP_VCO_RX));
+	CHECK(set(on, EXP_VCO_LOW));
 	memset(&wd, 0, sizeof(wd));
 	wd.release_at = release_at;
 	wd.bounce_at = bounce_at;

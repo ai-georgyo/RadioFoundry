@@ -100,8 +100,9 @@ typedef struct {
 	chainseq_ops_t ops;
 	chainseq_t seq;
 	// Bench state: the first LO's side, the tuning value in place of the table's (0: the table's), the modem's
-	// reference offset
+	// reference offset, the VCO line in receive by direction (chip_reg 3:6) instead of by frequency
 	bool lo_high;
+	bool vco_rx_dir;
 	uint16_t tune_override;
 	int8_t ref_offset;
 	int16_t trim_ppb;		// the reference trim, taken at the next tune
@@ -144,9 +145,9 @@ void cs7000p_rf_sleep(cs7000p_rf_t *rf, bool sleep);
 // drive is neither used nor dropped, and a safe request stands
 cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q);
 // FM, in this order around the modem's transmit set-up. tx_begin: the DAC to 0 (it held the tuning voltage and must
-// not become a power request) and the receive rail off. tx_key: the transmit VCO on the carrier and locked, the
-// transmit rail, the loop closed on no reference, the ramp to the drive. Not CS7000P_TX_OK: refused and counted,
-// the chain is safe, and receiving again when it was before (the caller redoes its own receive steps)
+// not become a power request) and the receive rail off. tx_key: the VCO line for the carrier, the synthesizer on it
+// and locked, the transmit rail, the loop closed on no reference, the ramp to the drive. Not CS7000P_TX_OK: refused
+// and counted, the chain is safe, and receiving again when it was before (the caller redoes its own receive steps)
 bool cs7000p_rf_tx_begin(cs7000p_rf_t *rf);
 cs7000p_tx_why_t cs7000p_rf_tx_key(cs7000p_rf_t *rf);
 // The end of a transmission, FM (ramp down) or bursts: the PA off, the receiver back on its last set-up in full,
@@ -161,10 +162,10 @@ void cs7000p_rf_refuse(cs7000p_rf_t *rf, cs7000p_tx_why_t why);
 void cs7000p_rf_burst_drives(const cs7000p_rf_t *rf, uint16_t *drive, uint16_t *top, uint16_t *floor);
 
 // board_rf_safe()'s part here, any context, no wait, and nothing written: the caller has already switched the DAC
-// off and shifted the safe word (exp_rf_safe_word: the loop open, the transmit rail off, the receive VCO), and holds
-// the interrupt mask across those writes and this call, so no burst point runs in between. From now until the radio
-// task's next request no transmit line comes on and the DAC takes no value but 0, and the sequencer is told its
-// lines moved (chainseq_safed). A sequence this cuts into fails at its next such write and ends safe
+// off and shifted the safe word (exp_rf_safe_word: the loop open, the transmit rail off, the VCO line parked), and
+// holds the interrupt mask across those writes and this call, so no burst point runs in between. From now until the
+// radio task's next request no transmit line comes on and the DAC takes no value but 0, and the sequencer is told
+// its lines moved (chainseq_safed). A sequence this cuts into fails at its next such write and ends safe
 void cs7000p_rf_safe(cs7000p_rf_t *rf);
 // The radio task's side of it: true once for the safe requests since the last call. The chain is then idle with the
 // DAC at 0 (unless a request of the task's has set it up since), and whatever else the board switched off with it

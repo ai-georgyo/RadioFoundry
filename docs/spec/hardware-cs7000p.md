@@ -375,7 +375,7 @@ IC621's.
 | 5 | `EXP_MIC_EXT` | EXT-MIC-C | accessory microphone connected |
 | 6 | `EXP_AK_RUN` | A-PDN | AK2365A out of power-down |
 | 7 | `EXP_DMR_SLEEP` | DMR_SLEEP | HR_C6000 asleep (its PWD pin) |
-| 8 | `EXP_VCO_RX` | VCOVCC_SW | the receive VCO is powered; 0: the transmit VCO (the drawing's note "T:0V R:3V") |
+| 8 | `EXP_VCO_LOW` | VCOVCC_SW | the VCO below about 430 MHz is powered (Q3); 0: the one above (Q4). Chosen by frequency in receive and transmit alike (7.2). The drawing's note "T:0V R:3V" reads it as a direction, which agrees with it only where receive is under 479 MHz and transmit over 430 MHz |
 | 9 | `EXP_TX_RAIL` | 5TC | 5T on: pre-drivers, the LO into the transmit chain, the antenna switch to transmit |
 | 10 | `EXP_MIC_INT` | MIC-C | internal microphone connected |
 | 11 | `EXP_SYNTH_RAIL` | SAVE | 5C on: charge pump, VCOs, the modulation amplifiers, and with them the reference oscillator's control voltage |
@@ -393,15 +393,17 @@ IC621's.
 | 23 | `EXP_AF_MUTE` | AF_MUTE | no effect as drawn (the part it switches is not fitted); kept 0 |
 
 Polarities read from documents and not seen on a radio: `DMR_SLEEP`, `A-PDN`, `VCOVCC_SW`, and the AK2365A's select
-level while its reset is released (open question 32). Each is one bit to flip in `exp_cs7000p.h`.
+level while its reset is released (open question 32). Each is one bit to flip in `exp_cs7000p.h`. `VCOVCC_SW`'s
+meaning is the maker's program's ([calibration-cs7000p.md](calibration-cs7000p.md) 5.12) and agrees with the lock
+seen at 433.5 MHz with the bit set; its switch points have not been seen on a radio.
 
 ### 4.2 Reset words and the order at start-up
 
 | Word | Value | Meaning |
 |---|---|---|
-| `EXP_RESET_WORD` | 0x2A0181 | bits 0, 7, 8, 17, 19, 21: both chips parked, the receive VCO selected, both speakers disconnected, everything else off. **No transmit bit, no rail, and the hold clear** |
+| `EXP_RESET_WORD` | 0x2A0181 | bits 0, 7, 8, 17, 19, 21: both chips parked, the lower VCO selected (the line parked), both speakers disconnected, everything else off. **No transmit bit, no rail, and the hold clear** |
 | `EXP_TX_BITS` | bits 3 and 9 | the two bits that can make RF |
-| `exp_rf_safe_word(shadow)` | shadow without the transmit bits, with `EXP_VCO_RX` | what `board_rf_safe()` writes |
+| `exp_rf_safe_word(shadow)` | shadow without the transmit bits, with `EXP_VCO_LOW` (the line parked) | what `board_rf_safe()` writes |
 
 The header asserts at build time that the reset word is 0x2A0181 and holds neither the hold nor a transmit bit.
 
@@ -715,7 +717,7 @@ protection.
 | Block | Parts | Notes |
 |---|---|---|
 | Synthesizer | SKY72310 (IC607), 16.8 MHz VC-TCXO (X601), fixed loop filter | lock detect on PD11; Mux_out is not wired |
-| VCOs | Q3 (receive), Q4 (transmit), one tuning line | `EXP_VCO_RX` powers one or the other, never both. Which is which rests on the drawing's note "T:0V R:3V" |
+| VCOs | Q3 (below about 430 MHz), Q4 (above it), one tuning line | `EXP_VCO_LOW` powers one or the other, never both, by the frequency the VCO runs at (7.2). The drawing's note "T:0V R:3V" names them by direction |
 | Receive | tracking band-pass filters, LNA, mixer, 49.95 MHz crystal filter (XF201), IF amplifier, AK2365A (IC200) | second LO 50.4 MHz = 3 x 16.8 MHz from a tripler on the receive rail; second IF 450 kHz to the HR_C6000 |
 | Transmit | two pre-drivers, a driver and a final FET | their drains are on the battery at all times |
 | T/R switching | the 5T and 5R rails | the LO routing and the antenna switch follow the rails through PIN diodes. No control line of their own |
@@ -741,9 +743,10 @@ Rails:
 | Reference | 16.8 MHz | read (printed at X601) |
 | First IF | 49.95 MHz | read (printed at XF201) |
 | Second LO, second IF | 50.4 MHz, 450 kHz | derived |
-| First LO side | **low**: LO = f - 49.95 MHz, receive VCO 350.05 to 477.05 MHz. `CS7000P_LO_HIGH` 0 | **open**: only the VCO tanks' part values point to it. A bench switch flips it together with the I/Q order (section 14, 3:3). Open question 2 |
+| First LO side | **low**: LO = f - 49.95 MHz, 350.05 to 477.05 MHz. `CS7000P_LO_HIGH` 0 | **open**: only the VCO tanks' part values point to it. A bench switch flips it together with the I/Q order (section 14, 3:3). Open question 2 |
 | Transmit | the VCO on the carrier | read: no multiplier |
-| Reference divider | 2 for the whole band (`sky72310_pick_ref_div()`): 8.4 MHz at the phase detector, N 41.7 to 61.0 (receive VCO 350.05 to 477.05 MHz, transmit 400 to 512 MHz; up to 68.7 with the LO above the signal, 449.95 to 576.95 MHz), step 32.04 Hz | datasheet |
+| VCO select | `EXP_VCO_LOW` set for 400.0 MHz <= f_rx < 479.00001 MHz in receive and for 400.0 MHz <= f_tx < 430.00001 MHz in transmit, else clear (`cs7000p_vco_low`, compared in 10 Hz units). Both switch points put the VCO itself at about 429-430 MHz (the receive LO at 479 MHz is 429.05 MHz). Through the sequencer's `vco_line` op: the line moves only with the transmit rail off and the loop open. With the LO above the signal (3:3), and with `chip_reg` 3:6 = 1, receive keeps the line set (the rule this port ran before); transmit always follows f_tx | read: the maker's rule ([calibration-cs7000p.md](calibration-cs7000p.md) 5.12). Agrees with the lock at 433.5 MHz (line set, LO 383.55 MHz); 433.5 MHz receive and transmit write exactly what they wrote before (`cs7000pRadioSeqTest`). Not seen: either switch point, receive over 479 MHz, transmit under 430 MHz (bring-up) |
+| Reference divider | 2 for the whole band (`sky72310_pick_ref_div()`): 8.4 MHz at the phase detector, N 41.7 to 61.0 (receive LO 350.05 to 477.05 MHz, transmit 400 to 512 MHz; up to 68.7 with the LO above the signal, 449.95 to 576.95 MHz), step 32.04 Hz | datasheet |
 | Phase detector gain, Mux_out | 31 and tri-stated (`SKY72310_MUX_OFF`: the pin is not wired) | open: the gain that suits this loop filter is unknown. Open question 3 |
 | Lock | PD11 high. Three samples 100 us apart must agree; timeout 5 ms | datasheet, derived |
 | Reference trim | applied to the frequencies in the plan (`ref_trim_tune_hz`): exact for the first LO and the carrier. The second LO is three times the same oscillator and is not corrected: about 50 Hz of IF offset per ppm (open question 31) | design |
@@ -811,7 +814,8 @@ a power request the moment the loop and the transmit rail come on.** The interlo
 the sink, and `drivers/rf/chainseq` keeps the order on every path:
 
 - the DAC is 0 (or at the floor) and the loop is open whenever the transmit rail changes;
-- the transmit rail is off whenever the receive VCO is selected;
+- the VCO select line changes only while the transmit rail is off and the loop is open (it follows the frequency,
+  7.2, not the direction);
 - the DAC never carries a tuning value while the loop is closed;
 - every error path, a refused write included, ends in the safe state.
 
@@ -853,8 +857,8 @@ PC8 is TIM3 CH3 behind a 2-pole RC filter, summed into the reference oscillator'
 | Step | Action | Reason |
 |---|---|---|
 | 1 | Refuse outside 400-527 MHz, nothing written | |
-| 2 | Safe state: DAC 0, `EXP_APC_LOOP` off, `EXP_TX_RAIL` off | the DAC is about to become a tuning voltage: the loop must be open first |
-| 3 | `EXP_SYNTH_RAIL` on (settle if it was off), `EXP_VCO_RX` on | |
+| 2 | Safe state: DAC 0, `EXP_APC_LOOP` off, `EXP_TX_RAIL` off, `EXP_VCO_LOW` set | the DAC is about to become a tuning voltage: the loop must be open first |
+| 3 | `EXP_VCO_LOW` (set in step 2, the safe state's park) cleared when f_rx is over the receive switch; `EXP_SYNTH_RAIL` on (settle if it was off) | the VCO for the LO, before the words (7.2) |
 | 4 | Synthesizer to f - IF; wait for lock, at most 5 ms. Unlocked is counted and receive goes on | |
 | 5 | `EXP_RX_RAIL` on; 1 ms | the tripler is the AK2365A's LO |
 | 6 | AK2365A set-up: software reset, control 1 (the operating mode), 500 us, control 2 (the AGC setting and the calibration's start), control 3 to 5; then 3 ms (calibration 1.3 ms, settle 1.5 ms). In DMR the narrow filter and level are used whatever the channel's width says | the data sheet's calibration procedure: the circuits it runs on are up 500 us after the mode is set |
@@ -874,7 +878,7 @@ in order inside the receive set-up.
 | 1 | DAC 0 | it held the tuning voltage |
 | 2 | `EXP_RX_RAIL` off, sub-audio detector paused | receiver and tripler off |
 | 3 | The HR_C6000's FM transmit set-up with the pair and reference offset, then the codec input bits. Then `EXP_MIC_POWER` and `EXP_MIC_INT` on | modulation ready before RF. Under a bench override with no pair known the carrier is unmodulated. A failed write of the transmit set-up counts as a refusal (`why=9`) |
-| 4 | `EXP_VCO_RX` off; synthesizer to the carrier; wait for lock. **Unlocked: back to receive, refused** | |
+| 4 | `EXP_VCO_LOW` for f_tx (set under 430.00001 MHz); synthesizer to the carrier; wait for lock. **Unlocked: back to receive, refused** | the transmit rail is still off (7.2) |
 | 5 | `EXP_TX_RAIL` on; 500 us | pre-drivers, LO, antenna switch |
 | 6 | DAC at the floor, `EXP_APC_LOOP` on, then a ramp of 8 steps of 250 us to the drive | the loop closes on a zero reference |
 | 7 | Sub-audio generator on | |
@@ -883,12 +887,13 @@ in order inside the receive set-up.
 ### 7.10 DMR transmit
 
 `tx()` arms the shared burst runner (`platform/stm32/dmr_keyup`) with the same refusal. Per burst, at interrupt
-level: receiver off, transmit VCO, synthesizer words, `EXP_TX_RAIL` with the DAC off; the loop closed with the DAC
-still off; then the drive points; the PA drop; back to the receive LO. A drive point before the loop point would be
-refused by the interlock. The PA point of a burst is refused when the lock pin does not read locked three times in a
-row. After each burst sequence the reference hold is written again. `tx_off()` after bursts runs the whole receive
-set-up (the last switch back has none for the AK2365A); the modem glue's `dmr_tx_end` keeps the receiver as that
-switch left it. A refused re-arm behind an armed transmission sets the receiver up again at once.
+level: receiver off, the VCO line for f_tx, synthesizer words, `EXP_TX_RAIL` with the DAC off; the loop closed with
+the DAC still off; then the drive points; the PA drop; back to the receive LO with the line for f_rx. A drive point
+before the loop point would be refused by the interlock. The PA point of a burst is refused when the lock pin does
+not read locked three times in a row. After each burst sequence the reference hold is written again. `tx_off()`
+after bursts runs the whole receive set-up (the last switch back has none for the AK2365A); the modem glue's
+`dmr_tx_end` keeps the receiver as that switch left it. A refused re-arm behind an armed transmission sets the
+receiver up again at once.
 
 At the arm `EXP_MIC_POWER` and `EXP_MIC_INT` come on, as in FM's step 3: the microphone's bias settles before the
 first burst. They go off when the arm ends: `tx_off()`, `dmr_tx_end`, a refused arm or re-arm, a retune or a mode
@@ -1356,7 +1361,7 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 | 0 | HR_C6000, pages 1 and 4 (2 and 3 are FIFOs a read would drain). Every receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again | read / write; a write is followed by the register read back |
 | 1 | SKY72310, page 0, registers 0 to 14, values to 0xFFF. The driver's next tune overwrites the divider registers | write only (the value written is returned) |
 | 2 | AK2365A, 0x01 to 0x04, 0x0B and 0x0C (the registers the data sheet names; it forbids access to the others). Page 0 reads with the data line pulled down, page 1 pulled up: a value that is the same both ways came from the chip. Where the read bits fall is from the data sheet's drawing and unverified | read / write; a write is followed by a read back |
-| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back at the next one; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte). 3 and 4 take effect at the radio task's next status poll (a receive set-up) | read / write |
+| 3 | The board, page 0. 0: the receive tuning DAC, through the interlock: a write of 1 to 4095 puts the value (clamped to 250 to 3850) on the DAC now, if the radio is receiving, and keeps it for later receive set-ups; 0 gives the table's value back at the next one; refused while a transmit bit is set or an FM transmission is up; a read gives the DAC's code now. 1: the expander shadow, read only. 2: PC8's idle duty, 0 to 1024 (0 and 1024 hold the line low or high: bench only); refused while a tone is sent. 3: the LO side (0 low, 1 high: retunes and sets the I/Q order). 4: the reference offset, a signed byte (two's complement in the low byte). 6: the receive VCO rule, 0 by frequency (the maker's, the default), 1 by direction (the line set in every receive set-up, as before the rule: for a receive test across 479 MHz); transmit follows f_tx either way, and nothing keeps it over a restart. 3, 4 and 6 take effect at the radio task's next status poll (a receive set-up) | read / write |
 | 0xFF (`soc`) | The SoC's own registers ([debuglink.md](debuglink.md) 3.24). **Never DAC1 (0x40007400-0x400077FF) or GPIOE (0x58021000-0x580213FF)**: a write there bypasses the interlock (4.3) and can key the PA | read / write; a write is refused only while transmitting |
 
 ---
@@ -1436,7 +1441,7 @@ the source comments use.
 | 29 | **The radio on with the knob off.** (a) A watchdog reset with SK1 held: no code of RadioFoundry's runs before the ROM bootloader, and the chain keeps the hold it had. The only path into the loader the firmware cannot guard: every software reset waits for SK1 (2.5). (b) A power-on with SK1 held, or with the first sector erased, and the knob turned off before RadioFoundry has run: the chain keeps its random power-up state. (c) A start task blocked for good with the knob off, a firmware fault (5.3) | the radio stays on until the pack is taken off (the PA stays off through R141) | Stated here (5.3), on the bring-up page and on the user page. Every reset the firmware causes itself clears the hold first. How often IC621 powers up with the hold set: several cold starts with SK1, knob off in the loader |
 | 30 | Whether the ROM bootloader forces the last partial 32-byte flash word of a download | the last bytes of the image missing after an install | rfoundry and the web flasher fill the image to 32 bytes. A third-party DfuSe tool is not covered: the user page says to use ours |
 | 31 | The second LO (3 x the reference) is not corrected by the plan's trim | 50 Hz of IF offset per ppm of reference error | Small against the IF filter; noted with the measurement of 1 |
-| 32 | Polarities taken from documents: `DMR_SLEEP`, `A-PDN`, the AK2365A's select level while its reset is released (held high here), `VCOVCC_SW` (a drawing note only) | a chip that stays asleep; the wrong VCO | `board.hrc` (its read-back), the AK2365A's 0x0B read-back (bring-up stage 9; `board.ak` sends frames only and proves none of it), `board.pll` at the first start. Each is one expander bit in `exp_cs7000p.h` |
+| 32 | Polarities taken from documents: `DMR_SLEEP`, `A-PDN`, the AK2365A's select level while its reset is released (held high here), `VCOVCC_SW` (a drawing note, and the maker's rule of 7.2; its switch points not seen) | a chip that stays asleep; the wrong VCO | `board.hrc` (its read-back), the AK2365A's 0x0B read-back (bring-up stage 9; `board.ak` sends frames only and proves none of it), `board.pll` at the first start; for the VCO's switch points `board.pll` locked on receive channels on both sides of 479 MHz and, once a transmission is allowed, on carriers on both sides of 430 MHz. Each is one expander bit in `exp_cs7000p.h` |
 | 33 | DAC code 0 with the buffer on is up to 0.2 V: 36 mV at the APC reference. The sequences disable the channel for "0"; a ramp's first codes pass through the buffer's floor | a PA floor that is not where the table expects it | PA4 with the channel off and at code 1, and the PA current with the loop closed and the transmit rail on: all at the first key-up, at drive 1 into the dummy load (bring-up stage 11). No receive-side write puts code 1 on the DAC |
 | 34 | The timing of the expander and the bit-banged buses is computed, not measured; the time from power-on to the reset word; the chain's bit order as drawn (no read-back exists) | a wrong expander bit (it can be the APC loop); a marginal bus | A scope on PE7 to PE9 at power-on (the first frame decoded) and in normal running, and on the HR_C6000's bus clock; the outputs bit by bit (bring-up stage 4) |
 | 35 | The reference's settle time after the synthesizer rail comes on (30 ms assumed) | a first transmission or measurement off frequency | The carrier against time after the rail, with 1 |
