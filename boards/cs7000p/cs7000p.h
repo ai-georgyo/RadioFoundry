@@ -60,6 +60,9 @@ void cs7000p_gps_init(void);
 bool cs7000p_diag_line(uint8_t i, char *buf, uint8_t len);
 void cs7000p_diag_reset(void);
 bool cs7000p_view_line(uint8_t i, char *buf, uint8_t len);
+// The first of view_cs7000p.c's lines in the second view section (board_t.view_split): the lines before it fill the
+// `board` section, whose reply is near its limit (view_cs7000p.c checks the count)
+#define CS7000P_VIEW_SPLIT	(36u + (CONFIG_DMR ? 1u : 0u))
 
 // display_cs7000p.c, input_cs7000p.c: the ops, and their state for the views and the diagnostics page
 extern const hal_display_t cs7000p_display;
@@ -85,5 +88,12 @@ typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx; uint8_t pll_r,
 void cs7000p_radio_state(cs7000p_radio_state_t *s);	// plain data, no bus traffic
 // board_rf_safe() wrote the lines: the sequencer's state follows, no write, inside board_rf_safe()'s masked section
 void cs7000p_radio_rf_safe(void);
+// The maker's factory table: the factory copy's configuration (board.factory_copy; core/storage/factory_copy.h,
+// CONFIG_FACTORY_COPY builds), and the view's two lines of the table in use and the copy's record
+#if CONFIG_FACTORY_COPY
+extern const factory_copy_cfg_t cs7000p_factory_copy;
+#endif
+void cs7000p_cal_table_line(char *buf, uint8_t len);
+void cs7000p_cal_rec_line(char *buf, uint8_t len);
 
 #endif

@@ -102,8 +102,9 @@ body = "#2b2b2e"
 accent = "#e07a1f"
 lens = [40, 32]
 
-# tests/hil: what the health checks expect (test_health.py). calibration: the firmware does not read the maker's
-# factory table yet (docs/spec/calibration-cs7000p.md), so the view shows none to check
+# tests/hil: what the health checks expect (test_health.py). calibration: the generic check looks for a calibration the
+# radio uses; this one reads the maker's factory table and its copy but uses none of it yet, and its own test checks
+# them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table and cal_rec in board2)
 [hil]
 display = "160x128x4"
 calibration = false
