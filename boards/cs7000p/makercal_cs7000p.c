@@ -459,7 +459,7 @@ bool cs7000p_maker_tx_row(const cs7000p_maker_t *m, cs7000p_mk_row_t row, uint32
 		return fail(why, CS7000P_MK_LK_BAND);
 	}
 	uint8_t flags = 0, out = 0;
-	uint8_t lk = switched(m->tx_p10, m->row[row], hz, CS7000P_MAKER_TX_SWITCH_10HZ, true, &out, &flags);
+	uint8_t lk = switched(m->tx_p10, m->row[row], hz, CS7000P_VCO_TX_SWITCH_HZ / 10u, true, &out, &flags);
 	if (lk != CS7000P_MK_LK_OK) {
 		return fail(why, lk);
 	}
@@ -487,7 +487,7 @@ bool cs7000p_maker_rx_row(const cs7000p_maker_t *m, cs7000p_mk_row_t row, uint32
 		return fail(why, CS7000P_MK_LK_BAND);
 	}
 	uint8_t flags = 0, out = 0;
-	uint8_t lk = switched(m->rx_p10, m->row[row], hz, CS7000P_MAKER_RX_SWITCH_10HZ, false, &out, &flags);
+	uint8_t lk = switched(m->rx_p10, m->row[row], hz, CS7000P_VCO_RX_SWITCH_HZ / 10u, false, &out, &flags);
 	if (lk != CS7000P_MK_LK_OK) {
 		return fail(why, lk);
 	}
