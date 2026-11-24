@@ -97,6 +97,21 @@ static factory_copy_state_t cal_st;
 // The copy's changed() (a restore wrote): the radio task takes it at its status poll, parses the table now in use
 // there and sets receive up again. The table in use never changes on another task
 static volatile bool cal_req;
+#if CONFIG_DEBUGLINK
+// The view's generation of the table in use (board2's lines): odd while the radio task changes the table and sets
+// receive up on it
+static volatile uint32_t cal_gen;
+#endif
+
+// A change of the table in use starts, or ends: the view copies nothing in between
+static void cal_gen_step(void)
+{
+#if CONFIG_DEBUGLINK
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	cal_gen = cal_gen + 1u;
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
+}
 
 // The copy's checker: the bytes are the maker's when the reader's state is ok and every integrity rule passes (spec
 // 7). The port's use rules never fail it: they only drop a field group (makercal_cs7000p.h)
@@ -863,6 +878,7 @@ static void init(void)
 {
 	// The table in use: the factory copy's load ran before (app.c); without the copy, the window read here. Before
 	// the chain, and nothing of it is applied yet
+	cal_gen_step();
 	cal_take();
 	if (speaker_lock == NULL) {
 		speaker_lock = xSemaphoreCreateMutex();
@@ -871,6 +887,7 @@ static void init(void)
 	// The table in use for receive, from the modem's first set-up on. Always this one struct: a later cal_take()
 	// parses into it on this task, and the receive set-up that follows takes the new values
 	cs7000p_rf.maker = &maker;
+	cal_gen_step();
 	radio_up = true;
 	cal_tx = cs7000p_cal_any_tx(&cs7000p_cal_model);
 	// The synthesizer rail and its settle time. The reference oscillator's control voltage is only defined with
@@ -950,8 +967,11 @@ static void rx_sleep(bool sleep)
 static void status(radio_status_t *st)
 {
 	// A table a restore wrote: taken here, never under a transmission, then a receive set-up as a bench change asks.
-	// busy() holds until it is taken, so no second request lands in between
-	if (cal_req && !tx_on && !dmr_armed) {
+	// busy() holds until it is taken, so no second request lands in between. The view sees the change whole: the
+	// table, the set-up on it and this poll's RSSI source
+	const bool take = cal_req && !tx_on && !dmr_armed;
+	if (take) {
+		cal_gen_step();
 		cal_take();
 		cal_req = false;
 		retune_req = true;
@@ -973,6 +993,9 @@ static void status(radio_status_t *st)
 	// strength test read it; the FM squelch reads the noise
 	st->rssi_dbm = cs7000p_cal_rssi_m(cs7000p_rf.maker, cs7000p_adc_raw(CS7000P_ADC_RSSI),
 					  cs7000p_adc_mv(CS7000P_ADC_RSSI), &rssi_src);
+	if (take) {
+		cal_gen_step();
+	}
 	st->noise = cs7000p_noise(cs7000p_adc_raw(CS7000P_ADC_NOISE), receiving);
 	st->carrier = receiving && st->rssi_dbm >= CARRIER_DBM;
 #if CONFIG_SUBTONE
@@ -1054,35 +1077,87 @@ void cs7000p_radio_state(cs7000p_radio_state_t *s)
 }
 
 #if CONFIG_DEBUGLINK
-// The view's two lines of the table (hardware-cs7000p.md 15), from the debug link's task: plain data. The window's
-// state, the source of the table in use, the window's CRC-32 (the one a host compares with its backup), the window's
-// reason and offset, the field groups and the battery byte of the table in use
-void cs7000p_cal_table_line(char *buf, uint8_t len)
+// --- board2's lines (hardware-cs7000p.md 15), from the debug link's task ---
+//
+// They show one state of the table in use and of the receive set-up on it, never a mix: the radio task changes the
+// table (a restore's take) and sets receive up on it with cal_gen odd, and the view copies what its lines show only
+// while cal_gen is even, under the interrupt mask, so the radio task can't start a change during the copy. A reply's
+// board2 lines all come from the copy its first line takes. Should a change outlast VIEW_WAIT_MS, the lines say busy
+
+#define VIEW_WAIT_MS	250u
+
+typedef struct {
+	factory_copy_state_t st;	// the copy's state the table in use came with
+	uint16_t fields;
+	uint8_t battery, restore;	// the table's battery byte (0: none valid); the last restore's result
+	// The receive reference: the coding, the level's offset and source, why it is not trim A, 4:0x04; the trims
+	uint8_t coding, ref_src, ref_why;
+	int8_t rx_ref, r04;
+	bool a_ok, b_ok;
+	int16_t d_a, d_b;
+	// The other sources, the VCO line now and its rule, the IF words
+	uint8_t tune_src, rssi_src;
+	bool vco_low, vco_dir, if_maker;
+	// The maker's squelch thresholds at the receive frequency, or the lookup's reason
+	bool sq_ok;
+	uint8_t o1, c1, o9, c9, sq_why;
+	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
+} cal_view_t;
+
+static cal_view_t view;
+
+static void view_fill(cal_view_t *v)
 {
-	dl_fmt(buf, len, "cal_table=%s src=%s crc=0x%08x why=%s off=0x%03x fields=0x%04x bat=0x%02x",
-	       cal_win_name(cal_st.win), cal_src_name(cal_st.source), (unsigned)cal_st.win_crc, cal_why_name(cal_st.why),
-	       (unsigned)cal_st.off, maker.fields, maker.valid ? maker.battery : 0u);
+	v->st = cal_st;
+	v->fields = maker.fields;
+	v->battery = maker.valid ? maker.battery : 0u;
+#if CONFIG_FACTORY_COPY
+	v->restore = factory_copy_result();
+#else
+	v->restore = 0xFFu;
+#endif
+	v->coding = cs7000p_rf.ref_coding;
+	v->ref_src = cs7000p_rf.ref_src;
+	v->ref_why = cs7000p_rf.ref_why;
+	v->rx_ref = cs7000p_rf.rx_ref;
+	v->r04 = cs7000p_rf.ref_offset;
+	v->a_ok = cs7000p_maker_trim(&maker, false, &v->d_a);
+	v->b_ok = cs7000p_maker_trim(&maker, true, &v->d_b);
+	v->tune_src = cs7000p_rf.tune_src;
+	v->rssi_src = rssi_src;
+	v->vco_low = (cs7000p_exp_get() & EXP_VCO_LOW) != 0u;
+	v->vco_dir = cs7000p_rf.vco_rx_dir;
+	v->if_maker = cs7000p_rf.if_maker;
+	const uint32_t hz = cs7000p_rf.seq.rx_hz;
+	v->sq_why = CS7000P_MK_LK_OK;
+	v->sq_ok = cs7000p_maker_squelch(&maker, hz, 1, &v->o1, &v->c1, &v->sq_why) &&
+		   cs7000p_maker_squelch(&maker, hz, 9, &v->o9, &v->c9, &v->sq_why);
+	v->busy = false;
 }
 
-// The copy's record: its state, the CRC-32 of its bytes (- when it holds none of ours), whether this start wrote it
-// (2: tried and failed, tried again at the next start), the last restore's result now (none: no restore at this
-// start; pending while its job runs; the record's fields are the table in use's, taken after the job)
-void cs7000p_cal_rec_line(char *buf, uint8_t len)
+// The copy the lines format: taken while no change is under way, else after it (the debug link's task waits: it is
+// below the radio task, which ends a change within one receive set-up)
+static void view_take(void)
 {
-	const bool ours = cal_st.rec == FACTORY_COPY_REC_OK || cal_st.rec == FACTORY_COPY_REC_BAD;
-	char crc[12];
-	if (ours) {
-		dl_fmt(crc, sizeof(crc), "0x%08x", (unsigned)cal_st.rec_crc);
-	} else {
-		crc[0] = '-';
-		crc[1] = '\0';
+	for (uint32_t waited = 0;; waited++) {
+		const uint32_t g = cal_gen;
+		if ((g & 1u) == 0u) {
+			const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
+			const bool same = cal_gen == g;
+			if (same) {
+				view_fill(&view);
+			}
+			portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
+			if (same) {
+				return;
+			}
+		}
+		if (waited >= VIEW_WAIT_MS) {
+			view.busy = true;
+			return;
+		}
+		hal_delay_ms(1);
 	}
-#if CONFIG_FACTORY_COPY
-	const char *restore = factory_copy_result_name(factory_copy_result());
-#else
-	const char *restore = "none";
-#endif
-	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=%s", cal_rec_name(cal_st.rec), crc, cal_st.wrote, restore);
 }
 
 static const char *src_name(uint8_t src)
@@ -1090,11 +1165,10 @@ static const char *src_name(uint8_t src)
 	return src == CS7000P_SRC_MAKER ? "maker" : (src == CS7000P_SRC_BENCH ? "bench" : "default");
 }
 
-// A trim of the table in use as d, or "-" when its group did not pass
-static void trim_text(char *t, uint8_t len, bool b)
+// A trim as d, or "-" when its group did not pass
+static void trim_text(char *t, uint8_t len, bool ok, int16_t d)
 {
-	int16_t d;
-	if (cs7000p_maker_trim(&maker, b, &d)) {
+	if (ok) {
 		dl_fmt(t, len, "%d", d);
 	} else {
 		t[0] = '-';
@@ -1102,46 +1176,129 @@ static void trim_text(char *t, uint8_t len, bool b)
 	}
 }
 
+// The window's state, the source of the table in use, the window's CRC-32 (the one a host compares with its backup),
+// the window's reason and offset, the field groups and the battery byte of the table in use
+static void fmt_cal_table(const cal_view_t *v, char *buf, uint8_t len)
+{
+	dl_fmt(buf, len, "cal_table=%s src=%s crc=0x%08x why=%s off=0x%03x fields=0x%04x bat=0x%02x",
+	       cal_win_name(v->st.win), cal_src_name(v->st.source), (unsigned)v->st.win_crc, cal_why_name(v->st.why),
+	       (unsigned)v->st.off, v->fields, v->battery);
+}
+
+// The copy's record: its state, the CRC-32 of its bytes (- when it holds none of ours), whether this start wrote it
+// (2: tried and failed, tried again at the next start), the last restore's result now (none: no restore at this
+// start; pending while its job runs; the record's fields are the table in use's, taken after the job)
+static void fmt_cal_rec(const cal_view_t *v, char *buf, uint8_t len)
+{
+	const bool ours = v->st.rec == FACTORY_COPY_REC_OK || v->st.rec == FACTORY_COPY_REC_BAD;
+	char crc[12];
+	if (ours) {
+		dl_fmt(crc, sizeof(crc), "0x%08x", (unsigned)v->st.rec_crc);
+	} else {
+		crc[0] = '-';
+		crc[1] = '\0';
+	}
+#if CONFIG_FACTORY_COPY
+	const char *restore = factory_copy_result_name(v->restore);
+#else
+	const char *restore = "none";
+#endif
+	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=%s", cal_rec_name(v->st.rec), crc, v->st.wrote, restore);
+}
+
 // The receive reference (hardware-cs7000p.md 6.5, 15): the coding chip_reg 3:5 asks for, the level the last receive
 // entry wrote in it (the bias), 4:0x04 in receive, the two trims of the table in use, the level's source and, when it
 // is not trim A, why
-void cs7000p_ref_line(char *buf, uint8_t len)
+static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
 {
 	static const char *const codings[] = { "hold", "maker", "maker7d" };
 	static const char *const whys[] = { "none", "table", "group", "rx_bound" };
-	const uint8_t k = cs7000p_rf.ref_coding, w = cs7000p_rf.ref_why;
-	const int8_t off = cs7000p_rf.rx_ref;
-	const unsigned bias = k == CS7000P_REF_HOLD ? (unsigned)(0x200 + off) : ((unsigned)(uint16_t)off & 0x3FFu);
+	const uint8_t k = v->coding, w = v->ref_why;
+	const unsigned bias = k == CS7000P_REF_HOLD ? (unsigned)(0x200 + v->rx_ref) : ((unsigned)(uint16_t)v->rx_ref & 0x3FFu);
 	char a[8], b[8];
-	trim_text(a, sizeof(a), false);
-	trim_text(b, sizeof(b), true);
+	trim_text(a, sizeof(a), v->a_ok, v->d_a);
+	trim_text(b, sizeof(b), v->b_ok, v->d_b);
 	dl_fmt(buf, len, "ref=%s bias=0x%03x r04=0x%02x d_a=%s d_b=%s src=%s why=%s", k < 3u ? codings[k] : "?", bias,
-	       (unsigned)(uint8_t)cs7000p_rf.ref_offset, a, b, src_name(cs7000p_rf.ref_src), w < 4u ? whys[w] : "?");
+	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 4u ? whys[w] : "?");
 }
 
 // The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
 // receive (chip_reg 3:6), the IF chip's words (chip_reg 3:7)
-void cs7000p_rx_cal_line(char *buf, uint8_t len)
+static void fmt_rx_cal(const cal_view_t *v, char *buf, uint8_t len)
 {
-	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s ifw=%s", src_name(cs7000p_rf.tune_src),
-	       rssi_src == CS7000P_SRC_MAKER ? "maker" : "sheet", (cs7000p_exp_get() & EXP_VCO_LOW) != 0u ? "low" : "high",
-	       cs7000p_rf.vco_rx_dir ? "dir" : "freq", cs7000p_rf.if_maker ? "maker" : "port");
+	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s ifw=%s", src_name(v->tune_src),
+	       v->rssi_src == CS7000P_SRC_MAKER ? "maker" : "sheet", v->vco_low ? "low" : "high",
+	       v->vco_dir ? "dir" : "freq", v->if_maker ? "maker" : "port");
 }
 
 // The maker's squelch thresholds at the receive frequency, shown and never applied (the squelch is the port's,
 // cs7000p_noise): open and close at levels 1 and 9 as 8-bit noise codes, the scale of noise_raw >> 4 (calibration-
 // cs7000p.md 5.7; they were set under the maker's IF words, chip_reg 3:7). none: no valid table, its SQUELCH group
 // refused, or no receive frequency the rows reach, with the lookup's reason
+static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
+{
+	if (v->sq_ok) {
+		dl_fmt(buf, len, "sq_maker=ok o1=%u c1=%u o9=%u c9=%u", v->o1, v->c1, v->o9, v->c9);
+	} else {
+		dl_fmt(buf, len, "sq_maker=none why=%s", cs7000p_maker_lookup_name(v->sq_why));
+	}
+}
+
+static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {
+	fmt_cal_table, fmt_cal_rec, fmt_ref, fmt_rx_cal, fmt_sq_maker,
+};
+static const char *const view_keys[CS7000P_CAL_VIEW_LINES] = { "cal_table", "cal_rec", "ref", "rx_cal", "sq_maker" };
+
+static void view_line(uint8_t k, char *buf, uint8_t len)
+{
+	if (view.busy) {
+		dl_fmt(buf, len, "%s=busy", view_keys[k]);
+	} else {
+		view_fmt[k](&view, buf, len);
+	}
+}
+
+void cs7000p_cal_view_line(uint8_t k, char *buf, uint8_t len)
+{
+	if (k >= CS7000P_CAL_VIEW_LINES) {
+		buf[0] = '\0';
+		return;
+	}
+	if (k == 0u) {
+		view_take();	// the reply's first board2 line: its copy for the rest
+	}
+	view_line(k, buf, len);
+}
+
+// Each line alone, from a copy of its own (the tests, one line at a time)
+void cs7000p_cal_table_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(0, buf, len);
+}
+
+void cs7000p_cal_rec_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(1, buf, len);
+}
+
+void cs7000p_ref_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(2, buf, len);
+}
+
+void cs7000p_rx_cal_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(3, buf, len);
+}
+
 void cs7000p_sq_maker_line(char *buf, uint8_t len)
 {
-	uint8_t o1 = 0, c1 = 0, o9 = 0, c9 = 0, why = CS7000P_MK_LK_OK;
-	const uint32_t hz = cs7000p_rf.seq.rx_hz;
-	if (cs7000p_maker_squelch(&maker, hz, 1, &o1, &c1, &why) &&
-	    cs7000p_maker_squelch(&maker, hz, 9, &o9, &c9, &why)) {
-		dl_fmt(buf, len, "sq_maker=ok o1=%u c1=%u o9=%u c9=%u", o1, c1, o9, c9);
-	} else {
-		dl_fmt(buf, len, "sq_maker=none why=%s", cs7000p_maker_lookup_name(why));
-	}
+	view_take();
+	view_line(4, buf, len);
 }
 #endif
 

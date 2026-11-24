@@ -1505,6 +1505,12 @@ diagnostics page shows the bring-up readings.
 | `rx_cal` (`board2`) | the tune's source, `maker` / `default` / `bench` (3:0); `rssi=` `maker` / `sheet`; `vco=` the VCO line now, `low` / `high`; `vco_rule=` `freq` / `dir` (3:6); `ifw=` the IF chip's words, `port` / `maker` (3:7) |
 | `sq_maker` (`board2`) | the maker's squelch thresholds at the receive frequency, shown and never applied (13.1): `ok o1= c1= o9= c9=`, open and close at levels 1 and 9 as 8-bit noise codes (the scale of `noise_raw` >> 4; [calibration-cs7000p.md](calibration-cs7000p.md) 5.7), by the receive rows' lookup (inside the 479 MHz switch segment the end value on the frequency's VCO side; past the end points extended, where their order need not hold); `none why=` the lookup's reason, `table` (none valid) / `group` / `band` (out of the receive band, or no receive yet) / `switch` / `math`. `sq_maker=ok o1=120 c1=130 o9=40 c9=50` |
 
+The five `board2` keys of one reply describe one state: the table in use and the receive set-up on it. A restore's
+take changes the table and sets receive up on it in one step of the radio task; the reply copies the state at its
+first `board2` line, never during such a step, and its other lines format that copy. A reply asked during the step
+waits for its end; one that waited 250 ms gives `<key>=busy` for each of the five instead (not expected: the step is
+one receive set-up). The other keys, in `board`, are read one by one.
+
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
 through STORAGE READ (and an ok record's bytes with `cal_rec`'s). It never transmits or writes.
 

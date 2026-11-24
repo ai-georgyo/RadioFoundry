@@ -43,8 +43,15 @@ HRC_CHIP, HRC_PAGE = 0, 4
 
 
 def board_view(r):
-    v = r.view(["board"])       # board2 with it, where the firmware has it
-    return {k[len("board."):]: val for k, val in v.items() if k.startswith("board.")}
+    # board2 with it, where the firmware has it. Its keys read "busy" in a reply that waited 250 ms for a restore's
+    # take to end (hardware-cs7000p.md 15): asked again
+    for _ in range(4):
+        v = r.view(["board"])
+        b = {k[len("board."):]: val for k, val in v.items() if k.startswith("board.")}
+        if b.get("cal_table") != "busy":
+            return b
+        time.sleep(0.5)
+    return b
 
 
 def fields(value):
