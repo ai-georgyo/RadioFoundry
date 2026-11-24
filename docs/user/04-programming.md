@@ -397,7 +397,7 @@ tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore
 
 The radio checks the bytes before it writes them, and refuses to replace a valid calibration with another one. The
 tool first checks that the backup is this radio's, by the maker's other data in it. [Troubleshooting](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)
-explains each refusal. The web installer's **Restore** doesn't write the calibration back yet: when the backup's differs from the radio's, it says so when it finishes and points to the command.
+explains each refusal. The web installer's **Restore** of a backup taken under RadioFoundry (**Channels and settings only**) makes the same checks after it writes the channels back: when the backup's calibration differs from the radio's, it shows the three checksums and, when the backup is this radio's, a button that writes it back through the same command of the radio's. A backup it can't tie to this radio gets no button: only the tool's `--no-identity` writes that one. Any other backup goes through the command above.
 
 ## Limits and notes
 
