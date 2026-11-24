@@ -479,7 +479,7 @@ writes without asking; without one it asks first:
 | 2. Recognize | `classify` ([codeplug-stock-tyt.md](../spec/codeplug-stock-tyt.md) 2). A RadioFoundry codeplug, a blank chip or an unknown layout ends the step: nothing is written |
 | 3. Convert | `importStock`, the Codeplug Editor's conversion, with its counts and notes. No channels ends the step |
 | 4. Prepare | The settings area is claimed (`prepareStorage(box)`, as before a codeplug restore). This step read the codeplug span only, so on a claim-first foreign region nothing is claimed, the step shows `flash.storage.claim_first` and ends: nothing is written |
-| 5. Write | The radio's bytes with the converted image over the codeplug's regions (`writeRanges`, as a Codeplug Editor write), in the 4 KB sectors that differ (`codeplugSectors`). The radio's own settings block, the VFO pair, the ID database area, RadioFoundry's own areas and protected data keep the radio's bytes |
+| 5. Write | The radio's bytes with the converted image over the codeplug's regions (`writeRanges`, as a Codeplug Editor write), in the 4 KB sectors that differ (`codeplugSectors`). The radio's own settings block, the VFO pair, the ID database area, RadioFoundry's own areas and protected data keep the radio's bytes: no byte of a protected range is sent ([Protected regions](#protected-regions)) |
 | 6. Check | The span read back: every written sector holds its bytes (the VFO pair aside: a read shows the live VFOs), and the decoded codeplug has the converted counts. A mismatch is reported as a problem and the step stops |
 
 The backup's copy comes first because the backup ends by claiming the settings area. On a family whose stock tables
@@ -550,7 +550,7 @@ Not yet tested on a real radio.
 
 | Target | Writes | Limits |
 |---|---|---|
-| Exactly as backed up (backup taken on RadioFoundry) | The internal flash image through the bootloader (every sector erased and rewritten), then the codeplug areas that differ through CPS writes | The CPS refuses RadioFoundry's own areas and the calibration window |
+| Exactly as backed up (backup taken on RadioFoundry) | The internal flash image through the bootloader (every sector erased and rewritten), then the codeplug areas that differ through CPS writes | The CPS refuses RadioFoundry's own areas and the calibration window. The board's protected data keeps the radio's bytes ([below](#protected-regions)) |
 | Codeplug only (any backup that holds the codeplug span) | The codeplug areas that differ, through CPS writes; the firmware is not touched | As above |
 | Previous open firmware (backup taken on another open firmware) | That firmware's internal flash image through the bootloader (`planInternal`) | The SPI flash is not written back, as for stock: that firmware's own CPS writes its codeplug from `spi-flash.bin` |
 | Back to stock | The stock application from the user's stock file, codec included, through the bootloader. Any file for this radio that its key opens can be used, mapped or not: no codec is taken from it | The SPI flash stays as it is: writing it back whole needs a firmware command that doesn't exist yet (a gated STORAGE write, like CLAIM). Until then the flasher says so, and the stock codeplug goes back with the vendor CPS |
@@ -562,15 +562,24 @@ documented, and RadioFoundry doesn't overwrite it unless an ID database is uploa
 
 No write touches a board's protected regions ([board-registry.md](board-registry.md#protected-regions):
 `[[flash.protect]]`, the factory calibration first). `protect.js` is the one check, with the data from
-`flash-boards.json`.
+`flash-boards.json`. An entry is a byte range, and how a writer keeps it depends on how it writes:
+
+- A direct writer erases the chip itself, with no journal, so an erase cut short would lose the range. It works by
+  whole erase units: a write over one is refused (`check`), a restore leaves out every unit an entry touches
+  (`carvedUnits`; an entry off the unit boundaries is widened to them, `widen`).
+- A writer through the firmware's CPS writes the sector but sends no byte of the range (`carveBytes`). The CPS reads
+  the stored sector at `X 1` and merges only the bytes sent ([cps-protocol.md](../spec/cps-protocol.md) 2.3), so the
+  radio keeps its own bytes there, on any firmware with the CPS. A firmware whose flash map lists the range keeps them
+  anyway ([settings-store.md](../spec/settings-store.md) 4.1).
 
 | Writer | Over a protected region |
 |---|---|
 | `Stub` (`stub.js`) | Every erase and program command is checked before it is sent; a chip erase is refused. `writeProgram` refuses an install that overlaps one. The restore task passes `carve`: those sectors keep what the radio has and show as never written |
-| `F4Stub` (`f4stub.js`) | `erase`, `program` and `writeImage` refuse. `spiWrite` carves |
+| `F4Stub` (`f4stub.js`) | `erase`, `program` and `writeImage` refuse. `spiWrite` leaves out every sector a data entry touches, whole (an entry inside a sector too) |
 | `makePlan` (`plan.js`), `Dfu.run` | Keep and merge plans refuse; a restore plan keeps the sector (`keep`, "protected"). `Dfu.run` checks the plan again before the first request |
 | `Iap`, `BfLoader` | Refused when the area the loader erases holds one: the vendor loaders erase a fixed span, which can't be carved |
-| Codeplug restore (`codeplugSectors`) | Protected data sectors are left out |
+| Codeplug restore (`codeplugSectors`), the stock channel step (`migrationSectors`) | A sector is compared with the radio's outside the protected data and, when it differs there, written with `cpsWriteParts`: every piece outside the ranges, none of their bytes. A sector that differs only inside a range is not written, nor is one a range covers whole. Each sector's bytes are the radio's in the ranges, so the check after the write compares what the radio holds. The restore logs the ranges whose backup bytes differ from the radio's (`keptDiffering`): they are not written back by this step |
+| Codeplug Editor (`codeplug/transport.js`) | `writeRanges(radio)` leaves out `keepOut(radio)`: the settings block and the radio's protected data (`radios.json` `flash.protect`, less `codeplug.base`), in order. The CPS sends none of their bytes; a fast-protocol block holding one is read from the radio first. An ID database that would reach a sector holding protected data is refused as too big ([codeplug-editor.md](codeplug-editor.md#transports)) |
 
 The error is a `ProtectedError` (`code` "protected") naming the region and the reason from `board.toml`. Nothing is
 erased before the check.

@@ -16,7 +16,7 @@
 //                   (docs/dev/web-flasher.md "Restore"), so the flasher reports what differs instead of guessing.
 
 import { RESTORE, makePlan } from "./plan.js";
-import { overlapping as protectOverlap } from "./protect.js";
+import { carveBytes } from "./protect.js";
 import { stockApplication } from "./stockfw.js";
 import { CODEPLUG_SPAN } from "./backup.js";
 import { TFTP_SIZE } from "../codeplug/image.js";
@@ -56,30 +56,50 @@ export function planStock(stockFile, key, board, fb) {
 	return makePlan(board, [[addr, app]], RESTORE);
 }
 
-// The 4 KB sectors of the codeplug areas whose bytes differ between the radio and the backup: [addr, bytes] (emulated
-// EEPROM 0x00000-0x0FFFF and the open-firmware flash image 0x20000-0x11FFFF; never the calibration and RadioFoundry's own areas
-// at 0x10000-0x1FFFF, which the CPS refuses anyway). protect: the board's protected regions; a sector in one of
-// them (data memory) is left out, so the radio keeps its own bytes there
+// The 4 KB sectors of the codeplug areas whose bytes differ between the radio and the backup outside the board's
+// protected regions: [addr, bytes, parts] (emulated EEPROM 0x00000-0x0FFFF and the open-firmware flash image
+// 0x20000-0x11FFFF; never the calibration and RadioFoundry's own areas at 0x10000-0x1FFFF, which the CPS refuses
+// anyway). protect: the board's protected regions; their data bytes are never sent. parts: [[addr, bytes]], every
+// piece of the sector outside them, what the write sends (the CPS keeps the radio's bytes in the gaps,
+// cps-protocol.md 2.3). bytes: the sector as the radio holds it after the write, the backup's with the radio's own
+// bytes in a protected region. A sector that differs only inside a region is not written, nor is one a region covers
+// whole
 export function codeplugSectors(backupSpi, radioSpi, protect = []) {
 	const out = [];
 	for (let a = 0; a < CODEPLUG_SPAN; a += 4096) {
 		if (a >= 0x10000 && a < 0x20000) continue;
-		if (protectOverlap(protect, "data", a, a + 4096).length) continue;
 		const want = backupSpi.subarray(a, a + 4096);
 		const have = radioSpi.subarray(a, a + 4096);
 		if (want.length < 4096) break;
+		const pieces = carveBytes(protect, "data", a, a + 4096);
 		let same = have.length === 4096;
-		for (let i = 0; same && i < 4096; i++) same = want[i] === have[i];
-		if (!same) out.push([a, want]);
+		for (const [lo, hi] of pieces) for (let i = lo - a; same && i < hi - a; i++) same = want[i] === have[i];
+		if (same || !pieces.length) continue;
+		const data = want.slice();
+		data.set(have);
+		for (const [lo, hi] of pieces) data.set(want.subarray(lo - a, hi - a), lo - a);
+		out.push([a, data, pieces.map(([lo, hi]) => [lo, data.subarray(lo - a, hi - a)])]);
 	}
 	return out;
 }
 
+// The board's protected data regions in the codeplug areas whose bytes differ between the backup and the radio:
+// codeplugSectors() doesn't write them back (the radio keeps its own), so the restore names them in its log
+export function keptDiffering(backupSpi, radioSpi, protect = []) {
+	const areas = [[0, 0x10000], [0x20000, Math.min(CODEPLUG_SPAN, backupSpi.length)]];
+	const differs = (lo, hi) => {
+		for (let i = lo; i < hi; i++) if (backupSpi[i] !== radioSpi[i]) return true;
+		return false;
+	};
+	return (protect || []).filter((p) => p.mem === "data" && areas.some(([x, y]) => differs(Math.max(p.start, x), Math.min(p.end, y))));
+}
+
+// Each sector's parts through the CPS (all of it for a sector given without parts); the addresses the radio refused
 export async function writeCodeplug(link, sectors, progress = () => {}) {
 	const refused = [];
 	let done = 0;
-	for (const [addr, data] of sectors) {
-		if (!await link.cpsWriteSector(addr, data)) refused.push(addr);
+	for (const [addr, data, parts] of sectors) {
+		if (!await link.cpsWriteParts(addr, parts ?? [[addr, data]])) refused.push(addr);
 		progress(++done, sectors.length);
 	}
 	await link.cpsClose();

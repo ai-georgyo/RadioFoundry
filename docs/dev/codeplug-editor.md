@@ -72,6 +72,13 @@ more the editor asks before reading. A skipped database stays out of the model (
 touches it; the DMR ID Database tab reads it later into the model. A write compares with the
 radio and sends only the changed bytes inside the codeplug's regions, never whole sectors, since a sector can hold the
 radio's own settings (0x6000). It verifies, then ends with `C 5` so the radio reloads the codeplug without a restart.
+`writeRanges(radio)` is those regions without `keepOut(radio)`: the settings block and the board's protected data
+(`flash.protect` in `data/radios.json`, from `board.toml` `[[flash.protect]]`, at data address minus the base), in
+order. No write sends a byte of them: the CPS keeps the radio's bytes in a sector's gaps
+([cps-protocol.md](../spec/cps-protocol.md) 2.3), and a fast-protocol block holding one is read from the radio first,
+so the block goes back with the radio's bytes there. A change only inside them writes nothing. An ID database that
+would reach a 4 KB sector holding protected data is refused as too big (`iddb_too_big`), as the radio's TFTP server
+refuses one ([tftp.md](../spec/tftp.md)). Which boards list such data: [feature-matrix.md](../feature-matrix.md).
 
 The radio's bytes a write compares with (`S.conn.image`) belong to one radio. A programming cable stays open while the
 radio on it is swapped, so before every read and write the page asks `who(radios)`: the board again and the chip UID
