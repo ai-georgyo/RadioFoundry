@@ -140,10 +140,8 @@ typedef enum {
 #define CS7000P_MAKER_RX_TRIM_MAX	32
 // Transmit takes the same-VCO end value inside a switch segment at most this wide, and refuses inside a wider one
 #define CS7000P_MAKER_WINDOW_MAX_HZ	1000000u
-// The last 10 Hz step on the low VCO (expander bit 8 = 1, spec 5.12): receive below 479.00001 MHz, transmit below
-// 430.00001 MHz. Points on either side of these hold that VCO's values
-#define CS7000P_MAKER_RX_SWITCH_10HZ	47900000u
-#define CS7000P_MAKER_TX_SWITCH_10HZ	43000000u
+// The VCO switch points are the frequency plan's (CS7000P_VCO_RX_SWITCH_HZ, CS7000P_VCO_TX_SWITCH_HZ in
+// rfplan_cs7000p.h, spec 5.12): the line the radio sets and the side whose values a lookup takes are one rule
 // The points' range (spec 7)
 #define CS7000P_MAKER_POINT_MIN_HZ	400000000u
 #define CS7000P_MAKER_POINT_MAX_HZ	527000000u
