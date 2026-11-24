@@ -36,6 +36,9 @@
 #if CONFIG_NET_LOCAL
 #include "net/net.h"
 #endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
+#endif
 #if CONFIG_NET_PPP
 #include "hostlink/hostlink_ppp.h"
 #include "net/ppp.h"
@@ -558,6 +561,13 @@ static void hostlink_task(void *arg)
 			net_poll(now, false);		// back to serial: the services see the link go down (USRP's audio stops)
 #endif
 		}
+#if CONFIG_NET_M17
+		// M17 reflector. In serial mode the reflector client is still asked: a link asked now says it waits
+		// for the network (docs/spec/m17-ip.md 5) and is made once the radio is in network mode with the host up
+		if (!hostlink_network_mode()) {
+			m17_net_poll(now, false);
+		}
+#endif
 #endif
 #if CONFIG_SNMP
 		snmp_agent_poll(now);		// requests over RF, notifications (in either USB personality)

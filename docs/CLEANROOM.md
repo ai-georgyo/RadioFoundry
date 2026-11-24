@@ -23,6 +23,7 @@ M17 and Codec 2 have copyleft sources. They are used as follows.
 | Source | License | Who may read it | What may be taken |
 |---|---|---|---|
 | M17 Protocol Specification | GFDL prose, GPL-2.0+ code listings | Spec writers and implementers, with the code listings removed first | Facts only. No sentences are copied; [docs/spec/m17.md](spec/m17.md) restates them |
+| M17 Protocol Specification Part II, Internet Interface | Prose and tables in a GPL-2.0 repository, no notice of its own (the owner agreed to its reading, 2026-11-23) | Spec writers and implementers | Facts only. No sentences are copied; [docs/spec/m17-ip.md](spec/m17-ip.md) restates them. No reflector, gateway or client code is read |
 | Codec 2 design document and reference source | LGPL 2.1 | Spec writers only | Prose and equations written fresh in [docs/spec/codec2.md](spec/codec2.md), internal values dumped on synthetic inputs, and the table values below |
 | Codec 2 reference implementation, built and run | LGPL 2.1 | Implementers, as a black box outside the repository | Its outputs, compared through the external harness |
 

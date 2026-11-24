@@ -6644,6 +6644,16 @@ static void air_key(radio_sm_t *sm, uint32_t now_ms, uint32_t hz, bool autok)
 	sm->view.tx_elapsed_ms = 0;
 	sm->tx_start_ms = now_ms;
 	outputs(sm);
+	if (m->tx_elsewhere != NULL && m->tx_elsewhere()) {
+		// Not on the air (M17 to a reflector): nothing keyed, nothing to switch off at its end
+		if (!o->tx_go()) {
+			air_deny(sm, TXDENY_REFUSED, autok);
+			return;
+		}
+		air_poll(sm);
+		changed(sm);
+		return;
+	}
 	// From here a refusal of the mode's own transmission is the transmission's end: AIR_TX_DONE (after the abort,
 	// or already) and air_tick ends the TX state
 	if (!key_tx(sm, hz, RADIO_BW_12K5, sm->view.power, &none)) {

@@ -74,6 +74,9 @@ extern const ui_scr_def_t ui_dual_screen, ui_dual_pick_screen, ui_dual_zone_scre
 #endif
 #if CONFIG_M17
 extern const ui_scr_def_t ui_call_details_screen, ui_m17_key_screen, ui_m17_keys_screen, ui_m17_bert_screen;	// ui_m17.c
+#if CONFIG_NET_M17
+extern const ui_scr_def_t ui_m17_refl_screen;	// ui_m17.c
+#endif
 #endif
 #if CONFIG_HEARD_LIST
 extern const ui_scr_def_t ui_heard_screen, ui_heard_one_screen;	// ui_heard.c
@@ -2290,6 +2293,9 @@ enum { TEXT_NAME, TEXT_MESSAGE, TEXT_CALLSIGN,
 #if CONFIG_M17
 	TEXT_CALL_TEXT,
 #endif
+#if CONFIG_NET_M17
+	TEXT_REFLECTOR,
+#endif
 	TEXT_PREFIXES };
 static uint8_t text_prefix;
 #if CONFIG_M17
@@ -2393,6 +2399,9 @@ static void text_draw(void)
 #endif
 #if CONFIG_M17
 		TRN(TEXT_TITLE_CALL_TEXT, "Call Text"),
+#endif
+#if CONFIG_NET_M17
+		TRN(M17_LABEL_REFLECTOR, "Reflector"),
 #endif
 	};
 	static const char *const modes[TEXT_MODES] = { "ABC", "123", "abc" };
@@ -2595,6 +2604,10 @@ static bool callsign_check(char *t)
 		t[--n] = '\0';		// trailing spaces don't count (m17.md 10)
 	if (n == 0)
 		return true;		// ours: cleared; anything else: unchanged
+#if CONFIG_NET_M17
+	if (callsign_why >= UI_CALL_REFL)
+		return ui_m17_refl_check(callsign_why, t);	// a reflector's name and module, address or port
+#endif
 	if (!((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= '0' && t[0] <= '9'))) {
 		ui_toast(TR(CALLSIGN_WHY_FIRST_CHAR, TEXT_ALT_OPEN "Start with a letter or digit" TEXT_ALT_NEXT
 			"Letter or digit first" TEXT_ALT_CLOSE));
@@ -2612,6 +2625,13 @@ static void callsign_kept(void)
 {
 	const char *t = callsign_why == UI_CALL_MSG ? compose.to.call : text_name_buf;
 	uint64_t a = 0;
+#if CONFIG_NET_M17
+	if (callsign_why >= UI_CALL_REFL) {
+		if (t[0] != '\0')
+			ui_m17_refl_kept(callsign_why, t);	// nothing typed: unchanged
+		return;
+	}
+#endif
 	if (t[0] != '\0' && !m17_addr_from_text(t, &a))
 		return;		// the entry's set and the check leave none: no change
 	if (callsign_why == UI_CALL_OWN) {
@@ -2656,6 +2676,17 @@ void ui_callsign_open(uint8_t why)
 		if (a != 0 && m17_addr_text(a, call) == M17_ADDR_KIND_STD)
 			str_copy(t, CODEPLUG_NAME_LEN + 1, call);
 	}
+#if CONFIG_NET_M17
+	if (why >= UI_CALL_REFL) {
+		// The reflector's entries in the callsign's set: its name and module (9 places), an address, a port
+		ui_m17_refl_text(why, t, CODEPLUG_NAME_LEN + 1);
+		text_open(t, why == UI_CALL_REFL ? M17_CALL_MAX : why == UI_CALL_REFL_ADDRESS ? 15 : 5, SCR_CALLSIGN,
+			  TEXT_SET_CALLSIGN);
+		text_prefix = TEXT_REFLECTOR;
+		text_done = callsign_kept;
+		return;
+	}
+#endif
 	text_open(t, M17_CALL_MAX, SCR_CALLSIGN, TEXT_SET_CALLSIGN);
 	text_done = callsign_kept;
 }
@@ -6917,8 +6948,9 @@ void ui_crash_tick(uint32_t now_ms)
 
 // Every tool keeps its number on every radio and build, so a key path (OK 6 7: Diagnostics; tests/hil/test_ui.py and the
 // user guide) is the same everywhere. A build without diagnostics skips 7, and one without satellite skips 9.
-enum { T_SCAN, T_POSITION, T_HOTSPOT, T_USB_NET, T_SFR, T_ROAM, T_DIAG, T_APRS, T_SATELLITE, T_ZONE_OFFER, T_M17_BERT,
-       T_HEARD, T_COUNT };
+// M17's reflector sits before its BER test, so the BER test and the stations heard keep their place from the bottom
+enum { T_SCAN, T_POSITION, T_HOTSPOT, T_USB_NET, T_SFR, T_ROAM, T_DIAG, T_APRS, T_SATELLITE, T_ZONE_OFFER, T_M17_REFL,
+       T_M17_BERT, T_HEARD, T_COUNT };
 
 // A tool this build doesn't have is left out of the list
 static bool tool_shown(uint16_t i)
@@ -6927,12 +6959,14 @@ static bool tool_shown(uint16_t i)
 	if (i == T_ZONE_OFFER)
 		return offer_waiting();	// 0 on the keypad: only while another radio's zone waits
 #endif
-	// M17's BER test and the stations heard: after the others, no digit (Tools keeps its numbers); where the radio
-	// runs M17 (the heard list's only source so far)
-	if (i == T_M17_BERT || i == T_HEARD) {
+	// M17's BER test, its reflector and the stations heard: after the others, no digit (Tools keeps its numbers);
+	// where the radio runs M17 (the heard list's only source so far)
+	if (i == T_M17_BERT || i == T_M17_REFL || i == T_HEARD) {
 #if CONFIG_M17
 		if (!(feats() & UI_FEAT_M17))
 			return false;
+		if (i == T_M17_REFL)
+			return CONFIG_NET_M17;
 		return i == T_M17_BERT ? CONFIG_M17_BERT && ui_m17_has(UI_M17_BERT) : CONFIG_HEARD_LIST;
 #else
 		return false;
@@ -6985,6 +7019,11 @@ static void tools_item(uint16_t row, ui_item_t *it)
 					 TRN(TOOLS_ROW_USB_NETWORK, "USB network"), TRN(TOOLS_ROW_SFR, "Single-freq repeater"),
 					 TRN(TITLE_ROAMING, "Roaming"), TRN(TITLE_DIAGNOSTICS, "Diagnostics"), TRX(WORD_APRS, "APRS"),
 					 TRN(SATELLITE_2, "Satellite"), TRN(TOOLS_ROW_SHARES_RECEIVED, "Zones/Chs Received"),
+#if CONFIG_NET_M17
+					 TRN(TOOLS_ROW_M17_REFLECTOR, "M17 reflector"),
+#else
+					 TR_NONE,
+#endif
 #if CONFIG_M17_BERT
 					 TRN(TOOLS_ROW_M17_BERT, "M17 BER test"),
 #else
@@ -7087,6 +7126,7 @@ static void tools_select(uint16_t row, bool hold)
 	case T_ZONE_OFFER: ui_push(SCR_OFFER, 0); break;
 	case T_SATELLITE: ui_push(SCR_SATELLITE_PASSES, 0); break;
 	case T_M17_BERT: ui_push(SCR_M17_BERT, 0); break;
+	case T_M17_REFL: ui_push(SCR_M17_REFL, 0); break;
 	case T_HEARD: ui_push(SCR_HEARD, 0); break;
 	default: break;
 	}
@@ -8675,6 +8715,20 @@ static void pick_m17_fill(void)
 #endif
 	pick_m17_add(cur, TRN(PICKER_CHIP_CURRENT, "Current"));
 	pick_m17_add(all, TR_NONE);
+#if CONFIG_NET_M17
+	// Linked: the reflector's own services, as the destination (docs/spec/m17-ip.md 7)
+	if (ui_m17_refl_linked() && !pick_for_editor()) {
+		static const char *const svc[2] = { "ECHO", "INFO" };
+		for (uint8_t i = 0; i < 2; i++) {
+			uint64_t a;
+			uint8_t b[M17_ADDR_BYTES];
+			if (m17_addr_from_text(svc[i], &a)) {
+				m17_addr_put(b, a);
+				pick_m17_add(b, TRN(PICKER_CHIP_REFLECTOR, "Reflector"));
+			}
+		}
+	}
+#endif
 	for (uint8_t i = 0, n = 0; i < ui_recent_count() && n < 8; i++) {
 		const ui_recent_t *r = ui_recent_get(i);
 		if (r->src.kind == UI_ADDR_CALL && !r->out && r->sig != UI_RECENT_SIG_DATA) {
@@ -9024,6 +9078,9 @@ const ui_scr_def_t *const ui_scr[SCR_COUNT] = {
 #endif
 #if CONFIG_M17_BERT
 	[SCR_M17_BERT] = &ui_m17_bert_screen,
+#endif
+#if CONFIG_NET_M17
+	[SCR_M17_REFL] = &ui_m17_refl_screen,
 #endif
 #endif
 #if CONFIG_HEARD_LIST

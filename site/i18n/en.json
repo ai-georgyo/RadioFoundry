@@ -441,6 +441,8 @@
  "screen.m17_key": "Your M17 signing key",
  "screen.m17_keys": "Station keys for checking M17 signatures",
  "screen.m17_bert": "M17 bit error rate test",
+ "screen.m17_reflector": "Linking to an M17 reflector",
+ "screen.home_m17_linked": "Home, linked to an M17 reflector",
  "radios.list_title": "All Radios",
  "radios.col_cpu": "Processor",
  "radio.cpu": "Processor",

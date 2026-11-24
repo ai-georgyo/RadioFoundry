@@ -32,6 +32,10 @@
 #if CONFIG_ENTROPY
 #include "crypto/entropy.h"
 #endif
+#if CONFIG_NET_M17
+#include "m17/m17_codeplug.h"
+#include "net/m17_net.h"
+#endif
 
 // The counters' layouts the loops below walk: 32-bit words in declaration order, each run's first and last
 _Static_assert(offsetof(radio_m17_stats_t, begins) == 0u && offsetof(radio_m17_stats_t, tx_syms) == 22u * 4u &&
@@ -364,6 +368,43 @@ void debuglink_m17_reset(void)
 #endif
 }
 
+#if CONFIG_NET_M17
+// Sub-op 7, the reflector (m17_net.h): u8 0 unlink (2 bytes in all); 1 link, 2 link listen only, then the reflector's
+// IPv4 address (4 bytes, big endian), its port (u16 little endian, 0: 17000) and its name and module as text
+// ("M17-XYZ C", 3 to 9 bytes, no NUL). Linked with our callsign (m17_own_addr): REFUSED without one
+static uint8_t net_op(const uint8_t *a, uint16_t len)
+{
+	m17_net_target_t t;
+	char text[M17_CALL_MAX + 1];
+	uint16_t n = (uint16_t)(len - 8u);
+
+	if (len == 2 && a[1] == 0) {
+		m17_net_unlink(M17_NET_FROM_DEBUG);
+		return DL_ST_OK;
+	}
+	if (len < 11 || len > 8 + M17_CALL_MAX || (a[1] != 1 && a[1] != 2) || memchr(a + 8, 0, n) != NULL) {
+		return DL_ST_BAD_ARG;
+	}
+	memset(&t, 0, sizeof t);
+	memcpy(text, a + 8, n);
+	text[n] = '\0';
+	t.ip = (uint32_t)a[2] << 24 | (uint32_t)a[3] << 16 | (uint32_t)a[4] << 8 | a[5];
+	t.port = (uint16_t)(a[6] | a[7] << 8);
+	t.listen = a[1] == 2;
+	if (!m17_net_parse_name(text, t.name, &t.module)) {
+		return DL_ST_BAD_ARG;
+	}
+	t.own = m17_own_addr(NULL);
+	if (t.own == 0) {
+		return DL_ST_REFUSED;	// no callsign to link with
+	}
+	if (!m17_net_target_ok(&t)) {
+		return DL_ST_BAD_ARG;	// the address is no unicast one
+	}
+	return m17_net_link(M17_NET_FROM_DEBUG, &t) ? DL_ST_OK : DL_ST_BAD_ARG;
+}
+#endif
+
 // RADIO op 44 (docs/spec/debuglink.md 3.8): a[0] the sub-op, then its arguments, each of an exact length
 uint8_t debuglink_m17_op(const uint8_t *a, uint16_t len)
 {
@@ -371,6 +412,13 @@ uint8_t debuglink_m17_op(const uint8_t *a, uint16_t len)
 		return DL_ST_BAD_ARG;
 	}
 #if CONFIG_M17
+	if (a[0] == DL_M17_NET) {
+#if CONFIG_NET_M17
+		return net_op(a, len);
+#else
+		return DL_ST_UNAVAILABLE;
+#endif
+	}
 	// Each sub-op's request length, its byte included; 0: 8 or more (the SMS: a destination and its text)
 	static const uint8_t want[] = { 11, 2, 0, 1, 3, 2, 5 };
 	if (a[0] >= sizeof want || (want[a[0]] != 0 ? len != want[a[0]] : len < 8)) {

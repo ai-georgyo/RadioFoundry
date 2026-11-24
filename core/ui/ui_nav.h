@@ -52,6 +52,7 @@ typedef enum {
 	// (ui_heard.c, CONFIG_HEARD_LIST: the list, one station's details, arg its index)
 	SCR_CALL_DETAILS, SCR_M17_KEY, SCR_M17_KEYS, SCR_M17_BERT, SCR_CALLSIGN, SCR_CALL_TEXT, SCR_HEARD,
 	SCR_HEARD_ONE,
+	SCR_M17_REFL,			// Tools > M17 reflector (ui_m17.c, CONFIG_NET_M17): link to a reflector's module
 #if CONFIG_BACKLIGHT_TEST
 	SCR_BL_TEST,			// Settings > Advanced > Backlight tests
 #endif

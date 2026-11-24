@@ -986,6 +986,18 @@
    "needs": [
     "M17_BERT"
    ]
+  },
+  "m17_reflector": {
+   "group": "tools",
+   "needs": [
+    "NET_M17"
+   ]
+  },
+  "home_m17_linked": {
+   "group": "home",
+   "needs": [
+    "NET_M17"
+   ]
   }
  }
 }

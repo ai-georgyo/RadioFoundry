@@ -2,7 +2,8 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // M17 on a channel, the radio core's side (radio_m17.h; docs/spec/m17.md, the radio core): the engine and the voice
 // path on the lent memory, the channel's parameters, the signature work in the radio task, packets into the SMS inbox,
-// the heard list, the BER test, the benches, and the view.
+// the heard list, the BER test, the benches, and the view. Linked to a reflector (CONFIG_NET_M17), the network path:
+// PTT's stream and the SMS go to the reflector instead of the air, its streams play when the air is quiet.
 //
 // Secrets. A traffic key is read straight into cfg_tmp (static, wiped once the engine has its copy), a signing key
 // into the voice path's lent scratch (sig_work_t), never onto a task stack; each read sits inside crash_secret_enter /
@@ -41,6 +42,9 @@
 #endif
 #if CONFIG_HEARD_LIST
 #include "radio/radio_heard.h"
+#endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
 #endif
 
 #define BARRIER()		__atomic_signal_fence(__ATOMIC_SEQ_CST)
@@ -324,22 +328,64 @@ static void cfg_settings(const m17_engine_cfg_t *c, radio_m17_settings_t *out)
 }
 
 // --- Voice: the engine's hooks (provider's task) to the voice path ---
+#if CONFIG_NET_M17
+// The voice path's receive queue has one producer; with a reflector linked there are two: the engine's hooks here
+// (provider's task) and the network path (net_push, radio task). Each says it is on, then looks at the other (both
+// sequentially consistent: at least one of two that overlap sees the other). An air call holds the queue from its start
+// to its end (air_rx); a network frame is handed over only while it is clear, and an air call's hook that finds a
+// hand-over under way keeps its start for its next frame (air_pending: the mode + 1) or drops that one frame. Its end
+// needs no wait: once an air call's start is in, a hand-over under way began after air_rx was set, saw it, and writes
+// nothing (no read-modify-write either side: the C-SKY core has none to spare)
+#define SC_STORE(x, v)	__atomic_store_n(&(x), (v), __ATOMIC_SEQ_CST)
+#define SC_LOAD(x)	__atomic_load_n(&(x), __ATOMIC_SEQ_CST)
+static uint8_t air_rx, net_pushing, air_pending;
+static uint8_t air_calls;	// air calls started (the network path starts its own call again after one)
+#endif
+
 static void h_start(const m17_call_t *c, void *ctx)
 {
+	c2_mode_t mode = c2_mode((uint8_t)M17_TYPE_DATA(c->type));
+
 	(void)ctx;
-	m17_voice_rx_start(c2_mode((uint8_t)M17_TYPE_DATA(c->type)));
+#if CONFIG_NET_M17
+	SC_STORE(air_rx, 1);
+	SC_STORE(air_calls, (uint8_t)(air_calls + 1u));
+	if (SC_LOAD(net_pushing)) {
+		air_pending = (uint8_t)(mode + 1);
+		return;
+	}
+	air_pending = 0;
+#endif
+	m17_voice_rx_start(mode);
 }
 
 static void h_voice(const uint8_t stream[M17_STREAM_BYTES], uint8_t errs, void *ctx)
 {
 	(void)ctx;
+#if CONFIG_NET_M17
+	SC_STORE(air_rx, 1);
+	if (SC_LOAD(net_pushing))
+		return;		// a network frame is going in: this one is lost
+	if (air_pending != 0) {
+		m17_voice_rx_start((c2_mode_t)(air_pending - 1u));
+		air_pending = 0;
+	}
+#endif
 	m17_voice_rx_frame(stream, errs);
 }
 
 static void h_end(void *ctx)
 {
 	(void)ctx;
+#if CONFIG_NET_M17
+	if (air_pending != 0)
+		air_pending = 0;		// it never started: nothing to end
+	else
+		m17_voice_rx_end();		// a hand-over under way now saw air_rx and writes nothing
+	SC_STORE(air_rx, 0);
+#else
 	m17_voice_rx_end();
+#endif
 }
 
 static bool h_tx(uint8_t stream[M17_STREAM_BYTES], void *ctx)
@@ -349,6 +395,39 @@ static bool h_tx(uint8_t stream[M17_STREAM_BYTES], void *ctx)
 }
 
 static const m17_engine_hooks_t hooks = { h_start, NULL, h_voice, h_end, h_tx };
+
+#if CONFIG_NET_M17
+// --- The network path's state (docs/spec/m17-ip.md 7): linked to a reflector, PTT on the channel sends to it and its
+// streams play while the air is quiet. Radio task only; the link itself is the host link task's (m17_net.h) ---
+#define NET_PRIME		3u	// frames in hand before a reflector stream starts to play (120 ms for the jitter) ...
+#define NET_PRIME_MS		200u	// ... or fewer once the first has waited this long
+#define NET_AHEAD		5u	// more in hand than this: one more each tick until it is back (a burst after a gap)
+#define NET_GAP_MS		500u	// no frame this long: the stream is over (its last frame lost)
+enum { NTX_OFF, NTX_ON, NTX_DONE };
+static struct {
+	uint8_t tx;		// NTX_*: the transmission tx_prepare sent to the reflector
+	uint8_t tx_mode;	// c2_mode_t
+	uint16_t tx_sid, tx_fn, last_sid;
+	uint16_t tx_type;
+	uint8_t tx_src[M17_ADDR_BYTES], tx_dst[M17_ADDR_BYTES];
+	uint32_t rng;
+	bool rx;		// a reflector stream plays ...
+	bool skip;		// ... or is dropped (not voice, or encrypted)
+	uint16_t rx_sid;	// that stream ...
+	uint16_t rx_type;	// ... its TYPE
+	uint8_t rx_src[M17_ADDR_BYTES], rx_dst[M17_ADDR_BYTES];	// ... its caller and what it called (the heard list)
+	uint8_t rx_mode;	// c2_mode_t
+	uint8_t air_calls;	// air_calls when it last started its call in the voice path
+	uint32_t wait_ms;	// the first frame of the next stream waits to prime since (0: none waits)
+	uint32_t rel_ms;	// the next frame's release
+	uint32_t last_ms;	// the latest frame taken
+	uint32_t end_ms;	// when the reflector call the view shows ended (0: running)
+	bool view;		// the view shows a reflector call (the engine's call is no longer the view's)
+} net;
+#define NET_VIEW()	(net.view)
+#else
+#define NET_VIEW()	false
+#endif
 
 // --- SMS ---
 #if CONFIG_M17_PACKET
@@ -701,6 +780,18 @@ bool radio_m17_begin(const channel_t *ch, uint16_t number)
 		stats.mem_lent++;
 	params(ch, number);
 	memset(&run, 0, sizeof run);
+#if CONFIG_NET_M17
+	{
+		uint16_t last = net.last_sid;
+		uint32_t rng = net.rng;
+
+		memset(&net, 0, sizeof net);	// what the network gave meanwhile is stale
+		net.last_sid = last;
+		net.rng = rng;
+		m17_net_rx_flush();
+		air_rx = air_pending = net_pushing = 0;	// no provider runs yet
+	}
+#endif
 	run.tx_kind = 0xFFu;
 	run.idle_since = hal_millis();	// the key check's 2 s start here
 	m17_voice_begin(&m->voice);	// before the engine: its first call may come at once
@@ -771,6 +862,10 @@ void radio_m17_end(void)
 #endif
 #if CONFIG_M17_BERT
 	bert.tx = false;
+#endif
+#if CONFIG_NET_M17
+	net.tx = NTX_OFF;
+	net.rx = net.skip = false;
 #endif
 }
 
@@ -1233,6 +1328,329 @@ static OWN_FRAME void gnss_poll(m17_engine_t *e, uint32_t now)
 	}
 }
 
+#if CONFIG_NET_M17
+// --- The network path's work, each tick (docs/spec/m17-ip.md 7) ---
+
+// One frame of ours to the reflector (the ring full or the link gone: counted there)
+static void net_tx_send(const uint8_t stream[M17_STREAM_BYTES], uint16_t fn)
+{
+	m17_net_frame_t f;
+
+	f.sid = net.tx_sid;
+	f.fn = fn;
+	f.type = net.tx_type;
+	memcpy(f.src, net.tx_src, M17_ADDR_BYTES);
+	memcpy(f.dst, net.tx_dst, M17_ADDR_BYTES);
+	memcpy(f.stream, stream, M17_STREAM_BYTES);
+	(void)m17_net_tx_frame(&f);
+}
+
+// The encoder's frames, as they come (one every 40 ms; the engine takes none: it sends nothing now)
+static void net_tx_pump(void)
+{
+	uint8_t st[M17_STREAM_BYTES];
+
+	while (net.tx == NTX_ON && m17_voice_tx_frame(st)) {
+		net_tx_send(st, net.tx_fn);
+		net.tx_fn = (uint16_t)((net.tx_fn + 1u) & M17_FN_MASK);
+	}
+}
+
+// PTT released, or the time-out: what the encoder has, then a silent last frame (FN with its end bit)
+static void net_tx_end(void)
+{
+	if (net.tx != NTX_ON)
+		return;
+	net_tx_pump();
+	m17_voice_tx(false, C2_MODE_3200);
+	net_tx_send(m17_voice_silence((c2_mode_t)net.tx_mode), (uint16_t)(net.tx_fn | M17_FN_END));
+	net.tx = NTX_DONE;	// the radio core ends the TX state at the next tick (tx_state)
+}
+
+// A reflector stream the voice path plays: voice (3200 or 1600), in the clear
+static bool net_voice(uint16_t type)
+{
+	return (type & M17_TYPE_STREAM) != 0 && M17_TYPE_ENC(type) == M17_ENC_NONE &&
+	       (M17_TYPE_DATA(type) == M17_DATA_VOICE || M17_TYPE_DATA(type) == M17_DATA_VOICE_DATA);
+}
+
+// A hand-over to the voice path's queue (air_rx above): a call's start, a frame, an end. False: an air call holds it
+static bool net_push(const uint8_t *stream, bool start, bool end)
+{
+	bool ok;
+
+	SC_STORE(net_pushing, 1);
+	ok = SC_LOAD(air_rx) == 0;
+	if (ok) {
+		uint8_t calls = SC_LOAD(air_calls);
+
+		if (start || calls != net.air_calls) {
+			net.air_calls = calls;	// (an air call came between our frames: ours starts again)
+			m17_voice_rx_start((c2_mode_t)net.rx_mode);
+		}
+		if (stream != NULL)
+			m17_voice_rx_frame(stream, 0);	// no FEC over IP: never "bad"
+		if (end)
+			m17_voice_rx_end();
+	}
+	SC_STORE(net_pushing, 0);
+	return ok;
+}
+
+// The details of a reflector call (Call Details): who and what, no META over the network
+static void net_det(const radio_m17_view_t *n, uint16_t type)
+{
+	seq_begin(&det_seq);
+	memset(&det, 0, sizeof det);
+	memcpy(det.src, n->src, M17_ADDR_BYTES);
+	memcpy(det.dst, n->dst, M17_ADDR_BYTES);
+	memcpy(det.orig, n->orig, M17_ADDR_BYTES);
+	memcpy(det.via, n->via, M17_ADDR_BYTES);
+	det.can = n->can;
+	det.voice = (uint8_t)M17_TYPE_DATA(type);
+	det.played = true;
+	det.end_ms = net.end_ms;
+	seq_end(&det_seq);
+	det_have = true;
+}
+
+// A reflector stream takes the view: its caller, what it called, the reflector as via. A reflector rewrites DST (to
+// the client, or to everyone): a call from it is never "to us", so no reply window opens on it
+static OWN_FRAME void net_call_view(radio_m17_view_t *n, const m17_net_frame_t *f)
+{
+	m17_net_status_t s;
+	uint64_t via = 0;
+
+	if (m17_net_status_try(&s))
+		via = m17_net_module_addr(s.t.name, s.t.module);
+	net.view = true;
+	net.end_ms = 0;
+	n->flags &= ~(uint32_t)CALL_FLAGS;
+	n->flags |= RADIO_M17_LSF;
+	if (M17_TYPE_DATA(f->type) == M17_DATA_VOICE_DATA)
+		n->flags |= RADIO_M17_1600;
+	n->can = (uint8_t)M17_TYPE_CAN(f->type);
+	n->enc = 0;
+	n->why = M17_WHY_NONE;
+	n->sig = RADIO_M17_SIG_NONE;
+	memcpy(n->src, f->src, M17_ADDR_BYTES);
+	memcpy(n->dst, f->dst, M17_ADDR_BYTES);
+	memcpy(n->orig, f->src, M17_ADDR_BYTES);
+	m17_addr_put(n->via, via);
+	n->rssi_dbm = 0;
+	n->call_seq++;
+	n->meta_seq++;
+	net_det(n, f->type);
+}
+
+// The reflector stream stops playing (its end, a gap, the air or PTT first)
+static void net_rx_stop(radio_m17_view_t *n, uint32_t now)
+{
+	net.skip = false;
+	if (!net.rx)
+		return;
+	net.rx = false;
+	(void)net_push(NULL, false, true);
+	if (net.view) {		// (an air call may have taken the view first)
+		net.end_ms = now != 0 ? now : 1u;
+		net_det(n, net.rx_type);
+		n->meta_seq++;
+	}
+#if CONFIG_HEARD_LIST
+	radio_heard_t h;
+
+	memset(&h, 0, sizeof h);
+	h.mode = RADIO_MODE_M17;
+	h.flags = RADIO_HEARD_ADDR;
+	memcpy(h.addr, net.rx_src, sizeof h.addr);
+	memcpy(h.to, net.rx_dst, sizeof h.to);
+	if (m17_addr_get(h.addr) != 0)
+		radio_heard_add(&h);
+#endif
+}
+
+// One frame from the reflector, in its turn
+static void net_frame(radio_m17_view_t *n, const m17_net_frame_t *f, uint32_t now)
+{
+	bool end = (f->fn & M17_FN_END) != 0;
+
+	net.last_ms = now;
+	if (!((net.rx || net.skip) && f->sid == net.rx_sid)) {
+		net_rx_stop(n, now);		// a new stream (the one before lost its last frame)
+		net.rx_sid = f->sid;
+		if (!net_voice(f->type)) {
+			net.skip = true;	// data, or encrypted: nothing to play
+		} else {
+			net.rx = true;
+			net.rx_type = f->type;
+			memcpy(net.rx_src, f->src, M17_ADDR_BYTES);
+			memcpy(net.rx_dst, f->dst, M17_ADDR_BYTES);
+			net.rx_mode = (uint8_t)c2_mode((uint8_t)M17_TYPE_DATA(f->type));
+			net_call_view(n, f);
+			(void)net_push(NULL, true, false);
+		}
+	}
+	// A signed stream's tail (the authentication and signature frames) is no voice; not checked over the network
+	bool tail = (f->type & M17_TYPE_SIGNED) != 0 && (f->fn & M17_FN_MASK) >= M17_FN_AUTH;
+	if (net.rx && !tail)
+		(void)net_push(f->stream, false, false);
+	if (end) {
+		if (net.rx)
+			net_rx_stop(n, now);
+		net.skip = false;
+	}
+}
+
+// The reflector's streams: played while nothing is heard on the air and nothing is sent, paced at a frame every 40 ms
+// from a few in hand (the network's jitter); dropped otherwise
+static OWN_FRAME void net_rx(radio_m17_view_t *n, const m17_engine_view_t *ev, uint32_t now)
+{
+	m17_net_frame_t f;
+
+	if (ev->rx_active || ev->tx != AIR_TX_IDLE || net.tx != NTX_OFF || run.tx_kind != 0xFFu || !m17_net_linked()) {
+		net_rx_stop(n, now);
+		m17_net_rx_flush();
+		net.wait_ms = 0;
+	} else {
+		if ((net.rx || net.skip) && now - net.last_ms >= NET_GAP_MS)
+			net_rx_stop(n, now);
+		if (net.rx && (int32_t)(now - net.rel_ms) > (int32_t)(2u * M17_FRAME_MS))
+			net.rel_ms = now;	// it ran dry: the pace starts again from the next frame
+		for (;;) {
+			uint8_t q = m17_net_rx_count();
+			bool due = (int32_t)(now - net.rel_ms) >= 0;
+
+			if (q == 0)
+				break;
+			if (!net.rx && !net.skip) {
+				// Between streams: the next one gathers a few frames first
+				if (net.wait_ms == 0)
+					net.wait_ms = now != 0 ? now : 1u;
+				if (q < NET_PRIME && now - net.wait_ms < NET_PRIME_MS)
+					break;
+				net.wait_ms = 0;
+				net.rel_ms = now;
+				due = true;
+			} else if (net.rx && !due && q <= NET_AHEAD) {
+				break;
+			}
+			if (!m17_net_rx_take(&f))
+				break;
+			net_frame(n, &f, now);
+			if (due)
+				net.rel_ms += M17_FRAME_MS;
+		}
+	}
+	if (net.rx)
+		n->flags |= RADIO_M17_RX | RADIO_M17_PLAYED;
+	if (net.view)
+		n->end_ms = net.rx ? 0 : net.end_ms;
+}
+
+#if CONFIG_M17_PACKET
+_Static_assert(sizeof sms.data <= M17_NET_SMS_MAX, "an SMS fits the network's slot");
+
+// SMS through the reflector: one from it into the inbox when it is ours; ours to it, at once (no channel to wait for)
+static OWN_FRAME void net_sms(m17_engine_t *e)
+{
+	const m17_net_sms_t *in = m17_net_sms_peek();
+
+	if (in != NULL) {
+		m17_packet_info_t info;
+		uint8_t tl = 0;
+
+		memset(&info, 0, sizeof info);
+		info.src = in->src;
+		info.dst = in->dst;
+		info.type = m17_pkt_type_get(in->data, in->len, &tl);
+		if (tl != 0 && info.type == M17_PKT_SMS) {
+			if (!sms_ours(&info, e->cfg.dst)) {
+				stats.sms_dropped++;
+			} else {
+				uint8_t peer[M17_ADDR_BYTES];
+				uint16_t k = 0;
+
+				while (tl + k < in->len && in->data[tl + k] != 0)
+					k++;
+				m17_addr_put(peer, in->src);
+				inbox_add(peer, false, in->data + tl, k, in->cut);
+				stats.sms_rx++;
+			}
+		}
+		m17_net_sms_done();
+	}
+	if (sms.waiting && !sms.inflight && m17_net_talks()) {
+		m17_net_sms_t *o;
+
+		if (sms_clear_refused()) {
+			sms_done(RADIO_M17_SMS_BUSY);	// the channel was set to encrypt: never in the clear
+		} else if ((o = m17_net_sms_slot()) != NULL) {
+			o->src = ch_now.own;
+			o->dst = sms.dst;
+			o->can = e->cfg.tx_can;
+			o->cut = false;
+			o->len = sms.len;
+			memcpy(o->data, sms.data, sms.len);
+			m17_net_sms_post();
+			inbox_add(sms.to, true, &sms.data[1], (uint16_t)(sms.len - 2u), false);
+			stats.sms_tx++;
+			sms_done(RADIO_M17_SMS_SENT);	// handed to the reflector: M17 has no delivery report
+		}
+	}
+}
+#endif
+
+// A new stream ID per PTT, never the last one
+static uint16_t net_sid(void)
+{
+	uint16_t sid;
+#if CONFIG_ENTROPY
+	uint8_t b[2];
+
+	if (entropy_get(b, sizeof b)) {
+		sid = (uint16_t)(b[0] << 8 | b[1]);
+	} else
+#endif
+	{
+		net.rng = net.rng * 1103515245u + 12345u + hal_micros();
+		sid = (uint16_t)(net.rng >> 16);
+	}
+	if (sid == net.last_sid)
+		sid ^= 0xA5A5u;
+	net.last_sid = sid;
+	return sid;
+}
+
+// PTT linked to talk: the stream goes to the reflector, not the air. In the clear and unsigned: a channel set to
+// encrypt refuses (never in the clear), signing is not done over the network
+static bool net_tx_start(m17_engine_t *e)
+{
+	const m17_engine_cfg_t *c = &e->cfg;
+
+	if (c->tx_enc != M17_ENC_NONE) {
+		run.prep_deny = TXDENY_REFUSED;
+		return false;
+	}
+	net.tx_sid = net_sid();
+	net.tx_fn = 0;
+	net.tx_mode = (uint8_t)c2_mode(c->voice);
+	net.tx_type = m17_type(true, c->voice == M17_DATA_VOICE_DATA ? M17_DATA_VOICE_DATA : M17_DATA_VOICE,
+			       M17_ENC_NONE, M17_META_TEXT, c->tx_can, false);
+	m17_addr_put(net.tx_src, c->src);
+	m17_addr_put(net.tx_dst, c->dst);
+	net.tx = NTX_ON;
+	run.tx_kind = M17_TX_STREAM;
+	run.tx_aborted = false;
+	m17_voice_tx(true, (c2_mode_t)net.tx_mode);
+	return true;
+}
+
+static bool net_elsewhere(void)
+{
+	return net.tx != NTX_OFF;
+}
+#endif
+
 bool radio_m17_poll(radio_m17_view_t *v)
 {
 	m17_engine_view_t ev;
@@ -1253,6 +1671,9 @@ bool radio_m17_poll(radio_m17_view_t *v)
 	e = &mem->eng;
 	m17_engine_view(e, &ev);
 	m17_voice_poll();
+#if CONFIG_NET_M17
+	net_tx_pump();		// what the encoder made since the last tick, to the reflector
+#endif
 	if (run.masked) {
 		if (!ev.rx_active || ev.rx_calls != run.masked_calls)
 			run.masked = false;
@@ -1269,6 +1690,12 @@ bool radio_m17_poll(radio_m17_view_t *v)
 	n.flags |= RADIO_M17_ON;
 	n.tx = ev.tx;
 	n.tx_phase = ev.tx_phase;
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF) {
+		n.tx = net.tx == NTX_ON ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;	// our stream to the reflector
+		n.tx_phase = net.tx == NTX_ON ? (uint8_t)M17_TXP_DATA : (uint8_t)M17_TXP_EOT;
+	}
+#endif
 	// A new call: its fields from now on; a call that ended: its end, the heard list
 	bool fresh = ev.rx_calls != run.calls && ev.rx.flags != 0 && !run.masked;
 	if ((run.active && (!ev.rx_active || fresh))) {
@@ -1281,6 +1708,9 @@ bool radio_m17_poll(radio_m17_view_t *v)
 #endif
 	}
 	if (fresh) {
+#if CONFIG_NET_M17
+		net.view = false;	// an air call takes the view back
+#endif
 		run.calls = ev.rx_calls;
 		run.end_ms = 0;
 		run.sig = RADIO_M17_SIG_NONE;
@@ -1291,7 +1721,8 @@ bool radio_m17_poll(radio_m17_view_t *v)
 		seq_end(&det_seq);
 		run.dirty = true;
 	}
-	bool mine = run.calls != 0 && ev.rx_calls == run.calls;	// the engine's call is the one the view has
+	// the engine's call is the one the view has (not after a reflector call took it)
+	bool mine = run.calls != 0 && ev.rx_calls == run.calls && !NET_VIEW();
 	run.active = mine && ev.rx_active;
 	if (mine) {
 		uint32_t flags0 = n.flags;
@@ -1326,7 +1757,8 @@ bool radio_m17_poll(radio_m17_view_t *v)
 		key_check(&ev, now);
 	}
 	if (heard_sig != RADIO_M17_SIG_NONE) {
-		n.sig = run.sig;
+		if (!NET_VIEW())
+			n.sig = run.sig;
 #if CONFIG_HEARD_LIST
 		if (mine && !run.active)
 			heard_add(&n, &ev.rx);
@@ -1352,6 +1784,12 @@ bool radio_m17_poll(radio_m17_view_t *v)
 #endif
 #if CONFIG_M17_BERT
 	bert_poll(&ev, ev.rx_active, now, &n);
+#endif
+#if CONFIG_NET_M17
+	net_rx(&n, &ev, now);
+#if CONFIG_M17_PACKET
+	net_sms(e);
+#endif
 #endif
 	gnss_poll(e, now);
 	settings_view(&n);
@@ -1440,6 +1878,10 @@ uint8_t radio_m17_auto_tx(bool busy, bool keyed, uint32_t now_ms)
 		return RADIO_AIR_AUTO_NO;
 #endif
 #if CONFIG_M17_PACKET
+#if CONFIG_NET_M17
+	if (sms.waiting && !sms.inflight && m17_net_talks())
+		return RADIO_AIR_AUTO_NO;	// it goes to the reflector (net_sms), not on the air
+#endif
 	if (sms.waiting && !sms.inflight && sms_clear_refused()) {
 		sms_done(RADIO_M17_SMS_BUSY);	// the channel was set to encrypt after it was queued: never in the clear
 		return RADIO_AIR_AUTO_NO;
@@ -1476,6 +1918,10 @@ uint8_t radio_m17_auto_tx(bool busy, bool keyed, uint32_t now_ms)
 
 static bool m17_no_tx(void)
 {
+#if CONFIG_NET_M17
+	if (m17_net_talks())
+		return false;	// PTT goes to the reflector: the provider's transmit doesn't matter
+#endif
 	return mem != NULL && (mem->eng.session.fit & AIR_FIT_TX) == 0;
 }
 
@@ -1500,6 +1946,10 @@ static bool m17_tx_prepare(void)
 #endif
 	if (req.kind == M17_TX_STREAM && (run.prep_deny = stream_deny()) != TXDENY_NONE)
 		return false;		// the user's PTT while an SMS waited (tx_deny let it through for the SMS)
+#if CONFIG_NET_M17
+	if (req.kind == M17_TX_STREAM && m17_net_talks())
+		return net_tx_start(e);
+#endif
 	if (position_utc_now(hal_millis(), UTC_FRESH_MS, &unix_s, NULL))
 		req.ts = utc_since_2020(unix_s);
 #if CONFIG_M17_AES
@@ -1554,11 +2004,21 @@ static bool m17_tx_prepare(void)
 
 static bool m17_tx_go(void)
 {
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF)
+		return true;	// nothing to start on the air
+#endif
 	return mem != NULL && m17_engine_tx_go(&mem->eng);
 }
 
 static void m17_tx_stop(void)
 {
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF) {
+		net_tx_end();
+		return;
+	}
+#endif
 	if (mem != NULL) {
 		m17_voice_tx(false, C2_MODE_3200);	// the engine fills the frame on air, and a signed tail, with silence
 		m17_engine_tx_stop(&mem->eng);
@@ -1567,6 +2027,13 @@ static void m17_tx_stop(void)
 
 static void m17_tx_abort(void)
 {
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF) {
+		net_tx_end();
+		run.tx_aborted = true;
+		return;
+	}
+#endif
 	if (mem != NULL) {
 		m17_voice_tx(false, C2_MODE_3200);
 		m17_engine_tx_abort(&mem->eng);
@@ -1580,6 +2047,10 @@ static void m17_tx_abort(void)
 
 static uint8_t m17_tx_state(void)
 {
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF)
+		return net.tx == NTX_ON ? (uint8_t)AIR_TX_ON : (uint8_t)AIR_TX_DONE;
+#endif
 	return mem != NULL ? (uint8_t)m17_engine_tx_state(&mem->eng) : (uint8_t)AIR_TX_IDLE;
 }
 
@@ -1587,6 +2058,14 @@ static void m17_tx_clear(void)
 {
 	if (mem == NULL)
 		return;
+#if CONFIG_NET_M17
+	if (net.tx != NTX_OFF) {
+		net.tx = NTX_OFF;
+		m17_voice_tx(false, C2_MODE_3200);
+		run.tx_kind = 0xFFu;
+		return;
+	}
+#endif
 	m17_voice_tx(false, C2_MODE_3200);
 	m17_engine_tx_clear(&mem->eng);
 #if CONFIG_M17_PACKET
@@ -1794,6 +2273,9 @@ const radio_air_mode_t radio_m17_mode = {
 	.view_off = row_view_off,
 	.tx_deny = radio_m17_tx_deny,
 	.auto_tx = radio_m17_auto_tx,
+#if CONFIG_NET_M17
+	.tx_elsewhere = net_elsewhere,
+#endif
 	.ops = &radio_m17_air,
 };
 

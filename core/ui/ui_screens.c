@@ -1060,6 +1060,15 @@ static void draw_place(const radio_view_t *v, const ui_state_t *s)
 		}
 		int rw = gfx_text_width(L->small, right);
 		const char *left = v->vfo ? "VFO" : v->zone_name;
+		bool linked = false;
+#if CONFIG_NET_M17
+		// Linked to a reflector on an M17 channel: where the zone was, "Linked M17-M17 C" (UX 22)
+		char refl[32];
+		if (v->ch.mode == RADIO_MODE_M17 && ui_m17_refl_place(refl, sizeof refl)) {
+			left = refl;
+			linked = true;
+		}
+#endif
 		if (v->vfo && v->ch.mode == RADIO_MODE_DMR && !v->ch.rx_only && v->ch.tx_hz != v->ch.rx_hz) {
 			// A split VFO on DMR: the talk row names the target, so the TX frequency goes here (FM's talk row
 			// already shows it). A frequency is never cut short: the step gives way, then "VFO"
@@ -1075,7 +1084,7 @@ static void draw_place(const radio_view_t *v, const ui_state_t *s)
 		if (rw)
 			gfx_text(L->small, w - rw, L->zone_y, right, ui_col.dim);
 		gfx_text_fit(L->small, left, w - rw - L->small->w, fit, sizeof fit);
-		gfx_text(L->small, 0, L->zone_y, fit, v->vfo ? ui_col.warn : ui_col.fg);
+		gfx_text(L->small, 0, L->zone_y, fit, v->vfo && !linked ? ui_col.warn : ui_col.fg);
 	}
 
 	int y = L->channel_y;

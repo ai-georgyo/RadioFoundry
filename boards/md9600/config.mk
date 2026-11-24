@@ -76,6 +76,10 @@ CONFIG_M17_AES ?= n
 CONFIG_M17_SCRAMBLER ?= n
 CONFIG_M17_BERT ?= n
 CONFIG_HEARD_LIST ?= n
+# flash: the M17 reflector client (NET_M17) would leave the default image 4,200 B over the app region (it takes about
+# 9.1 KB; 2026-11-23), and ci's maximal image, which has M17 with every part, more
+CONFIG_NET_M17 ?= n
+MAXIMAL_SKIP += NET_M17
 # flash: the web pages stored without gzip are larger: beside M17 that image is 17,608 B over the app region
 # (2026-11-23), so ci builds no configuration without NET_HTTP_GZIP here
 BOARD_REQUIRED += NET_HTTP_GZIP

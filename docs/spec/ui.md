@@ -610,6 +610,7 @@ link time. `ui_svc_features()` ORs the bits each package reports.
 | `ui_svc_m17_wide_set`, `ui_svc_m17_write_block`, `UI_SET_M17_SIGN`, `UI_SET_M17_GNSS` | storage-cps | `ui_svc_storage.c`: storage jobs that write the radio-wide M17 record (`m17_wide_save`) and a stored channel's block (destination, encryption off) |
 | `ui_msg_m17` (the M17 message provider, 2.6), `ui_svc_m17_poll` | radio core (`CONFIG_M17_PACKET`) | `ui_svc_m17.c` over `radio_m17_sms_*`: the inbox's rows, the sends, and the polled "Message from" / "Sent to" / "Not sent to" banners (M17 has no delivery report) |
 | Call Details, the signing key, station keys, BER test, Heard | radio core | `ui_m17.c`, `ui_heard.c` over `radio_m17_details`, `radio_m17_key`, `m17_station_key_at`, `radio_m17_bert_*`, `radio_heard` |
+| Tools > M17 reflector, Home's place line while linked, the picker's `ECHO` and `INFO` | the M17 reflector client (`CONFIG_NET_M17`) | `ui_m17.c` over `m17_net_link`, `m17_net_unlink` and `m17_net_status` (a copy any task reads; the host link task runs the link): [m17-ip.md](m17-ip.md) 7.1 |
 | talker alias, private call start | dmr-voice | read from `radio_view_t.dmr`; `UI_EV_PRIVATE_CALL` is not raised by anyone yet |
 
 A request to save channel changes reports the reason when it cannot start: the VFO keeps its settings

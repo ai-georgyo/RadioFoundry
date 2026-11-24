@@ -26,6 +26,10 @@
 #if CONFIG_ENTROPY
 #include "crypto/entropy.h"
 #endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
+#include "dmr/ipGateway.h"
+#endif
 #endif
 
 static int failures;
@@ -723,21 +727,124 @@ static void test_op(void)
 
 	// Nothing, an unknown sub-op
 	CHECK(op(tm, 0) == DL_ST_BAD_ARG);
-	uint8_t u[] = { 7, 0 };
+	uint8_t u[] = { 8, 0 };
 	CHECK(op(u, 2) == DL_ST_BAD_ARG);
+	u[0] = DL_M17_NET;	// The reflector's sub-op: unlink, or unavailable without the client
+#if CONFIG_NET_M17
+	CHECK(op(u, 2) == DL_ST_OK);
+#else
+	CHECK(op(u, 2) == DL_ST_UNAVAILABLE);
+#endif
 	u[0] = 0xFF;
 	CHECK(op(u, 1) == DL_ST_BAD_ARG);
+}
+#endif
+
+#if CONFIG_NET_M17
+// ---- M17 reflector. Sub-op 7 with the client built (debuglinkM17TestNet): the real m17_net.c on a fake IP
+// gateway, our callsign from a fake radio-wide record ----
+static uint64_t f_own;
+uint64_t m17_own_addr(bool *bad)
+{
+	if (bad != NULL)
+		*bad = false;
+	return f_own;
+}
+static uint8_t f_frame[IPGW_LOCAL_MAX];
+static uint8_t f_sent[16];
+static int f_sent_len;
+uint8_t *ipGatewayLocalPayload(void) { return f_frame; }
+bool ipGatewayUdpBind(uint16_t port, ipGatewayUdpHandler handler) { (void)port; (void)handler; return true; }
+bool ipGatewayUdpSend(uint32_t ip, uint16_t sport, uint16_t dport, const uint8_t *p, int n)
+{
+	(void)ip; (void)sport; (void)dport;
+	f_sent_len = n;
+	memcpy(f_sent, p, (size_t)(n < (int)sizeof f_sent ? n : (int)sizeof f_sent));
+	return true;
+}
+
+// a: the link request, ip 192.0.2.1, port, text
+static uint16_t net_req(uint8_t *a, uint8_t kind, uint16_t port, const char *name)
+{
+	size_t n = strlen(name);
+	a[0] = DL_M17_NET;
+	a[1] = kind;
+	a[2] = 192;
+	a[3] = 0;
+	a[4] = 2;
+	a[5] = 1;
+	a[6] = (uint8_t)port;
+	a[7] = (uint8_t)(port >> 8);
+	memcpy(a + 8, name, n);
+	return (uint16_t)(8u + n);
+}
+
+static void test_net_op(void)
+{
+	uint8_t a[32];
+	uint16_t n;
+	m17_net_status_t s;
+
+	m17_net_start();
+	(void)m17_addr_from_text("N0CALL", &f_own);
+	// Link: the target as given, our callsign, CONN at the next poll
+	n = net_req(a, 1, 17001, "M17-XYZ C");
+	CHECK(op(a, n) == DL_ST_OK);
+	m17_net_poll(1000u, true);
+	m17_net_status(&s);
+	CHECK(s.state == M17_NET_CONNECTING && s.t.ip == 0xC0000201u && s.t.port == 17001 && strcmp(s.t.name, "M17-XYZ") == 0 &&
+	      s.t.module == 'C' && !s.t.listen && s.t.own == f_own);
+	CHECK(f_sent_len == 11 && memcmp(f_sent, "CONN", 4) == 0 && f_sent[10] == 'C');
+	// Listen only, lower case and a 6-character designation; port 0: 17000
+	n = net_req(a, 2, 0, "urfxyz  a");
+	CHECK(op(a, n) == DL_ST_OK);
+	m17_net_poll(1010u, true);
+	m17_net_status(&s);
+	CHECK(s.t.listen && strcmp(s.t.name, "URFXYZ") == 0 && s.t.module == 'A' && s.t.port == 0);
+	CHECK(f_sent_len == 11 && memcmp(f_sent, "LSTN", 4) == 0);
+	// Unlink: 2 bytes exactly
+	a[1] = 0;
+	CHECK(op(a, 2) == DL_ST_OK);
+	CHECK(op(a, 3) == DL_ST_BAD_ARG);
+	m17_net_poll(1020u, true);
+	CHECK(m17_net_state() == M17_NET_UNLINKING && f_sent_len == 10 && memcmp(f_sent, "DISC", 4) == 0);
+	// Refusals: a kind not known, a text too short or too long or with a NUL, no module, an address that isn't
+	// unicast, no callsign
+	n = net_req(a, 3, 0, "M17-XYZ C");
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "A ");
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "M17-XYZ  C");
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "M17-XYZ C");
+	a[10] = 0;
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "M17-XYZC");
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "M17-XYZ C");
+	a[2] = 127;
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	a[2] = 224;
+	CHECK(op(a, n) == DL_ST_BAD_ARG);
+	n = net_req(a, 1, 0, "M17-XYZ C");
+	f_own = 0;
+	CHECK(op(a, n) == DL_ST_REFUSED);
+	m17_net_poll(1030u, true);
+	CHECK(m17_net_state() == M17_NET_UNLINKING);	// none of them reached the client
 }
 #endif
 
 int main(void)
 {
 	CHECK(debuglink_is_feature_op(DL_OP_M17));
-	CHECK(DL_VIEW_HEARD == DL_VIEW_M17 + 4 && DL_VIEW_COUNT == DL_VIEW_HEARD + 1);
+	CHECK(DL_VIEW_HEARD == DL_VIEW_M17 + 4 && DL_VIEW_M17_NET == DL_VIEW_HEARD + 1 && DL_VIEW_COUNT == DL_VIEW_M17_NET + 1);
 #if CONFIG_M17
 	test_keys();
 	test_widest();
 	test_op();
+#if CONFIG_NET_M17
+	test_net_op();
+#endif
 	printf("debuglinkM17Test (packet %d, bert %d, sig %d, heard %d, entropy %d): %s\n", CONFIG_M17_PACKET,
 	       CONFIG_M17_BERT, CONFIG_M17_SIG, CONFIG_HEARD_LIST, CONFIG_ENTROPY, failures ? "FAILED" : "ok");
 #else

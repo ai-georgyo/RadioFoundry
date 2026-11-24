@@ -257,6 +257,7 @@ NET_SRC-$(CONFIG_MDNS) += core/net/net.c core/net/net_services.c core/net/mdns.c
 NET_SRC-$(CONFIG_TFTP) += core/net/net.c core/net/net_services.c core/net/tftp.c core/net/tftp_codeplug.c
 NET_SRC-$(CONFIG_TFTP_IDDB) += core/net/tftp_iddb.c
 NET_SRC-$(CONFIG_NET_USRP) += core/net/net.c core/usbaudio/usrp_net.c core/usbaudio/usrp.c
+NET_SRC-$(CONFIG_NET_M17) += core/net/net.c core/net/m17_net.c
 APP_SRC += $(sort $(NET_SRC-y))
 # The PCM stream shared between the radio's users, a host audio session (USRP) and APRS receive
 MUX_SRC-$(CONFIG_NET_USRP) += core/usbaudio/audio_mux.c core/usbaudio/pcm_slip.c

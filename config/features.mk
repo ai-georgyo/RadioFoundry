@@ -343,6 +343,10 @@ CONFIG_M17_SCRAMBLER ?= $(CONFIG_M17)
 CONFIG_M17_AES ?= $(CONFIG_M17)
 # the list of stations heard (core/radio/radio_heard.c): M17 is its only source so far (needs M17)
 CONFIG_HEARD_LIST ?= $(CONFIG_M17)
+# M17 reflector client: an M17 channel's calls and SMS through a reflector over the USB network or PPP, Tools > M17
+# reflector (needs M17 and DMR_IP_GATEWAY; core/net/m17_net.c, docs/spec/m17-ip.md). About 10 KB of flash and 1.2 KB
+# of RAM: a board without that room turns it off in its config.mk
+CONFIG_NET_M17 ?= $(if $(and $(filter y,$(CONFIG_M17)),$(filter y,$(CONFIG_DMR_IP_GATEWAY))),y,n)
 # Derived from the M17 switches and DMR_AES, never set by hand (a command line or a board's config.mk that sets one
 # stops the build): CODEC2 the vocoder (core/codec2), with M17; CRYPTO_AES the one AES in the tree, with M17_AES or
 # DMR_AES; CRYPTO_P256 ECDSA P-256 with M17_SIG; ENTROPY the random pool M17's AES nonces come from, with M17_AES;
@@ -383,7 +387,7 @@ CONFIG_SATELLITE_TLE ?= $(if $(filter y,$(CONFIG_DEBUGLINK)),y,n)
 FEATURES := USB_SERIAL_REQUEST FM SUBTONE DMR DMR_PRIVACY DMR_AES DMR_TALKER_ALIAS DMR_GPS DMR_SMS DMR_TMS DMR_ARS DMR_LRRP DMR_SIGNALING DMR_EMERGENCY DMR_ROAMING DMR_TRUNK DMR_TRUNK_TX DMR_TRUNK_SUPL DMR_TRUNK_GW VOICE_CAPTURE DMR_IP_GATEWAY ZONE_SHARE DMR_UDP_COMPRESS NET_TCP NET_KISS NET_HTTP NET_HTTP_GZIP NET_WEBCTL NET_RADIO_UDP NET_RIGCTL NET_APRSIS NET_USRP MDNS TFTP TFTP_IDDB IDDB_COMPACT DMR_CONTROL_STATION SNMP SFR SFR_DUALPATH_RX SFR_CWID TASK_STACKS \
 	USB HOSTLINK USB_NETWORK NET_PPP HOTSPOT HOTSPOT_SPLIT DEBUGLINK CPS_OPENFW CPS_FAST VFO VFO_FM VFO_DMR DIAG BACKLIGHT_TEST FONT_XL FONT_AA FONT_BIG LANG_ES LANG_IT LANG_FR LANG_ZH CJK_GLYPHS LANG_DEFAULT_ES LANG_DEFAULT_IT LANG_DEFAULT_FR LANG_DEFAULT_ZH UI_COLOR UI_SETTINGS SCAN DUAL_WATCH BEEP SIG_TONES FM_TX_TONES DTMF \
 	RX_EXT VOX REF_TRIM BATTERY_SAVE VIBRATE GPS AUDIO_PROBE STUB_ENTRY NAND_STORAGE CRASH_LOG CRASH_SCREEN CRASH_REPORT WATCHDOG SUPPORT_INFO FAULT_TRACE AM_RX BCAST_FM APRS APRS_AFSK APRS_DMR APRS_RX APRS_IGATE GPS_SKY SATELLITE_TLE KEY_ASSIGN CHANNEL_LIST CHANNEL_EDIT ZONE_EDIT CONTACT_EDIT VOLUME_BAR P25 P25_TRUNK NXDN NXDN_SCRAMBLER \
-	M17 M17_PACKET M17_BERT M17_SIG M17_SCRAMBLER M17_AES HEARD_LIST AIR_RAW
+	M17 M17_PACKET M17_BERT M17_SIG M17_SCRAMBLER M17_AES HEARD_LIST NET_M17 AIR_RAW
 
 # The panel's width in pixels: the display class the board's board.toml names (hardware.gallery = "160x128", the width
 # first). Empty when it names none, which counts as a narrow panel
@@ -455,6 +459,7 @@ $(if $(and $(call feature_on,NXDN),$(if $(call feature_on,DMR),,x)),$(error CONF
 # M17: the mode needs DMR, its sub-features need the mode
 $(if $(and $(call feature_on,M17),$(if $(call feature_on,DMR),,x)),$(error CONFIG_M17=y needs CONFIG_DMR=y (the air provider and the PCM audio are the board's DMR glue)))
 $(foreach f,M17_PACKET M17_BERT M17_SIG M17_SCRAMBLER M17_AES HEARD_LIST,$(if $(and $(call feature_on,$(f)),$(if $(call feature_on,M17),,x)),$(error CONFIG_$(f)=y needs CONFIG_M17=y)))
+$(if $(call feature_on,NET_M17),$(if $(and $(call feature_on,M17),$(call feature_on,DMR_IP_GATEWAY)),,$(error CONFIG_NET_M17=y needs CONFIG_M17=y and CONFIG_DMR_IP_GATEWAY=y)))
 $(if $(and $(call feature_on,AIR_RAW),$(if $(call feature_on,DEBUGLINK),,x)),$(error CONFIG_AIR_RAW=y needs CONFIG_DEBUGLINK=y))
 ifneq ($(call feature_on,DEBUGLINK),)
   ifeq ($(call feature_on,HOSTLINK),)

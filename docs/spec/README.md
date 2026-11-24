@@ -49,6 +49,7 @@ Past bugs, by subsystem: [gotchas.md](gotchas.md). Contributors read [docs/dev](
 | Spec | Covers |
 |---|---|
 | [m17.md](m17.md) | M17: the air interface, frames and FEC, stream and packet modes, encryption, signatures, addresses |
+| [m17-ip.md](m17-ip.md) | M17 over IP: the reflector client, its packets, the link and its timers, the gaps and their decisions |
 | [p256.md](p256.md) | P-256 ECDSA for M17 signatures: field and point arithmetic, RFC 6979 signing, verifying, keys, cost |
 | [crypto.md](crypto.md) | Symmetric crypto: AES and counter mode, HMAC-SHA-256, HMAC_DRBG, secrets handling, the entropy pool |
 | [codec2.md](codec2.md) | Codec 2 vocoder, modes 3200 and 1600: bit stream, analysis, synthesis, tables |

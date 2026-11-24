@@ -11031,6 +11031,279 @@ static void test_m17(void)
 		radio_m17_end();
 	}
 }
+
+#if CONFIG_NET_M17
+// ---- M17 reflector. The network path (docs/spec/m17-ip.md 7): linked to a reflector through a fake IP gateway
+// (the real m17_net.c on it), PTT on the M17 channel sends the stream to the reflector and keys nothing, a reflector
+// stream plays through the voice path while the air is quiet and gives way to a call on the air, SMS both ways, a
+// channel set to encrypt refused, and listen only or unlinked back to the air ----
+#include "net/m17_net.h"
+#include "dmr/ipGateway.h"
+#include "hostlink/hostlink_net.h"
+#include "hostlink/hostlink_net_air.h"
+
+#define NREFL_IP	0xC0000201u
+static ipGatewayUdpHandler nbound;
+static uint8_t nframe[IPGW_LOCAL_MAX];
+#define NSENT_MAX	256
+static struct { int len; uint8_t d[IPGW_UDP_PAYLOAD_MAX]; } nsent[NSENT_MAX];
+static int n_sent;
+uint8_t *ipGatewayLocalPayload(void) { return nframe; }
+bool ipGatewayUdpBind(uint16_t port, ipGatewayUdpHandler h) { (void)port; nbound = h; return true; }
+bool ipGatewayUdpSend(uint32_t ip, uint16_t sp, uint16_t dp, const uint8_t *p, int n)
+{
+	(void)ip; (void)sp; (void)dp;
+	if (n_sent < NSENT_MAX) {
+		nsent[n_sent].len = n;
+		memcpy(nsent[n_sent].d, p, (size_t)n);
+		n_sent++;
+	}
+	return true;
+}
+// What the radio core reaches of the gateway and its air side with the gateway built in (none of it used here)
+void ipGatewaySetOffNetId(uint32_t id) { (void)id; }
+void hostlink_net_air_packet(const dmrDataPacket_t *packet, void *ctx) { (void)packet; (void)ctx; }
+void hostlink_net_air_start(void) { }
+void hostlink_net_air_tick(uint32_t own_id, uint32_t now_ms) { (void)own_id; (void)now_ms; }
+bool hostlink_net_passthrough_active(void) { return false; }
+
+// The radio and the host link task, in turn
+static void nrun(uint32_t ms)
+{
+	for (uint32_t t = 0; t < ms; t += 5) {
+		run(5);
+		m17_net_poll(now, true);
+	}
+}
+
+static void nfrom(const uint8_t *p, int n)
+{
+	nbound(false, NREFL_IP, M17_NET_PORT, 0x0C000001u, M17_NET_PORT, p, n);
+}
+
+static int nsent_count(int mark, const char *magic, int len)
+{
+	int c = 0;
+	for (int i = mark; i < n_sent; i++)
+		if (memcmp(nsent[i].d, magic, 4) == 0 && nsent[i].len == len)
+			c++;
+	return c;
+}
+
+static void nlink(bool listen)
+{
+	m17_net_target_t t;
+
+	memset(&t, 0, sizeof t);
+	t.ip = NREFL_IP;
+	strcpy(t.name, "M17-XYZ");
+	t.module = 'C';
+	t.listen = listen;
+	t.own = m17a("W1AW");
+	CHECK(m17_net_link(M17_NET_FROM_UI, &t));
+	nrun(10);
+	nfrom((const uint8_t *)"ACKN", 4);
+	nrun(10);
+	CHECK(m17_net_linked() && m17_net_talks() == !listen);
+}
+
+static void nunlink(void)
+{
+	m17_net_unlink(M17_NET_FROM_UI);
+	nrun(10);
+	nfrom((const uint8_t *)"DISC", 4);
+	nrun(10);
+	CHECK(m17_net_state() == M17_NET_OFF);
+}
+
+// One stream packet from the reflector: N0CALL to the module, voice 3200 on CAN 0, frame fn of sid
+static void nstream(uint16_t sid, uint16_t fn)
+{
+	uint8_t lsd[M17_LSD_BYTES], p[M17_NET_STREAM_LEN];
+
+	memset(lsd, 0, sizeof lsd);
+	m17_addr_put(lsd + M17_LSF_DST, m17_net_module_addr("M17-XYZ", 'C'));
+	m17_addr_put(lsd + M17_LSF_SRC, m17a("N0CALL"));
+	lsd[M17_LSF_TYPE + 1] = (uint8_t)m17_type(true, M17_DATA_VOICE, M17_ENC_NONE, M17_META_TEXT, 0, false);
+	m17_net_put_stream(p, sid, lsd, fn, m17_voice_silence(C2_MODE_3200));
+	nfrom(p, sizeof p);
+}
+
+// The reflector sends a stream of n frames, one every 40 ms, the last with its end bit
+static void nstream_send(uint16_t sid, uint16_t n)
+{
+	for (uint16_t fn = 0; fn < n; fn++) {
+		nstream(sid, fn + 1u == n ? (uint16_t)(fn | M17_FN_END) : fn);
+		nrun(40);
+	}
+}
+
+static void test_m17_net(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	m17_voice_stats_t vs0, vs1;
+	int mark;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(sm.view.ch.mode == RADIO_MODE_M17 && radio_m17_running());
+	CHECK(strstr(build_features_now(), "NET_M17,") != NULL);
+	m17_net_start();
+	nlink(false);
+
+	// PTT: the stream to the reflector, nothing keyed; FN counts from 0, the last frame has the end bit, every frame
+	// the stream's SID, to the module (GAP 5), from us, voice 3200 on the channel's CAN
+	mark = n_sent;
+	int tx_calls = hw.tx_calls;
+	req(RREQ_PTT, 1);
+	nrun(1000);
+	CHECK(sm.view.state == RS_TX && !hw.keyed && hw.tx_calls == tx_calls && v->tx == AIR_TX_ON);
+	req(RREQ_PTT, 0);
+	nrun(100);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed && v->tx == AIR_TX_IDLE && hw.tx_calls == tx_calls);
+	int frames = nsent_count(mark, "M17 ", 54);
+	CHECK(frames >= 20 && frames <= 27);
+	uint16_t sid = 0, fn_want = 0;
+	bool ended = false, ok = true;
+	for (int i = mark; i < n_sent; i++) {
+		const uint8_t *p = nsent[i].d;
+		bool alt;
+		if (memcmp(p, "M17 ", 4) != 0)
+			continue;
+		uint16_t s = (uint16_t)(p[4] << 8 | p[5]), fn = (uint16_t)(p[34] << 8 | p[35]);
+		if (fn_want == 0)
+			sid = s;
+		ok = ok && s == sid && !ended && (fn & M17_FN_MASK) == fn_want && m17_net_stream_ok(p, 54, &alt);
+		ok = ok && m17_addr_get(p + 6) == m17_net_module_addr("M17-XYZ", 'C') && m17_addr_get(p + 12) == m17a("W1AW");
+		ok = ok && m17_lsf_type(p + 6) == m17_type(true, M17_DATA_VOICE, M17_ENC_NONE, M17_META_TEXT, 0, false);
+		ended = (fn & M17_FN_END) != 0;
+		fn_want++;
+	}
+	CHECK(ok && ended);
+	// A second PTT: another SID
+	mark = n_sent;
+	req(RREQ_PTT, 1);
+	nrun(300);
+	req(RREQ_PTT, 0);
+	nrun(100);
+	CHECK(nsent_count(mark, "M17 ", 54) >= 5 && (uint16_t)(nsent[mark].d[4] << 8 | nsent[mark].d[5]) != sid);
+
+	// A reflector stream: it plays (the voice path takes its frames), the view shows it from N0CALL via the module
+	m17_voice_stats(&vs0);
+	uint8_t seq = v->call_seq;
+	nstream_send(0x5150u, 25);
+	nrun(10);
+	m17_voice_stats(&vs1);
+	CHECK(vs1.rx_in - vs0.rx_in >= 24 && vs1.rx_in - vs0.rx_in <= 25);
+	CHECK(v->call_seq != seq && addr_is(v->src, "N0CALL") && m17_addr_get(v->via) ==
+	      m17_net_module_addr("M17-XYZ", 'C') && !(v->flags & RADIO_M17_TO_US));
+	nrun(200);
+	CHECK(!(v->flags & RADIO_M17_RX) && v->end_ms != 0 && sm.view.state == RS_IDLE);
+	radio_heard_t h;
+	CHECK(radio_heard_get(0, &h) && h.mode == RADIO_MODE_M17 && m17_addr_get(h.addr) == m17a("N0CALL"));
+	radio_m17_details_t d;
+	CHECK(radio_m17_details(&d) && addr_is(d.src, "N0CALL") && d.played && d.end_ms != 0);
+	// ... and while it plays the radio core shows a reception
+	nstream(0x5151u, 0);
+	nstream(0x5151u, 1);
+	nstream(0x5151u, 2);
+	nrun(60);
+	CHECK((v->flags & (RADIO_M17_RX | RADIO_M17_PLAYED)) == (RADIO_M17_RX | RADIO_M17_PLAYED) &&
+	      sm.view.state == RS_RX);
+	// A stream that loses its last frame ends by the gap
+	nrun(700);
+	CHECK(!(v->flags & RADIO_M17_RX) && sm.view.state == RS_IDLE);
+
+	// The air first: a call heard on the channel plays, the reflector's frames meanwhile are dropped
+	mfar_begin("K1ABC", 0, false);
+	mfar_key(M17_TX_STREAM, 0);
+	nrun(300);
+	CHECK((v->flags & RADIO_M17_PLAYED) && addr_is(v->src, "K1ABC"));
+	for (uint16_t fn = 0; fn < 10; fn++) {
+		nstream(0x6000u, fn);
+		nrun(40);
+	}
+	CHECK(addr_is(v->src, "K1ABC") && m17_net_rx_count() == 0);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	mfar_stop();
+	nrun(800);
+	CHECK(!(v->flags & RADIO_M17_RX));
+	// ... and after it the reflector plays again
+	m17_voice_stats(&vs0);
+	nstream_send(0x6001u, 10);
+	nrun(200);
+	m17_voice_stats(&vs1);
+	CHECK(vs1.rx_in - vs0.rx_in >= 9 && addr_is(v->src, "N0CALL"));
+
+	// SMS: to the reflector at once, no channel access, nothing keyed; one from it into the inbox
+	uint8_t seq0, seq1;
+	(void)radio_m17_sms_result(&seq0, NULL);
+	uint8_t inbox0 = radio_m17_sms_count();
+	mark = n_sent;
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "via the reflector"));
+	nrun(50);
+	CHECK(radio_m17_sms_result(&seq1, NULL) == RADIO_M17_SMS_SENT && seq1 != seq0 && !hw.keyed);
+	CHECK(nsent_count(mark, "M17P", 4 + 30 + 1 + 18 + 2) == 1);
+	const uint8_t *gl, *gd;
+	uint16_t gn;
+	CHECK(m17_net_get_packet(nsent[n_sent - 1].d, (size_t)nsent[n_sent - 1].len, &gl, &gd, &gn) && gd[0] == M17_PKT_SMS &&
+	      memcmp(gd + 1, "via the reflector", 18) == 0 && m17_addr_get(gl) == m17a("N0CALL"));
+	uint8_t pkt[80], lsf[M17_LSF_BYTES];
+	static const uint8_t text[] = "\x05" "hello W1AW";
+	m17_lsf_make(lsf, m17a("W1AW"), m17a("N0CALL"), m17_type(false, 0, M17_ENC_NONE, M17_META_TEXT, 0, false), NULL);
+	int n = (int)m17_net_put_packet(pkt, sizeof pkt, lsf, text, sizeof text);
+	nfrom(pkt, n);
+	nrun(30);
+	radio_m17_sms_t m, m1;
+	CHECK(radio_m17_sms_count() == (inbox0 + 2u < RADIO_M17_SMS_INBOX ? inbox0 + 2u : RADIO_M17_SMS_INBOX));
+	CHECK(radio_m17_sms_get(0, &m) && !m.sent && m.unread && addr_is(m.peer, "N0CALL") &&
+	      strcmp(m.text, "hello W1AW") == 0);
+	CHECK(radio_m17_sms_get(1, &m1) && m1.sent && addr_is(m1.peer, "N0CALL") && strcmp(m1.text, "via the reflector") == 0);
+
+	// A channel set to encrypt: PTT refused (never in the clear), nothing sent
+	m17_conv_t ce = conv_plain(0);
+	ce.tx_enc = M17_ENC_AES;
+	ce.key_id = 1;
+	cp_m17_traffic(0, M17_SYS, M17_ENC_AES, 1, aes_key, 16);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	m17_reenter();
+	nlink(false);
+	mark = n_sent;
+	req(RREQ_PTT, 1);
+	nrun(200);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_REFUSED && !hw.keyed);
+	req(RREQ_PTT, 0);
+	nrun(100);
+	CHECK(nsent_count(mark, "M17 ", 54) == 0);
+	m17_conv_t cp = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &cp);
+	m17_reenter();
+
+	// Listen only: PTT on the air
+	nunlink();
+	nlink(true);
+	mark = n_sent;
+	req(RREQ_PTT, 1);
+	nrun(300);
+	CHECK(sm.view.state == RS_TX && hw.keyed);
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && hw.keyed; i++)
+		nrun(10);
+	CHECK(!hw.keyed && nsent_count(mark, "M17 ", 54) == 0);
+	// Unlinked: the air, and no reflector frame plays
+	nunlink();
+	req(RREQ_PTT, 1);
+	nrun(300);
+	CHECK(sm.view.state == RS_TX && hw.keyed);
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && hw.keyed; i++)
+		nrun(10);
+	CHECK(!hw.keyed && sm.view.state == RS_IDLE);
+	CHECK(fair[0].keyed_violations == 0);
+}
+#endif
 #endif
 
 #if CONFIG_AIR
@@ -13844,6 +14117,9 @@ int main(void)
 #endif
 #if CONFIG_M17
 	test_m17();
+#endif
+#if CONFIG_NET_M17
+	test_m17_net();
 #endif
 	test_air_table();
 #ifdef RADIO_AIR_TEST_ROW

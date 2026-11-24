@@ -2018,6 +2018,131 @@ msgid "Counts reset"
 msgstr "Contadores a cero"
 
 #: core/ui/ui_m17.c
+msgctxt "HOME_LABEL_M17_LINKED"
+msgid "Linked "
+msgstr "Enlazado "
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_LINKED_TO"
+msgid "Linked to "
+msgstr "Enlazado a "
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_CONNECTING_TO"
+msgid "Connecting to "
+msgstr "Conectando con "
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_UNLINKING"
+msgid "Unlinking"
+msgstr "Desenlazando"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_LOST"
+msgid "Link lost: trying again"
+msgstr "Enlace perdido: reintentando"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_CLOSED"
+msgid "Closed by the reflector: trying again later"
+msgstr "Cerrado por el reflector: reintento más tarde"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_NO_NET"
+msgid "Waiting for the network"
+msgstr "Esperando la red"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_NO_ANSWER"
+msgid "No answer: trying again"
+msgstr "Sin respuesta: reintentando"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_REFUSED"
+msgid "Refused by the reflector"
+msgstr "Rechazado por el reflector"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_REFL_NO_PORT"
+msgid "No UDP port free"
+msgstr "Ningún puerto UDP libre"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_BODY_NOT_LINKED"
+msgid "Not linked"
+msgstr "Sin enlace"
+
+#: core/ui/ui_m17.c core/ui/ui_menus.c
+msgctxt "M17_LABEL_REFLECTOR"
+msgid "Reflector"
+msgstr "Reflector"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_REFL_ADDRESS"
+msgid "Address"
+msgstr "Dirección"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_REFL_PORT"
+msgid "Port"
+msgstr "Puerto"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_LABEL_LISTEN_ONLY"
+msgid "Listen only"
+msgstr "Solo escuchar"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_ROW_LINK"
+msgid "Link"
+msgstr "Enlazar"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_ROW_UNLINK"
+msgid "Unlink"
+msgstr "Desenlazar"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TOAST_UNLINKED"
+msgid "Unlinked"
+msgstr "Desenlazado"
+
+#: core/ui/ui_m17.c core/ui/ui_screens.c
+msgctxt "DENY_WHY_NO_CALLSIGN"
+msgid "No M17 callsign set"
+msgstr "Sin indicativo M17"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_WHY_REFL_SET"
+msgid "{Type the reflector and its address first|Reflector, address first}"
+msgstr "{Escriba antes el reflector y su dirección|Antes reflector y dirección}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TOAST_LINKING"
+msgid "Linking..."
+msgstr "Enlazando..."
+
+#: core/ui/ui_m17.c
+msgctxt "M17_TITLE_REFLECTOR"
+msgid "M17 Reflector"
+msgstr "Reflector M17"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_WHY_REFL_NAME"
+msgid "{Reflector, space, module: M17-ABC C|Like M17-ABC C}"
+msgstr "{Reflector, espacio, módulo: M17-ABC C|Como M17-ABC C}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_WHY_REFL_ADDRESS"
+msgid "{An IPv4 address: 192.0.2.1|Like 192.0.2.1}"
+msgstr "{Una dirección IPv4: 192.0.2.1|Como 192.0.2.1}"
+
+#: core/ui/ui_m17.c
+msgctxt "M17_WHY_REFL_PORT"
+msgid "{A port from 1 to 65535|Port 1-65535}"
+msgstr "{Un puerto de 1 a 65535|Puerto 1-65535}"
+
+#: core/ui/ui_m17.c
 msgctxt "VALUE_SET"
 msgid "Set"
 msgstr "Definida"
@@ -4073,6 +4198,11 @@ msgid "Zones/Chs Received"
 msgstr "Zonas/Can recibidos"
 
 #: core/ui/ui_menus.c
+msgctxt "TOOLS_ROW_M17_REFLECTOR"
+msgid "M17 reflector"
+msgstr "Reflector M17"
+
+#: core/ui/ui_menus.c
 msgctxt "TOOLS_ROW_M17_BERT"
 msgid "M17 BER test"
 msgstr "Prueba BER M17"
@@ -5053,6 +5183,11 @@ msgid "Select contact..."
 msgstr "Elige un contacto..."
 
 #: core/ui/ui_menus.c
+msgctxt "PICKER_CHIP_REFLECTOR"
+msgid "Reflector"
+msgstr "Reflector"
+
+#: core/ui/ui_menus.c
 msgctxt "PICKER_ROW_TYPE_CALLSIGN"
 msgid "Type a callsign..."
 msgstr "Escribe un indicativo..."
@@ -5486,11 +5621,6 @@ msgstr "Banco de aire: sin PTT"
 msgctxt "DENY_WHY_AIR_NO_TX"
 msgid "This mode: receive only"
 msgstr "Este modo: solo recibe"
-
-#: core/ui/ui_screens.c
-msgctxt "DENY_WHY_NO_CALLSIGN"
-msgid "No M17 callsign set"
-msgstr "Sin indicativo M17"
 
 #: core/ui/ui_screens.c
 msgctxt "DENY_WHY_CALLSIGN_INVALID"

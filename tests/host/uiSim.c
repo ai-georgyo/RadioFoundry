@@ -237,6 +237,11 @@ static const struct { const char *name, *script; } gallery[] = {
 	{ "m17_key", M17_GAL "m17caps:sig m17sk ok 7 4 down down down ok" },
 	{ "m17_keys", M17_GAL "m17caps:sig m17key:N0CALL m17key:K1ABC m17key:VE3XYZ/P ok 7 4 down down down down ok" },
 	{ "callsign", "m17 ok 7 0 down down ok 9 long:1 2 9" },
+#if CONFIG_NET_M17
+	// M17 reflector. Linked to M17-M17 C: Tools > M17 reflector, and Home's place line
+	{ "m17_reflector", M17_GAL "m17net:link ok 6 up up ok" },
+	{ "home_m17_linked", M17_GAL "m17net:link" },
+#endif
 #endif
 };
 

@@ -64,6 +64,10 @@ typedef struct {
 	// transmission when its frames are out). keyed: a HOLD transmission is on air; NO now lets go. busy: the channel
 	// is busy (carrier, or a reception). The TX time-out applies to both. NULL: never
 	uint8_t (*auto_tx)(bool busy, bool keyed, uint32_t now_ms);
+	// The transmission its tx_prepare just queued goes elsewhere than the air (M17 linked to a reflector: the
+	// network): the radio core keys no transmitter for it, the rest (the TX state, the time-out, the end at
+	// AIR_TX_DONE) as for the air. NULL: always the air
+	bool (*tx_elsewhere)(void);
 	const radio_air_ops_t *ops;
 } radio_air_mode_t;
 

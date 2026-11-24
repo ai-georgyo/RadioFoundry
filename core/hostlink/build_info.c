@@ -76,6 +76,9 @@ static const char features[] =
 #if CONFIG_HEARD_LIST
 	"HEARD_LIST,"
 #endif
+#if CONFIG_NET_M17
+	"NET_M17,"
+#endif
 #if CONFIG_FM
 	"FM,"
 #endif

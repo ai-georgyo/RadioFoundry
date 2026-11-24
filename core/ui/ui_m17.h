@@ -33,7 +33,8 @@ static inline bool ui_m17_has(uint8_t cap) { return (ui_svc_m17_caps() & cap) !=
 
 // The callsign entry (TEXT_SET_CALLSIGN, ui_menus.c): opened for our callsign, for a destination (the picker's Type a
 // callsign..., the channel editor's), or for a message's recipient
-enum { UI_CALL_OWN, UI_CALL_DST, UI_CALL_EDITOR, UI_CALL_MSG };
+// ... or for the reflector's entries (CONFIG_NET_M17: the reflector and module, its address, its port; in this order)
+enum { UI_CALL_OWN, UI_CALL_DST, UI_CALL_EDITOR, UI_CALL_MSG, UI_CALL_REFL, UI_CALL_REFL_ADDRESS, UI_CALL_REFL_PORT };
 void ui_callsign_open(uint8_t why);
 
 // The call text's entry (printable ASCII, 52 characters), kept in the radio-wide record; ui_menus.c
@@ -47,6 +48,16 @@ extern uint16_t ui_m17_page_first, ui_m17_page_max;
 void ui_m17_tick(uint8_t top);
 // The settings rows' radio-wide record (our callsign, the call text, the two choices), read into the scratch
 m17_wide_t *ui_m17_wide(void);
+#if CONFIG_NET_M17
+// The reflector (ui_m17.c; docs/spec/m17-ip.md 7): Home's place line while linked ("Linked M17-M17 C"; false: not
+// linked), linked at all (the picker's ECHO and INFO), and the reflector's entries: their text to open with, the check
+// before OK keeps it (false: a toast said why), and the value kept
+bool ui_m17_refl_place(char *buf, size_t len);
+bool ui_m17_refl_linked(void);
+void ui_m17_refl_text(uint8_t why, char *t, size_t len);
+bool ui_m17_refl_check(uint8_t why, const char *t);
+void ui_m17_refl_kept(uint8_t why, const char *t);
+#endif
 #endif
 
 #endif

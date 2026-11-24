@@ -26,6 +26,10 @@ MAXIMAL_SKIP := NET_PPP APRS_IGATE LANG_FR LANG_ZH LANG_DEFAULT_ZH
 # fallback: off until the owner names a trade; docs/feature-matrix.md, "M17 trades", has the measured
 # candidates
 CONFIG_M17 ?= n
+# The M17 reflector client (NET_M17) stays off with M17. On top of M17 with its packets and heard list,
+# SATELLITE_TLE=n and LANG_ES=n it takes 9,120 B of flash and 1,272 B of RAM: 27,720 B and 1,188 B stay free, under the
+# 1.5 KB of RAM a default keeps (2026-11-23)
+CONFIG_NET_M17 ?= n
 # flash: P-256 signatures take about 19.1 KB (an STM32 radio's figure)
 CONFIG_M17_SIG ?= n
 # flash: AES and the random pool take about 2.6 KB (an STM32 radio's figure; the cipher itself is DMR AES's too)

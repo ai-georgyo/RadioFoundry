@@ -441,6 +441,8 @@
  "screen.m17_key": "La tua chiave di firma M17",
  "screen.m17_keys": "Chiavi delle stazioni per verificare le firme M17",
  "screen.m17_bert": "Test del tasso di errore sui bit M17",
+ "screen.m17_reflector": "Collegamento a un reflector M17",
+ "screen.home_m17_linked": "Home, collegato a un reflector M17",
  "radios.list_title": "Tutte le radio",
  "radios.col_cpu": "Processore",
  "radio.cpu": "Processore",

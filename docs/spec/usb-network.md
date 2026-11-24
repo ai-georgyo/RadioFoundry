@@ -142,7 +142,7 @@ The radio's own TCP services on its address (status page, KISS TNC, rigctld, APR
 [tcp-services.md](tcp-services.md); TCP to other radios is not carried.
 
 Voice over the network personality (USRP audio, host PTT, COS) is designed in [usb-audio.md](usb-audio.md) 4.2;
-not built yet.
+not built yet. M17 reflector links run over this link or PPP ([m17-ip.md](m17-ip.md)).
 
 ### 3.1 Routing and IP addresses
 

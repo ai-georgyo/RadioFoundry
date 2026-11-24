@@ -27,6 +27,9 @@
 #if CONFIG_APRS
 #include "aprs/aprs.h"
 #endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
+#endif
 #if CONFIG_NET_USRP
 #include "usbaudio/usrp_net.h"
 #endif
@@ -600,7 +603,7 @@ static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dm
 						  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc",
 						  "net_link", "cps", "board", "audio", "t3", "t3_svc", "t3_roam", "voice_cap", "t3_msg",
 						  "t3_ra", "p25", "p25_trunk", "nxdn", "m17", "m17_stats", "m17_data",
-						  "m17_voice", "heard" };
+						  "m17_voice", "heard", "m17net" };
 
 const char *debuglink_view_name(uint8_t section)
 {
@@ -744,6 +747,13 @@ void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t
 	case DL_VIEW_M17_VOICE:
 	case DL_VIEW_HEARD:
 		debuglink_view_m17((uint8_t)(section - DL_VIEW_M17), v, t);
+		break;
+	case DL_VIEW_M17_NET:
+#if CONFIG_NET_M17
+		m17_net_view(t);
+#else
+		dl_text(t, "m17net.built=0\n");
+#endif
 		break;
 	case DL_VIEW_USRP:
 #if CONFIG_NET_USRP

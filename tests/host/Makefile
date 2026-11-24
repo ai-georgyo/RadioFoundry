@@ -2473,3 +2473,57 @@ run: run-fix-sec
 run-fix-sec: hrc7000ChipUidTest
 	./hrc7000ChipUidTest
 .PHONY: run-fix-sec
+
+# The M17 reflector client (core/net/m17_net.c; docs/spec/m17-ip.md) against a fake IP gateway and reflector: the
+# packet codecs against hand-made packets, the link's state machine and timers, streams and SMS both ways, the MAGICs
+# ignored, the debug link's m17net section. No network
+M17NET  := m17NetTest.c $(CORE)/net/m17_net.c $(CORE)/m17/m17_frame.c $(CORE)/m17/m17_addr.c $(FEC) \
+           $(CORE)/debuglink/dl_fmt.c
+M17NETF := -DCONFIG_M17=1 -DCONFIG_NET_M17=1 -DCONFIG_DMR_IP_GATEWAY=1
+TESTS   += m17NetTest
+m17NetTest: $(M17NET) $(CORE)/net/m17_net.h $(wildcard $(CORE)/m17/*.h) $(CORE)/dmr/ipGateway.h $(CORE)/config.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(M17NETF) -o $@ $(M17NET)
+run: run-m17-net
+run-m17-net: m17NetTest
+	./m17NetTest
+.PHONY: run-m17-net
+# M17's radio core with the reflector linked (radioCoreTest.c's test_m17_net): the whole radio core as
+# radioCoreTestM17 with the IP gateway built (its services left out) and the real m17_net.c on a fake gateway
+RCM17NET := $(sort $(RCM17) $(CORE)/net/m17_net.c)
+TESTS   += radioCoreTestM17Net
+radioCoreTestM17Net: $(RCM17NET) $(RM17H) $(CORE)/net/m17_net.h
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=1 -DCONFIG_USB_NETWORK=1 -DCONFIG_NET_TCP=0 \
+		-DCONFIG_NET_USRP=0 -DCONFIG_MDNS=0 -DCONFIG_TFTP=0 -DCONFIG_SNMP=0 -DCONFIG_NET_RADIO_UDP=0 \
+		-DCONFIG_DMR_CONTROL_STATION=0 -DCONFIG_SFR=1 -DCONFIG_APRS=0 $(RM17F) -DCONFIG_M17_SCRAMBLER=1 \
+		-DCONFIG_NET_M17=1 -o $@ $(RCM17NET) -lm
+run: run-m17-net-radio
+run-m17-net-radio: radioCoreTestM17Net
+	./radioCoreTestM17Net
+.PHONY: run-m17-net-radio
+# The reflector's screens (Tools > M17 reflector, Home's place line, the picker's ECHO and INFO): uiFlowTest and uiSim
+# build them, on the real m17_net.c over the simulator's fake gateway (sim/ui_sim.c); uiM17NetOff builds the UI's
+# files with the reflector and each M17 part switched off on its own, as objects (warnings fail them)
+UINET   := $(CORE)/net/m17_net.c $(CORE)/m17/m17_frame.c $(FEC) $(CORE)/debuglink/dl_fmt.c
+uiFlowTest uiSim: UIFLAGS += -DCONFIG_NET_M17=1
+uiFlowTest uiSim: UIAPP += $(UINET)
+uiFlowTest uiSim: $(UINET) $(CORE)/net/m17_net.h
+uiM17NetOff: $(UIDEPS) $(UIM17) $(CORE)/net/m17_net.h
+	@mkdir -p out/m17off
+	@$(foreach f,$(UIM17OFF),for src in $(UIM17SRC); do \
+		$(CC) $(UIFLAGS) -Werror $(call m17off,$f) -DCONFIG_NET_M17=1 -c -o out/m17off/net.o $$src || exit 1; \
+	done && echo "M17 reflector UI builds without $(subst +, and ,$f)" &&) true
+	@touch $@
+run: run-m17-net-ui
+run-m17-net-ui: uiM17NetOff
+.PHONY: run-m17-net-ui
+# The debug link's RADIO op 44 sub-op 7 with the client built (debuglinkM17Test.c's test_net_op), on the real
+# m17_net.c and a fake gateway
+DLM17NET := $(DLM17) $(CORE)/net/m17_net.c $(CORE)/m17/m17_frame.c $(FEC)
+TESTS   += debuglinkM17TestNet
+debuglinkM17TestNet: $(DLM17NET) $(DLM17H) $(CORE)/net/m17_net.h $(CORE)/dmr/ipGateway.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=1 $(DLM17F) -DCONFIG_NET_M17=1 -DCONFIG_DMR_IP_GATEWAY=1 -o $@ \
+		$(sort $(DLM17NET))
+run: run-m17-net-debuglink
+run-m17-net-debuglink: debuglinkM17TestNet
+	./debuglinkM17TestNet
+.PHONY: run-m17-net-debuglink

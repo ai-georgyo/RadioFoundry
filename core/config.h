@@ -372,6 +372,10 @@
 #ifndef CONFIG_HEARD_LIST
 #define CONFIG_HEARD_LIST		0
 #endif
+// The M17 reflector client over the USB network or PPP (core/net/m17_net.c, docs/spec/m17-ip.md)
+#ifndef CONFIG_NET_M17
+#define CONFIG_NET_M17			0
+#endif
 // Derived from M17 and DMR_AES (config/features.mk, never set by hand): CODEC2 the vocoder (core/codec2); DSP the
 // shared FFT, trigonometry and log tables (core/dsp) of the MBE core and Codec 2; CRYPTO_AES (the one AES, for M17 and
 // DMR), CRYPTO_P256, CRYPTO_HMAC the generic ciphers (core/crypto); ENTROPY the random pool (core/crypto/entropy.c)
@@ -460,7 +464,8 @@
 
 // Derived: the shared packet data / CSBK code
 // Any of the radio's own services on the USB network link (core/net/net.c starts and polls them)
-#define CONFIG_NET_LOCAL		(CONFIG_NET_TCP || CONFIG_MDNS || CONFIG_TFTP || CONFIG_NET_USRP || CONFIG_NET_RADIO_UDP)
+#define CONFIG_NET_LOCAL		(CONFIG_NET_TCP || CONFIG_MDNS || CONFIG_TFTP || CONFIG_NET_USRP || CONFIG_NET_RADIO_UDP || \
+				 CONFIG_NET_M17)
 #ifndef CONFIG_DMR_DATA_CORE
 #define CONFIG_DMR_DATA_CORE		(CONFIG_DMR_SMS || CONFIG_DMR_ARS || CONFIG_DMR_LRRP || CONFIG_DMR_SIGNALING || \
 					 CONFIG_DMR_EMERGENCY || CONFIG_DMR_IP_GATEWAY || CONFIG_ZONE_SHARE || CONFIG_CRASH_REPORT || \
@@ -629,6 +634,9 @@
 #endif
 #if CONFIG_HEARD_LIST && !CONFIG_M17
 #error "CONFIG_HEARD_LIST needs CONFIG_M17 (its only source so far)"
+#endif
+#if CONFIG_NET_M17 && !(CONFIG_M17 && CONFIG_DMR_IP_GATEWAY)
+#error "CONFIG_NET_M17 needs CONFIG_M17 and CONFIG_DMR_IP_GATEWAY (the mode, and the IP stack it runs on)"
 #endif
 #if (CONFIG_APRS_RX && !CONFIG_APRS_AFSK) || (CONFIG_APRS_IGATE && !(CONFIG_APRS_RX && CONFIG_HOSTLINK))
 #error "an APRS sub-feature is on without its parent (APRS_RX needs APRS_AFSK; APRS_IGATE needs APRS_RX and HOSTLINK)"

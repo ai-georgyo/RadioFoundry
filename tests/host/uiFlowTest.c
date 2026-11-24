@@ -1550,6 +1550,18 @@ static const flow_t flows_s[] = {
 #define M17_BERT_OPEN	"ok 6 up ok"
 #endif
 #define M17_PRIVACY	"ok 7 4 down down "	// Settings > Privacy > Sign M17 calls, below the DMR privacy rows
+#if CONFIG_NET_M17
+// M17 reflector. Tools > M17 reflector, above the BER test (which a radio without the "bert" part hides) and
+// the heard list; the entries typed on the keypad: "M17-M17 C", 192.0.2.1, port 17001
+#if CONFIG_HEARD_LIST
+#define M17_REFL_OPEN	"ok 6 up up ok"
+#else
+#define M17_REFL_OPEN	"ok 6 up ok"
+#endif
+#define REFL_NAME	"ok 6 long:1 long:7 1 6 long:1 long:7 0 2 2 2 ok "
+#define REFL_ADDR	"down ok long:1 long:9 long:2 1 1 1 long:0 1 1 1 long:2 1 1 1 long:1 ok "
+#define REFL_TYPED	"m17 m17call:W1AW " M17_REFL_OPEN " " REFL_NAME REFL_ADDR
+#endif
 // 53 characters on the keypad ("ADAD..."): one more than the call text holds
 #define CALL_TEXT_53	"2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2 3 2"
 // Six stations heard: with two more the heard list (RADIO_HEARD_MAX) is full
@@ -1559,6 +1571,51 @@ static const flow_t flows_s[] = {
 #define M17_EDIT	M17 "ok 5 ok down down ok "	// Mode: DMR to M17
 static const flow_t flows_m17[] = {
 	// --- New screens ---
+#if CONFIG_NET_M17
+	// M17 reflector. The reflector's page: what to link to typed in, the link's states, refusals (each flow
+	// starts unlinked with nothing remembered)
+	{ "M17 reflector opens", "m17", M17_REFL_OPEN,
+	  "screen=m17-reflector shows=Not_linked shows=Not_set m17net=off", 5, false },
+	{ "M17 reflector: name and module", "m17 " M17_REFL_OPEN, REFL_NAME, "screen=m17-reflector shows=M17-M17_C", 13,
+	  false },
+	{ "M17 reflector: no module", "m17 " M17_REFL_OPEN, "ok 6 long:1 long:7 ok", "screen=callsign m17net=off", 5,
+	  false },
+	{ "M17 reflector: address", "m17 " M17_REFL_OPEN, REFL_ADDR, "screen=m17-reflector shows=192.0.2.1", 18, false },
+	{ "M17 reflector: no address", "m17 " M17_REFL_OPEN, "down ok long:1 long:2 long:7 1 1 1 long:0 ok",
+	  "screen=callsign", 10, false },
+	{ "M17 reflector: loopback refused", "m17 " M17_REFL_OPEN,
+	  "down ok long:1 long:2 long:7 1 1 1 long:0 1 1 1 long:0 1 1 1 long:1 ok", "screen=callsign", 18, false },
+	{ "M17 reflector: port", "m17 " M17_REFL_OPEN, "down down ok back back back back back long:1 long:7 long:0 long:0 "
+	  "long:1 ok", "screen=m17-reflector shows=17001", 15, false },
+	{ "M17 reflector: port 0 refused", "m17 " M17_REFL_OPEN, "down down ok back back back back back long:0 ok",
+	  "screen=callsign", 10, false },
+	{ "M17 reflector: listen only", "m17 " M17_REFL_OPEN, "down down down ok", "shows=On", 4, false },
+	{ "M17 reflector: link", REFL_TYPED, "down down down ok",
+	  "toast=Linking... m17net=connecting m17netsent=CONN shows=Connecting_to_M17-M17_C shows=Unlink", 5, false },
+	{ "M17 reflector: listen-only link", REFL_TYPED "down down ok", "down ok", "m17net=connecting m17netsent=LSTN",
+	  2, false },
+	{ "M17 reflector: linked", REFL_TYPED "down down down ok", "m17net:ackn",
+	  "m17net=linked shows=Linked_to_M17-M17_C shows=Unlink", 0, false },
+	{ "M17 reflector: refused", REFL_TYPED "down down down ok", "m17net:nack",
+	  "m17net=off shows=Refused_by_the_reflector shows=Link", 0, false },
+	{ "M17 reflector: closed by the reflector", REFL_TYPED "down down down ok m17net:ackn", "m17net:disc",
+	  "m17net=wait shows=Closed_by_the_reflector", 0, false },
+	{ "M17 reflector: unlink", REFL_TYPED "down down down ok m17net:ackn", "ok",
+	  "toast=Unlinked m17net=unlinking m17netsent=DISC", 1, false },
+	{ "M17 reflector: unlinked", REFL_TYPED "down down down ok m17net:ackn ok", "m17net:disc",
+	  "m17net=off shows=Not_linked", 0, false },
+	{ "M17 reflector: kept for the next time", REFL_TYPED "down down down ok m17net:ackn ok m17net:disc back",
+	  "ok", "screen=m17-reflector shows=M17-M17_C", 1, false },
+	// No host link (or serial mode): the link waits for it, nothing sent; it links once the host link is up
+	{ "M17 reflector: waiting for the network", REFL_TYPED "m17net:down", "down down down ok",
+	  "m17net=wait m17netsent=none shows=Waiting_for_the_network shows=Unlink", 5, false },
+	{ "M17 reflector: the network back", REFL_TYPED "m17net:down down down down ok", "m17net:up",
+	  "m17net=connecting m17netsent=CONN shows=Connecting_to_M17-M17_C", 0, false },
+	{ "M17 reflector: no callsign", "m17 " M17_REFL_OPEN " " REFL_NAME REFL_ADDR, "down down down ok",
+	  "toast=No_M17_callsign_set m17net=off", 4, false },
+	{ "M17 reflector: nothing typed", "m17 m17call:W1AW " M17_REFL_OPEN, "down down down down ok",
+	  "m17net=off screen=m17-reflector", 5, false },
+#endif
 	{ "M17 call details: none heard", "m17 dlmode:m17", "push:call-details",
 	  "screen=call-details shows=No_M17_call_heard_yet", 0, false },
 	{ "M17 call details opens", M17 "m17rx:N0CALL,ALL m17rxend", "ctx 3", "screen=call-details shows=N0CALL", 2,
@@ -1812,6 +1869,18 @@ static const flow_t flows_m17_k[] = {
 	  "temporary=0 m17ram=0,0,0,0,ALL", 1, false },
 	{ "M17 VFO picker destination undone", "m17 m17call:W1AW ok 4 up ok dlmode:m17 m17rx:N0CALL,ALL m17rxend "
 	  "long:ctx down ok", "back", "talk=ALL temporary=0", 1, false },
+#if CONFIG_NET_M17
+	// M17 reflector. Linked: the reflector's services as destinations
+	{ "M17 picker: the reflector's rows", M17 "m17net:link", "long:ctx",
+	  "screen=picker shows=ECHO shows=INFO shows=All_call", 1, false },
+	{ "M17 picker: talk to ECHO", M17 "m17net:link", "long:ctx down ok", "screen=home talk=ECHO", 3, false },
+	// Home's place line where it has one (the zone line)
+	{ "M17 reflector: Home's place line", "m17 dlmode:m17 m17call:W1AW m17net:link", "",
+	  "screen=home shows=Linked_M17-M17_C m17net=linked", 0, false },
+	{ "M17 reflector: not on Home off M17", "m17 m17call:W1AW m17net:link", "", "screen=home hides=Linked", 0, false },
+	{ "M17 reflector: Home unlinked", "m17 dlmode:m17 m17call:W1AW", "", "screen=home hides=Linked", 0, false },
+	{ "M17 picker: no reflector rows unlinked", M17, "long:ctx", "screen=picker hides=ECHO hides=INFO", 1, false },
+#endif
 #if CONFIG_M17_BERT
 	// The BER test takes its mode again when the picker over it closes
 	{ "M17 BER test: the mode again after the picker", "m17 m17caps:bert dlmode:m17 " M17_BERT_OPEN " long:ctx",

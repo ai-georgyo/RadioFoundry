@@ -3156,6 +3156,96 @@ static bool m17_rx_end(const char *arg)
 	return true;
 }
 
+#if CONFIG_NET_M17
+// ---- M17 reflector. The reflector client (core/net/m17_net.c, the real one) on a fake IP gateway, with the
+// reflector played by tokens: m17net:ackn, nack, disc (the reflector's answers and its disconnect), link (linked to
+// M17-M17 C at 192.0.2.1 in one go, our callsign W1AW where none is set), down and up (the host link). The flows check
+// m17net=<state> and m17netsent=<the last MAGIC sent> ----
+#include "net/m17_net.h"
+#include "dmr/ipGateway.h"
+static ipGatewayUdpHandler simnet_rx;
+static uint8_t simnet_frame[IPGW_LOCAL_MAX];
+static char simnet_last[5] = "none";
+static bool simnet_up = true;
+uint8_t *ipGatewayLocalPayload(void) { return simnet_frame; }
+bool ipGatewayUdpBind(uint16_t port, ipGatewayUdpHandler handler) { (void)port; simnet_rx = handler; return true; }
+bool ipGatewayUdpSend(uint32_t ip, uint16_t sport, uint16_t dport, const uint8_t *p, int n)
+{
+	(void)ip; (void)sport; (void)dport;
+	if (n >= 4) {
+		memcpy(simnet_last, p, 4);
+		simnet_last[4] = '\0';
+	}
+	return true;
+}
+
+// The reflector's datagram to the radio, from the address and port it is linked to
+static void simnet_from(const char *p, int n)
+{
+	m17_net_status_t st;
+	m17_net_status(&st);
+	if (simnet_rx != NULL)
+		simnet_rx(false, st.t.ip, st.t.port ? st.t.port : M17_NET_PORT, 0x0C000001u, M17_NET_PORT,
+			  (const uint8_t *)p, n);
+	m17_net_poll(now_ms, simnet_up);
+}
+
+static void simnet_step(void)
+{
+	static bool started;
+	if (!started) {
+		m17_net_start();
+		started = true;
+	}
+	m17_net_poll(now_ms, simnet_up);
+}
+
+static bool simnet_token(const char *arg)
+{
+	if (strcmp(arg, "ackn") == 0) {
+		simnet_from("ACKN", 4);
+	} else if (strcmp(arg, "nack") == 0) {
+		simnet_from("NACK", 4);
+	} else if (strcmp(arg, "disc") == 0) {
+		simnet_from("DISC\x01\x02\x03\x04\x05\x06", 10);
+	} else if (strcmp(arg, "link") == 0) {
+		m17_net_target_t t;
+		memset(&t, 0, sizeof t);
+		t.ip = 0xC0000201u;
+		strcpy(t.name, "M17-M17");
+		t.module = 'C';
+		t.own = m17_own_addr(NULL);
+		if (t.own == 0)
+			(void)m17_addr_from_text("W1AW", &t.own);
+		if (!m17_net_link(M17_NET_FROM_DEBUG, &t))
+			return false;
+		simnet_step();
+		simnet_from("ACKN", 4);
+	} else if (strcmp(arg, "down") == 0 || strcmp(arg, "up") == 0) {
+		simnet_up = arg[0] == 'u';
+		simnet_step();
+	} else {
+		return false;
+	}
+	return true;
+}
+
+// Each flow starts unlinked
+static void simnet_reset(void)
+{
+	simnet_up = true;
+	simnet_step();
+	if (m17_net_state() != M17_NET_OFF) {
+		m17_net_unlink(M17_NET_FROM_DEBUG);
+		simnet_step();
+		simnet_from("DISC", 4);
+	}
+	m17_net_unlink(M17_NET_FROM_DEBUG);	// not linked: the last target forgotten
+	simnet_step();
+	strcpy(simnet_last, "none");
+}
+#endif
+
 // M17's tokens: true when t is one, *ok its outcome
 static bool m17_token(const char *t, char *arg, char *err, size_t len, bool *ok)
 {
@@ -3259,6 +3349,15 @@ static bool m17_token(const char *t, char *arg, char *err, size_t len, bool *ok)
 		changed();
 		advance(300);
 #endif
+#if CONFIG_NET_M17
+	} else if (strcmp(t, "m17net") == 0 && arg != NULL) {	// the reflector: m17net:ackn|nack|disc|link|down|up
+		if (!simnet_token(arg)) {
+			snprintf(err, len, "bad m17net");
+			*ok = false;
+			return true;
+		}
+		changed();
+#endif
 #if CONFIG_M17_BERT
 	} else if (strcmp(t, "m17bert") == 0 && arg != NULL) {	// m17bert:<bits>,<errors>,<search|lock|lost|none>
 		char state[8] = "";
@@ -3312,6 +3411,9 @@ static void m17_reset(void)
 #if CONFIG_HEARD_LIST
 	radio_heard_clear();
 #endif
+#if CONFIG_NET_M17
+	simnet_reset();
+#endif
 }
 #endif
 
@@ -3332,6 +3434,9 @@ static void step(void)
 #if CONFIG_M17
 	m17_take();	// the radio task's turn: the latest settings request
 	m17_step();
+#endif
+#if CONFIG_NET_M17
+	simnet_step();	// the host link task's turn
 #endif
 	if (view.state == RS_TX)
 		view.tx_elapsed_ms += TICK_MS;
@@ -3753,6 +3858,14 @@ static bool check(const char *kv, char *err, size_t len)
 #endif
 #if CONFIG_M17_BERT
 	else if (strcmp(key, "m17bertmode") == 0) snprintf(got, sizeof got, "%u", m17_bert_mode);	// the engine's BERT mode
+#endif
+#if CONFIG_NET_M17
+	else if (strcmp(key, "m17net") == 0) {	// the reflector link's state, as the debug link names it
+		static const char *const names[] = { "off", "wait", "connecting", "linked", "unlinking" };
+		uint8_t st = m17_net_state();
+		snprintf(got, sizeof got, "%s", st < 5 ? names[st] : "?");
+	}
+	else if (strcmp(key, "m17netsent") == 0) snprintf(got, sizeof got, "%s", simnet_last);	// the last MAGIC sent
 #endif
 	else if (strcmp(key, "locked") == 0) snprintf(got, sizeof got, "%u", s.locked);
 	else if (strcmp(key, "gps") == 0) snprintf(got, sizeof got, "%u", s.gps);	// UI_GPS_*: the strip's icon

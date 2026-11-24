@@ -441,6 +441,8 @@
  "screen.m17_key": "你的 M17 签名密钥",
  "screen.m17_keys": "用于验证 M17 签名的电台密钥",
  "screen.m17_bert": "M17 误码率测试",
+ "screen.m17_reflector": "连接 M17 服务器",
+ "screen.home_m17_linked": "主页，已连接 M17 服务器",
  "radios.list_title": "所有电台",
  "radios.col_cpu": "处理器",
  "radio.cpu": "处理器",

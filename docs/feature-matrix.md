@@ -64,6 +64,7 @@ is `tools/bringup.py list --radio <id>`.
 | `m17_scrambler` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
 | `m17_aes` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
 | `heard_list` | not recorded | off | not recorded | not recorded | not written | off | off | not recorded |
+| `m17_reflector` | not recorded | off | not recorded | not recorded | not written | off | off | off |
 | `dmr_voice` | pass (seed) | pass (seed) | pass (seed) | pass (seed) | pass (seed) | not recorded | partial, needs re-run | partial, needs re-run |
 | `dmr_privacy` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | partial, needs re-run |
 | `dmr_aes` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
@@ -323,6 +324,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | `M17_SCRAMBLER` | ● | ○ | ● | ● | … | ○ | ○ | ● |
 | `M17_AES` | ● | ○ | ● | ● | … | ○ | ○ | ● |
 | `HEARD_LIST` | ● | ○ | ● | ● | … | ○ | ○ | ● |
+| `NET_M17` | ● | ○ | ● | ● | … | ○ | ○ | ○ |
 | `AIR_RAW` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
 | Voltage reading (board, no switch) | Battery | Battery | Battery | None | Battery | Battery | Supply | Battery |
 | Clock kept through power-off (board, no switch) | Yes | ? | Yes | ? | ? | ? | ? | No (only while on) |
@@ -353,6 +355,7 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | M17 scrambler | `M17_SCRAMBLER` | 1,352* | — | Needs `M17`; off in the amateur variant. Off by default on the MD-9600 for flash |
 | M17 AES encryption | `M17_AES` | — | — | Needs `M17`; off in the amateur variant. About 2.4 KB with the random pool, on the AES DMR AES uses too ([M17 on each radio](#m17-on-each-radio)). Off by default on the MD-9600 for flash |
 | Heard list: the stations heard | `HEARD_LIST` | 2,368* | — | Needs `M17`, its only source so far. RAM: 304 B. Off by default on the MD-9600 for flash |
+| M17 reflector client: an M17 channel's calls and SMS through a reflector over the USB network or PPP | `NET_M17` | 9,120* | — | Needs `M17` and `DMR_IP_GATEWAY` ([m17-ip.md](spec/m17-ip.md)). DM-1701: on top of M17 with its packets and heard list, `SATELLITE_TLE=n` and `LANG_ES=n`. RAM: 1,272 B. On where M17 and the gateway are and it fits; off on the MD-9600 (4,200 B over), the DM-1701 and the MD-UV380 (M17 off). Not checked against a real reflector |
 | Basic privacy (Motorola / Anytone BP) | `DMR_PRIVACY` | 1,936 | 1,992 |  |
 | AES-256 DMR voice, PI header and late-entry signaling | `DMR_AES` | 4,656 | — | Requires `DMR_PRIVACY`. DM-1701: 4,656 B flash and 496 B RAM with `DMR_AES` on versus off, the AES cipher (`core/crypto/aes.c`, shared with M17) included. TX to a receiver of another make needs the modem driver's burst F field (`set_burst_f`, [dmr-voice.md](spec/dmr-voice.md) 5.1): only the HR_C7000 driver has it (DM-32UV); on the HR_C6000 and other radios our AES overs reach radios running RadioFoundry only (#864). |
 | Talker alias receive and send | `DMR_TALKER_ALIAS` | 984 | 1,300 |  |
@@ -398,7 +401,12 @@ turned on (its parts off, as their `config.mk` sets them) minus the default, and
 | `M17_BERT` | 3,176 / 80 | 3,180 / 72 | 3,176 / 72 | 2,896 / 72 | 2,916 / 80 | 3,188 / 72 | 3,168 / 72 |
 | `HEARD_LIST` | 2,496 / 296 | 2,492 / 296 | 2,492 / 296 | 2,396 / 296 | 1,884 / 296 | 2,368 / 304 | 2,348 / 304 |
 | `M17_PACKET` | 5,024 / 840 | 5,024 / 840 | 5,004 / 840 | 4,808 / 840 | 4,808 / 840 | 5,012 / 856 | 4,980 / 856 |
+| `NET_M17` | 10,096 / 1,224 | 10,096 / 1,232 | 10,068 / 1,232 | — | 8,852 / 1,280 | 9,120 / 1,272 | — |
 
+- `NET_M17` (the reflector client, [m17-ip.md](spec/m17-ip.md)): the image with it minus the image without. On by
+  default on the DM-32UV, the DM-1801 Pro and the DB25-D PRO. Off on the MD-9600: its figure is the default with it
+  turned on, 4,200 B over the app region. The DM-1701's is on top of M17 with its packets and heard list,
+  `SATELLITE_TLE=n` and `LANG_ES=n`, with 1,188 B of RAM left; the MD-UV380 is not measured. The RT10 has no IP gateway.
 - MD-9600: `M17_SIG`, `M17_AES`, `M17_SCRAMBLER`, `M17_BERT` and `HEARD_LIST` are off by default for flash (with every
   part the image is 23,316 B over its app region; DMR AES takes 4,444 B of it); its `M17` and `M17_PACKET` rows are the
   default without them, its other rows the image with that part on minus the default.
@@ -461,7 +469,7 @@ tables.
 | Item | State |
 |---|---|
 | MMDVM M17 hotspot | Not written: no permissible source gives its commands or payload ([m17.md](spec/m17.md) 19). The hotspot NAKs them on every radio |
-| M17 reflector client (M17 over IP) | Not written: waits for the project lead's go-ahead |
+| M17 reflector client (M17 over IP, `NET_M17`) | Written, unconfirmed: host tested against a fake reflector only, no real reflector contacted yet; its gap decisions are the firmware's reading ([m17-ip.md](spec/m17-ip.md) 8) |
 | APRS over M17 packets | Not written: the specification defines no format |
 | Working with another M17 radio or modem | Unconfirmed: no off-air test against another implementation. The transmit pulse is the modem chip's (root raised cosine 0.2, not the specification's 0.5) |
 | The specification's gaps | Unconfirmed: [m17.md](spec/m17.md) 13 lists what this firmware assumes |
@@ -523,6 +531,7 @@ tables.
 | Zone and channel control over UDP, port 4191: where the radio is, select and step, change notices | `NET_RADIO_UDP` | 2,296 | 2,292 | 112-120 B RAM; needs no TCP or HTTP; DM-32UV 2,392 ([tcp-services.md](spec/tcp-services.md) 8) |
 | rigctld, port 4532 | `NET_RIGCTL` | 3,852 | 3,728 |  |
 | Audio linking (USRP over UDP, port 34001) | `NET_USRP` | 4,552 | 4,888 | DM-1701: DMR and FM both ways. MD-380: DMR only (FM audio doesn't reach the processor yet). DM-32UV: DMR only until its board code has the FM audio paths |
+| M17 reflector client (M17 over UDP, port 17000) | `NET_M17` | 9,120* | — | An M17 channel linked to a reflector module: see [Radio and voice](#radio-and-voice) and [m17-ip.md](spec/m17-ip.md) |
 | APRS-IS client | `NET_APRSIS` | 2,856 | 2,720 | Needs NAT on the host |
 | mDNS / DNS-SD (rfoundry-<id>.local) | `MDNS` | 6,744 | 6,504 |  |
 | TFTP codeplug read / write | `TFTP` | 6,356 | 6,412 | Without the ID database below |
@@ -577,18 +586,21 @@ defaults is at least 3 KB and 1.5 KB ([build-config.md](build-config.md#room-to-
 
 | Radio | App region / RAM region | Default | Maximal |
 |---|---:|---:|---:|
-| DM-32UV | 901,120 / 211,456 | 30,088 / 7,296 | 30,512 / 9,888 |
+| DM-32UV | 901,120 / 211,456 | 19,904 / 6,072 | 30,512 / 9,888 |
 | DM-1701 | 737,280 / 131,068 | 32,668 / 3,604 | 3,368 / 3,236 |
-| DM-1801 Pro | 901,120 / 211,456 | 71,636 / 28,984 | 18,860 / 28,608 |
-| DB25-D PRO | 897,024 / 216,576 | 82,160 / 38,208 | 28,660 / 37,840 |
+| DM-1801 Pro | 901,120 / 211,456 | 61,448 / 27,752 | 7,672 / 28,608 |
+| DB25-D PRO | 897,024 / 216,576 | 72,004 / 36,976 | 17,504 / 37,840 |
 | MD-380 | 868,352 / 131,068 | 292,112 / 20,380 | 237,464 / 19,292 |
 | MD-UV380 | 737,280 / 131,068 | 31,708 / 2,932 | 2,400 / 2,564 |
 | MD-9600 | 737,280 / 131,068 | 4,352 / 7,812 | 2,468 / 7,500 |
 | RT10 | 901,120 / 211,456 | 313,312 / 72,264 | 194,556 / 50,056 |
 
-The DM-32UV's default keeps 7,296 B of RAM: M17 with every part takes 2,984 B of it. Its maximal configuration and the
-DM-1701's and MD-UV380's leave M17 out (their `config.mk`); the MD-9600's leaves satellite tracking and the languages
-out, so it has M17 with every part.
+The DM-32UV's default keeps 6,072 B of RAM: M17 with every part takes 2,984 B of it, the reflector client
+(`NET_M17`) 1,224 B. The DM-32UV's, DM-1801 Pro's and DB25-D PRO's defaults are measured with the reflector client
+(2026-11-23); their maximal flash figures too (ci's build), their maximal RAM figures predate it (about 1.2 KB less
+with it). The DM-32UV's maximal configuration and the DM-1701's and MD-UV380's leave M17 out (their
+`config.mk`); the MD-9600's leaves satellite tracking, the languages and the reflector client out, so it has M17 with
+every part.
 
 ### DM-1701 and MD-380
 

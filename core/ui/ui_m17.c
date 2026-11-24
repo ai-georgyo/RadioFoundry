@@ -21,6 +21,9 @@
 #if CONFIG_M17_SIG
 #include "m17/m17_sig.h"
 #endif
+#if CONFIG_NET_M17
+#include "net/m17_net.h"
+#endif
 
 // The scratch's layout: the page text first, then the radio-wide record, then the last call in full (8-aligned)
 #define M17_DET_AT(cap)		((cap) - ((sizeof(radio_m17_details_t) + 7u) & ~7u))
@@ -629,6 +632,272 @@ const ui_scr_def_t ui_m17_bert_screen = {
 };
 #endif
 
+#if CONFIG_NET_M17
+// --- The reflector (22; docs/spec/m17-ip.md 7): one module of one reflector through the USB network or PPP. What
+// Link links to is typed here (the reflector and module, its IPv4 address, its port) and kept in RAM: the last one
+// linked, or what was typed since ---
+static m17_net_target_t refl;
+static bool refl_loaded;
+static uint8_t refl_seen;	// the state and its reason the page last drew (ui_m17_tick redraws on a change)
+enum { RR_NAME, RR_ADDRESS, RR_PORT, RR_LISTEN, RR_LINK, RR_COUNT };
+
+static const m17_net_target_t *refl_draft(void)
+{
+	if (!refl_loaded) {
+		m17_net_status_t s;
+		m17_net_status(&s);
+		memset(&refl, 0, sizeof refl);
+		if (s.t.name[0] != '\0')
+			refl = s.t;	// the link in force, or the last one
+		refl_loaded = true;
+	}
+	return &refl;
+}
+
+// "M17-M17 C": the designation and its module, as the reflector's destination reads
+static void sb_refl(sbuf_t *b, const m17_net_target_t *t)
+{
+	sb_str(b, t->name);
+	sb_chr(b, ' ');
+	sb_chr(b, t->module);
+}
+
+static void sb_ip(sbuf_t *b, uint32_t ip)
+{
+	for (int i = 3; i >= 0; i--) {
+		sb_u32(b, (ip >> (8 * i)) & 0xFFu, 1);
+		if (i != 0)
+			sb_chr(b, '.');
+	}
+}
+
+// A link is up or wanted: the last row unlinks
+static bool refl_wanted(uint8_t st)
+{
+	return st == M17_NET_LINKED || st == M17_NET_CONNECTING || st == M17_NET_WAIT;
+}
+
+bool ui_m17_refl_place(char *buf, size_t len)
+{
+	m17_net_status_t s;
+	sbuf_t b;
+	if (m17_net_state() != M17_NET_LINKED)
+		return false;
+	m17_net_status(&s);
+	sb_init(&b, buf, len);
+	sb_str(&b, TR(HOME_LABEL_M17_LINKED, "Linked "));
+	sb_refl(&b, &s.t);
+	return true;
+}
+
+bool ui_m17_refl_linked(void)
+{
+	return m17_net_state() == M17_NET_LINKED;
+}
+
+// The state above the rows: linked or connecting to what, or why not
+static const char *refl_body(void)
+{
+	static char body[64];
+	m17_net_status_t s;
+	sbuf_t b;
+	m17_net_status(&s);
+	sb_init(&b, body, sizeof body);
+	switch (s.state) {
+	case M17_NET_LINKED:
+	case M17_NET_CONNECTING:
+		sb_str(&b, s.state == M17_NET_LINKED ? TR(M17_BODY_LINKED_TO, "Linked to ") :
+			TR(M17_BODY_CONNECTING_TO, "Connecting to "));
+		sb_refl(&b, &s.t);
+		break;
+	case M17_NET_UNLINKING:
+		sb_str(&b, TR(M17_BODY_UNLINKING, "Unlinking"));
+		break;
+	case M17_NET_WAIT:
+		sb_str(&b, s.why == M17_NET_WHY_LOST ? TR(M17_BODY_REFL_LOST, "Link lost: trying again") :
+			s.why == M17_NET_WHY_DISC ? TR(M17_BODY_REFL_CLOSED, "Closed by the reflector: trying again later") :
+			s.why == M17_NET_WHY_NO_NET ? TR(M17_BODY_REFL_NO_NET, "Waiting for the network") :
+			TR(M17_BODY_REFL_NO_ANSWER, "No answer: trying again"));
+		break;
+	default:
+		sb_str(&b, s.why == M17_NET_WHY_REFUSED ? TR(M17_BODY_REFL_REFUSED, "Refused by the reflector") :
+			s.why == M17_NET_WHY_NO_PORT ? TR(M17_BODY_REFL_NO_PORT, "No UDP port free") :
+			TR(M17_BODY_NOT_LINKED, "Not linked"));
+		break;
+	}
+	refl_seen = (uint8_t)(s.state << 4 | s.why);
+	return body;
+}
+
+static uint16_t refl_count(void) { return RR_COUNT; }
+
+// Opened: the link in force (or the last one) again; what was typed and never linked is gone
+static void refl_enter(void)
+{
+	refl_loaded = false;
+}
+
+static void refl_item(uint16_t i, ui_item_t *it)
+{
+	const m17_net_target_t *t = refl_draft();
+	sbuf_t b;
+	static const tr_id_t labels[RR_COUNT] = { TRN(M17_LABEL_REFLECTOR, "Reflector"),
+		TRN(M17_LABEL_REFL_ADDRESS, "Address"), TRN(M17_LABEL_REFL_PORT, "Port"),
+		TRN(M17_LABEL_LISTEN_ONLY, "Listen only"), TRN(M17_ROW_LINK, "Link") };
+	str_copy(it->label, sizeof it->label, i == RR_LINK && refl_wanted(m17_net_state()) ?
+		TR(M17_ROW_UNLINK, "Unlink") : tr(labels[i]));
+	sb_init(&b, it->value, sizeof it->value);
+	switch (i) {
+	case RR_NAME:
+		if (t->name[0] != '\0')
+			sb_refl(&b, t);
+		else
+			sb_str(&b, TR(VALUE_NOT_SET, "Not set"));
+		break;
+	case RR_ADDRESS:
+		if (t->ip != 0)
+			sb_ip(&b, t->ip);
+		else
+			sb_str(&b, TR(VALUE_NOT_SET, "Not set"));
+		break;
+	case RR_PORT:
+		sb_u32(&b, t->port != 0 ? t->port : M17_NET_PORT, 1);
+		break;
+	case RR_LISTEN:
+		sb_str(&b, t->listen ? TR(VALUE_ON, "On") : TR(VALUE_OFF, "Off"));
+		break;
+	default:
+		break;
+	}
+}
+
+static void refl_select(uint16_t i, bool hold)
+{
+	(void)hold;
+	if (i == RR_NAME || i == RR_ADDRESS || i == RR_PORT) {
+		ui_callsign_open((uint8_t)(UI_CALL_REFL + i));
+		return;
+	}
+	if (i == RR_LISTEN) {
+		refl_draft();
+		refl.listen = !refl.listen;	// for the next Link
+		ui_dirty();
+		return;
+	}
+	if (refl_wanted(m17_net_state())) {
+		m17_net_unlink(M17_NET_FROM_UI);
+		ui_toast(TR(M17_TOAST_UNLINKED, "Unlinked"));
+		ui_dirty();
+		return;
+	}
+	m17_net_target_t t = *refl_draft();
+	t.own = m17_own_addr(NULL);
+	if (t.own == 0) {
+		ui_toast(TR(DENY_WHY_NO_CALLSIGN, "No M17 callsign set"));
+	} else if (!m17_net_link(M17_NET_FROM_UI, &t)) {
+		ui_toast(TR(M17_WHY_REFL_SET, TEXT_ALT_OPEN "Type the reflector and its address first" TEXT_ALT_NEXT
+			"Reflector, address first" TEXT_ALT_CLOSE));
+	} else {
+		ui_toast(TR(M17_TOAST_LINKING, "Linking..."));
+	}
+	ui_dirty();
+}
+
+const ui_scr_def_t ui_m17_refl_screen = {
+	.name = "m17-reflector", .flags = SF_LIST | SF_FIELD, .prefix = TRN(M17_TITLE_REFLECTOR, "M17 Reflector"),
+	.count = refl_count, .item = refl_item, .select = refl_select, .body = refl_body, .enter = refl_enter,
+};
+
+// The entries (the callsign entry's set: letters, digits, '.', '-', '/', space): what it opens with
+void ui_m17_refl_text(uint8_t why, char *t, size_t len)
+{
+	const m17_net_target_t *r = refl_draft();
+	sbuf_t b;
+	sb_init(&b, t, len);
+	if (why == UI_CALL_REFL && r->name[0] != '\0')
+		sb_refl(&b, r);
+	else if (why == UI_CALL_REFL_ADDRESS && r->ip != 0)
+		sb_ip(&b, r->ip);
+	else if (why == UI_CALL_REFL_PORT)
+		sb_u32(&b, r->port != 0 ? r->port : M17_NET_PORT, 1);
+}
+
+// "a.b.c.d", each part 0-255: the address, 0 when it isn't one
+static uint32_t parse_ip(const char *t)
+{
+	uint32_t ip = 0;
+	for (int part = 0; part < 4; part++) {
+		uint32_t v = 0;
+		int digits = 0;
+		while (*t >= '0' && *t <= '9' && digits < 4) {
+			v = v * 10u + (uint32_t)(*t++ - '0');
+			digits++;
+		}
+		if (digits == 0 || v > 255u || (part < 3 ? *t++ != '.' : *t != '\0'))
+			return 0;
+		ip = ip << 8 | v;
+	}
+	return ip;
+}
+
+// "1" to "65535": the port, 0 when it isn't one
+static uint16_t parse_port(const char *t)
+{
+	uint32_t v = 0;
+	if (*t == '\0')
+		return 0;
+	for (; *t != '\0'; t++) {
+		if (*t < '0' || *t > '9' || (v = v * 10u + (uint32_t)(*t - '0')) > 65535u)
+			return 0;
+	}
+	return (uint16_t)v;
+}
+
+bool ui_m17_refl_check(uint8_t why, const char *t)
+{
+	char name[M17_NET_NAME_MAX + 1], module;
+	m17_net_target_t probe;
+	bool ok;
+	if (why == UI_CALL_REFL) {
+		ok = m17_net_parse_name(t, name, &module);
+		if (!ok)
+			ui_toast(TR(M17_WHY_REFL_NAME, TEXT_ALT_OPEN "Reflector, space, module: M17-ABC C" TEXT_ALT_NEXT
+				"Like M17-ABC C" TEXT_ALT_CLOSE));
+		return ok;
+	}
+	if (why == UI_CALL_REFL_ADDRESS) {
+		probe = *refl_draft();
+		probe.ip = parse_ip(t);
+		probe.own = 1;		// the address alone is checked here
+		if (probe.name[0] == '\0') {
+			memcpy(probe.name, "M17", 4);
+			probe.module = 'A';
+		}
+		ok = probe.ip != 0 && m17_net_target_ok(&probe);
+		if (!ok)
+			ui_toast(TR(M17_WHY_REFL_ADDRESS, TEXT_ALT_OPEN "An IPv4 address: 192.0.2.1" TEXT_ALT_NEXT
+				"Like 192.0.2.1" TEXT_ALT_CLOSE));
+		return ok;
+	}
+	ok = parse_port(t) != 0;
+	if (!ok)
+		ui_toast(TR(M17_WHY_REFL_PORT, TEXT_ALT_OPEN "A port from 1 to 65535" TEXT_ALT_NEXT "Port 1-65535"
+			TEXT_ALT_CLOSE));
+	return ok;
+}
+
+void ui_m17_refl_kept(uint8_t why, const char *t)
+{
+	refl_draft();
+	if (why == UI_CALL_REFL)
+		(void)m17_net_parse_name(t, refl.name, &refl.module);
+	else if (why == UI_CALL_REFL_ADDRESS)
+		refl.ip = parse_ip(t);
+	else
+		refl.port = parse_port(t) == M17_NET_PORT ? 0 : parse_port(t);
+}
+#endif
+
 // --- Settings (11): the values of M17's action rows ---
 void ui_m17_set_value(uint8_t row, ui_item_t *it)
 {
@@ -671,6 +940,15 @@ void ui_m17_set_value(uint8_t row, ui_item_t *it)
 // with the page open asks too
 void ui_m17_tick(uint8_t top)
 {
+#if CONFIG_NET_M17
+	// The reflector's page follows the link's state as the host link task changes it
+	if (top == SCR_M17_REFL) {
+		m17_net_status_t s;
+		m17_net_status(&s);
+		if ((uint8_t)(s.state << 4 | s.why) != refl_seen)
+			ui_dirty();
+	}
+#endif
 #if CONFIG_M17_BERT
 	if (top == SCR_M17_BERT) {
 		bert_enter();
@@ -678,7 +956,7 @@ void ui_m17_tick(uint8_t top)
 		radio_req_m17_bert(RADIO_REQ_M17_BERT_MODE_OFF);
 		bert_held = false;
 	}
-#else
+#elif !CONFIG_NET_M17
 	(void)top;
 #endif
 }

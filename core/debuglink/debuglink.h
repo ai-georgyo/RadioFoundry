@@ -64,6 +64,7 @@ enum {
 	DL_VIEW_M17_DATA,	// M17: packets, SMS and the signature counters
 	DL_VIEW_M17_VOICE,	// M17: the voice path's counters and the BER test
 	DL_VIEW_HEARD,		// the stations heard, any mode (radio_heard.h; debuglink_view_m17.c, M17 its only source)
+	DL_VIEW_M17_NET,	// the M17 reflector client: the link, its target, its counters (core/net/m17_net.c)
 	DL_VIEW_COUNT
 };
 #define DL_VIEW_VERSION		5	// bumped when a key changes meaning or goes away (new keys don't bump it)
@@ -110,6 +111,7 @@ enum {
 	DL_M17_BENCH_CODEC = 4,	// phase, mode: radio_req_m17_bench, the codec bench
 	DL_M17_BER_MODE = 5,	// 0 off, 1 on: radio_req_m17_bert (the BER test mode)
 	DL_M17_TIME = 6,	// Unix seconds u32 (0 forgets): utc_set, UTC_SRC_HOST
+	DL_M17_NET = 7,		// 0 unlink; 1 link, 2 link listen only: ip[4] big endian, port u16 (0: 17000), name 'M17-XYZ C'
 };
 void debuglink_view_keys(dl_text_t *t);
 enum {

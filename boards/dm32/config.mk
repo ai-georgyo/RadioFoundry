@@ -3,12 +3,12 @@
 # DM-32UV feature defaults (config/features.mk lists them all). 880 KB of code space before the codec slot, so RAM is
 # the limit: 211,456 B below the codec's RAM window (boards/dm32/memory.ld, docs/spec/hardware-dm32.md 17.1), the
 # RTOS heap's 33 KB among them (freertos_board.h). Every feature the radio has hardware and glue for is on, and the
-# image (P25, P25 trunking, NXDN and M17 with every part among them) keeps 7,296 B of it linked free, more than the
-# 1.5 KB every default image keeps (docs/build-config.md, board defaults; 10,280 B without M17, measured
-# 2026-11-23). Linked free is what the linker leaves of the RAM region; the heap's own headroom at run time is
-# tasks.heap_min_free. A feature that needs more RAM cuts some first, or shrinks the heap if tasks.heap_min_free shows
-# room (tests/hil/test_task_stacks.py). The codec's encoder and decoder share one state block
-# (platform/hrc7000/vocoder.c), which P25 borrows while it runs
+# image (P25, P25 trunking, NXDN and M17 with every part among them, and its reflector client) keeps 6,072 B of it
+# linked free, more than the 1.5 KB every default image keeps (docs/build-config.md, board defaults; 7,296 B without
+# the reflector client, 10,280 B without M17, measured 2026-11-23). Linked free is what the linker leaves of the RAM
+# region; the heap's own headroom at run time is tasks.heap_min_free. A feature that needs more RAM cuts some first,
+# or shrinks the heap if tasks.heap_min_free shows room (tests/hil/test_task_stacks.py). The codec's encoder and
+# decoder share one state block (platform/hrc7000/vocoder.c), which P25 borrows while it runs
 # The host link runs on the programming cable's UART0; USB, PPP and TCP_CONNS follow the platform
 # (platform/hrc7000/config.mk)
 # The 240x320 panel at full resolution in 16 colors (display_dm32.c, board.mk). The 16x32 font is the large class's
