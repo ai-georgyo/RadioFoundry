@@ -2,8 +2,9 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // The RF chain sequencer (drivers/rf/chainseq) against a fake board. Every line, DAC, synthesizer and IF write and
 // every delay is logged, and a watcher checks the driver's three rules at each write, whatever the test: the DAC at
-// or under the floor and the loop open whenever the transmit rail changes, the transmit rail off whenever the
-// receive VCO comes on, no tuning value on the DAC while the loop is closed. The fake also has a board's interlock on
+// or under the floor and the loop open whenever the transmit rail changes, the VCO select line moving only with the
+// transmit rail off and the loop open (and by direction, the transmit rail off whenever the receive VCO comes on),
+// no tuning value on the DAC while the loop is closed. The fake also has a board's interlock on
 // the shared DAC (a transmit line only with the DAC at or under the floor, a value over the floor only with both
 // transmit lines on or both off): no sequence may run into it. Nothing here drives hardware: the "PA" is a log.
 //
@@ -12,6 +13,8 @@
 // every position of every three-call sequence (once, and from there on; no drive reaches a closed loop in a call
 // after its refused write), and the rules and the state under every sequence of four calls and a long random walk.
 // All of it with a floor of 0 and with one above 0, and without the burst pieces as chainseqTestFm (CONFIG_DMR=0).
+// Without a vco_line op every expected log is the one the line by direction gives; with one (a plan whose receive and
+// transmit switch points differ) the same tests run with the plan's levels, plus its own cases.
 #include <stdio.h>
 #include <string.h>
 #include "rf/chainseq/chainseq.h"
@@ -43,6 +46,11 @@ static int failures;
 #define F_A		440000000u
 #define F_B		446500000u
 #define F_NOCAL		475000000u	// receives, no transmit calibration
+#define F_C		460000000u	// over the plan's receive switch
+// The plan's VCO rule (ops_plan): the line on (the lower VCO) below each switch. F_A is under both, F_B between them
+// (on to receive, off to transmit), F_C over both
+#define PLAN_RX_SW_HZ	450000000u
+#define PLAN_TX_SW_HZ	443000000u
 #define F_OUT		500000000u	// out of band
 #define DRIVE_LOW	900u
 #define DRIVE_HIGH	1800u
@@ -80,6 +88,10 @@ static struct {
 	int plan_power;
 	uint32_t delay_total;
 	int calls;		// every write and delay the driver asked for, refused ones too
+	// The plan's VCO rule: how often it was asked, and the last question
+	int plan_asks;
+	uint32_t plan_hz;
+	bool plan_tx;
 	// The watcher
 	bool pa_allowed;	// the PA may come on air
 	bool no_wait;		// an interrupt level call: no delay
@@ -100,6 +112,20 @@ static bool g_log = true;
 static bool has_lock(void)
 {
 	return g_ops->locked != NULL;
+}
+
+static bool has_plan(void)
+{
+	return g_ops->vco_line != NULL;
+}
+
+// The VCO line's level the driver must give a channel at hz: the plan's, or by direction
+static bool want_vco(uint32_t hz, bool tx)
+{
+	if (!has_plan()) {
+		return !tx;
+	}
+	return hz < (tx ? PLAN_TX_SW_HZ : PLAN_RX_SW_HZ);
 }
 
 static void log_ev(uint8_t kind, uint8_t a, uint32_t v)
@@ -143,11 +169,15 @@ static bool f_line(void *ctx, uint8_t line, bool on)
 		CHECK(f.dac <= f.floor);
 		CHECK(!f.level[CHAINSEQ_LINE_APC_LOOP]);
 	}
-	if (on && line == CHAINSEQ_LINE_VCO_RX) {
-		CHECK(!f.level[CHAINSEQ_LINE_TX_RAIL]);	// rule 2
+	if (line == CHAINSEQ_LINE_VCO_RX && f.level[line] != on) {
+		CHECK(!f.level[CHAINSEQ_LINE_TX_RAIL] && !f.level[CHAINSEQ_LINE_APC_LOOP]);	// rule 2
+	}
+	if (on && line == CHAINSEQ_LINE_VCO_RX && !has_plan()) {
+		CHECK(!f.level[CHAINSEQ_LINE_TX_RAIL]);	// rule 2 by direction
 	}
 	if (on && line == CHAINSEQ_LINE_TX_RAIL) {
-		CHECK(!f.level[CHAINSEQ_LINE_VCO_RX]);	// rule 2, from the other side
+		// Rule 2, from the other side: by direction the transmit VCO, with a plan its level for the carrier
+		CHECK(f.level[CHAINSEQ_LINE_VCO_RX] == want_vco(f.synth_hz, true));
 		CHECK(!f.level[CHAINSEQ_LINE_RX_RAIL]);
 	}
 	if (on && line == CHAINSEQ_LINE_APC_LOOP) {
@@ -185,12 +215,12 @@ static bool f_dac(void *ctx, uint16_t v)
 		return false;
 	}
 	if (loop && rail && v > f.floor && f.dac <= f.floor) {
-		// The PA comes on air: only where a test expects it, on a calibrated carrier from the transmit VCO, with
-		// the receiver off, and with the lock read since the synthesizer's last words
+		// The PA comes on air: only where a test expects it, on a calibrated carrier from its own VCO, with the
+		// receiver off, and with the lock read since the synthesizer's last words
 		f.rises++;
 		CHECK(f.pa_allowed);
 		CHECK(f.cal && f.synth_hz >= RX_LO_HZ && f.synth_hz <= TX_HI_HZ);
-		CHECK(!f.level[CHAINSEQ_LINE_VCO_RX] && !f.level[CHAINSEQ_LINE_RX_RAIL]);
+		CHECK(f.level[CHAINSEQ_LINE_VCO_RX] == want_vco(f.synth_hz, true) && !f.level[CHAINSEQ_LINE_RX_RAIL]);
 		CHECK(f.level[CHAINSEQ_LINE_SYNTH_RAIL]);
 		CHECK(!has_lock() || f.lock_run >= (int)CHAINSEQ_LOCK_READS);
 	}
@@ -272,6 +302,16 @@ static bool f_tx_plan(void *ctx, uint32_t hz, uint8_t power, uint32_t *vco_hz, u
 	return true;
 }
 
+// The plan's VCO rule. Pure: it writes nothing and waits for nothing (the burst pieces ask it at interrupt level)
+static bool f_vco_line(void *ctx, uint32_t hz, bool tx)
+{
+	CHECK(ctx == &f);
+	f.plan_asks++;
+	f.plan_hz = hz;
+	f.plan_tx = tx;
+	return want_vco(hz, tx);
+}
+
 static const chainseq_ops_t ops_lock = {
 	.line = f_line, .synth = f_synth, .locked = f_locked, .if_setup = f_if_setup, .dac = f_dac, .delay_us = f_delay,
 	.rx_plan = f_rx_plan, .tx_plan = f_tx_plan,
@@ -282,6 +322,13 @@ static const chainseq_ops_t ops_lock = {
 static const chainseq_ops_t ops_nolock = {
 	.line = f_line, .synth = f_synth, .locked = NULL, .if_setup = f_if_setup, .dac = f_dac, .delay_us = f_delay,
 	.rx_plan = f_rx_plan, .tx_plan = f_tx_plan,
+	.rail_settle_us = SETTLE_US, .lock_timeout_us = LOCK_US, .tx_rail_lead_us = LEAD_US, .ctx = &f,
+};
+
+// A board whose VCOs are chosen by frequency, with a lock indication
+static const chainseq_ops_t ops_plan = {
+	.line = f_line, .synth = f_synth, .locked = f_locked, .if_setup = f_if_setup, .dac = f_dac, .delay_us = f_delay,
+	.rx_plan = f_rx_plan, .tx_plan = f_tx_plan, .vco_line = f_vco_line,
 	.rail_settle_us = SETTLE_US, .lock_timeout_us = LOCK_US, .tx_rail_lead_us = LEAD_US, .ctx = &f,
 };
 
@@ -396,6 +443,9 @@ static void w_lock(void)
 static void w_rx(uint32_t hz, bool wide, bool cold)
 {
 	w_safe();
+	if (!want_vco(hz, false)) {
+		WL(VCO_RX, 0);	// a plan that wants the other level than the parked one
+	}
 	WL(SYNTH_RAIL, 1);
 	if (cold) {
 		WW(SETTLE_US);
@@ -429,7 +479,7 @@ static void w_tx(uint32_t hz, uint16_t drive, bool cold)
 	if (cold) {
 		WW(SETTLE_US);
 	}
-	WL(VCO_RX, 0);
+	WL(VCO_RX, want_vco(hz, true));
 	WS(hz);
 	w_lock();
 	WL(TX_RAIL, 1);
@@ -449,6 +499,8 @@ static void consistent(void)
 	const bool *lv = f.level;
 	bool loop = lv[CHAINSEQ_LINE_APC_LOOP], txr = lv[CHAINSEQ_LINE_TX_RAIL], vco_rx = lv[CHAINSEQ_LINE_VCO_RX];
 	bool rxr = lv[CHAINSEQ_LINE_RX_RAIL], syn = lv[CHAINSEQ_LINE_SYNTH_RAIL];
+	// The line as the state's frequency wants it (by direction: on to receive, off to transmit); parked when idle
+	bool vco_r = vco_rx == want_vco(q.rx_hz, false), vco_t = vco_rx == want_vco(q.tx_hz, true);
 	bool ok = false;
 	switch (q.state) {
 	case CHAINSEQ_ST_OFF:
@@ -456,24 +508,24 @@ static void consistent(void)
 		ok = !loop && !txr && vco_rx && f.dac == 0u;
 		break;
 	case CHAINSEQ_ST_RX:
-		ok = !loop && !txr && vco_rx && rxr && syn && lv[CHAINSEQ_LINE_IF_RUN] && f.dac == TUNE(q.rx_hz) &&
+		ok = !loop && !txr && vco_r && rxr && syn && lv[CHAINSEQ_LINE_IF_RUN] && f.dac == TUNE(q.rx_hz) &&
 		     f.synth_hz == RXVCO(q.rx_hz) && f.if_wide == q.wide;
 		break;
 	case CHAINSEQ_ST_SLEEP:
-		ok = !loop && !txr && vco_rx && !rxr && syn && f.dac == TUNE(q.rx_hz);
+		ok = !loop && !txr && vco_r && !rxr && syn && f.dac == TUNE(q.rx_hz);
 		break;
 	case CHAINSEQ_ST_TX:
-		ok = loop && txr && !vco_rx && !rxr && syn && f.dac == q.drive && q.drive >= q.floor &&
+		ok = loop && txr && vco_t && !rxr && syn && f.dac == q.drive && q.drive >= q.floor &&
 		     f.synth_hz == q.tx_hz;
 		break;
 	case CHAINSEQ_ST_BURST:
-		ok = !loop && !vco_rx && !rxr && syn && f.dac == 0u && f.synth_hz == q.tx_hz;
+		ok = !loop && vco_t && !rxr && syn && f.dac == 0u && f.synth_hz == q.tx_hz;
 		break;
 	case CHAINSEQ_ST_BURST_LOOP:
-		ok = loop && txr && !vco_rx && !rxr && syn && f.dac == q.floor && f.synth_hz == q.tx_hz;
+		ok = loop && txr && vco_t && !rxr && syn && f.dac == q.floor && f.synth_hz == q.tx_hz;
 		break;
 	case CHAINSEQ_ST_BURST_ON:
-		ok = loop && txr && !vco_rx && !rxr && syn && f.dac == q.drive && q.drive > q.floor &&
+		ok = loop && txr && vco_t && !rxr && syn && f.dac == q.drive && q.drive > q.floor &&
 		     f.synth_hz == q.tx_hz;
 		break;
 	default:
@@ -823,7 +875,7 @@ static void test_tx_unlocked(void)
 	w_pa_off(false);
 	WL(RX_RAIL, 0);
 	WL(SYNTH_RAIL, 1);
-	WL(VCO_RX, 0);
+	WL(VCO_RX, want_vco(F_B, true));
 	WS(F_B);
 	for (int i = 0; i < n - 1; i++) {
 		WW(CHAINSEQ_LOCK_POLL_US);
@@ -867,7 +919,7 @@ static void test_tx_retune(void)
 	w_pa_off(true);
 	WL(RX_RAIL, 0);
 	WL(SYNTH_RAIL, 1);
-	WL(VCO_RX, 0);
+	WL(VCO_RX, want_vco(F_B, true));
 	WS(F_B);
 	w_lock();
 	WL(TX_RAIL, 1);
@@ -1119,7 +1171,7 @@ static void test_burst(void)
 	w_pa_off(false);
 	WL(RX_RAIL, 0);
 	WL(SYNTH_RAIL, 1);
-	WL(VCO_RX, 0);
+	WL(VCO_RX, want_vco(F_B, true));
 	WS(F_B);
 	WL(TX_RAIL, 1);
 	MATCH();
@@ -1179,7 +1231,7 @@ static void test_burst(void)
 	reads = f.lock_reads;
 	CHECK(burst_rx());
 	w_pa_off(false);
-	WL(VCO_RX, 1);
+	WL(VCO_RX, want_vco(F_A, false));
 	WS(RXVCO(F_A));
 	WL(RX_RAIL, 1);
 	WD(TUNE(F_A));
@@ -1248,7 +1300,7 @@ static void test_burst_orders(void)
 	w_pa_off(true);
 	WL(RX_RAIL, 0);
 	WL(SYNTH_RAIL, 1);
-	WL(VCO_RX, 0);
+	WL(VCO_RX, want_vco(F_A, true));
 	WS(F_A);
 	WL(TX_RAIL, 1);
 	MATCH();
@@ -1433,17 +1485,153 @@ static void test_burst_unlocked(void)
 
 #endif
 
+// --- The VCO line from the plan ---
+
+// A plan whose levels differ by frequency: receive and transmit on both sides of its switch points, bursts across
+// them. The line is the plan's wherever the direction's would be written, and in a receive set-up the one new write
+// comes only for the level the safe state did not park
+static void test_plan(void)
+{
+	if (!has_plan()) {
+		return;
+	}
+	CHECK(want_vco(F_A, false) && want_vco(F_A, true));
+	CHECK(want_vco(F_B, false) && !want_vco(F_B, true));
+	CHECK(!want_vco(F_C, false) && !want_vco(F_C, true));
+
+	// Receive under the switch: the parked level is the plan's, nothing more is written
+	fresh();
+	CHECK(chainseq_rx(&q, F_A, true) == CHAINSEQ_OK);
+	w_rx(F_A, true, true);
+	MATCH();
+	CHECK(f.plan_hz == F_A && !f.plan_tx);
+	consistent();
+	// Over it: the line off after the park, before the synthesizer rail and the words
+	CHECK(chainseq_rx(&q, F_C, false) == CHAINSEQ_OK);
+	w_safe();
+	WL(VCO_RX, 0);
+	WL(SYNTH_RAIL, 1);
+	WS(RXVCO(F_C));
+	w_lock();
+	WL(RX_RAIL, 1);
+	WL(IF_RUN, 1);
+	WW(SETTLE_US);
+	WI(0);
+	WD(TUNE(F_C));
+	MATCH();
+	CHECK(q.state == CHAINSEQ_ST_RX && !f.level[CHAINSEQ_LINE_VCO_RX] && f.plan_hz == F_C && !f.plan_tx);
+	consistent();
+	// Asleep and awake: the same level again
+	chainseq_sleep(&q, true);
+	consistent();
+	chainseq_sleep(&q, false);
+	CHECK(!f.level[CHAINSEQ_LINE_VCO_RX]);
+	consistent();
+
+	// FM under the transmit switch from a receiver over the receive one: the line on with the transmit rail off and
+	// the loop open, then the transmit rail with it on
+	clear_log();
+	CHECK(chainseq_tx(&q, F_A, 1) == CHAINSEQ_OK);
+	w_tx(F_A, DRIVE_HIGH, false);
+	MATCH();
+	CHECK(f.level[CHAINSEQ_LINE_VCO_RX] && f.level[CHAINSEQ_LINE_TX_RAIL] && f.rises == 1);
+	CHECK(f.plan_hz == F_A && f.plan_tx);
+	consistent();
+	// The end: down in order, the safe state parks the line on, the receive set-up moves it off again
+	chainseq_tx_off(&q);
+	w_ramp(DRIVE_HIGH, false);
+	w_pa_off(true);
+	w_rx(F_C, false, false);
+	MATCH();
+	CHECK(q.state == CHAINSEQ_ST_RX && !f.level[CHAINSEQ_LINE_VCO_RX]);
+	consistent();
+	// Between the switches the direction decides it: on to receive, off to transmit
+	CHECK(chainseq_rx(&q, F_B, true) == CHAINSEQ_OK && f.level[CHAINSEQ_LINE_VCO_RX]);
+	CHECK(chainseq_tx(&q, F_B, 0) == CHAINSEQ_OK && !f.level[CHAINSEQ_LINE_VCO_RX] && f.plan_tx);
+	consistent();
+	chainseq_tx_off(&q);
+	CHECK(f.level[CHAINSEQ_LINE_VCO_RX] && q.state == CHAINSEQ_ST_RX);
+	// Not locked on the carrier: safe (the line parked) and back to the receive set-up, which moves it again
+	fresh();
+	(void)chainseq_rx(&q, F_C, true);
+	f.lock = false;
+	f.pa_allowed = false;
+	CHECK(chainseq_tx(&q, F_A, 1) == CHAINSEQ_UNLOCKED);
+	CHECK(q.state == CHAINSEQ_ST_RX && !f.level[CHAINSEQ_LINE_VCO_RX] && f.rises == 0);
+	consistent();
+	f.lock = true;
+	f.pa_allowed = true;
+
+#if CONFIG_DMR
+	// Bursts across the switches: from a receiver with the line off to a carrier with it on, at interrupt level
+	fresh();
+	(void)chainseq_rx(&q, F_C, true);
+	clear_log();
+	int asks = f.plan_asks;
+	CHECK(burst_tune(F_A));
+	w_pa_off(false);
+	WL(RX_RAIL, 0);
+	WL(SYNTH_RAIL, 1);
+	WL(VCO_RX, 1);
+	WS(F_A);
+	WL(TX_RAIL, 1);
+	MATCH();
+	CHECK(f.plan_asks == asks + 1 && f.plan_hz == F_A && f.plan_tx);
+	consistent();
+	CHECK(point(CHAINSEQ_PT_LOOP, DRIVE_LOW) && point(PA_KEYUP_PT_PA, DRIVE_LOW));
+	CHECK(q.state == CHAINSEQ_ST_BURST_ON && f.level[CHAINSEQ_LINE_VCO_RX] && f.rises == 1);
+	consistent();
+	burst_off();
+	// The points and the burst's end leave the line alone: it moves only with a tune or a way back
+	CHECK(f.plan_asks == asks + 1);
+	clear_log();
+	CHECK(burst_rx());
+	w_pa_off(false);
+	WL(VCO_RX, 0);
+	WS(RXVCO(F_C));
+	WL(RX_RAIL, 1);
+	WD(TUNE(F_C));
+	MATCH();
+	CHECK(f.plan_hz == F_C && !f.plan_tx);
+	consistent();
+	// And the other way: a receiver with the line on, bursts with it off
+	CHECK(chainseq_rx(&q, F_A, true) == CHAINSEQ_OK);
+	CHECK(burst_tune(F_B) && !f.level[CHAINSEQ_LINE_VCO_RX]);
+	consistent();
+	CHECK(point(PA_KEYUP_PT_PA, DRIVE_HIGH) && q.state == CHAINSEQ_ST_BURST_ON);
+	// A retune of the bursts while one is up: the PA down first, then the line
+	CHECK(burst_tune(F_A) && f.level[CHAINSEQ_LINE_VCO_RX] && q.state == CHAINSEQ_ST_BURST);
+	consistent();
+	CHECK(burst_rx() && f.level[CHAINSEQ_LINE_VCO_RX]);
+	consistent();
+#endif
+	CHECK(f.trips == 0 && q.errors == 0u);
+	clear_log();
+}
+
 // --- Refused writes, everywhere ---
 
-// The calls a sequence is made of. The lock line going away and coming back is one of them
+// The calls a sequence is made of. The lock line going away and coming back is one of them. The last ones only with
+// the plan (sym_count()): without it they would add sequences, not cases, and the runs by direction stay what they
+// were
 enum {
 	SYM_RX_A, SYM_RX_B, SYM_RX_OUT, SYM_TX_A, SYM_TX_B, SYM_TX_NOCAL, SYM_TX_OFF, SYM_SLEEP, SYM_WAKE, SYM_SAFE,
 	SYM_DRIVE, SYM_DRIVE_0, SYM_UNLOCK, SYM_LOCK,
 #if CONFIG_DMR
 	SYM_TUNE, SYM_TUNE_NOCAL, SYM_PT_LOOP, SYM_PT_BOOST, SYM_PT_PA, SYM_PT_DRIVE, SYM_BURST_OFF, SYM_BURST_RX,
 #endif
+	SYM_PLAN_FIRST,
+	SYM_RX_C = SYM_PLAN_FIRST,	// receive over the plan's switch: the line off
+#if CONFIG_DMR
+	SYM_TUNE_A,			// bursts on the line's other level than SYM_TUNE's
+#endif
 	SYM_COUNT
 };
+
+static int sym_count(void)
+{
+	return has_plan() ? SYM_COUNT : SYM_PLAN_FIRST;
+}
 
 static void do_sym(int sym)
 {
@@ -1482,7 +1670,9 @@ static void do_sym(int sym)
 		break;
 	case SYM_BURST_OFF: burst_off(); break;
 	case SYM_BURST_RX: (void)burst_rx(); break;
+	case SYM_TUNE_A: (void)burst_tune(F_A); break;
 #endif
+	case SYM_RX_C: (void)chainseq_rx(&q, F_C, false); break;
 	default: break;
 	}
 	CHECK(!nothing || f.calls == calls);
@@ -1500,8 +1690,9 @@ static void test_refused_writes(void)
 {
 	g_log = false;
 	long runs = 0;
-	for (int n3 = 0; n3 < SYM_COUNT * SYM_COUNT * SYM_COUNT && failures < 40; n3++) {
-		int seq[3] = { n3 % SYM_COUNT, n3 / SYM_COUNT % SYM_COUNT, n3 / SYM_COUNT / SYM_COUNT };
+	const int ns = sym_count();
+	for (int n3 = 0; n3 < ns * ns * ns && failures < 40; n3++) {
+		int seq[3] = { n3 % ns, n3 / ns % ns, n3 / ns / ns };
 		fresh();
 		int first = f.nwrites;	// the start's own writes are test_safe's
 		for (int i = 0; i < 3; i++) {
@@ -1536,7 +1727,8 @@ static void test_refused_writes(void)
 	}
 	g_log = true;
 	clear_log();
-	printf("  refused writes: %ld runs (floor %u%s)\n", runs, g_floor, has_lock() ? "" : ", no lock line");
+	printf("  refused writes: %ld runs (floor %u%s%s)\n", runs, g_floor, has_lock() ? "" : ", no lock line",
+	       has_plan() ? ", VCO plan" : "");
 }
 
 // --- Every interleaving ---
@@ -1553,11 +1745,12 @@ static void test_interleavings(void)
 {
 	g_log = false;
 	long seqs = 0;
-	int n4 = SYM_COUNT * SYM_COUNT * SYM_COUNT * SYM_COUNT;
+	const int ns = sym_count();
+	int n4 = ns * ns * ns * ns;
 	for (int n = 0; n < n4 && failures < 40; n++) {
 		fresh();
-		for (int i = 0, d = n; i < 4; i++, d /= SYM_COUNT) {
-			step(d % SYM_COUNT);
+		for (int i = 0, d = n; i < 4; i++, d /= ns) {
+			step(d % ns);
 		}
 		CHECK(f.trips == 0);
 		seqs++;
@@ -1567,7 +1760,7 @@ static void test_interleavings(void)
 	long rises = 0;
 	for (long i = 0; i < 1000000 && failures < 40; i++) {
 		lcg = lcg * 1664525u + 1013904223u;
-		step((int)((lcg >> 16) % SYM_COUNT));
+		step((int)((lcg >> 16) % (uint32_t)ns));
 		rises = f.rises;
 	}
 	CHECK(f.trips == 0);
@@ -1575,8 +1768,8 @@ static void test_interleavings(void)
 	CHECK(rises > 1000);	// the walk did transmit: the rules were not kept by never keying
 	g_log = true;
 	clear_log();
-	printf("  interleavings: %ld sequences, a walk with %ld key-ups (floor %u%s)\n", seqs, rises, g_floor,
-	       has_lock() ? "" : ", no lock line");
+	printf("  interleavings: %ld sequences, a walk with %ld key-ups (floor %u%s%s)\n", seqs, rises, g_floor,
+	       has_lock() ? "" : ", no lock line", has_plan() ? ", VCO plan" : "");
 }
 
 static void run_all(const chainseq_ops_t *o, uint16_t floor)
@@ -1602,6 +1795,7 @@ static void run_all(const chainseq_ops_t *o, uint16_t floor)
 	test_burst_refused();
 	test_burst_unlocked();
 #endif
+	test_plan();
 	test_refused_writes();
 	test_interleavings();
 }
@@ -1612,6 +1806,8 @@ int main(void)
 	run_all(&ops_lock, 300);
 	run_all(&ops_nolock, 0);
 	run_all(&ops_nolock, 300);
+	run_all(&ops_plan, 0);
+	run_all(&ops_plan, 300);
 	printf("chainseqTest%s: %s (%d failures)\n", CONFIG_DMR ? "" : " (FM only)", failures == 0 ? "PASSED" : "FAILED",
 	       failures);
 	return failures == 0 ? 0 : 1;
