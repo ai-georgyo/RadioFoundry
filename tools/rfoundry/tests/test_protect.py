@@ -334,12 +334,17 @@ class CpsWrites(unittest.TestCase):
             self.assertEqual(cc.protect_for({"radio_type": 7, "board": None})[0], [TABLE, RECORDS, sec])
         finally:
             cc.rfoundryboards.BOARDS = saved
-        # The registry: an MD-380 and a CS7000 M17 PLUS both report radio type 7; the MD-380's VERSION board gives
-        # no data range (the CS7000's maker's table is not an MD-380's)
-        md380 = boards.get("md380")
-        got, note = cc.protect_for({"radio_type": 7, "model": "MD-380", "board": md380.debuglink_names[0]})
-        self.assertEqual(([p for p in got if p["mem"] == "data"], note), ([], None))
-        self.assertEqual(cc.kept_ranges(got), [])
+        # The registry: where boards share a radio type, each board's VERSION name gives its own entries alone (a
+        # range one maker's radio keeps is not another's), and some type is shared by boards whose data entries differ
+        shared = 0
+        for t in {t for b in saved.values() for t in b.cps_radio_types}:
+            those = [b for b in saved.values() if t in b.cps_radio_types and b.debuglink_names]
+            data = {tuple((p["start"], p["end"]) for p in b.protect if p["mem"] == "data") for b in those}
+            shared += len(data) > 1
+            for b in those:
+                got, note = cc.protect_for({"radio_type": t, "board": b.debuglink_names[0]})
+                self.assertEqual((got, note), (list(b.protect), None), (t, b.id))
+        self.assertGreater(shared, 0, "a radio type two boards with different data entries report")
         # The registry: each board reporting a radio type has its entries kept by a write to that type
         for t in {t for b in saved.values() for t in b.cps_radio_types}:
             got, _ = cc.protect_for({"radio_type": t})
@@ -369,9 +374,9 @@ class CpsWrites(unittest.TestCase):
                 return r
 
         def version(seq):
-            return b"junk" + dbg.frame(dbg.VERSION | 0x80, seq, b"\0proto=1\nboard=MD-380\nfeatures=x\n")
+            return b"junk" + dbg.frame(dbg.VERSION | 0x80, seq, b"\0proto=1\nboard=B-1\nfeatures=x\n")
         port = Port(version)
-        self.assertEqual(cc.Cps(port).version_board(), "MD-380")
+        self.assertEqual(cc.Cps(port).version_board(), "B-1")
         self.assertEqual(port.out, b"")
         self.assertEqual(cc.Cps(Port(lambda seq: version(seq ^ 1))).version_board(0.1), None, "another request's")
         port = Port(lambda seq: b"-")
