@@ -96,6 +96,11 @@ FLASH_MAP_FIELDS = ("settings_addr", "settings_size", "journal_addr", "openfw_ee
                     "calibration_addr", "calibration_size", "native_addr", "native_size", "staging_addr", "staging_size",
                     "satellite_addr", "satellite_size")
 OPENFW_FLASH_OFFSET = 0x20000
+# hal_flash_map_t .factory (hal/hal_flash.h): the maker's bytes the firmware keeps through every rewrite of their
+# sector (docs/spec/settings-store.md 4.1), {addr, size} byte ranges, at most HAL_FLASH_FACTORY_MAX; a board that lists
+# them builds with STORAGE_FACTORY_KEEP (board.mk MCU_DEFS), and each one is a [[flash.protect]] data entry
+FACTORY_MAX = 4
+FACTORY_KEEP_DEF = "STORAGE_FACTORY_KEEP"
 APP_SLOT = "app+slot"		# [flash] sectors: one sector for the application, one for the codec slot (no geometry)
 NAND_DRIVER = "drivers/flash/spi_nand"	# in BOARD_DIRS: the board's data memory is SPI NAND (the stub's nand flag)
 # The memories a [[flash.protect]] entry names, and what an offset in each means: progmem, the MCU's program flash from
@@ -513,6 +518,89 @@ def flash_map(board_dir):
     return out
 
 
+def _factory_ranges(body, where):
+    """[(addr, size)] of a hal_flash_map_t initializer's .factory list, in order, size 0 entries included; [] without
+    one. Entries are { addr, size } or { .addr = .., .size = .. } of integer literals: the registry reads no macros"""
+    m = re.search(r"\.factory\s*=\s*\{", body)
+    if not m:
+        return []
+    inner = _braced(body, m.end())[:-1]
+    out = []
+    for e in re.findall(r"\{([^{}]*)\}", inner):
+        lit = r"(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*"
+        f = (re.fullmatch(r"\s*\.addr\s*=\s*%s\s*,\s*\.size\s*=\s*%s\s*,?\s*" % (lit, lit), e) or
+             re.fullmatch(r"\s*%s\s*,\s*%s\s*,?\s*" % (lit, lit), e))
+        if not f:
+            raise RegistryError("%s: hal_flash_map_t .factory entry {%s} is not two integer literals { addr, size }"
+                                % (where, e.strip()))
+        out.append((int(f.group(1), 0), int(f.group(2), 0)))
+    if re.sub(r"\{[^{}]*\}|[\s,]", "", inner):
+        raise RegistryError("%s: hal_flash_map_t .factory is a list of { addr, size } entries" % where)
+    return out
+
+
+def flash_factory(board_dir):
+    """The board's hal_flash_map_t .factory list as [(addr, size)] in order (size 0 entries included), from the same map
+    flash_map() reads (maps for smaller chips ignored); [] without one."""
+    sources = list(_c_sources(board_dir))
+    small_maps = {name for _, text in sources
+                  for name in re.findall(r"\.small_map\s*=\s*&\s*(\w+)", text)}
+    out, where = [], None
+    d = board_dir if isinstance(board_dir, str) else board_dir[0]
+    for f, text in sources:
+        for m in re.finditer(r"\bhal_flash_map_t\s+(\w+)\s*=\s*\{", text):
+            if m.group(1) in small_maps:
+                continue
+            found = _factory_ranges(_braced(text, m.end()), "%s/%s" % (os.path.relpath(d, ROOT), f))
+            if where is not None and found != out:
+                raise RegistryError("%s: hal_flash_map_t .factory in %s and %s differ" % (os.path.relpath(d, ROOT),
+                                                                                         where, f))
+            out, where = found, f
+    return out
+
+
+def factory_keep(mcu_defs):
+    """board.mk MCU_DEFS sets STORAGE_FACTORY_KEEP (-DSTORAGE_FACTORY_KEEP, or =1 or another value but 0)"""
+    for d in (mcu_defs or "").split():
+        if d == "-D" + FACTORY_KEEP_DEF or d.startswith("-D%s=" % FACTORY_KEEP_DEF):
+            v = d.partition("=")[2].rstrip("uUlL")
+            try:
+                return v == "" or int(v, 0) != 0
+            except ValueError:
+                return True		# a macro or an expression: the preprocessor's to read, set as far as we know
+    return False
+
+
+def factory_problems(factory, keep, protect):
+    """Why a board's hal_flash_map_t .factory list (factory: [(addr, size)], flash_factory()) can't stand beside its
+    build and its registry: a list without STORAGE_FACTORY_KEEP in board.mk MCU_DEFS or the define without a list (the
+    firmware would keep nothing, or compile the rule for nothing), more than FACTORY_MAX entries, a size 0 entry before
+    a range, ranges out of order or touching, or a list that isn't the board's [[flash.protect]] data entries (the
+    tools must keep what the firmware keeps, and no more there). protect: the board's entries."""
+    out = []
+    ranges = [(a, a + n) for a, n in factory if n]
+    if ranges and not keep:
+        out.append("hal_flash_map_t .factory lists ranges, but board.mk MCU_DEFS doesn't set -D%s=1: the firmware "
+                   "would keep none of them" % FACTORY_KEEP_DEF)
+    if keep and not ranges:
+        out.append("board.mk MCU_DEFS sets %s, but hal_flash_map_t .factory lists no range" % FACTORY_KEEP_DEF)
+    if len(factory) > FACTORY_MAX:
+        out.append("hal_flash_map_t .factory has %d entries, HAL_FLASH_FACTORY_MAX is %d" % (len(factory), FACTORY_MAX))
+    sizes = [n for _, n in factory]
+    if 0 in sizes and any(sizes[sizes.index(0):]):
+        out.append("hal_flash_map_t .factory: a size 0 entry ends the list, but a range follows it")
+    for (a0, e0), (a1, e1) in zip(ranges, ranges[1:]):
+        if a1 <= e0:
+            out.append("hal_flash_map_t .factory: 0x%X-0x%X and 0x%X-0x%X are not ascending and apart" % (a0, e0, a1, e1))
+    data = sorted((p["start"], p["end"]) for p in protect if p["mem"] == "data")
+    if ranges and sorted(ranges) != data:
+        out.append("hal_flash_map_t .factory (%s) isn't the [[flash.protect]] data entries (%s): each range the "
+                   "firmware keeps is a data entry, and each data entry a range" % (
+                       ", ".join("0x%X-0x%X" % r for r in sorted(ranges)) or "none",
+                       ", ".join("0x%X-0x%X" % r for r in data) or "none"))
+    return out
+
+
 def write_floor(board_dir):
     """The data flash's write floor a board gives its driver (hrc_flash_cfg_t .write_floor: below it the firmware only
     reads, the radio's own data), 0 without one."""
@@ -687,6 +775,7 @@ class Board:
         self.pins = pins			# pins.h integer defines
         self.flash_map = fmap or {}		# hal_flash_map_t: FLASH_MAP_FIELDS
         self.write_floor = 0			# hrc_flash_cfg_t .write_floor (write_floor()), set by the loader
+        self.factory = []			# hal_flash_map_t .factory, [(addr, size)] (flash_factory()), set by the loader
         # config.mk BOARD_UNSUPPORTED: {switch: reason}, in the build's order (make's value decides the set)
         reasons = unsupported or {}
         self.unsupported = {s: reasons.get(s, "") for s in mk.get("BOARD_UNSUPPORTED", "").split()}
@@ -1004,6 +1093,7 @@ def load(root=ROOT, only=None):
                           **unsupported_reasons(os.path.join(root, "platform", plat.id, "config.mk")),
                           **unsupported_reasons(os.path.join(bdir, "config.mk"))}, flash_map(srcs))
         out[bid].write_floor = write_floor(srcs)
+        out[bid].factory = flash_factory(srcs)
         out[bid].volts = source_volts(srcs)
         out[bid].nand_geo = nand_geometry(srcs) if out[bid].nand else None
         nw = {**not_written_reasons(os.path.join(root, "platform", plat.id, "config.mk")),
@@ -1103,7 +1193,8 @@ def write_test_problems(start, nand, spi_size, areas, protect, floor=0, size=STU
     """Why [flash.stub] write_test can't be the stub's data flash test region [start, start + size): a NAND
     (never written by the stub tool), a negative offset, below the board's write floor (the radio's own data), off the
     sector boundaries, past the chip (an address past it wraps to a low one), or over an area of the flash map or a
-    protected region. areas: Board.map_areas(); protect: the data entries; floor: write_floor()."""
+    protected region, widened to whole sectors (an entry the firmware keeps inside a sector leaves that sector to it:
+    the test erases). areas: Board.map_areas(); protect: the data entries; floor: write_floor()."""
     if size <= 0 or size % DATA_SECTOR:
         return ["size is not a positive multiple of 0x%X" % DATA_SECTOR]
     end = start + size
@@ -1118,17 +1209,21 @@ def write_test_problems(start, nand, spi_size, areas, protect, floor=0, size=STU
         out.append("not on a 0x%X sector boundary" % DATA_SECTOR)
     if end > spi_size:
         out.append("ends past the data flash ([flash] backup spi_size 0x%X)" % spi_size)
-    for lo, hi, what in areas + [(p["start"], p["end"], "the protected region " + p["what"]) for p in protect]:
+    wide = [(p["start"] - p["start"] % DATA_SECTOR, -(-p["end"] // DATA_SECTOR) * DATA_SECTOR,
+             "the protected region " + p["what"]) for p in protect]
+    for lo, hi, what in areas + wide:
         if lo < end and start < hi:
             out.append("overlaps %s (0x%X-0x%X)" % (what, lo, hi))
     return out
 
 
-def protect_problems(entries, mems, owned=()):
+def protect_problems(entries, mems, owned=(), kept=()):
     """Why a board's [[flash.protect]] entries can't stand: a memory the board lacks, an empty or reversed range, one
     past the memory's end or off its erase boundaries, an overlap with another entry, or with flash the firmware owns
     (owned: [(mem, start, end, what)], the application and the codec slot), which every install would then be refused.
-    mems: Board.memories()."""
+    mems: Board.memories(). kept: the [(start, end)] data flash ranges the board's flash map keeps (hal_flash_map_t
+    .factory): a data entry off the erase boundaries is allowed when it is one of them, since the firmware then keeps
+    its bytes through every rewrite of the sector, and the direct writers widen it to whole sectors."""
     out = []
     for i, p in enumerate(entries):
         m, lo, hi = p["mem"], p["start"], p["end"]
@@ -1143,9 +1238,10 @@ def protect_problems(entries, mems, owned=()):
         if hi > size:
             out.append("%s: past the end of the %s (0x%X bytes)" % (tag, PROTECT_MEMS[m], size))
         bounds = (lambda a: a % step == 0) if isinstance(step, int) else (lambda a: a in step or a == size)
-        if not (bounds(lo) and bounds(hi)):
-            out.append("%s: start and end must be on the %s's erase boundaries (%s)" % (
-                tag, PROTECT_MEMS[m], "0x%X" % step if isinstance(step, int) else "its sectors"))
+        if not (bounds(lo) and bounds(hi)) and not (m == "data" and (lo, hi) in kept):
+            out.append("%s: start and end must be on the %s's erase boundaries (%s)%s" % (
+                tag, PROTECT_MEMS[m], "0x%X" % step if isinstance(step, int) else "its sectors",
+                ", or the entry a range the flash map keeps (hal_flash_map_t .factory)" if m == "data" else ""))
         if not p["what"].strip() or not re.search(r"\(.*\d.*\)", p["what"]):
             out.append("%s: what names the data and cites the spec section, e.g. \"factory calibration "
                        "(hardware-<radio>.md 6.1)\"" % tag)
@@ -1432,7 +1528,10 @@ def check(root=ROOT):
         owned = [("progmem", b.app_base - base, b.app_region[1] - base, "the application")]
         if b.codec_slot:
             owned.append(("progmem", b.codec_slot[0] - base, b.codec_slot[1] - base, "the codec slot"))
-        for why in protect_problems(b.protect, b.memories(), owned):
+        kept = [(a, a + n) for a, n in b.factory if n]
+        for why in protect_problems(b.protect, b.memories(), owned, kept):
+            bad(why)
+        for why in factory_problems(b.factory, factory_keep(b.mk.get("MCU_DEFS")), b.protect):
             bad(why)
         for (_, a0, s0), (_, a1, _) in zip(secs, secs[1:]):
             if a0 + s0 > a1:
@@ -2028,6 +2127,76 @@ def self_test():
     except RegistryError:
         ok(True, "flash_map refuses two maps that differ")
     shutil.rmtree(tmpc)
+    # hal_flash_map_t .factory: the parser, the define and the registry's data entries
+    tmpf = tempfile.mkdtemp()
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("static const hal_flash_map_t small = { .openfw_end = 1, .factory = { { 0x5000u, 0x10u } } };\n"
+                "const hal_flash_map_t fmap = {\n\t.openfw_eeprom = 0u,\t/* .factory = { { 1, 2 } } */\n"
+                "\t.factory = {\n\t\t{ 0x001000u, 0x200u },\t// the table\n"
+                "\t\t{ .addr = 0x01E000UL, .size = 8192 },\n\t},\n\t.openfw_end = 0x00100000u,\n};\n"
+                "static const cfg_t cfg = { .map = &fmap, .small_map = &small };\n")
+    ok(flash_factory(tmpf) == [(0x1000, 0x200), (0x1E000, 0x2000)] and
+       flash_map(tmpf) == {"openfw_eeprom": 0, "openfw_end": 0x100000},
+       "flash_factory: pairs and designated entries, suffixes and comments; the small map's list is not the board's; "
+       "flash_map reads past the nested list %r" % flash_factory(tmpf))
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t fmap = { .openfw_eeprom = 0u };\n")
+    ok(flash_factory(tmpf) == [], "flash_factory: a map without a list")
+    for text, what in (("const hal_flash_map_t m = { .factory = { { TABLE_ADDR, 0x200u } } };\n", "a macro"),
+                       ("const hal_flash_map_t m = { .factory = { 0x1000u, 0x200u } };\n", "an entry without braces")):
+        with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            flash_factory(tmpf)
+            ok(False, "flash_factory refuses %s" % what)
+        except RegistryError:
+            ok(True, "flash_factory refuses %s" % what)
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t m = { .factory = { { 0x1000u, 0x200u } } };\n")
+    with open(os.path.join(tmpf, "store2.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t m2 = { .factory = { { 0x1000u, 0x100u } } };\n")
+    try:
+        flash_factory(tmpf)
+        ok(False, "flash_factory refuses two maps whose lists differ")
+    except RegistryError:
+        ok(True, "flash_factory refuses two maps whose lists differ")
+    shutil.rmtree(tmpf)
+    ok(factory_keep("-DX=1 -DSTORAGE_FACTORY_KEEP=1") and factory_keep("-DSTORAGE_FACTORY_KEEP") and
+       not factory_keep("-DSTORAGE_FACTORY_KEEP=0") and not factory_keep("-DSTORAGE_FACTORY_KEEP=0x0u") and
+       factory_keep("-DSTORAGE_FACTORY_KEEP=0x1u") and not factory_keep("-DSTORAGE_FACTORY_KEEPX=1") and
+       not factory_keep(None), "factory_keep: the define set, bare or to a value other than 0")
+    table = {"mem": "data", "start": 0x1000, "end": 0x1200, "what": "t (x.md 2.1)"}
+    recs = {"mem": "data", "start": 0x1E000, "end": 0x20000, "what": "r (x.md 2.4)"}
+    lst = [(0x1000, 0x200), (0x1E000, 0x2000), (0, 0), (0, 0)]
+    ok(factory_problems(lst, True, [recs, table]) == [], "factory: a list with the define, equal to the data entries")
+    ok(factory_problems([], False, [dict(table, start=0x1000, end=0xC9000)]) == [],
+       "factory: data entries without a list or the define pass as before")
+    for args, want in (((lst, False, [table, recs]), "doesn't set -DSTORAGE_FACTORY_KEEP=1"),
+                       (([], True, []), "lists no range"),
+                       (([(0x1000, 0x200), (0, 0), (0x1E000, 0x2000)], True, [table, recs]), "a size 0 entry"),
+                       ((lst + [(0, 0)], True, [table, recs]), "HAL_FLASH_FACTORY_MAX"),
+                       (([(0x1E000, 0x2000), (0x1000, 0x200)], True, [table, recs]), "ascending and apart"),
+                       (([(0x1000, 0x200), (0x1200, 0x10)], True, [table, dict(table, start=0x1200, end=0x1210)]),
+                        "ascending and apart"),
+                       ((lst, True, [table]), "isn't the [[flash.protect]] data entries"),
+                       (([(0x1000, 0x200)], True, [table, recs]), "isn't the [[flash.protect]] data entries"),
+                       (([(0x1000, 0x100)], True, [table]), "isn't the [[flash.protect]] data entries")):
+        got = factory_problems(*args)
+        ok(len(got) == 1 and want in got[0], "factory refuses: %s %r" % (want, got))
+    ok(protect_problems([table, recs], {"data": (0x1000000, 0x1000)}, (), [(0x1000, 0x1200), (0x1E000, 0x20000)])
+       == [], "protect: a data entry off the erase boundaries passes when the map keeps it")
+    got = protect_problems([table], {"data": (0x1000000, 0x1000)})
+    ok(len(got) == 1 and "erase boundaries" in got[0] and ".factory" in got[0],
+       "protect: a data entry off the erase boundaries the map doesn't keep is refused %r" % got)
+    got = protect_problems([dict(table, end=0x1100)], {"data": (0x1000000, 0x1000)}, (), [(0x1000, 0x1200)])
+    ok(len(got) == 1 and "erase boundaries" in got[0], "protect: only the map's exact range passes off the boundaries")
+    got = protect_problems([dict(table, mem="progmem")], {"progmem": (0x100000, 0x1000)}, (), [(0x1000, 0x1200)])
+    ok(len(got) == 1 and "erase boundaries" in got[0], "protect: the map's list allows a data entry only")
+    ok(write_test_problems(0x2000, False, 0x1000000, [], [table]) == [] and
+       write_test_problems(0x1800, False, 0x1000000, [], [table]) == [
+           "not on a 0x1000 sector boundary", "overlaps the protected region t (x.md 2.1) (0x1000-0x2000)"],
+       "write_test: an entry inside a sector counts as its whole sector %r"
+       % write_test_problems(0x1800, False, 0x1000000, [], [table]))
     ok(ld_expr("0x030E8000 - 0x0300C000") == 0xDC000 and ld_expr("128K - 4") == 131068 and ld_expr("1M") == 1 << 20,
        "ld_expr: hex, K and M")
     try:
