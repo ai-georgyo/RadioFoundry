@@ -694,7 +694,7 @@ carries them over from the flash, the writer's bytes there dropped with success 
 takes the journaled sector path; and one read of the bytes can be wrong, so they are read again and compared before
 the commit point. A failure past the commit point holds the journal until a replay finishes it: the journal then
 holds the only copies. Which radios keep bytes: [feature-matrix.md](../feature-matrix.md). Built and host-tested
-(`storageFactoryTest`); no board lists bytes yet.
+(`storageFactoryTest`); not yet run on a radio.
 
 ## 11. Calibration
 
