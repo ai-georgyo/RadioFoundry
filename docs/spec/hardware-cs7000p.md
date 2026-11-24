@@ -1277,6 +1277,23 @@ and every value below is still the model's. The last column is the maker's field
 The maker's sequences around these values are not copied, only the values
 ([calibration-cs7000p.md](calibration-cs7000p.md) 6.5): the port's order of section 7.5 stands.
 
+The table's reader is written and nothing calls it yet: `makercal_cs7000p.{h,c}`, pure, host-tested on invented
+tables (`cs7000pMakerCalTest`). It refuses what [calibration-cs7000p.md](calibration-cs7000p.md) 7 refuses, in two
+kinds of rule. An **integrity** rule (that page's section 7, with a trim bound of 64 steps) makes the table not
+valid: it is never used or copied, and a restore refuses such bytes. A **use** rule (the port's own: an RSSI point at 0x00 or 0xFF, a
+sub-audio level of 0, burst hold or PA-off values that differ across the points, the battery byte at 0x00 or 0xFF)
+only drops that field group, so what depends on it keeps today's value. Lookups follow that page's 4.3-4.4 to the
+bit and flag every case where the maker's 32-bit product or sum would wrap. On top of them, the port's rules:
+
+| Rule | Transmit (f_tx, TX points) | Receive (f_rx, RX points) |
+|---|---|---|
+| Inside the segment holding the VCO switch (that page's 5.12: 430.00001 MHz transmit, 479.00001 MHz receive) | the end value on the frequency's VCO side if the segment is at most 1 MHz wide, else refused | the end value on the frequency's VCO side |
+| Past the end points | extended inside the transmit ranges only; refused when the extension crosses the switch | extended inside the receive range and clamped (the tune into 250-3850); today's value when the extension crosses the switch |
+| Past the end points, the switch's segment the first or the last | refused: its line mixes the two VCOs' values | today's value |
+| A result that wrapped, was held at 0 or 255, or is 0 or 255 | refused | today's value only when it wrapped |
+| Trim A | d = v - 128 (4:0x04 in FM, d mod 256) | the bias 0x200 + d only within 32 steps, else today's |
+| DMR burst fields | refused at a frequency where the looked-up fields fail that page's burst rules (an extension can) | |
+
 ### 13.2 What is refused, and the bench override
 
 `cs7000p_cal_tx_ok()` is true only when the PA row for the level, the modulation pair for the mode and the
