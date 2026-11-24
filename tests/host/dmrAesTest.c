@@ -27,17 +27,17 @@ static void hex(const char *s, uint8_t *out, size_t n)
 	}
 }
 
-// FIPS-197 Appendix C.3
+// FIPS-197 Appendix C.3, through the shared cipher (core/crypto/aes.c) DMR AES runs on
 static void test_fips197(void)
 {
 	uint8_t key[32], pt[16], ct[16], want[16];
-	aes256_ctx_t ctx;
+	aes_ctx_t ctx;
 
 	hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", key, 32);
 	hex("00112233445566778899aabbccddeeff", pt, 16);
 	hex("8ea2b7ca516745bfeafc49904b496089", want, 16);
-	aes256Init(&ctx, key);
-	aes256Encrypt(&ctx, pt, ct);
+	CHECK(aes_init(&ctx, key, DMR_AES_KEY_BYTES), "AES-256 key");
+	aes_encrypt(&ctx, pt, ct);
 	CHECK(memcmp(ct, want, 16) == 0, "FIPS-197 C.3");
 }
 

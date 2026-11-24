@@ -422,7 +422,10 @@ static void test_foreign(void)
 	CHECK(!storage_debug_read_allowed(0x3000u, 16) && !storage_debug_read_allowed(ring, 0));
 	CHECK(!storage_debug_read_allowed(0xFFFFFFF0u, 0x20));
 
-	// Claim: the housekeeping erases the ring and the journal, then saves what the radio runs with
+	// Claim: the housekeeping erases the ring and the journal, then saves what the radio runs with, the boot count
+	// included (the nonce counter's, crypto.md 8.3: a region is foreign only when no record of ours held one)
+	settings_set_boot_count(settings_begin(), 7);
+	settings_end(200);
 	CHECK(storage_claim_request() && storage_claim_pending());
 	settings_poll(6000);
 	CHECK(storage_region() == STORAGE_REGION_OURS && storage_ready() && !storage_claim_pending());
@@ -435,7 +438,7 @@ static void test_foreign(void)
 	CHECK(boot_any());
 	settings_get_stats(&st);
 	settings_read(&s);
-	CHECK(st.load == SETTINGS_LOADED && s.squelch == 5);
+	CHECK(st.load == SETTINGS_LOADED && s.squelch == 5 && settings_boot_count(&s) == 7u);
 	CHECK(!storage_claim_request());	// ours: nothing to claim
 	CHECK(sim_flash_violations() == 0);
 
@@ -604,6 +607,143 @@ static void test_settings_gateway_upgrade(void)
 	settings_read(&s);
 	settings_get_stats(&st);
 	CHECK(st.load == SETTINGS_LOADED && s.ds_ip_gateway == 9996543u && s.vfo2_rx_hz == 446006250u);
+}
+
+// The boot count (the entropy pool's nonce counter, settings-store.md 3) in the three bytes page 1 had reserved: an
+// older record, which has them 0, reads 0 and keeps the fields around them; the count survives a save and a restart,
+// all 24 bits of it, and stops at its end
+static void test_settings_boot_count(void)
+{
+	settings_t old, s;
+	settings_stats_t st;
+
+	settings_defaults(&old);
+	CHECK(settings_boot_count(&old) == 0);
+	old.satellite_index = 3;
+	old.sig_fm[2] = 4;
+	sim_flash_create(FLASH_SIZE, &map);
+	put_record(&map, 0, 0, 1, SETTINGS_LAYOUT | (1u << SETTINGS_PAGE_SHIFT), sizeof old - SETTINGS_PAGE_BYTES,
+		   (const uint8_t *)&old + SETTINGS_PAGE_BYTES, true, true);
+	put_record(&map, 0, 1, 2, SETTINGS_LAYOUT, SETTINGS_PAGE_BYTES, &old, true, true);
+	boot();
+	settings_read(&s);
+	CHECK(settings_boot_count(&s) == 0 && s.satellite_index == 3 && s.sig_fm[2] == 4);
+	settings_set_boot_count(settings_begin(), 0xABCDEFu);
+	settings_end(1);
+	CHECK(settings_flush());
+	boot();
+	settings_read(&s);
+	settings_get_stats(&st);
+	CHECK(st.load == SETTINGS_LOADED && settings_boot_count(&s) == 0xABCDEFu && s.satellite_index == 3 &&
+	      s.sig_fm[2] == 4 && SETTINGS_FIELD(boot_count_hi) == 0xABu && SETTINGS_FIELD(boot_count_lo) == 0xCDEFu);
+	settings_set_boot_count(&s, 0x1000000u);
+	CHECK(settings_boot_count(&s) == SETTINGS_BOOT_COUNT_MAX && s.satellite_index == 3);	// it stops at its end
+	settings_set_boot_count(&s, 0x10000u);
+	CHECK(settings_boot_count(&s) == 0x10000u && s.boot_count_lo == 0 && s.boot_count_hi == 1);
+}
+
+// A set of another layout (a firmware update or downgrade that changed one): its page 1 and its page 0, written
+// straight into the ring at the given places
+static void other_layout_set(settings_t *pl, uint32_t count, unsigned sec1, unsigned sl1, unsigned sec0,
+			     unsigned sl0)
+{
+	settings_defaults(pl);
+	pl->squelch = 9;
+	settings_set_boot_count(pl, count);
+	put_record(&map, sec1, sl1, 1, (SETTINGS_LAYOUT + 1) | (1u << SETTINGS_PAGE_SHIFT),
+		   sizeof *pl - SETTINGS_PAGE_BYTES, (const uint8_t *)pl + SETTINGS_PAGE_BYTES, true, true);
+	put_record(&map, sec0, sl0, 2, SETTINGS_LAYOUT + 1, SETTINGS_PAGE_BYTES, pl, true, true);
+}
+
+// The boot count never goes back at a load (crypto.md 8.3): a layout change loads the defaults but keeps the count,
+// whichever way the layout went; a cut save's page 1 newer than the set in force carries its higher count; the
+// ownership mark and a page 1 too short to hold the count carry nothing; and the record the count came from is not
+// erased before a save stored the count again, even by a save that is cut right after its erase
+static void test_settings_boot_count_carry(void)
+{
+	settings_t pl, s;
+	settings_stats_t st;
+
+	sim_flash_create(FLASH_SIZE, &map);
+	other_layout_set(&pl, 0x0ABCDEu, 0, 0, 0, 1);
+	boot();
+	settings_read(&s);
+	settings_get_stats(&st);
+	CHECK(st.load == SETTINGS_DEFAULTS && !st.dirty && s.squelch == SETTINGS_UNSET8);
+	CHECK(settings_boot_count(&s) == 0x0ABCDEu);
+	settings_begin()->squelch = 3;
+	settings_end(1);
+	CHECK(settings_flush());
+	boot();
+	settings_read(&s);
+	settings_get_stats(&st);
+	CHECK(st.load == SETTINGS_LOADED && s.squelch == 3 && settings_boot_count(&s) == 0x0ABCDEu);
+
+	// The other layout's page 0 last in sector 0 and its page 1 in sector 1: the next save has to erase a sector,
+	// and sector 1, next in the ring, holds the count's only copy. Cut right after that erase: the count is still
+	// there at the next boot
+	sim_flash_create(FLASH_SIZE, &map);
+	other_layout_set(&pl, 0x000777u, 1, 0, 0, 15);
+	boot();
+	settings_read(&s);
+	CHECK(settings_boot_count(&s) == 0x000777u);
+	settings_begin()->squelch = 4;
+	settings_end(1);
+	sim_flash_cut_after(1);		// one unit: the erase
+	CHECK(!settings_flush());
+	CHECK(sim_flash_is_cut());
+	sim_flash_cut_after(0);
+	boot();
+	settings_read(&s);
+	CHECK(settings_boot_count(&s) == 0x000777u);
+	CHECK(sim_flash_data[map.settings_addr + STORAGE_SECTOR] == 'O');	// sector 1 kept, another one erased
+	// The save that holds it goes through, and from then on the ring moves on as usual
+	settings_begin()->squelch = 4;
+	settings_end(1);
+	CHECK(settings_flush());
+	for (unsigned i = 0; i < 80; i++) {	// 160 records: round the 128-slot ring
+		settings_begin()->squelch = (uint8_t)(i & 7u);
+		settings_end(2u + i);
+		CHECK(settings_flush());
+	}
+	boot();
+	settings_read(&s);
+	settings_get_stats(&st);
+	CHECK(st.load == SETTINGS_LOADED && settings_boot_count(&s) == 0x000777u && st.failures == 0);
+
+	// A save cut after its page 1 (page 0 never committed): the set before it is in force, the higher count stays
+	sim_flash_create(FLASH_SIZE, &map);
+	settings_defaults(&pl);
+	pl.squelch = 2;
+	settings_set_boot_count(&pl, 5);
+	put_record(&map, 0, 0, 1, SETTINGS_LAYOUT | (1u << SETTINGS_PAGE_SHIFT), sizeof pl - SETTINGS_PAGE_BYTES,
+		   (const uint8_t *)&pl + SETTINGS_PAGE_BYTES, true, true);
+	put_record(&map, 0, 1, 2, SETTINGS_LAYOUT, SETTINGS_PAGE_BYTES, &pl, true, true);
+	settings_set_boot_count(&pl, 6);
+	put_record(&map, 0, 2, 3, SETTINGS_LAYOUT | (1u << SETTINGS_PAGE_SHIFT), sizeof pl - SETTINGS_PAGE_BYTES,
+		   (const uint8_t *)&pl + SETTINGS_PAGE_BYTES, true, true);
+	boot();
+	settings_read(&s);
+	settings_get_stats(&st);
+	CHECK(st.load == SETTINGS_LOADED && st.seq == 2 && s.squelch == 2 && settings_boot_count(&s) == 6u);
+
+	// A page 1 of another layout that ends 1 byte short of the count (an older firmware's): nothing carried; the
+	// ownership mark alone: nothing either
+	sim_flash_create(FLASH_SIZE, &map);
+	settings_defaults(&pl);
+	memset((uint8_t *)&pl + SETTINGS_PAGE_BYTES, 0x5A, sizeof pl - SETTINGS_PAGE_BYTES);
+	put_record(&map, 0, 0, 1, (SETTINGS_LAYOUT + 1) | (1u << SETTINGS_PAGE_SHIFT),
+		   (uint16_t)(offsetof(settings_t, boot_count_lo) + 1u - SETTINGS_PAGE_BYTES),
+		   (const uint8_t *)&pl + SETTINGS_PAGE_BYTES, true, true);
+	put_record(&map, 0, 1, 2, SETTINGS_LAYOUT + 1, SETTINGS_PAGE_BYTES, &pl, true, true);
+	boot();
+	settings_read(&s);
+	CHECK(settings_boot_count(&s) == 0);
+	sim_flash_create(FLASH_SIZE, &map);
+	boot();
+	settings_read(&s);
+	CHECK(settings_boot_count(&s) == 0 && sim_flash_data[map.settings_addr] == 'O');
+	CHECK(sim_flash_violations() == 0);
 }
 
 // Stored power levels count against the board's level count (power_levels): a record from before it (0), or from a
@@ -925,10 +1065,10 @@ static void test_settings_layout(void)
 		{ offsetof(settings_t, t3_stun), 396 },
 		{ offsetof(settings_t, t3_kill), 397 },
 		{ offsetof(settings_t, satellite_index), 398 },
-		{ offsetof(settings_t, reserved10), 399 },
+		{ offsetof(settings_t, boot_count_hi), 399 },
 		{ offsetof(settings_t, sig_dmr), 400 },
 		{ offsetof(settings_t, sig_fm), 403 },
-		{ offsetof(settings_t, reserved11), 406 },
+		{ offsetof(settings_t, boot_count_lo), 406 },
 		{ offsetof(settings_t, aes_mi_res), 408 },
 	};
 	CHECK(sizeof(settings_t) == 412);
@@ -1268,6 +1408,8 @@ int main(void)
 	test_settings_pages();
 	test_settings_gateway_upgrade();
 	test_settings_power_levels();
+	test_settings_boot_count();
+	test_settings_boot_count_carry();
 	test_settings_bad_records();
 	test_settings_worn_sector();
 	test_write_across_sectors();

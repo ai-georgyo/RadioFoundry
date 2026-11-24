@@ -84,7 +84,7 @@ ipGatewayTestAir440: $(IPGW) $(CORE)/dmr/ipGateway.h
 
 # The data service (replies, signaling, our SMS, ARS, LRRP, the API mailbox) on a fake host
 SVC     := dmrDataServiceTest.c $(DATA) $(FRAME) $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/dmr_emergency.c $(CORE)/dmr/call/dmr_lc.c \
-           $(CORE)/position/nmea.c
+           $(CORE)/position/nmea.c $(CORE)/position/position_geo.c
 
 dmrDataServiceTest: $(SVC) $(CORE)/dmr/dmrDataService.c $(CORE)/dmr/dmrDataService.h $(CORE)/dmr/dmr_data_api.h
 	$(CC) $(CFLAGS) -o $@ $(SVC) -lm
@@ -96,8 +96,8 @@ dmrDataServiceTestNoTms: $(SVC) $(CORE)/dmr/dmrDataService.c $(CORE)/dmr/dmrData
 
 # LRRP on its own: request decoding (malformed and mutated too), the answers' bounds, the distance
 TESTS   += lrrpTest
-lrrpTest: lrrpTest.c fuzz.h $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/dmrLrrp.h $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c
-	$(CC) $(CFLAGS) -Wshadow -o $@ lrrpTest.c $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c -lm
+lrrpTest: lrrpTest.c fuzz.h $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/dmrLrrp.h $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c $(CORE)/position/position_geo.c
+	$(CC) $(CFLAGS) -Wshadow -o $@ lrrpTest.c $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c $(CORE)/position/position_geo.c -lm
 
 # The air queue on a fake data service (docs/spec/dmr-data.md 12): byte ring, order, wrap, refusals, timing
 # The shared FEC of the modes on the air interface (core/fec) against the standard's matrices, and the framer
@@ -141,7 +141,8 @@ nxdnEngineTest: nxdnEngineTest.c $(CORE)/nxdn/nxdn_engine.c $(NXDN) $(CORE)/nxdn
 	$(CC) $(CFLAGS) -DCONFIG_NXDN_SCRAMBLER=1 -I$(ROOT)/hal -Wshadow -o $@ nxdnEngineTest.c $(CORE)/nxdn/nxdn_engine.c $(NXDN) $(CORE)/nxdn/nxdn_scramble.c $(CORE)/dmr/ambe/ambeFec.c $(CORE)/air/air_session.c $(CORE)/air/air_framer.c $(CORE)/air/air_softmodem.c $(FEC) -lm
 
 # The MBE synthesis core and the full-rate voice decoder on it (core/mbe), against golden vectors
-MBE     := $(wildcard $(CORE)/mbe/*.c)
+DSP     := $(wildcard $(CORE)/dsp/*.c)
+MBE     := $(wildcard $(CORE)/mbe/*.c) $(DSP)
 TESTS   += mbeTest
 mbeTest: mbeTest.c $(MBE) $(wildcard $(CORE)/mbe/*.h) $(CORE)/dsp/fxp.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ mbeTest.c $(MBE) -lm
@@ -169,10 +170,10 @@ P25TRUNK := $(CORE)/p25/p25_tsbk.c $(CORE)/p25/p25_follow.c $(CORE)/p25/p25_engi
 p25TrunkTest: p25TrunkTest.c $(P25TRUNK) $(wildcard $(CORE)/p25/*.h) $(wildcard $(CORE)/air/*.h) $(ROOT)/hal/hal_air.h
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_AIR=1 -DCONFIG_P25=1 -DCONFIG_P25_TRUNK=1 -o $@ p25TrunkTest.c $(P25TRUNK) -lm
 
-# The P25 voice path: engine frames through the full-rate decoder to PCM blocks (core/p25/p25Voice.c)
+# The P25 voice path: engine frames through the full-rate decoder to PCM blocks (p25Voice.c, the test includes it)
 TESTS   += p25VoiceTest
 p25VoiceTest: p25VoiceTest.c $(CORE)/p25/p25Voice.c $(CORE)/p25/p25Voice.h $(MBE) $(wildcard $(CORE)/mbe/*.h)
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_P25=1 -o $@ p25VoiceTest.c $(CORE)/p25/p25Voice.c $(MBE) -lm
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_P25=1 -o $@ p25VoiceTest.c $(MBE) -lm
 
 # The fixed-point kernels the signal code shares (core/dsp/fxp.h)
 TESTS   += fxpTest
@@ -181,8 +182,8 @@ fxpTest: fxpTest.c $(CORE)/dsp/fxp.h
 
 # The soft modem's receiver on a modeled tap, alone and under the framer and the P25 receive hooks
 TESTS   += airSoftmodemTest
-airSoftmodemTest: airSoftmodemTest.c $(CORE)/air/air_softmodem.c $(CORE)/air/air_softmodem.h $(CORE)/dsp/fxp.h $(CORE)/air/air_framer.c $(P25) $(FEC) $(ROOT)/hal/hal_baseband.h
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ airSoftmodemTest.c $(CORE)/air/air_softmodem.c $(CORE)/air/air_framer.c $(P25) $(FEC) -lm
+airSoftmodemTest: airSoftmodemTest.c $(CORE)/air/air_softmodem.c $(CORE)/air/air_softmodem.h $(CORE)/dsp/fxp.h $(CORE)/air/air_framer.c $(P25) $(NXDN) $(FEC) $(ROOT)/hal/hal_baseband.h $(ROOT)/hal/hal_air.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -ffp-contract=off -o $@ airSoftmodemTest.c $(CORE)/air/air_softmodem.c $(CORE)/air/air_framer.c $(P25) $(NXDN) $(CORE)/dmr/ambe/ambeFec.c $(FEC) -lm
 
 airFramerTest: airFramerTest.c $(CORE)/air/air_framer.c $(CORE)/air/air_framer.h $(CORE)/air/air_syms.h $(ROOT)/hal/hal_air.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ airFramerTest.c $(CORE)/air/air_framer.c
@@ -230,13 +231,18 @@ sfrTest: $(SFRSRC) $(CORE)/dmr/sfr.h
 # APRS protocol layers (AX.25, HDLC, AFSK, KISS, formats, NMEA and its satellites, beacon triggers, iGate rules)
 TESTS   += aprsTest
 NMEALIB := $(CORE)/position/nmea.c $(CORE)/position/nmea_sky.c
-POSLIB  := $(CORE)/position/position.c $(NMEALIB)
+# The distance and bearing every mode's range comes from (position_geo.c): with the service, and on its own where a
+# test links a user of it without the service
+GEOLIB  := $(CORE)/position/position_geo.c
+POSLIB  := $(CORE)/position/position.c $(NMEALIB) $(GEOLIB)
 APRSLIB := $(CORE)/aprs/ax25.c $(CORE)/aprs/hdlc.c $(CORE)/aprs/afsk.c $(CORE)/aprs/kiss.c $(CORE)/aprs/aprs_fmt.c \
            $(CORE)/aprs/aprs_beacon.c $(CORE)/aprs/aprs_igate.c
 
-aprsTest: aprsTest.c $(APRSLIB) $(NMEALIB) $(wildcard $(CORE)/aprs/*.h)
-	$(CC) $(CFLAGS) -o $@ aprsTest.c $(APRSLIB) $(NMEALIB) -lm
+aprsTest: aprsTest.c $(APRSLIB) $(NMEALIB) $(GEOLIB) $(wildcard $(CORE)/aprs/*.h)
+	$(CC) $(CFLAGS) -o $@ aprsTest.c $(APRSLIB) $(NMEALIB) $(GEOLIB) -lm
 
+# A test with long output shows its last line: it writes a log and the recipe tails that. Piped into tail, make would
+# see tail's status, and a failing test or a sanitizer abort would pass; on failure the whole log is shown
 run: $(TESTS)
 	./dmrFecTest
 	./dmrSoftBptcTest
@@ -249,17 +255,16 @@ run: $(TESTS)
 	./dmrPrivacyTest
 	./lrrpTest
 	./airQueueTest
-	./fecTest | tail -1
+	./fecTest > fecTest.log || { cat fecTest.log; exit 1; }; tail -1 fecTest.log
 	./airFramerTest
 	./p25Test
 	./fxpTest
-	./mbeTest | tail -1
-	./imbeEncTest | tail -1
+	./mbeTest > mbeTest.log || { cat mbeTest.log; exit 1; }; tail -1 mbeTest.log
+	./imbeEncTest > imbeEncTest.log || { cat imbeEncTest.log; exit 1; }; tail -1 imbeEncTest.log
 	for v in $(VOICE_SETS); do ./imbeVoiceGen --check $(VOICE)/$$v.pcm $(VOICE)/$$v.imbe || exit 1; done
-	./airSoftmodemTest | tail -1
 	./p25EngineTest
-	./nxdnTest | tail -1
-	./nxdnEngineTest | tail -1
+	./nxdnTest > nxdnTest.log || { cat nxdnTest.log; exit 1; }; tail -1 nxdnTest.log
+	./nxdnEngineTest > nxdnEngineTest.log || { cat nxdnEngineTest.log; exit 1; }; tail -1 nxdnEngineTest.log
 	./p25TrunkTest
 	./p25VoiceTest
 	./hrc6000AirTest
@@ -288,6 +293,7 @@ clean:
 	rm -rf gen
 	rm -f $(TESTS) dmrDataTest.out ipGatewayTest.pcap ipGatewayTest16.pcap ipGatewayTest31.pcap ipGatewayTestShared.pcap ipGatewayTestAir440.pcap \
 		ipGatewayTest.expert
+	rm -f $(addsuffix .log,$(TESTS))
 	rm -rf *.dSYM out
 	rm -f *.gcda *.gcno
 
@@ -306,9 +312,11 @@ RFEAT   := $(CORE)/radio/scan.c $(CORE)/radio/beep.c $(CORE)/radio/sigtone.c $(C
            $(CORE)/radio/vibe.c $(CORE)/radio/mic_gain.c $(CORE)/radio/ref_trim.c $(CORE)/radio/pa_keyup.c $(CORE)/codeplug/codeplug_talk.c $(CORE)/codeplug/zone_shift.c \
            $(CORE)/codeplug/zone_settle.c \
            $(CORE)/radio/radio_sfr.c $(CORE)/radio/radio_cwid.c $(CORE)/radio/tx_limit.c $(T3RADIO)
+# The air-framed modes' rows, every mode's names and the memory they run in: the radio core always has them
+RAIR    := $(CORE)/radio/radio_air_modes.c $(CORE)/radio/radio_air_mem.c
 RCORE   := radioCoreTest.c $(CORE)/radio/radio_sm.c $(CORE)/codeplug/codeplug_keys.c $(CORE)/radio/tones.c $(RFEAT) $(CORE)/dmr/call/dmr_call.c $(CORE)/dmr/fec/dmrCach.c \
            $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/dmr/ambe/ambeFec.c \
-           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/radio/radio_aes.c sim/dmr_sim_modem.c $(CORE)/dmr/dmrData.c $(CORE)/dmr/dmrDataService.c \
+           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/crypto/aes.c $(CORE)/radio/radio_aes.c sim/dmr_sim_modem.c $(CORE)/dmr/dmrData.c $(CORE)/dmr/dmrDataService.c \
            $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/dmr_emergency.c $(CORE)/radio/morse.c $(CORE)/dmr/zoneShare.c $(CORE)/dmr/zoneShareSvc.c $(CORE)/dmr/dmrAirQueue.c \
            $(CORE)/settings/settings.c $(CORE)/storage/storage.c \
            $(CORE)/radio/radio_hotspot.c $(CORE)/hotspot/mmdvm.c $(CORE)/hotspot/hotspot.c \
@@ -318,7 +326,7 @@ RCORE   := radioCoreTest.c $(CORE)/radio/radio_sm.c $(CORE)/codeplug/codeplug_ke
            $(CORE)/ui/ui_svc_emergency.c $(CORE)/input/keyassign.c sim/sim_flash.c \
            $(CORE)/debuglink/debuglink_view_radio.c $(CORE)/debuglink/dl_fmt.c $(CORE)/codeplug/zone_edit.c \
            $(CORE)/radio/pa_sweep.c $(CORE)/radio/pa_keyrun.c \
-           $(POSLIB) $(CORE)/ui/ui_svc_position.c $(CORE)/ui/i18n.c
+           $(POSLIB) $(CORE)/ui/ui_svc_position.c $(CORE)/ui/i18n.c $(RAIR)
 
 radioCoreTest: $(RCORE) $(wildcard $(CORE)/radio/*.h) $(wildcard $(CORE)/dmr/call/*.h) $(CORE)/dmr/dmrDataService.h \
                $(CORE)/ui/ui_svc.h
@@ -388,7 +396,7 @@ radioCoreTestAprsDmr: $(RCAPRSD) $(wildcard $(CORE)/radio/*.h) $(wildcard $(CORE
 TESTS   += radioFeaturesTest
 RFTEST  := radioFeaturesTest.c $(CORE)/radio/radio_sm.c $(CORE)/codeplug/codeplug_keys.c $(CORE)/radio/tones.c $(RFEAT) $(CORE)/dmr/call/dmr_call.c $(CORE)/dmr/fec/dmrCach.c \
            $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/fec/dmrFec.c $(CORE)/dmr/fec/dmrSoftComb.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/dmr/ambe/ambeFec.c \
-           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/radio/radio_aes.c sim/dmr_sim_modem.c $(CORE)/dmr/dmrData.c $(CORE)/dmr/dmrDataService.c \
+           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/crypto/aes.c $(CORE)/radio/radio_aes.c sim/dmr_sim_modem.c $(CORE)/dmr/dmrData.c $(CORE)/dmr/dmrDataService.c \
            $(CORE)/dmr/dmrLrrp.c $(CORE)/dmr/dmr_emergency.c $(CORE)/radio/morse.c $(CORE)/dmr/zoneShare.c $(CORE)/dmr/zoneShareSvc.c $(CORE)/dmr/dmrAirQueue.c \
            $(CORE)/settings/settings.c $(CORE)/storage/storage.c $(CORE)/usbaudio/audio_mux.c \
            $(CORE)/usbaudio/pcm_slip.c $(CORE)/dmr/sfrRunner.c $(CORE)/dmr/sfr.c $(POSLIB)
@@ -720,7 +728,7 @@ TESTS   += uiFlowTest uiFlowTestNoColor uiSim
 TESTS   += uiFlowTestSatellite
 
 uiFlowTest: uiFlowTest.c $(UIDEPS)
-	$(CC) $(UIFLAGS) -DCONFIG_P25=1 -DCONFIG_P25_TRUNK=1 -DCONFIG_NXDN=1 -o $@ uiFlowTest.c $(UIAPP) -lz
+	$(CC) $(UIFLAGS) -DCONFIG_P25=1 -DCONFIG_P25_TRUNK=1 -DCONFIG_NXDN=1 $(UIM17F) -o $@ uiFlowTest.c $(UIAPP) -lz
 
 # The same flows built as a radio with only a monochrome screen builds them (CONFIG_UI_COLOR=n): no color rows;
 # without a translation (CONFIG_LANG_ES=n): the Language screen dims Spanish; and with the backlight tests
@@ -734,11 +742,17 @@ uiFlowTestNoColor: uiFlowTest.c $(UIDEPS)
 uiFlowTestSatellite: uiFlowTest.c $(UIDEPS)
 	$(CC) $(UIFLAGS) -DCONFIG_SATELLITE_TLE=1 -o $@ uiFlowTest.c $(UIAPP) -lz
 
+# DMR privacy compiled out beside M17's signatures (CONFIG_DMR_PRIVACY=n, CONFIG_M17_SIG=y): Settings > Privacy keeps
+# M17's signature rows, so it opens instead of being dimmed
+TESTS   += uiFlowTestPrivacyM17
+uiFlowTestPrivacyM17: uiFlowTest.c $(UIDEPS) $(UIM17)
+	$(CC) $(UIFLAGS) $(UIM17F) -DCONFIG_DMR_PRIVACY=0 -o $@ uiFlowTest.c $(UIAPP) -lz
+
 # UI_LANG=<code> also builds that language in (CONFIG_LANG_<CODE>=1), so a gallery can render in a language that is
 # off by default: make -B uiSim UI_LANG=fr (docs/dev/translating.md). The CJK face compiles to nothing without Chinese
 UI_LANG_FLAG := $(if $(UI_LANG),-DCONFIG_LANG_$(shell echo '$(UI_LANG)' | tr a-z A-Z)=1)
 uiSim: uiSim.c $(UIDEPS) $(CJK)
-	$(CC) $(UIFLAGS) $(UI_LANG_FLAG) -DCONFIG_SATELLITE_TLE=1 -o $@ uiSim.c $(UIAPP) $(CJK) -lz
+	$(CC) $(UIFLAGS) $(UI_LANG_FLAG) -DCONFIG_SATELLITE_TLE=1 $(UIM17F) -o $@ uiSim.c $(UIAPP) $(CJK) -lz
 
 # The beep reel (tools/beep_reel.py). BEEP_DIR picks the beep.c and beep.h to build with, so CI can build the base
 # commit's beeps for a before and after comparison. We copy that beep.h into out/beep/radio/ and put out/beep first on
@@ -774,7 +788,8 @@ ui-sheets: uiSim
 	UI_GALLERY_COLORS="$(UI_GALLERY_COLORS)" ./uiSim --sheets out/sheets $(GEOM)
 
 run: run-ui
-run-ui: gfxTest gfxTestZh gfxFbEdgeTest i18nTest i18nTestNoLang i18nTestDefault uiFlowTest uiFlowTestNoColor uiFlowTestSatellite uiSim beepReel
+run-ui: gfxTest gfxTestZh gfxFbEdgeTest i18nTest i18nTestNoLang i18nTestDefault uiFlowTest uiFlowTestNoColor uiFlowTestSatellite \
+	uiFlowTestPrivacyM17 uiSim beepReel
 	./gfxTest
 	./gfxTestZh
 	./gfxFbEdgeTest
@@ -784,12 +799,14 @@ run-ui: gfxTest gfxTestZh gfxFbEdgeTest i18nTest i18nTestNoLang i18nTestDefault 
 	./uiFlowTest
 	./uiFlowTestNoColor
 	./uiFlowTestSatellite
+	./uiFlowTestPrivacyM17
 	./uiSim --layout
 	./beepReel --out out/beep-reel --no-frames > /dev/null	# checks every beep has a scene and the scenes still run
 .PHONY: run-ui ui-gallery ui-sheets
 
 # AMBE+2 3600x2450 air frame FEC and interleaving (core/dmr/ambe), with vectors from the stock DM-1701 codec's FEC
-# and the DMR voice glue between the call stack, the FEC, the vocoder and the audio driver (fakes)
+# and the DMR voice glue between the call stack, the FEC, the vocoder and the audio driver (fakes; ambeVoice.c, the
+# test includes it)
 TESTS   += ambeFecTest ambeVoiceTest ambeVoiceCaptureTest
 
 ambeFecTest: ambeFecTest.c $(CORE)/dmr/ambe/ambeFec.c $(CORE)/dmr/ambe/ambeFec.h
@@ -797,18 +814,20 @@ ambeFecTest: ambeFecTest.c $(CORE)/dmr/ambe/ambeFec.c $(CORE)/dmr/ambe/ambeFec.h
 
 ambeVoiceTest: ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/dmr/ambe/ambeVoice.h $(CORE)/dmr/ambe/ambeFec.c \
 	       $(ROOT)/drivers/vocoder/ambe2_flags.h $(ROOT)/hal/hal_vocoder.h
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/radio/sigtone.c $(CORE)/radio/beep.c $(CORE)/dmr/ambe/ambeFec.c
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ ambeVoiceTest.c $(CORE)/radio/sigtone.c $(CORE)/radio/beep.c $(CORE)/dmr/ambe/ambeFec.c
 # The same with the voice capture built (CONFIG_VOICE_CAPTURE)
 ambeVoiceCaptureTest: ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c $(CORE)/dmr/ambe/ambeVoice.h $(CORE)/dmr/ambe/ambeFec.c \
 	       $(ROOT)/drivers/vocoder/ambe2_flags.h $(ROOT)/hal/hal_vocoder.h
-	$(CC) $(CFLAGS) -DCONFIG_VOICE_CAPTURE=1 -I$(ROOT)/hal -Wshadow -o $@ ambeVoiceTest.c $(CORE)/dmr/ambe/ambeVoice.c \
+	$(CC) $(CFLAGS) -DCONFIG_VOICE_CAPTURE=1 -I$(ROOT)/hal -Wshadow -o $@ ambeVoiceTest.c \
 	      $(CORE)/radio/sigtone.c $(CORE)/radio/beep.c $(CORE)/dmr/ambe/ambeFec.c
 
-# DMR AES-256 voice decryption (core/dmr/dmrAes.c): FIPS-197, the MI words, a captured test call, the hook
+# DMR AES-256 voice decryption (core/dmr/dmrAes.c, on the shared cipher core/crypto/aes.c): FIPS-197, the MI words, a
+# captured test call, the hook
 TESTS   += dmrAesTest
-dmrAesTest: dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrAes.h $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/ambe/ambeFec.c
-	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrPrivacy.c \
-		$(CORE)/dmr/ambe/ambeFec.c
+dmrAesTest: dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/dmrAes.h $(CORE)/crypto/aes.c $(CORE)/crypto/aes.h \
+	    $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/ambe/ambeFec.c
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ dmrAesTest.c $(CORE)/dmr/dmrAes.c $(CORE)/crypto/aes.c \
+		$(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/ambe/ambeFec.c
 run: run-aes
 run-aes: dmrAesTest
 	./dmrAesTest
@@ -914,7 +933,7 @@ run-ambe: ambeFecTest ambeVoiceTest ambeVoiceCaptureTest sigToneTest micGainTest
 
 # The DMR voice call stack (core/dmr/call) against a simulated modem; LC coding cross-checked with sfr.c and dmrData.c
 CALL    := dmrCallTest.c sim/dmr_sim_modem.c $(CORE)/dmr/call/dmr_call.c $(RXSEEN) $(CORE)/dmr/fec/dmrCach.c $(CORE)/dmr/call/dmr_lc.c $(CORE)/dmr/sfr.c $(DATA) $(FRAME) \
-           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/dmr/ambe/ambeFec.c
+           $(CORE)/dmr/dmrPrivacy.c $(CORE)/dmr/dmrAes.c $(CORE)/crypto/aes.c $(CORE)/dmr/ambe/ambeFec.c $(CORE)/position/position_geo.c
 TESTS   += dmrCallTest
 
 dmrCallTest: $(CALL) $(wildcard $(CORE)/dmr/call/*.h sim/*.h)
@@ -966,7 +985,8 @@ TESTS   += dmrDataChainTest
 DCHAIN  := dmrDataChainTest.c $(HRCDMR)/hrc6000_dmr.c $(HRC6K)/hrc6000.c $(HRCDMR)/hrc.c $(CORE)/dmr/call/dmr_call.c $(RXSEEN) $(CORE)/dmr/fec/dmrCach.c \
            $(CORE)/dmr/sfr.c \
            $(CORE)/dmr/call/dmr_lc.c $(DATA) $(FRAME) $(CORE)/dmr/dmrDataService.c $(CORE)/dmr/dmrLrrp.c \
-           $(CORE)/dmr/dmr_emergency.c $(CORE)/dmr/zoneShare.c $(CORE)/dmr/zoneShareSvc.c $(CORE)/dmr/dmrAirQueue.c $(CORE)/dmr/ambe/ambeFec.c
+           $(CORE)/dmr/dmr_emergency.c $(CORE)/dmr/zoneShare.c $(CORE)/dmr/zoneShareSvc.c $(CORE)/dmr/dmrAirQueue.c $(CORE)/dmr/ambe/ambeFec.c \
+           $(CORE)/position/position_geo.c
 
 dmrDataChainTest: $(DCHAIN) $(HRCDMR)/hrc6000_dmr.h $(ROOT)/hal/hal_dmr_modem.h $(wildcard $(CORE)/dmr/call/*.h) \
                   $(CORE)/dmr/dmrDataService.h $(CORE)/dmr/dmr_data_api.h
@@ -1764,7 +1784,7 @@ endif
 # engine and the radio core; tshark checks netSvcTest.pcap
 NETSVC  := netSvcTest.c netSvcCases.c $(CORE)/net/net.c $(CORE)/hostlink/hostlink_view.c $(CORE)/net/tcp.c $(CORE)/net/kiss_tcp.c $(CORE)/aprs/kiss.c \
            $(CORE)/net/http.c $(CORE)/net/radio_udp.c $(CORE)/net/rigctld.c $(CORE)/net/aprsis.c $(CORE)/net/webctl.c $(CORE)/net/ws.c \
-           $(CORE)/dmr/ipGateway.c $(CORE)/debuglink/dl_fmt.c $(DATA)
+           $(CORE)/dmr/ipGateway.c $(CORE)/debuglink/dl_fmt.c $(DATA) $(CORE)/radio/radio_air_modes.c
 TESTS   += netSvcTest
 
 netSvcTest: $(NETSVC) netSvcFakes.h $(wildcard $(CORE)/net/*.h) $(CORE)/dmr/ipGateway.h gen/gz/http_assets_gen.h
@@ -1865,11 +1885,12 @@ mbeExactSplitTest: mbeExactTest.c $(MBE) $(wildcard $(CORE)/mbe/*.h) $(CORE)/dsp
 	$(CC) $(CFLAGS) -Wshadow -DFXP_SPLIT16 -o $@ mbeExactTest.c $(MBE) -lm
 
 run: run-mbe-halves
+# Each into its log, then its last line, as in run: above (piped into tail, a failing test would pass)
 run-mbe-halves: fxpHalvesTest fxpHalvesSplitTest mbeExactTest mbeExactSplitTest
-	./fxpHalvesTest | tail -1
-	./fxpHalvesSplitTest | tail -1
-	./mbeExactTest | tail -1
-	./mbeExactSplitTest | tail -1
+	./fxpHalvesTest > fxpHalvesTest.log || { cat fxpHalvesTest.log; exit 1; }; tail -1 fxpHalvesTest.log
+	./fxpHalvesSplitTest > fxpHalvesSplitTest.log || { cat fxpHalvesSplitTest.log; exit 1; }; tail -1 fxpHalvesSplitTest.log
+	./mbeExactTest > mbeExactTest.log || { cat mbeExactTest.log; exit 1; }; tail -1 mbeExactTest.log
+	./mbeExactSplitTest > mbeExactSplitTest.log || { cat mbeExactSplitTest.log; exit 1; }; tail -1 mbeExactSplitTest.log
 .PHONY: run-mbe-halves
 
 # Each board's own host tests (boards/<id>/tests/host.mk): a fragment adds its tests to TESTS and a run-boards:: rule
@@ -1925,3 +1946,530 @@ run: run-hrc-pcm
 run-hrc-pcm: hrc7000PcmTest
 	./hrc7000PcmTest
 .PHONY: run-hrc-pcm
+
+# core/dsp/dsp_math.c's integer helpers (normalize, reciprocal, square roots, atan2) against exact references, plain
+# and as a C-SKY build runs (-DFXP_SPLIT16)
+TESTS   += dspMathTest dspMathSplitTest
+dspMathTest: dspMathTest.c $(CORE)/dsp/dsp_math.c $(CORE)/dsp/dsp.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ dspMathTest.c $(CORE)/dsp/dsp_math.c -lm
+
+dspMathSplitTest: dspMathTest.c $(CORE)/dsp/dsp_math.c $(CORE)/dsp/dsp.h
+	$(CC) $(CFLAGS) -Wshadow -DFXP_SPLIT16 -o $@ dspMathTest.c $(CORE)/dsp/dsp_math.c -lm
+
+# The MBE tests read dsp.h, which is no longer among the core/mbe headers their rules list: a change to it rebuilds them
+mbeTest imbeEncTest imbeVoiceGen p25VoiceTest mbeExactTest mbeExactSplitTest: $(CORE)/dsp/dsp.h
+
+# Not piped through tail: the shell would report tail's status, so a failed check or a sanitizer's abort would pass
+run: run-dsp-move
+run-dsp-move: dspMathTest dspMathSplitTest
+	./dspMathTest
+	./dspMathSplitTest
+.PHONY: run-dsp-move
+
+# Codec 2's shared tables and bit packing (core/codec2/c2_tab.c, c2_bits.c) against docs/spec/codec2.md 4, 9, 10.2 and
+# 14.4. RFOUNDRY_C2_HARNESS=<dir> adds the reference harness's vectors (kept outside the repository: spec 1, 16)
+C2TAB   := $(CORE)/codec2/c2_bits.c $(CORE)/codec2/c2_tab.c
+TESTS   += c2TabTest
+c2TabTest: c2TabTest.c $(C2TAB) $(CORE)/codec2/c2_int.h $(CORE)/codec2/codec2.h $(CORE)/support/sha256.c
+	$(CC) $(CFLAGS) -Wshadow -o $@ c2TabTest.c $(C2TAB) $(CORE)/support/sha256.c -lm
+
+run: run-c2tab
+run-c2tab: c2TabTest
+	./c2TabTest
+.PHONY: run-c2tab
+
+# The generic symmetric crypto (core/crypto, docs/spec/crypto.md): AES and counter mode, HMAC-SHA-256 and HMAC_DRBG
+# on the tree's SHA-256, against the standards' known answers. Each file builds only under its own switch
+TESTS   += cryptoTest
+CRYPTOT := cryptoTest.c $(CORE)/crypto/aes.c $(CORE)/crypto/hmac_sha256.c $(CORE)/support/sha256.c
+cryptoTest: $(CRYPTOT) $(CORE)/crypto/aes.h $(CORE)/crypto/hmac_sha256.h $(CORE)/crypto/crypto_wipe.h \
+	    $(CORE)/support/sha256.h $(CORE)/config.h
+	$(CC) $(CFLAGS) -Wshadow -DCONFIG_CRYPTO_AES=1 -DCONFIG_CRYPTO_HMAC=1 -o $@ $(CRYPTOT)
+run: run-crypto-sym
+run-crypto-sym: cryptoTest
+	./cryptoTest
+.PHONY: run-crypto-sym
+
+# The air modes' table with a fake mode's row (RADIO_AIR_TEST_ROW, radioCoreTest.c test_air_auto): the radio core keys
+# for a mode's own transmissions (auto_tx ONCE and HOLD), and an air build with no P25 or NXDN row (as M17's alone)
+# builds and runs every other case unchanged
+TESTS   += radioCoreTestAirRow
+RCAIRROW := $(RCORE) $(CORE)/air/air_session.c $(CORE)/air/air_framer.c $(CORE)/hostlink/build_info.c
+radioCoreTestAirRow: $(RCAIRROW) $(wildcard $(CORE)/radio/*.h) $(wildcard $(CORE)/dmr/call/*.h) $(CORE)/dmr/dmrDataService.h \
+                     $(CORE)/ui/ui_svc.h $(wildcard $(CORE)/air/*.h)
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=0 -DCONFIG_SFR=1 -DCONFIG_APRS=0 \
+		-DCONFIG_AIR=1 -DRADIO_AIR_TEST_ROW=test_air_row -o $@ $(RCAIRROW) -lm
+
+# P25 and NXDN with a lending vocoder, as on the HR_C7000 radios: P25 in the loan, NXDN in the arena, one at a time
+TESTS   += radioCoreTestP25NxdnLend
+radioCoreTestP25NxdnLend: $(RCP25NX) $(wildcard $(CORE)/radio/*.h) $(wildcard $(CORE)/dmr/call/*.h) $(CORE)/dmr/dmrDataService.h \
+                          $(CORE)/ui/ui_svc.h $(wildcard $(CORE)/nxdn/*.h) $(wildcard $(CORE)/p25/*.h) $(wildcard $(CORE)/air/*.h) \
+                          $(wildcard $(CORE)/dmr/ambe/*.h)
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=0 -DCONFIG_SFR=1 -DCONFIG_APRS=0 \
+		-DCONFIG_P25=1 -DCONFIG_NXDN=1 -DCONFIG_NXDN_SCRAMBLER=1 -DCONFIG_AIR_RAW=1 -DHAL_VOCODER_LEND_BYTES=0x4000 \
+		-o $@ $(RCP25NX) -lm
+
+run: run-radio-refactor
+run-radio-refactor: radioCoreTestAirRow radioCoreTestP25NxdnLend
+	./radioCoreTestAirRow
+	./radioCoreTestP25NxdnLend
+.PHONY: run-radio-refactor
+
+# The raw air bench's OPEN on the debug link (core/debuglink/debuglink_air.c, docs/spec/debuglink.md 3.28): the 15- and
+# 19-byte profile headers, every other length refused, the soft modem's gates prepared; the provider, the radio state,
+# the heap and the log faked (stubs/air_rtos). The provider tests also cover the verified set (core/air/air_verify.h).
+# airSoftmodemTest runs here, not through tail: its goldens, the grid rule, the gates and the cost case fail the run
+DLAIR   := debuglinkAirTest.c $(CORE)/debuglink/debuglink_air.c $(CORE)/debuglink/dl_fmt.c $(CORE)/air/air_softmodem.c
+TESTS   += debuglinkAirTest
+debuglinkAirTest: $(DLAIR) $(CORE)/debuglink/debuglink_air.h $(CORE)/air/air_softmodem.h $(ROOT)/hal/hal_air.h \
+                  $(ROOT)/hal/board.h stubs/air_rtos/FreeRTOS.h stubs/air_rtos/task.h
+	$(CC) $(CFLAGS) -Istubs/air_rtos -I$(ROOT)/hal -Wshadow -DCONFIG_AIR_RAW=1 -DCONFIG_P25=1 -DCONFIG_DEBUGLINK=1 -o $@ $(DLAIR)
+hrc6000AirTest hrc7000AirTest: $(CORE)/air/air_verify.h
+airSoftmodemTest: $(wildcard $(CORE)/nxdn/*.h) $(wildcard $(CORE)/p25/*.h)
+
+run: run-air-softmodem
+run-air-softmodem: airSoftmodemTest debuglinkAirTest
+	./airSoftmodemTest > airSoftmodemTest.out || { cat airSoftmodemTest.out; exit 1; }
+	tail -1 airSoftmodemTest.out
+	./debuglinkAirTest
+.PHONY: run-air-softmodem
+clean: clean-air-softmodem
+clean-air-softmodem:
+	rm -f airSoftmodemTest.out
+.PHONY: clean-air-softmodem
+
+# M17's frame codecs, META, packet mode and BERT (core/m17) on the shared FEC and CRC (core/fec): the known answers of
+# docs/spec/m17.md 11, each frame type against the spec's chain, round trips through errors and noise. Each file
+# builds only under its own switch. fecTest runs here unpiped too: the older group's tail hides its status
+M17FR   := $(CORE)/m17/m17_frame.c $(CORE)/m17/m17_meta.c $(CORE)/m17/m17_packet.c $(CORE)/m17/m17_bert.c
+TESTS   += m17Test
+m17Test: m17Test.c $(M17FR) $(FEC) $(wildcard $(CORE)/m17/*.h) $(wildcard $(CORE)/fec/*.h) $(CORE)/config.h \
+	 $(CORE)/air/air_syms.h $(ROOT)/hal/hal_air.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=1 -DCONFIG_M17_PACKET=1 -DCONFIG_M17_BERT=1 -o $@ \
+		m17Test.c $(M17FR) $(FEC) -lm
+run: run-m17-frames
+run-m17-frames: m17Test fecTest
+	./m17Test
+	./fecTest
+.PHONY: run-m17-frames
+
+# M17 stream encryption and signatures (core/m17/m17_crypt.c, m17_sig.c; docs/spec/m17.md 6, 7) against the
+# M17-SCRAMBLER, M17-AES-CTR, M17-SIG and M17-SIG-AES128 known answers, on the tree's AES and SHA-256
+TESTS   += m17CryptTest m17SigTest
+M17CRYPT := $(CORE)/m17/m17_crypt.c $(CORE)/crypto/aes.c
+M17CRYPTH := $(CORE)/m17/m17_crypt.h $(CORE)/m17/m17.h $(CORE)/crypto/aes.h $(CORE)/crypto/crypto_wipe.h $(CORE)/config.h
+M17SIGF := -DCONFIG_M17=1 -DCONFIG_M17_SIG=1 -DCONFIG_M17_SCRAMBLER=1 -DCONFIG_M17_AES=1
+m17CryptTest: m17CryptTest.c $(M17CRYPT) $(M17CRYPTH)
+	$(CC) $(CFLAGS) -Wshadow -DCONFIG_M17=1 -DCONFIG_M17_SCRAMBLER=1 -DCONFIG_M17_AES=1 -o $@ m17CryptTest.c \
+		$(M17CRYPT)
+m17SigTest: m17SigTest.c $(CORE)/m17/m17_sig.c $(M17CRYPT) $(CORE)/support/sha256.c $(CORE)/m17/m17_sig.h \
+	    $(CORE)/support/sha256.h $(M17CRYPTH)
+	$(CC) $(CFLAGS) -Wshadow $(M17SIGF) -o $@ m17SigTest.c $(CORE)/m17/m17_sig.c $(M17CRYPT) \
+		$(CORE)/support/sha256.c
+# Not piped through tail: a failed check must fail the run
+run: run-m17-crypt
+run-m17-crypt: m17CryptTest m17SigTest
+	./m17CryptTest
+	./m17SigTest
+.PHONY: run-m17-crypt
+
+# Codec 2's decoder (core/codec2/c2_dec.c, c2_synth.c): the random generator, the exact bins and φ_ex against float
+# models of docs/spec/codec2.md, the API, concealment and golden PCM CRCs, plain and as a C-SKY build runs
+# (-DFXP_SPLIT16: the same CRCs). RFOUNDRY_C2_HARNESS=<dir> adds the reference vectors (kept outside the repository:
+# spec 1, 17). c2DecCand (not run here) writes the candidate files compare.py judges, from the same harness
+C2DEC   := $(CORE)/codec2/c2_dec.c $(CORE)/codec2/c2_synth.c $(C2TAB) $(DSP)
+C2DECH  := $(wildcard $(CORE)/codec2/*.h) $(CORE)/dsp/dsp.h $(CORE)/dsp/fxp.h
+TESTS   += c2DecTest c2DecSplitTest
+c2DecTest: c2DecTest.c $(C2DEC) $(C2DECH) $(CORE)/support/sha256.c
+	$(CC) $(CFLAGS) -Wshadow -o $@ c2DecTest.c $(C2DEC) $(CORE)/support/sha256.c -lm
+
+c2DecSplitTest: c2DecTest.c $(C2DEC) $(C2DECH) $(CORE)/support/sha256.c
+	$(CC) $(CFLAGS) -Wshadow -DFXP_SPLIT16 -o $@ c2DecTest.c $(C2DEC) $(CORE)/support/sha256.c -lm
+
+# Optimized like the firmware's code, for its time per block; its own flags (CFLAGS defines __attribute__ away, which
+# glibc's headers do not take with -O2)
+c2DecCand: c2DecCand.c $(C2DEC) $(C2DECH)
+	$(CC) -std=gnu99 -O2 -Wall -Wextra -Wno-unused-parameter -Wshadow -I$(CORE) -o $@ c2DecCand.c $(C2DEC)
+
+run: run-c2dec
+run-c2dec: c2DecTest c2DecSplitTest
+	./c2DecTest
+	./c2DecSplitTest
+.PHONY: run-c2dec
+
+# The Codec 2 encoder (core/codec2/c2_enc.c, c2_nlp.c, c2_lpc.c, c2_quant.c, c2_enc_tab.c) against docs/spec/codec2.md
+# 5-9: golden bits, init and 1600's halves; RFOUNDRY_C2_HARNESS=<dir> adds each stage against the reference harness's
+# dumps (kept outside the repository: spec 1, 16). Built plain and as the C-SKY build computes (FXP_SPLIT16): the same
+# bits. c2EncCand (not in run) writes the harness's candidate files for compare.py
+C2ENC   := $(CORE)/codec2/c2_enc.c $(CORE)/codec2/c2_nlp.c $(CORE)/codec2/c2_lpc.c $(CORE)/codec2/c2_quant.c \
+           $(CORE)/codec2/c2_enc_tab.c $(C2TAB) $(CORE)/dsp/dsp.c $(CORE)/dsp/dsp_math.c $(CORE)/dsp/dsp_tab.c
+C2ENCH  := $(CORE)/codec2/c2_enc_int.h $(CORE)/codec2/c2_int.h $(CORE)/codec2/codec2.h $(CORE)/dsp/dsp.h \
+           $(CORE)/dsp/fxp.h
+TESTS   += c2EncTest c2EncSplitTest
+c2EncTest: c2EncTest.c $(C2ENC) $(C2ENCH)
+	$(CC) $(CFLAGS) -Wshadow -o $@ c2EncTest.c $(C2ENC) -lm
+
+c2EncSplitTest: c2EncTest.c $(C2ENC) $(C2ENCH)
+	$(CC) $(CFLAGS) -Wshadow -DFXP_SPLIT16 -o $@ c2EncTest.c $(C2ENC) -lm
+
+c2EncCand: c2EncCand.c $(C2ENC) $(C2ENCH)
+	$(CC) $(CFLAGS) -Wshadow -O2 -o $@ c2EncCand.c $(C2ENC) -lm
+
+# Not piped through tail: a failed check must fail the run
+run: run-codec2-enc
+run-codec2-enc: c2EncTest c2EncSplitTest
+	./c2EncTest
+	./c2EncSplitTest
+.PHONY: run-codec2-enc
+
+# ECDSA P-256 (core/crypto/p256.c, docs/spec/p256.md) against the known answers of p256.md 12: k G, RFC 6979, CAVP
+# SigGen, SigVer, PKV and KeyPair, the derived edge cases and M17's signature; plain and with the C-SKY multiply
+# (-DFXP_SPLIT16). The test includes p256.c itself (its field and point code)
+TESTS   += p256Test p256SplitTest
+P256T   := p256Test.c $(CORE)/crypto/p256_tab.c $(CORE)/crypto/hmac_sha256.c $(CORE)/support/sha256.c
+P256DEP := $(P256T) $(CORE)/crypto/p256.c $(CORE)/crypto/p256.h $(CORE)/crypto/hmac_sha256.h $(CORE)/crypto/crypto_wipe.h \
+	   $(CORE)/support/sha256.h $(CORE)/config.h
+P256DEF := -DCONFIG_CRYPTO_P256=1 -DCONFIG_CRYPTO_HMAC=1
+p256Test: $(P256DEP)
+	$(CC) $(CFLAGS) -Wshadow $(P256DEF) -o $@ $(P256T)
+
+p256SplitTest: $(P256DEP)
+	$(CC) $(CFLAGS) -Wshadow $(P256DEF) -DFXP_SPLIT16 -o $@ $(P256T)
+
+# Not piped through tail: a failed check must fail the run
+run: run-p256
+run-p256: p256Test p256SplitTest
+	./p256Test
+	./p256SplitTest
+.PHONY: run-p256
+
+# M17 in the codeplug (core/m17/m17_codeplug.c, m17_addr.c; docs/spec/m17-codeplug.md): the shared vectors, a
+# channel's set-up and its write from the radio, our address, traffic keys, the signing key, station keys; and the
+# storage journal's copy erased after a write of an area that holds a key (settings-store.md 4). Zone sharing with M17
+# channels, systems and station keys (zone-share.md 4.2)
+M17CP   := $(CPTAG) $(CORE)/codeplug/codeplug_talk.c $(CORE)/codeplug/codeplug_tag.c $(CORE)/codeplug/codeplug_records.c \
+           $(CORE)/m17/m17_codeplug.c $(CORE)/m17/m17_addr.c
+M17CPF  := -DCONFIG_AIR=1 -DCONFIG_M17=1 -DCONFIG_M17_SCRAMBLER=1 -DCONFIG_M17_AES=1
+TESTS   += m17CodeplugTest m17CodeplugClearTest zoneImportM17Test
+m17CodeplugTest: m17CodeplugTest.c $(M17CP) $(wildcard $(CORE)/codeplug/*.h $(CORE)/m17/*.h $(CORE)/storage/*.h) ../vectors/channel-modes.txt
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow $(M17CPF) -o $@ m17CodeplugTest.c $(M17CP)
+
+# The same in a build without the scrambler and AES (the amateur variant's)
+m17CodeplugClearTest: m17CodeplugTest.c $(M17CP) $(wildcard $(CORE)/codeplug/*.h $(CORE)/m17/*.h $(CORE)/storage/*.h) ../vectors/channel-modes.txt
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_AIR=1 -DCONFIG_M17=1 -o $@ m17CodeplugTest.c $(M17CP)
+
+zoneImportM17Test: zoneImportM17Test.c $(ZIMPORT) $(CORE)/codeplug/codeplug_records.c $(CORE)/m17/m17_codeplug.c $(CORE)/m17/m17_addr.c \
+		   $(CORE)/codeplug/zone_import.h $(CORE)/dmr/zoneShare.h $(wildcard $(CORE)/m17/*.h)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow $(M17CPF) -o $@ zoneImportM17Test.c $(ZIMPORT) $(CORE)/codeplug/codeplug_records.c \
+		$(CORE)/m17/m17_codeplug.c $(CORE)/m17/m17_addr.c
+
+# Not piped through tail: the shell would report tail's status, so a failed check would pass
+run: run-m17-codeplug
+run-m17-codeplug: m17CodeplugTest m17CodeplugClearTest zoneImportM17Test
+	./m17CodeplugTest
+	./m17CodeplugClearTest
+	./zoneImportM17Test
+.PHONY: run-m17-codeplug
+
+# The entropy pool and the nonce counter (core/crypto/entropy.c, entropy_boot.c; docs/spec/crypto.md 8) with a fake
+# hardware generator and a fake settings store; then both built with the switch off must define nothing. The UTC
+# sources and their age (position_utc.c on the position service, position.md 8) and the one distance and bearing helper
+# (position_geo.c, position.md 9) against a double reference
+TESTS   += entropyTest positionUtcTest positionGeoTest
+ENTROPYT := entropyTest.c $(CORE)/crypto/entropy_boot.c $(CORE)/crypto/hmac_sha256.c $(CORE)/support/sha256.c
+entropyTest: $(ENTROPYT) $(CORE)/crypto/entropy.c $(CORE)/crypto/entropy.h $(CORE)/crypto/entropy_boot.h \
+	     $(CORE)/crypto/hmac_sha256.h $(CORE)/settings/settings.h $(ROOT)/hal/hal_system.h
+	$(CC) $(CFLAGS) -Wshadow -DCONFIG_ENTROPY=1 -DCONFIG_CRYPTO_HMAC=1 -o $@ $(ENTROPYT)
+
+# The boot count on the real settings store and a simulated flash: worn, healed, cut at every point of the start-up save
+ENTSTORET := entropyStoreTest.c $(CORE)/crypto/entropy.c $(CORE)/crypto/entropy_boot.c $(CORE)/crypto/hmac_sha256.c \
+	     $(CORE)/support/sha256.c $(STORE)
+TESTS   += entropyStoreTest
+entropyStoreTest: $(ENTSTORET) $(CORE)/crypto/entropy.h $(CORE)/crypto/entropy_boot.h $(CORE)/settings/settings.h \
+		  sim/sim_flash.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -I. -Wshadow -DCONFIG_ENTROPY=1 -DCONFIG_CRYPTO_HMAC=1 -o $@ $(ENTSTORET)
+
+POSUTCT := positionUtcTest.c $(CORE)/position/position.c $(NMEALIB)
+positionUtcTest: $(POSUTCT) $(CORE)/position/position_utc.c $(CORE)/position/position_utc.h $(CORE)/position/position.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ $(POSUTCT)
+
+positionGeoTest: positionGeoTest.c fuzz.h $(GEOLIB) $(CORE)/position/position_geo.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ positionGeoTest.c $(GEOLIB) -lm
+
+# entropy.c and entropy_boot.c with the switch off: objects that define no symbol
+ENTROPY_OFF := out/entropy_off.o out/entropy_boot_off.o
+out/entropy_off.o: $(CORE)/crypto/entropy.c $(CORE)/crypto/entropy.h
+	@mkdir -p out
+	$(CC) $(CFLAGS) -c -DCONFIG_ENTROPY=0 -o $@ $(CORE)/crypto/entropy.c
+out/entropy_boot_off.o: $(CORE)/crypto/entropy_boot.c $(CORE)/crypto/entropy_boot.h
+	@mkdir -p out
+	$(CC) $(CFLAGS) -c -DCONFIG_ENTROPY=0 -o $@ $(CORE)/crypto/entropy_boot.c
+
+# Not piped through tail: the shell would report tail's status, so a failed check or a sanitizer's abort would pass
+run: run-entropy-utc
+run-entropy-utc: entropyTest entropyStoreTest positionUtcTest positionGeoTest $(ENTROPY_OFF)
+	./entropyTest
+	./entropyStoreTest
+	./positionUtcTest
+	./positionGeoTest
+	@for o in $(ENTROPY_OFF); do \
+		s=$$(nm -g --defined-only $$o 2>/dev/null) || { echo "FAIL nm $$o"; exit 1; }; \
+		if [ -n "$$s" ]; then echo "FAIL $$o defines with CONFIG_ENTROPY=0: $$s"; exit 1; fi; \
+	done; echo "entropy off: no symbols in $(ENTROPY_OFF)"
+.PHONY: run-entropy-utc
+
+# The UI's shared pieces: the merged message inbox (core/ui/ui_svc_msg.c) joins the UI simulator's build;
+# appended here, so the rules above get it in their recipes and as a prerequisite below. utf8DisplayTest:
+# utf8_to_display (core/ui/gfx.c) without and with the CJK face (CONFIG_LANG_ZH). textEditTest's character sets run
+# with run-text
+UIAPP   += $(CORE)/ui/ui_svc_msg.c
+uiFlowTest uiFlowTestNoColor uiFlowTestSatellite uiFlowTestPrivacyM17 uiSim beepReel: $(CORE)/ui/ui_svc_msg.c
+TESTS   += utf8DisplayTest utf8DisplayTestZh
+UTF8D   := utf8DisplayTest.c $(CORE)/ui/gfx.c $(CORE)/ui/fonts.c $(CJK)
+utf8DisplayTest: $(UTF8D) $(CORE)/ui/gfx.h $(CORE)/ui/font.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ $(UTF8D)
+utf8DisplayTestZh: $(UTF8D) $(CORE)/ui/gfx.h $(CORE)/ui/font.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_LANG_ZH=1 -o $@ $(UTF8D)
+# uiMsgMergeTest: the merged inbox over two fake providers (DMR's and APRS's places in the table)
+TESTS   += uiMsgMergeTest
+uiMsgMergeTest: uiMsgMergeTest.c $(CORE)/ui/ui_svc_msg.c $(CORE)/ui/ui_svc.h $(CORE)/ui/ui_addr.h $(LANG_H)
+	$(CC) $(UIFLAGS) -DCONFIG_DMR_SMS=1 -DCONFIG_APRS_AFSK=1 -o $@ uiMsgMergeTest.c $(CORE)/ui/ui_svc_msg.c
+
+# Not piped through tail: a failed check or a sanitizer's abort fails the target
+run: run-ui-shared
+run-ui-shared: utf8DisplayTest utf8DisplayTestZh textEditTest uiMsgMergeTest
+	./utf8DisplayTest
+	./utf8DisplayTestZh
+	./uiMsgMergeTest
+	./textEditTest
+.PHONY: run-ui-shared
+
+# The M17 engine (core/m17/m17_engine.c, m17_rx.c, m17_tx.c; docs/spec/m17.md, the engine's section): two engines on
+# made-up providers, the test playing both radio cores (P-256 signing and verifying included), then through the soft
+# modem's channel model. The engine's files also build with each sub-switch off, as objects (warnings fail them).
+# airSoftmodemTest links the receive side too, for its check of m17_air_mode's gate literals against the prep
+M17ENG  := $(CORE)/m17/m17_engine.c $(CORE)/m17/m17_rx.c $(CORE)/m17/m17_tx.c $(M17FR) $(CORE)/m17/m17_crypt.c \
+           $(CORE)/m17/m17_sig.c $(CORE)/crypto/aes.c $(CORE)/support/sha256.c $(CORE)/air/air_session.c $(CORE)/air/air_framer.c
+M17ENGH := $(wildcard $(CORE)/m17/*.h) $(wildcard $(CORE)/air/*.h) $(wildcard $(CORE)/crypto/*.h) $(wildcard $(CORE)/fec/*.h) \
+           $(CORE)/config.h $(ROOT)/hal/hal_air.h
+M17ENGF := -DCONFIG_M17=1 -DCONFIG_M17_PACKET=1 -DCONFIG_M17_BERT=1 -DCONFIG_M17_SIG=1 -DCONFIG_M17_SCRAMBLER=1 \
+           -DCONFIG_M17_AES=1
+M17ENGT := m17EngineTest.c $(M17ENG) $(CORE)/air/air_softmodem.c $(CORE)/crypto/p256.c $(CORE)/crypto/p256_tab.c \
+           $(CORE)/crypto/hmac_sha256.c $(FEC)
+TESTS   += m17EngineTest
+m17EngineTest: $(M17ENGT) $(M17ENGH)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow $(M17ENGF) -o $@ $(M17ENGT) -lm
+
+# Each sub-switch off in turn, and M17 alone: the three files compile clean
+M17ENG_OFF := SIG AES SCRAMBLER PACKET BERT ALL
+M17ENG_OFFO := $(M17ENG_OFF:%=out/m17eng_no_%.o)
+out/m17eng_no_%.o: $(CORE)/m17/m17_engine.c $(CORE)/m17/m17_rx.c $(CORE)/m17/m17_tx.c $(M17ENGH)
+	@mkdir -p out
+	for f in m17_engine m17_rx m17_tx; do \
+		$(CC) $(CFLAGS) -Werror -I$(ROOT)/hal -Wshadow $(if $(filter ALL,$*),-DCONFIG_M17=1,$(filter-out -DCONFIG_M17_$*=1,$(M17ENGF)) -DCONFIG_M17_$*=0) \
+			-c -o out/m17eng_no_$*_$$f.o $(CORE)/m17/$$f.c || exit 1; \
+	done
+	touch $@
+
+# airSoftmodemTest: the M17 receive side for its literal check (its own recipe lists its sources; the files are added
+# here as the target's flags so that recipe is left as it is)
+AIRSM_M17 := $(CORE)/m17/m17_rx.c $(CORE)/m17/m17_engine.c $(CORE)/m17/m17_tx.c $(CORE)/m17/m17_frame.c \
+             $(CORE)/m17/m17_meta.c $(CORE)/air/air_session.c
+airSoftmodemTest: CFLAGS += -DCONFIG_M17=1 -DAIR_SOFTMODEM_TEST_M17=1 $(AIRSM_M17)
+airSoftmodemTest: $(AIRSM_M17) $(M17ENGH)
+
+# Not piped through tail: a failed check must fail the run
+run: run-m17-engine
+run-m17-engine: m17EngineTest $(M17ENG_OFFO)
+	./m17EngineTest
+.PHONY: run-m17-engine
+
+# The M17 voice path (core/m17/m17_voice.c; docs/spec/m17.md, the voice path) on the real Codec 2, against the codec
+# run directly: priming, the 3200 and 1600 cadence, underruns, overflow, concealment, calls ending and cut off,
+# transmit framing and the filler, the scratch's loan, the codec bench, the mixer; the short voice set through both
+# directions, with the host's time per block. c2VoiceGen writes the voice set in Codec 2 and decoded back
+# (tests/data/voice/README.md): the run checks it on the short set; make c2-voice-data writes every set to C2VOICE_OUT
+# (generated, not committed)
+M17VOICE_C2 := $(sort $(C2DEC) $(C2ENC))
+C2VOICE_OUT ?= out/voice
+TESTS   += m17VoiceTest c2VoiceGen
+m17VoiceTest: m17VoiceTest.c $(CORE)/m17/m17_voice.c $(CORE)/m17/m17_voice.h $(CORE)/m17/m17_engine.h $(M17VOICE_C2) \
+	      $(C2DECH) $(C2ENCH) $(ROOT)/hal/hal_audio.h $(CORE)/config.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=1 -o $@ m17VoiceTest.c $(M17VOICE_C2) -lm
+
+c2VoiceGen: c2VoiceGen.c $(M17VOICE_C2) $(C2DECH) $(C2ENCH)
+	$(CC) $(CFLAGS) -Wshadow -o $@ c2VoiceGen.c $(M17VOICE_C2) -lm
+
+c2-voice-data: c2VoiceGen
+	@mkdir -p $(C2VOICE_OUT)
+	for v in $(VOICE_SETS); do ./c2VoiceGen $(VOICE)/$$v.pcm $(C2VOICE_OUT) || exit 1; done
+.PHONY: c2-voice-data
+
+# Not piped through tail: a failed check must fail the run
+run: run-m17-voice
+run-m17-voice: m17VoiceTest c2VoiceGen
+	./m17VoiceTest $(VOICE)/test_transmission.pcm
+	@mkdir -p out/voice
+	./c2VoiceGen $(VOICE)/test_transmission.pcm out/voice
+.PHONY: run-m17-voice
+
+# M17 in the radio core (core/radio/radio_m17.c, radio_heard.c; docs/spec/m17.md, the radio core): the whole radio core
+# against the fake board, whose board.air's far end is a second M17 engine played by the test (its signatures too), on
+# the real Codec 2 voice path, the codeplug's M17 records and P-256. radioCoreTestM17: M17 alone, every part on, in the
+# shared arena (as an STM32 radio runs it). radioCoreTestAir: P25, NXDN and M17 together with a lending vocoder (as on
+# the HR_C7000 radios: P25 and M17 in the loan, NXDN in the arena), the scrambler built out. crashSecretTest: the
+# secret work count and the scrub (core/crash/crash_secret.c) on crashCaptureTest's stand-in RTOS. crashTest and
+# crashCaptureTest link crash_secret.c now that the trace and the capture read its count
+RM17SRC := $(CORE)/radio/radio_m17.c $(CORE)/radio/radio_heard.c $(M17ENG) $(CORE)/m17/m17_voice.c $(M17VOICE_C2) \
+           $(CORE)/m17/m17_codeplug.c $(CORE)/m17/m17_addr.c $(CORE)/crypto/p256.c $(CORE)/crypto/p256_tab.c \
+           $(CORE)/crypto/hmac_sha256.c $(CORE)/crypto/entropy.c $(CORE)/crypto/entropy_boot.c \
+           $(CORE)/position/position_utc.c $(CORE)/crash/crash_secret.c $(FEC) $(CORE)/hostlink/build_info.c
+RM17H   := $(wildcard $(CORE)/radio/*.h) $(wildcard $(CORE)/m17/*.h) $(wildcard $(CORE)/crypto/*.h) $(wildcard $(CORE)/air/*.h) \
+           $(wildcard $(CORE)/codec2/*.h) $(wildcard $(CORE)/dmr/call/*.h) $(CORE)/dmr/dmrDataService.h $(CORE)/ui/ui_svc.h \
+           $(CORE)/crash/crash_secret.h $(CORE)/position/position_utc.h
+RM17F   := -DCONFIG_M17=1 -DCONFIG_M17_PACKET=1 -DCONFIG_M17_BERT=1 -DCONFIG_M17_SIG=1 -DCONFIG_M17_AES=1 \
+           -DCONFIG_HEARD_LIST=1
+RCM17   := $(sort $(RCORE) $(RM17SRC))
+TESTS   += radioCoreTestM17
+radioCoreTestM17: $(RCM17) $(RM17H)
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=0 -DCONFIG_SFR=1 -DCONFIG_APRS=0 \
+		$(RM17F) -DCONFIG_M17_SCRAMBLER=1 -o $@ $(RCM17) -lm
+
+RCAIR   := $(sort $(RCP25NX) $(RM17SRC))
+TESTS   += radioCoreTestAir
+radioCoreTestAir: $(RCAIR) $(RM17H) $(wildcard $(CORE)/nxdn/*.h) $(wildcard $(CORE)/p25/*.h) $(wildcard $(CORE)/dmr/ambe/*.h)
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DDMR_RX_TRACE=0 -DCONFIG_DMR_IP_GATEWAY=0 -DCONFIG_SFR=1 -DCONFIG_APRS=0 \
+		-DCONFIG_P25=1 -DCONFIG_NXDN=1 -DCONFIG_NXDN_SCRAMBLER=1 -DCONFIG_AIR_RAW=1 -DHAL_VOCODER_LEND_BYTES=0x4000 \
+		$(RM17F) -DCONFIG_M17_SCRAMBLER=0 -o $@ $(RCAIR) -lm
+
+TESTS   += crashSecretTest
+CRASHS  := crashSecretTest.c $(CORE)/crash/crash_secret.c $(CORE)/crash/crash_capture.c $(CORE)/crash/crash.c \
+           $(CORE)/crash/crash_trace.c $(CORE)/debuglink/dl_fmt.c
+crashSecretTest: $(CRASHS) $(CORE)/crash/crash.h $(CORE)/crash/crash_secret.h $(ROOT)/hal/hal_crash.h $(wildcard stubs/crash_rtos/*.h)
+	$(CC) $(CFLAGS) -Istubs/crash_rtos -I$(ROOT)/hal -DCONFIG_TASK_STACKS=0 -Wshadow -o $@ $(CRASHS)
+CRASHT  += $(CORE)/crash/crash_secret.c
+CRASHC  += $(CORE)/crash/crash_secret.c
+crashTest crashCaptureTest: $(CORE)/crash/crash_secret.c $(CORE)/crash/crash_secret.h
+
+# Not piped through tail: a failed check or a sanitizer's abort fails the run
+run: run-m17-radio
+run-m17-radio: radioCoreTestM17 radioCoreTestAir crashSecretTest
+	./radioCoreTestM17
+	./radioCoreTestAir
+	./crashSecretTest
+.PHONY: run-m17-radio
+
+# The Codec 2 encoder's near-4 kHz and two-line checks (docs/spec/codec2.md 18.3) decode what they encode, so
+# c2EncTest links the decoder; appended here, so the rules above get it in their recipes and as a prerequisite below.
+# RFOUNDRY_C2_EXTRA=<dir> adds the codec2-extra vectors (kept outside the repository, like the harness) to
+# run-codec2-enc
+C2ENC   += $(CORE)/codec2/c2_dec.c $(CORE)/codec2/c2_synth.c
+c2EncTest c2EncSplitTest c2EncCand: $(CORE)/codec2/c2_dec.c $(CORE)/codec2/c2_synth.c $(CORE)/codec2/c2_dec_int.h
+
+# M17 on the radio's screens (docs/ux/m17.md): uiFlowTest and uiSim run with M17 and every part of it (UIM17F, on their
+# flag lines above; not uiFlowTestNoColor, as P25 and NXDN), the address codec, the key fingerprint, the mode names,
+# the heard list and the distance to a station from the tree. uiFlowTestM17Base runs the flows with M17 alone (each part
+# switched off), and uiM17Off builds the UI's files with each part switched off on its own, as objects (warnings fail
+# them), so a board that leaves one out builds
+UIM17F  := -DCONFIG_M17=1 -DCONFIG_M17_PACKET=1 -DCONFIG_M17_BERT=1 -DCONFIG_M17_SIG=1 -DCONFIG_M17_SCRAMBLER=1 \
+           -DCONFIG_M17_AES=1 -DCONFIG_HEARD_LIST=1
+UIM17   := $(CORE)/ui/ui_m17.c $(CORE)/ui/ui_heard.c $(CORE)/ui/ui_svc_m17.c $(CORE)/m17/m17_addr.c \
+           $(CORE)/m17/m17_sig.c $(CORE)/radio/radio_heard.c $(CORE)/position/position_geo.c
+UI      += $(CORE)/radio/radio_air_modes.c
+UIAPP   += $(CORE)/radio/radio_air_modes.c $(UIM17)
+gfxTest gfxTestZh uiFlowTest uiFlowTestNoColor uiFlowTestSatellite uiFlowTestPrivacyM17 uiSim beepReel: \
+	$(CORE)/radio/radio_air_modes.c
+uiFlowTest uiFlowTestNoColor uiFlowTestSatellite uiSim beepReel: $(UIM17)
+TESTS   += uiFlowTestM17Base
+uiFlowTestM17Base: uiFlowTest.c $(UIDEPS) $(UIM17)
+	$(CC) $(UIFLAGS) -DCONFIG_M17=1 -o $@ uiFlowTest.c $(UIAPP) -lz
+# and with a switch the M17 rows lean on off (the channel editor's Destination row; DMR privacy, beside the signature
+# rows)
+UIM17OFF := M17_SIG M17_SCRAMBLER M17_AES M17_SCRAMBLER+M17_AES M17_PACKET M17_BERT HEARD_LIST CHANNEL_EDIT DMR_PRIVACY
+UIM17SRC := $(CORE)/ui/ui_screens.c $(CORE)/ui/ui_app.c $(CORE)/ui/ui_menus.c $(CORE)/ui/ui_dual.c \
+            $(CORE)/ui/ui_svc_msg.c $(CORE)/ui/ui_svc_stub.c $(UIM17)
+# UIM17F with the switches of $(1) (joined by +) off
+m17off   = $(filter-out $(foreach g,$(subst +, ,$1),-DCONFIG_$g=1),$(UIM17F)) $(foreach g,$(subst +, ,$1),-DCONFIG_$g=0)
+uiM17Off: $(UIDEPS) $(UIM17)
+	@mkdir -p out/m17off
+	@$(foreach f,$(UIM17OFF),for src in $(UIM17SRC); do \
+		$(CC) $(UIFLAGS) -Werror $(call m17off,$f) -c -o out/m17off/obj.o $$src || exit 1; \
+	done && echo "M17 UI builds without $(subst +, and ,$f)" &&) true
+	@touch $@
+run: run-m17-ui
+run-m17-ui: uiFlowTestM17Base uiM17Off
+	./uiFlowTestM17Base
+.PHONY: run-m17-ui
+
+# The debug link's M17 sections and RADIO op 44 (core/debuglink/debuglink_view_m17.c; docs/spec/debuglink.md 3.7, 3.8)
+# against a made-up radio core: every key and its format, each part within one reply at its widest, no secret printed
+# although the state holds them, each sub-op and its refusals. Built with every M17 part, with M17 alone (the
+# sub-features' keys and sub-ops gone) and without M17 (m17.built=0, the op unavailable)
+DLM17   := debuglinkM17Test.c $(CORE)/debuglink/debuglink_view_m17.c $(CORE)/debuglink/dl_fmt.c $(CORE)/m17/m17_addr.c
+DLM17H  := $(wildcard $(CORE)/debuglink/*.h) $(wildcard $(CORE)/m17/*.h) $(CORE)/radio/radio_m17.h \
+           $(CORE)/radio/radio_heard.h $(CORE)/radio/radio.h $(CORE)/crypto/entropy.h $(CORE)/position/position_utc.h \
+           $(CORE)/config.h
+DLM17F  := -DCONFIG_M17_PACKET=1 -DCONFIG_M17_BERT=1 -DCONFIG_M17_SIG=1 -DCONFIG_M17_SCRAMBLER=1 -DCONFIG_M17_AES=1 \
+           -DCONFIG_HEARD_LIST=1
+DLM17F0 := -DCONFIG_M17_PACKET=0 -DCONFIG_M17_BERT=0 -DCONFIG_M17_SIG=0 -DCONFIG_M17_SCRAMBLER=0 -DCONFIG_M17_AES=0 \
+           -DCONFIG_HEARD_LIST=0
+TESTS   += debuglinkM17Test debuglinkM17TestBase debuglinkM17TestOff
+debuglinkM17Test: $(DLM17) $(DLM17H)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=1 $(DLM17F) -o $@ $(DLM17)
+debuglinkM17TestBase: $(DLM17) $(DLM17H)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=1 $(DLM17F0) -o $@ $(DLM17)
+debuglinkM17TestOff: $(DLM17) $(DLM17H)
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -DCONFIG_M17=0 $(DLM17F0) -o $@ $(DLM17)
+
+# Not piped through tail: a failed check or a sanitizer's abort fails the run
+run: run-m17-debuglink
+run-m17-debuglink: debuglinkM17Test debuglinkM17TestBase debuglinkM17TestOff
+	./debuglinkM17Test
+	./debuglinkM17TestBase
+	./debuglinkM17TestOff
+.PHONY: run-m17-debuglink
+
+# The STM32F4 hardware generator's driver (platform/stm32f4/rng.c; docs/spec/crypto.md 8.4) on a scripted RNG block:
+# the continuous test, faults part way and on the spare word, and the word kept between reads never one given out.
+# The crash decoder's self-test (tools/crash_decode.py), a record scrubbed during secret work among its cases
+TESTS   += stm32RngTest
+stm32RngTest: stm32RngTest.c $(ROOT)/platform/stm32f4/rng.c $(ROOT)/platform/stm32f4/platform.h \
+	      stubs/stm32_rng/stm32f4xx_hal.h $(ROOT)/hal/hal_system.h
+	$(CC) $(CFLAGS) -Istubs/stm32_rng -I$(ROOT)/hal -Wshadow -DCONFIG_ENTROPY=1 -o $@ stm32RngTest.c
+
+# Not piped through tail: a failed check or a sanitizer's abort fails the run
+run: run-fix-core
+run-fix-core: stm32RngTest
+	./stm32RngTest
+	$(PYTHON) $(ROOT)/tools/crash_decode.py --self-test
+.PHONY: run-fix-core
+
+# The M17 engine's cipher calls through the linker's --wrap, so m17EngineTest sees each one run inside the crash
+# record's secret work (crash_secret.h). Only where the linker has --wrap (GNU ld, lld; not Apple's ld64): elsewhere
+# the test builds without that check and says so. No target of its own: run-m17-engine runs the test
+M17WRAP := $(shell printf 'int main(void){return 0;}\n' | $(CC) -x c - -Wl,--wrap=m17_wrap_probe -o /dev/null 2>/dev/null && echo 1)
+M17WRAP_C := ,
+m17EngineTest: CFLAGS += $(if $(M17WRAP),-DM17_TEST_WRAP=1 -Wl$(M17WRAP_C)--wrap=aes_init$(M17WRAP_C)--wrap=aes_encrypt$(M17WRAP_C)--wrap=m17_scr_init$(M17WRAP_C)--wrap=m17_scr_frame$(M17WRAP_C)--wrap=m17_scr_seek$(M17WRAP_C)--wrap=m17_scr_key_ok)
+
+# The UI's M17 settings services (core/ui/ui_svc_radio.c) against radio_task.c's one request slot: changes of one field
+# each before the radio task's turn (boot's CAN and voice, a destination, digital monitor) all end up in force
+TESTS   += uiSvcM17Test
+uiSvcM17Test: uiSvcM17Test.c $(CORE)/ui/ui_svc_radio.c $(LANG_H) $(wildcard $(CORE)/ui/*.h) $(CORE)/radio/radio.h \
+              $(CORE)/radio/radio_m17.h
+	$(CC) $(CFLAGS) $(CORE_HAL) -I. -DCONFIG_M17=1 -o $@ uiSvcM17Test.c $(CORE)/ui/ui_svc_radio.c
+
+run: run-fix-ui
+run-fix-ui: uiSvcM17Test
+	./uiSvcM17Test
+.PHONY: run-fix-ui
+
+# The HR_C7000's chip UID from the data flash's unique ID (platform/hrc7000/chip_uid.h): an ID of one repeated byte is
+# none, so the entropy pool and the debug link's token never take the value every such radio shares
+TESTS   += hrc7000ChipUidTest
+hrc7000ChipUidTest: hrc7000ChipUidTest.c $(ROOT)/platform/hrc7000/chip_uid.h
+	$(CC) $(CFLAGS) -Wshadow -o $@ hrc7000ChipUidTest.c
+
+run: run-fix-sec
+run-fix-sec: hrc7000ChipUidTest
+	./hrc7000ChipUidTest
+.PHONY: run-fix-sec

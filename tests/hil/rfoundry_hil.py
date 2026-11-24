@@ -24,7 +24,8 @@ from rfoundry_debug import (DebugLink, DebugLinkError, as_int, find_network_radi
                        parse_counters,
                        to_rgb, write_png, ACTIONS, PRESS, LONG, UP, APRS, APRS_OP_MESSAGE, APRS_OP_SEND_NOW,
                        APRS_OP_STATUS, DATA_OP_CALL_ALERT, DATA_OP_EMERGENCY, DATA_OP_IP_SEND,
-                       DATA_OP_RADIO_CHECK, DATA_OP_SMS, DMR_DATA, KEY, OP_TONE_BURST, PTT, RADIO, T3)
+                       DATA_OP_RADIO_CHECK, DATA_OP_SMS, DMR_DATA, KEY, OP_TONE_BURST, PTT, RADIO, T3,
+                       OP_M17, M17_BERT_RUN, M17_SMS)
 
 
 # Layer 1 of the TX guard (README.md, "Transmit frequencies"): with --allow-rf, every debug link request that keys the
@@ -57,6 +58,9 @@ def keys_tx(cmd, payload):
             return "channel"
         return None
     if cmd == RADIO and p[:2] == bytes([OP_TONE_BURST, 1]):
+        return "channel"
+    # M17 (op 44): the BERT run on, an SMS (sent once the channel is free)
+    if cmd == RADIO and (p[:3] == bytes([OP_M17, M17_BERT_RUN, 1]) or p[:2] == bytes([OP_M17, M17_SMS])):
         return "channel"
     if cmd == DMR_DATA and p:
         if p[0] in (DATA_OP_SMS, DATA_OP_CALL_ALERT, DATA_OP_RADIO_CHECK, DATA_OP_IP_SEND) or \

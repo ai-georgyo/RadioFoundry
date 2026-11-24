@@ -30,7 +30,7 @@
 //   p25rx:<src>,<dst>[,u|e|o]   a P25 call (CONFIG_P25 builds): u a unit call, e encrypted, o another talk group
 //                       (both not played); p25rxend ends it
 //   nxdnrx:<src>,<dst>[,e|p]    an NXDN call: e scrambled and muted, p scrambled and played
-//   chkind:<n>,p25|nxdn[,<name>]  a stored P25 or NXDN channel, with an optional name (_ = space)
+//   chkind:<n>,p25|nxdn|m17[,<name>]  a stored P25, NXDN or M17 channel, with an optional name (_ = space)
 //   p25t:<state>[,<tg>] the channel on view is a trunked P25 one (CONFIG_P25_TRUNK builds), its follower in state
 //                       1 finding the system, 2 on the control channel, 3 following talk group tg
 //   rx:<src>,<dst>,g|p[,name]   a DMR call starts (g = group, p = private to us); rxend ends it
@@ -81,6 +81,20 @@
 #include "ui/ui_app.h"
 #include "ui/ui_svc.h"
 #include "ui/ui_nav.h"
+#include "radio/radio_air_modes.h"
+#if CONFIG_M17
+#include "m17/m17_codeplug.h"
+#include "m17/m17_engine.h"
+#include "m17/m17_sig.h"
+#include "radio/radio_heard.h"
+#endif
+// M17 (UI_FEAT_M17, ui_svc_m17_caps) only with the "m17" token, its parts with "m17caps:" (the M17 section below)
+static bool m17_radio;
+#if CONFIG_M17
+static void m17_refresh(void);
+static radio_m17_settings_t m17_set;	// the VFO's and a channel switched to M17's
+#endif
+static void advance(uint32_t ms);
 #include "input/input.h"
 #include "hostlink/hostlink.h"
 #include "hotspot/hotspot.h"
@@ -768,7 +782,7 @@ bool ui_svc_setting_set(uint8_t id, int32_t value)
 static struct {
 	uint16_t number;
 	channel_t ch;
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 	bool air_set;		// saved with a block (ui_svc_write_channel_air)
 	ui_air_conv_t air;
 #endif
@@ -794,7 +808,7 @@ static int sim_write(uint16_t number, const channel_t *ch)
 		n_edits++;
 	sim_edits[i].number = number;
 	sim_edits[i].ch = *ch;
-#if CONFIG_P25 || CONFIG_NXDN
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
 	sim_edits[i].air_set = false;
 #endif
 	sim_rec.codeplug_writes++;
@@ -809,8 +823,9 @@ bool ui_svc_write_channel(uint16_t number, const channel_t *ch, uint16_t from)
 	return sim_write(number, ch) >= 0;
 }
 
-#if CONFIG_P25 || CONFIG_NXDN
-// The block goes with the channel: a plain channel in P25 or NXDN becomes one of the kind, as the storage job makes it
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
+// The block goes with the channel: a plain channel in P25, NXDN or M17 becomes one of the kind, as the storage job makes
+// it
 bool ui_svc_write_channel_air(uint16_t number, const channel_t *ch, uint16_t from, const ui_air_conv_t *conv)
 {
 	(void)from;
@@ -818,7 +833,8 @@ bool ui_svc_write_channel_air(uint16_t number, const channel_t *ch, uint16_t fro
 		return sim_held;
 	channel_t c = *ch;
 	if (c.kind == CODEPLUG_KIND_NONE) {
-		c.kind = c.mode == RADIO_MODE_P25 ? CODEPLUG_KIND_P25 : CODEPLUG_KIND_NXDN;
+		c.kind = c.mode == RADIO_MODE_P25 ? CODEPLUG_KIND_P25 : c.mode == RADIO_MODE_M17 ? CODEPLUG_KIND_M17 :
+			CODEPLUG_KIND_NXDN;
 		c.mode = RADIO_MODE_DMR;	// the stand-in record
 	}
 	int i = sim_write(number, &c);
@@ -948,6 +964,17 @@ bool nxdn_conv_load(uint16_t number, const channel_t *ch, nxdn_conv_cfg_t *out)
 	out->target = 1;
 	return true;
 }
+#endif
+
+// The air modes' rows the mode names come from (radio_air_modes.c): their names only, the radio core's rows run them
+#if CONFIG_P25
+const radio_air_mode_t radio_p25_mode = { .mode = RADIO_MODE_P25, .key = "p25", .name = "P25" };
+#endif
+#if CONFIG_NXDN
+const radio_air_mode_t radio_nxdn_mode = { .mode = RADIO_MODE_NXDN, .key = "nxdn", .name = "NXDN" };
+#endif
+#if CONFIG_M17
+const radio_air_mode_t radio_m17_mode = { .mode = RADIO_MODE_M17, .key = "m17", .name = "M17" };
 #endif
 
 // Zones the zone editor wrote (ui_svc_zone_edit, the real zone_edit.c on these fakes): once one is written, every
@@ -1423,6 +1450,10 @@ static void load_channel(void)
 #if CONFIG_DMR_TRUNK
 	t3_view();
 #endif
+#if CONFIG_M17
+	if (view.ch.kind == CODEPLUG_KIND_M17 && m17_radio)
+		view.ch.mode = RADIO_MODE_M17;	// a live M17 channel (radio_m17_take)
+#endif
 	view.dmr.active = view.ch.mode == RADIO_MODE_DMR;
 	view.dmr.codec = true;
 	view.dmr.cc = view.dmr.rx_cc = view.ch.color_code;
@@ -1431,6 +1462,9 @@ static void load_channel(void)
 	reply_until = 0;
 	default_target();
 	changed();
+#if CONFIG_M17
+	m17_refresh();
+#endif
 }
 
 void sim_worst(bool on)
@@ -1642,8 +1676,16 @@ void radio_req_tone(uint8_t which, subtone_t tone)
 }
 void radio_req_reply_cancel(void) { view.dmr.reply_active = false; reply_until = 0; default_target(); changed(); }
 
+#if CONFIG_M17
+static bool m17_ptt(bool down);
+#endif
+
 static void ptt(bool down)
 {
+#if CONFIG_M17
+	if (m17_ptt(down))
+		return;		// refused, or a signed transmission's tail still going
+#endif
 	if (down) {
 		to_selected();	// the radio core transmits on the selected channel
 		if (view.ch.rx_only) {
@@ -1703,7 +1745,7 @@ static void rx_start(uint32_t src, uint32_t dst, bool group, const char *alias)
 		ui_event_t ev;
 		memset(&ev, 0, sizeof ev);
 		ev.kind = UI_EV_PRIVATE_CALL;
-		ev.id = src;
+		ui_addr_set_dmr(&ev.from, src, false);
 		strcpy(ev.name, view.dmr.call.src_name);
 		ui_notify(&ev);
 	}
@@ -1768,7 +1810,7 @@ uint32_t ui_svc_features(void)
 	return 0xFFFFFFFFu & ~(soft_volume ? 0 : UI_FEAT_VOLUME) & ~(bcast_rx ? 0 : UI_FEAT_BCAST) &
 	       ~(ref_trim ? 0 : UI_FEAT_REF_TRIM) &
 	       ~(knob_radio ? 0 : UI_FEAT_VOLUME_KNOB) & ~(p25_radio ? 0 : UI_FEAT_P25) &
-	       ~(nxdn_radio ? 0 : UI_FEAT_NXDN);
+	       ~(nxdn_radio ? 0 : UI_FEAT_NXDN) & ~(m17_radio ? 0 : UI_FEAT_M17);
 }
 // My radio's names (ui_svc_name_*): placeholders, as the user's own would be; a save writes at once
 static char sim_names[UI_NAME_COUNT][17];
@@ -1970,10 +2012,24 @@ bool ui_svc_mode(uint8_t mode)
 	} else {
 		set_temp(0x80);
 	}
+#if CONFIG_M17
+	m17_refresh();
+#endif
 	return true;
 }
 bool ui_svc_hear_all(bool on)
 {
+#if CONFIG_M17
+	if (view.ch.mode == RADIO_MODE_M17) {	// every CAN: the settings' squelch (ui_svc_radio.c), none on a stored channel
+		if (!view.vfo && view.ch.kind == CODEPLUG_KIND_M17)
+			return false;
+		radio_m17_settings_t m;
+		radio_m17_settings_next(&m);
+		m.squelch = on ? M17_SQUELCH_ANY : M17_SQUELCH_CAN;
+		radio_req_m17_settings(&m);
+		return true;
+	}
+#endif
 	to_selected();
 	view.dmr.hear_all_latch = on;
 	view.dmr.hear_all = on || view.monitor;
@@ -2059,6 +2115,18 @@ void ui_svc_ptt_block(bool blocked) { ptt_blocked = blocked; }
 void ui_svc_volume_hold(bool hold) { vol_held = hold; }
 void ui_svc_apply(uint8_t id, int32_t value)
 {
+#if CONFIG_M17
+	if (id == UI_SET_M17_CAN || id == UI_SET_M17_VOICE) {	// the radio core's M17 settings (ui_svc_radio.c)
+		radio_m17_settings_t m;
+		radio_m17_settings_next(&m);
+		if (id == UI_SET_M17_CAN)
+			m.can = m.tx_can = (uint8_t)(value & 15);
+		else
+			m.mode1600 = value != 0;
+		radio_req_m17_settings(&m);
+		return;
+	}
+#endif
 	if (id == UI_SET_LONG_PRESS_MS)
 		sim_rec.long_press_ms = (uint32_t)value;
 	else if (id == UI_SET_TOT_S)
@@ -2196,15 +2264,17 @@ bool ui_svc_vfo_get(uint8_t index, channel_t *out)
 	out->timeslot = o.ts;
 	return true;
 }
-uint16_t ui_svc_msg_count(void) { return n_inbox; }
-uint16_t ui_svc_msg_unread(void)
+// The DMR inbox as its message provider (ui_svc_data.c's ui_msg_dmr on the radio); APRS's is ui_aprs.c's own, on the
+// APRS stand-ins above
+static uint16_t sim_msg_count(void) { return n_inbox; }
+static uint16_t sim_msg_unread(void)
 {
 	uint16_t n = 0;
 	for (uint16_t i = 0; i < n_inbox; i++)
 		n += inbox[i].m.unread;
 	return n;
 }
-bool ui_svc_msg_get(uint16_t i, ui_msg_t *out)
+static bool sim_msg_get(uint16_t i, ui_msg_t *out)
 {
 	if (i >= n_inbox)
 		return false;
@@ -2212,8 +2282,8 @@ bool ui_svc_msg_get(uint16_t i, ui_msg_t *out)
 	out->age_ms = now_ms - inbox[i].at;
 	return true;
 }
-void ui_svc_msg_read(uint16_t i) { if (i < n_inbox) inbox[i].m.unread = false; }
-bool ui_svc_msg_delete(uint16_t i)
+static void sim_msg_read(uint16_t i) { if (i < n_inbox) inbox[i].m.unread = false; }
+static bool sim_msg_delete(uint16_t i)
 {
 	if (i >= n_inbox)
 		return false;
@@ -2221,18 +2291,23 @@ bool ui_svc_msg_delete(uint16_t i)
 	n_inbox--;
 	return true;
 }
-bool ui_svc_msg_send(uint32_t dst, bool group, const char *text)
+static bool sim_msg_send_to(uint32_t dst, const char *text)
 {
-	(void)group;
 	sim_rec.messages_sent++;
 	strncpy(sim_rec.last_text, text, sizeof sim_rec.last_text - 1);
 	sim_rec.tx_id = dst;
 	return true;
 }
-bool ui_svc_msg_reply(uint16_t i, const char *text)
+static bool sim_msg_send(const ui_msg_to_t *to, const char *text) { return sim_msg_send_to(to->to.id, text); }
+static bool sim_msg_reply(uint16_t i, const char *text)
 {
-	return i < n_inbox && ui_svc_msg_send(inbox[i].m.src, false, text);
+	return i < n_inbox && sim_msg_send_to(inbox[i].m.peer.id, text);
 }
+const ui_msg_provider_t ui_msg_dmr = {
+	.net = UI_NET_DMR, .caps = UI_MSG_CAP_STATION, .text_max = UI_MSG_TEXT_MAX, .new_row = TR_NONE,
+	.count = sim_msg_count, .unread = sim_msg_unread, .get = sim_msg_get, .read = sim_msg_read,
+	.del = sim_msg_delete, .send = sim_msg_send, .reply = sim_msg_reply,
+};
 bool ui_svc_aprs_send_message(const char *to, const char *text, uint8_t flags)
 {
 	if (to[0] == '\0')
@@ -2531,7 +2606,7 @@ static void add_message(uint32_t src, const char *text)
 	memmove(&inbox[1], &inbox[0], n_inbox * sizeof inbox[0]);
 	n_inbox++;
 	memset(&inbox[0], 0, sizeof inbox[0]);
-	inbox[0].m.src = src;
+	ui_addr_set_dmr(&inbox[0].m.peer, src, false);
 	inbox[0].m.unread = true;
 	inbox[0].at = now_ms;
 	strcpy(inbox[0].m.name, contact_name(src, false));
@@ -2539,12 +2614,706 @@ static void add_message(uint32_t src, const char *text)
 	ui_event_t ev;
 	memset(&ev, 0, sizeof ev);
 	ev.kind = UI_EV_MESSAGE;
-	ev.id = src;
-	ev.index = 0;
+	ui_addr_set_dmr(&ev.from, src, false);
+	ev.index = 0;	// the newest in the DMR inbox
 	strcpy(ev.name, inbox[0].m.name);
 	strncpy(ev.text, text, sizeof ev.text - 1);
 	ui_notify(&ev);
 }
+
+#if CONFIG_M17
+// ---------------- M17 (docs/ux/m17.md 19.1): the radio core's view, records and inbox, as the tokens set them ----------------
+// The radio-wide record (our callsign, the call text, the two choices), the signing key, the station keys, the last
+// call in full, the SMS inbox and the sends, the BER counters. The radio name stands in for our callsign only with the
+// "m17name" token (the radio core's rule, m17_own_addr), so a flow starts without one unless it says so
+
+static uint8_t m17_caps;		// ui_svc_m17_caps: m17caps:sig,enc,sms,bert
+static m17_wide_t m17_wide;
+static bool m17_name_ok;		// the radio name is our callsign where the record has none
+static bool m17_call_bad;		// the record holds a value that is no standard address (m17call:bad)
+static bool m17_sk, m17_sk_bad;		// our signing key: on file, damaged
+static uint8_t m17_enc;			// the channel's transmit encryption (m17enc:): M17_ENC_* << 4 | subtype, 0 none
+static bool m17_enc_key;		// ... and its key on file
+static radio_m17_details_t m17_det;
+static bool m17_det_have;
+static uint32_t m17_tail_until;		// a signed transmission's tail after PTT (SIGNING)
+#define SIM_M17_KEYS	4
+static struct { uint8_t addr[M17_ADDR_BYTES]; uint8_t q[33]; } m17_keys[SIM_M17_KEYS];
+static uint8_t m17_n_keys;
+#if CONFIG_M17_PACKET
+static radio_m17_sms_t m17_sms[RADIO_M17_SMS_INBOX];
+static uint8_t m17_n_sms;
+static uint8_t m17_sms_result, m17_sms_seq, m17_sms_to[M17_ADDR_BYTES];
+#endif
+#if CONFIG_M17_BERT
+static radio_m17_bert_t m17_bert;
+static bool m17_bert_mode;
+#endif
+
+static void m17_put(uint8_t a[M17_ADDR_BYTES], const char *text)
+{
+	uint64_t v = M17_ADDR_BROADCAST;
+	if (strcmp(text, "ALL") != 0 && !m17_addr_from_text(text, &v))
+		v = 0;
+	m17_addr_put(a, v);
+}
+
+// A token's text: "_" is a space
+static void m17_spaces(char *t)
+{
+	for (; *t; t++)
+		if (*t == '_')
+			*t = ' ';
+}
+
+bool radio_m17_fits(void) { return m17_radio; }
+
+// A stored channel's tag block (codeplug_tag.c): an M17 channel's as the editor saved it, its encryption the token's
+int codeplug_tag_params(uint16_t number, const channel_t *ch, uint8_t *buf, uint16_t cap)
+{
+	const ui_air_conv_t *c = sim_air(number);
+	if (ch->kind != CODEPLUG_KIND_M17 || cap < M17_CP_CONV_LEN)
+		return 0;
+	// as the real one: the stored value, the tag's head included, is read into buf before the block is moved to its
+	// start, so buf needs cap + CODEPLUG_TAG_HEAD_MAX bytes (a smaller one is a sanitizer's report here)
+	memset(buf, 0xA5, (size_t)cap + CODEPLUG_TAG_HEAD_MAX);
+	memset(buf, 0, M17_CP_CONV_LEN);
+	if (c != NULL)
+		memcpy(buf, c->m17, M17_CP_CONV_LEN);
+	else
+		buf[9] = (uint8_t)(m17_enc >> 4);
+	return M17_CP_CONV_LEN;
+}
+uint8_t ui_svc_m17_caps(void) { return m17_radio ? m17_caps : 0; }
+
+uint64_t m17_own_addr(bool *bad)
+{
+	uint64_t a = 0;
+	if (bad != NULL)
+		*bad = m17_call_bad;
+	if (m17_call_bad)
+		return 0;
+	if (m17_wide.src != 0)
+		return m17_wide.src;
+	return m17_name_ok && m17_addr_from_text(sim_names[UI_NAME_RADIO], &a) ? a : 0;
+}
+
+void m17_wide_load(m17_wide_t *out) { *out = m17_wide; }
+
+static void m17_refresh(void);
+
+bool ui_svc_m17_wide_set(const m17_wide_t *w)
+{
+	m17_wide = *w;
+	m17_call_bad = false;
+	sim_rec.codeplug_writes++;
+	m17_refresh();
+	return true;
+}
+
+// A stored M17 channel's block (the editor's), else the defaults; its destination where the channel is the one on view
+static void m17_block(uint8_t b[M17_CP_CONV_LEN])
+{
+	memset(b, 0, M17_CP_CONV_LEN);
+	const ui_air_conv_t *c = view.vfo ? NULL : sim_air(view.channel_number);
+	if (c != NULL)
+		memcpy(b, c->m17, M17_CP_CONV_LEN);
+	b[9] = (uint8_t)(m17_enc >> 4);
+}
+
+bool ui_svc_m17_write_block(const uint8_t *dst, bool enc_off)
+{
+	if (view.vfo || view.ch.kind != CODEPLUG_KIND_M17)
+		return false;
+	ui_air_conv_t c;
+	memset(&c, 0, sizeof c);
+	m17_block(c.m17);
+	if (dst != NULL)
+		memcpy(&c.m17[3], dst, M17_ADDR_BYTES);
+	if (enc_off) {
+		c.m17[9] = 0;
+		m17_enc = 0;
+	}
+	channel_t ch = view.ch;
+	ui_svc_write_channel_air(view.channel_number, &ch, view.channel_number, &c);
+	m17_refresh();
+	return true;
+}
+
+bool ui_svc_m17_talk_to(const uint8_t dst[M17_ADDR_BYTES], uint8_t life)
+{
+	static const uint8_t all[M17_ADDR_BYTES] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	if (view.ch.mode != RADIO_MODE_M17)
+		return false;
+	if (!view.vfo && view.ch.kind == CODEPLUG_KIND_M17)
+		return life == UI_TALK_PERMANENT && ui_svc_m17_write_block(dst, false);
+	radio_m17_settings_t m;
+	radio_m17_settings_next(&m);
+	memcpy(m.dst, life == UI_TALK_DEFAULT && !view.vfo ? all : dst, M17_ADDR_BYTES);
+	radio_req_m17_settings(&m);
+	return true;
+}
+
+// The settings as radio_task.c takes them: a request waits for the radio task's next turn (m17_take, each step), the
+// latest one in the single slot; radio_m17_settings_next reads it while it waits
+static radio_m17_settings_t m17_pend;
+static bool m17_pend_on;
+void radio_m17_settings(radio_m17_settings_t *out) { *out = m17_set; }
+void radio_m17_settings_next(radio_m17_settings_t *out) { *out = m17_pend_on ? m17_pend : m17_set; }
+void radio_req_m17_settings(const radio_m17_settings_t *s)
+{
+	m17_pend = *s;
+	m17_pend_on = true;
+}
+
+static void m17_take(void)
+{
+	if (!m17_pend_on)
+		return;
+	m17_pend_on = false;
+	m17_set = m17_pend;
+	if (m17_addr_get(m17_set.dst) == 0)
+		memset(m17_set.dst, 0xFF, sizeof m17_set.dst);
+	m17_refresh();
+}
+
+bool radio_m17_details(radio_m17_details_t *out)
+{
+	if (!m17_det_have)
+		return false;
+	*out = m17_det;
+	return true;
+}
+
+bool radio_m17_key(radio_m17_key_t *out)
+{
+	memset(out, 0, sizeof *out);
+	if (!m17_sk)
+		return CONFIG_M17_SIG != 0;
+	out->present = true;
+	out->checked = true;
+	out->damaged = m17_sk_bad;
+	for (uint8_t i = 0; i < sizeof out->q; i++)
+		out->q[i] = (uint8_t)(0xB9u + 37u * i);
+#if CONFIG_M17_SIG
+	uint8_t qc[33];
+	qc[0] = 2;
+	memcpy(qc + 1, out->q, 32);
+	m17_key_fp(qc, out->fp);
+#endif
+	return CONFIG_M17_SIG != 0;
+}
+
+// The keyed settings' change count (codeplug_kv.h): moves when a station key is added, as a write does
+static uint8_t sim_kv_serial;
+uint8_t codeplug_kv_serial(void) { return sim_kv_serial; }
+
+bool m17_station_key_at(uint16_t i, uint64_t *addr, uint8_t key[33])
+{
+	if (i >= m17_n_keys)
+		return false;
+	*addr = m17_addr_get(m17_keys[i].addr);
+	memcpy(key, m17_keys[i].q, 33);
+	return true;
+}
+
+// No trusted clock here: the key page says the time goes out as 0
+bool position_utc_now(uint32_t now, uint32_t max_age_ms, uint32_t *unix_s, uint8_t *src)
+{
+	(void)now;
+	(void)max_age_ms;
+	(void)unix_s;
+	(void)src;
+	return false;
+}
+
+#if CONFIG_M17_BERT
+void radio_m17_bert_get(radio_m17_bert_t *out) { *out = m17_bert; }
+void radio_req_m17_bert(uint8_t cmd)
+{
+	if (cmd == RADIO_REQ_M17_BERT_MODE_ON || cmd == RADIO_REQ_M17_BERT_MODE_OFF)
+		m17_bert_mode = cmd == RADIO_REQ_M17_BERT_MODE_ON;
+	if (cmd == RADIO_REQ_M17_BERT_MODE_ON && m17_bert.state == RADIO_M17_BERT_NO_SIGNAL)
+		m17_bert.state = RADIO_M17_BERT_SEARCHING;	// looking for the first BERT frame
+	if (cmd == RADIO_REQ_M17_BERT_RESET) {
+		m17_bert.bits = m17_bert.errs = m17_bert.frames = 0;
+		m17_bert.state = RADIO_M17_BERT_SEARCHING;
+	}
+	m17_refresh();
+}
+#endif
+
+#if CONFIG_M17_PACKET
+uint8_t radio_m17_sms_count(void) { return m17_n_sms; }
+uint8_t radio_m17_sms_unread(void)
+{
+	uint8_t n = 0;
+	for (uint8_t i = 0; i < m17_n_sms; i++)
+		n += m17_sms[i].unread;
+	return n;
+}
+bool radio_m17_sms_get(uint8_t i, radio_m17_sms_t *out)
+{
+	if (i >= m17_n_sms)
+		return false;
+	*out = m17_sms[i];
+	return true;
+}
+void radio_m17_sms_read(uint8_t i) { if (i < m17_n_sms) m17_sms[i].unread = false; }
+bool radio_m17_sms_delete(uint8_t i)
+{
+	if (i >= m17_n_sms)
+		return false;
+	memmove(&m17_sms[i], &m17_sms[i + 1], (m17_n_sms - i - 1u) * sizeof m17_sms[0]);
+	m17_n_sms--;
+	return true;
+}
+uint8_t radio_m17_sms_result(uint8_t *seq, uint8_t to[6])
+{
+	*seq = m17_sms_seq;
+	memcpy(to, m17_sms_to, M17_ADDR_BYTES);
+	return m17_sms_result;
+}
+
+// The newest first, the oldest dropped (the radio core's 4), cut on a character boundary at what it keeps
+static void m17_sms_add(const uint8_t peer[M17_ADDR_BYTES], const char *utf8, bool sent)
+{
+	if (m17_n_sms == RADIO_M17_SMS_INBOX)
+		m17_n_sms--;
+	memmove(&m17_sms[1], &m17_sms[0], m17_n_sms * sizeof m17_sms[0]);
+	m17_n_sms++;
+	radio_m17_sms_t *m = &m17_sms[0];
+	memset(m, 0, sizeof *m);
+	memcpy(m->peer, peer, sizeof m->peer);
+	m->unread = !sent;
+	m->sent = sent;
+	m->at_ms = now_ms;
+	size_t n = strlen(utf8);
+	m->cut = n > RADIO_M17_SMS_MAX;
+	if (m->cut) {
+		n = RADIO_M17_SMS_MAX;
+		while (n > 0 && ((uint8_t)utf8[n] & 0xC0u) == 0x80u)
+			n--;
+	}
+	memcpy(m->text, utf8, n);
+}
+
+bool radio_req_m17_sms(uint64_t dst, const char *utf8)
+{
+	uint8_t to[M17_ADDR_BYTES];
+	if (view.ch.mode != RADIO_MODE_M17 || m17_own_addr(NULL) == 0)
+		return false;
+	if (!view.vfo && view.ch.kind == CODEPLUG_KIND_M17 && m17_enc != 0)
+		return false;	// as the radio core: a channel set to encrypt sends no SMS (packet mode has no encryption)
+	m17_addr_put(to, dst);
+	sim_rec.messages_sent++;
+	snprintf(sim_rec.last_text, sizeof sim_rec.last_text, "%s", utf8);
+	memcpy(m17_sms_to, to, sizeof to);
+	m17_sms_add(to, utf8, true);
+	return true;
+}
+#endif
+
+// The view's M17 part from the settings in force (the VFO's, a channel switched to M17's) or the stored block, our
+// callsign, what PTT sends
+static void m17_refresh(void)
+{
+	radio_m17_view_t *m = &view.m17;
+	uint32_t call = m->flags & (RADIO_M17_RX | RADIO_M17_PLAYED | RADIO_M17_ENC | RADIO_M17_LATE | RADIO_M17_LSF |
+		RADIO_M17_1600 | RADIO_M17_TEXT | RADIO_M17_GNSS | RADIO_M17_PACKET | RADIO_M17_SIGNED | RADIO_M17_TO_US |
+		RADIO_M17_DATA | RADIO_M17_BERT);
+	m->flags = call;
+	if (view.ch.mode != RADIO_MODE_M17)
+		return;
+	m->flags |= RADIO_M17_ON;
+	bool stored = !view.vfo && view.ch.kind == CODEPLUG_KIND_M17;
+	uint8_t b[M17_CP_CONV_LEN];
+	m17_block(b);
+	bool r1600 = stored ? (b[0] & M17_CP_1600) != 0 : m17_set.mode1600;
+	uint8_t sq = stored ? M17_CP_SQUELCH(b[0]) : m17_set.squelch;
+	m->tx_can = stored ? (uint8_t)(b[1] & 15u) : m17_set.tx_can;
+	m->rx_can = sq == M17_SQUELCH_ANY ? (uint8_t)M17_CAN_ANY : stored ? (uint8_t)(b[1] & 15u) : m17_set.can;
+	if (stored)
+		memcpy(m->talk, b + 3, M17_ADDR_BYTES);
+	else
+		memcpy(m->talk, m17_set.dst, M17_ADDR_BYTES);
+	if (m17_addr_get(m->talk) == 0)
+		memset(m->talk, 0xFF, M17_ADDR_BYTES);
+	bool bad;
+	m17_addr_put(m->own, m17_own_addr(&bad));
+	if (m17_addr_get(m->own) == 0)
+		m->flags |= bad ? RADIO_M17_CALL_BAD : RADIO_M17_NO_CALL;
+	if (r1600)
+		m->flags |= RADIO_M17_TX_1600;
+	bool enc_built = (m17_caps & UI_M17_ENC) != 0;
+	if (stored && m17_enc != 0 && enc_built && m17_enc_key) {
+		m->flags |= RADIO_M17_TX_ENC;
+		m->tx_enc = m17_enc;
+	} else {
+		m->tx_enc = 0;
+	}
+	if ((m17_caps & UI_M17_SIG) && m17_wide.sign && m17_sk && !m17_sk_bad)
+		m->flags |= RADIO_M17_TX_SIGN;
+	if (m17_det_have)
+		m->flags |= RADIO_M17_HAS_DETAILS;
+#if CONFIG_M17_BERT
+	if (m17_bert_mode)
+		m->flags |= RADIO_M17_BERT_MODE;
+#endif
+	m->tot_s = (m->flags & (RADIO_M17_TX_ENC | RADIO_M17_TX_SIGN)) && (view.tot_s == 0 || view.tot_s > 1310) ? 1310 :
+		view.tot_s;
+	changed();
+}
+
+// PTT on M17: the radio core's refusals in their order (m17.md 17.3), else a stream; true when it decided
+static bool m17_ptt(bool down)
+{
+	radio_m17_view_t *m = &view.m17;
+	if (view.ch.mode != RADIO_MODE_M17)
+		return false;
+	if (!down) {
+		if (view.state == RS_TX && (m->flags & RADIO_M17_TX_SIGN)) {
+			m->tx_phase = M17_TXP_TAIL;	// the five tail frames: SIGNING, then the end
+			m17_tail_until = now_ms + 400u;
+			changed();
+			return true;
+		}
+		m->tx_phase = M17_TXP_IDLE;
+		return false;
+	}
+	m17_refresh();
+	bool stored = !view.vfo && view.ch.kind == CODEPLUG_KIND_M17;
+	uint8_t deny = (m->flags & RADIO_M17_NO_CALL) ? TXDENY_NO_CALLSIGN : (m->flags & RADIO_M17_CALL_BAD) ?
+		TXDENY_CALLSIGN_BAD : stored && m17_enc != 0 && !(m17_caps & UI_M17_ENC) ? TXDENY_ENC_NOT_BUILT :
+		stored && m17_enc != 0 && !m17_enc_key ? TXDENY_ENC_NO_KEY :
+		(m17_caps & UI_M17_SIG) && m17_wide.sign && !m17_sk ? TXDENY_SIG_NO_KEY :
+		(m17_caps & UI_M17_SIG) && m17_wide.sign && m17_sk_bad ? TXDENY_SIG_KEY_BAD : TXDENY_NONE;
+	if (deny == TXDENY_NONE)
+		return false;
+	view.state = RS_TX_DENIED;
+	view.tx_deny = deny;
+	changed();
+	return true;
+}
+
+static void m17_step(void)
+{
+	if (m17_tail_until && now_ms >= m17_tail_until) {
+		m17_tail_until = 0;
+		view.m17.tx_phase = M17_TXP_IDLE;
+		view.state = RS_IDLE;
+		changed();
+	}
+}
+
+// A call heard: m17rx:<src>,<dst>[,opt...] (docs/ux/m17.md 19.1)
+static bool m17_rx(char *arg, char *err, size_t len)
+{
+	radio_m17_view_t *m = &view.m17;
+	char *save = NULL, *tok = strtok_r(arg, ",", &save);
+	char *dst = tok != NULL ? strtok_r(NULL, ",", &save) : NULL;
+	if (tok == NULL || dst == NULL) {
+		snprintf(err, len, "bad m17rx");
+		return false;
+	}
+	memset(&m17_det, 0, sizeof m17_det);
+	m17_spaces(tok);
+	m17_spaces(dst);
+	m17_put(m->src, tok);
+	m17_put(m->dst, dst);
+	memcpy(m->orig, m->src, sizeof m->orig);
+	memset(m->via, 0, sizeof m->via);
+	uint32_t f = RADIO_M17_RX | RADIO_M17_LSF | RADIO_M17_PLAYED;
+	uint8_t why = M17_WHY_NONE, enc = 0;
+	m->can = m->rx_can == M17_CAN_ANY ? m->tx_can : m->rx_can;
+	m17_det.voice = M17_DATA_VOICE;
+	for (char *o = strtok_r(NULL, ",", &save); o != NULL; o = strtok_r(NULL, ",", &save)) {
+		if (strcmp(o, "s") == 0) {
+			f |= RADIO_M17_SIGNED;
+		} else if (strcmp(o, "e") == 0 || strcmp(o, "x") == 0) {
+			f = (f & ~RADIO_M17_PLAYED) | RADIO_M17_ENC;
+			why = o[0] == 'e' ? M17_WHY_ENC : M17_WHY_SCR;
+			enc = (uint8_t)((o[0] == 'e' ? M17_ENC_AES : M17_ENC_SCRAMBLER) << 4 | 1u);
+		} else if (strcmp(o, "p") == 0) {
+			f |= RADIO_M17_ENC;
+			enc = (uint8_t)(m17_enc != 0 ? m17_enc : M17_ENC_SCRAMBLER << 4 | 1u);
+		} else if (strcmp(o, "l") == 0) {
+			f = (f & ~RADIO_M17_LSF) | RADIO_M17_LATE;
+		} else if (strncmp(o, "can=", 4) == 0) {
+			m->can = (uint8_t)atoi(o + 4);
+			if (m->rx_can != M17_CAN_ANY && m->can != m->rx_can) {
+				f &= ~RADIO_M17_PLAYED;
+				why = M17_WHY_CAN;
+			}
+		} else if (strcmp(o, "d") == 0) {
+			f = (f & ~RADIO_M17_PLAYED) | RADIO_M17_DATA;
+			why = M17_WHY_DATA;
+			m17_det.voice = M17_DATA_DATA;
+		} else if (strcmp(o, "r16") == 0) {
+			f |= RADIO_M17_1600;
+			m17_det.voice = M17_DATA_VOICE_DATA;
+		} else if (strncmp(o, "t=", 2) == 0) {
+			f |= RADIO_M17_TEXT;
+			m17_spaces(o + 2);
+			snprintf(m17_det.text, sizeof m17_det.text, "%s", o + 2);
+		} else if (strncmp(o, "g=", 2) == 0) {
+			char *lon = strtok_r(NULL, ",", &save);
+			f |= RADIO_M17_GNSS;
+			m17_det.gnss = true;
+			m17_det.lat_e7 = (int32_t)(atof(o + 2) * 1e7);
+			m17_det.lon_e7 = lon != NULL ? (int32_t)(atof(lon) * 1e7) : 0;
+		} else if (strncmp(o, "o=", 2) == 0) {
+			m17_spaces(o + 2);
+			m17_put(m->orig, o + 2);
+			memcpy(m->via, m->src, sizeof m->via);
+		} else if (strncmp(o, "r=", 2) == 0) {
+			m17_spaces(o + 2);
+			m17_put(m->via, o + 2);
+		}
+	}
+	bool known = false;
+	for (uint8_t i = 0; i < m17_n_keys; i++)
+		known |= memcmp(m17_keys[i].addr, m->orig, M17_ADDR_BYTES) == 0;
+	m->sig = (f & RADIO_M17_SIGNED) ? RADIO_M17_SIG_RUNNING : known ? RADIO_M17_SIG_UNSIGNED_KNOWN : RADIO_M17_SIG_NONE;
+	if (m17_addr_get(m->own) != 0 && memcmp(m->dst, m->own, M17_ADDR_BYTES) == 0)
+		f |= RADIO_M17_TO_US;
+	m->flags = (m->flags & ~(RADIO_M17_RX | RADIO_M17_PLAYED | RADIO_M17_ENC | RADIO_M17_LATE | RADIO_M17_LSF |
+		RADIO_M17_1600 | RADIO_M17_TEXT | RADIO_M17_GNSS | RADIO_M17_PACKET | RADIO_M17_SIGNED | RADIO_M17_TO_US |
+		RADIO_M17_DATA | RADIO_M17_BERT)) | f | RADIO_M17_HAS_DETAILS;
+	m->why = why;
+	m->enc = enc;
+	m->end_ms = 0;
+	m->rssi_dbm = -71;
+	m->call_seq++;
+	memcpy(m17_det.src, m->src, 6);
+	memcpy(m17_det.dst, m->dst, 6);
+	memcpy(m17_det.orig, m->orig, 6);
+	memcpy(m17_det.via, m->via, 6);
+	m17_det.can = m->can;
+	m17_det.enc = enc;
+	m17_det.played = (f & RADIO_M17_PLAYED) != 0;
+	m17_det.sig = m->sig;
+	m17_det.rssi_dbm = -71;
+	m17_det_have = true;
+	view.state = RS_RX;
+	view.rssi_dbm = -71;
+	changed();
+	advance(300);
+	return true;
+}
+
+// The call ends: m17rxend[:<verdict>]; into the heard list as the radio core puts it
+static bool m17_rx_end(const char *arg)
+{
+	radio_m17_view_t *m = &view.m17;
+	uint8_t sig = m->sig;
+	if (arg != NULL) {
+		sig = strcmp(arg, "ok") == 0 ? RADIO_M17_SIG_VALID : strcmp(arg, "bad") == 0 ? RADIO_M17_SIG_INVALID :
+			strcmp(arg, "nokey") == 0 ? RADIO_M17_SIG_NO_KEY : strcmp(arg, "late") == 0 ? RADIO_M17_SIG_LATE :
+			strcmp(arg, "lost") == 0 ? RADIO_M17_SIG_LOST : strcmp(arg, "old") == 0 ? RADIO_M17_SIG_OLD :
+			strcmp(arg, "replay") == 0 ? RADIO_M17_SIG_REPLAY : strncmp(arg, "by=", 3) == 0 ?
+			RADIO_M17_SIG_SIGNER_DIFFERS : sig;
+		if (sig != RADIO_M17_SIG_NO_KEY && sig != m->sig) {
+			memcpy(m17_det.signer, m->orig, 6);
+			memcpy(m17_det.sig_dst, m->dst, 6);
+		}
+		if (sig == RADIO_M17_SIG_SIGNER_DIFFERS) {
+			char who[16];
+			snprintf(who, sizeof who, "%s", arg + 3);
+			m17_spaces(who);
+			m17_put(m17_det.signer, who);
+		}
+	} else if (sig == RADIO_M17_SIG_RUNNING) {
+		sig = RADIO_M17_SIG_CHECKING;
+	}
+	m->sig = sig;
+	m17_det.sig = sig;
+	m->flags &= ~(RADIO_M17_RX | RADIO_M17_PLAYED);
+	m->end_ms = now_ms;
+	m17_det.end_ms = now_ms;
+	m->meta_seq++;
+	view.state = RS_IDLE;
+	view.last_rx_ms = now_ms;
+#if CONFIG_HEARD_LIST
+	radio_heard_t h;
+	memset(&h, 0, sizeof h);
+	h.mode = RADIO_MODE_M17;
+	h.flags = RADIO_HEARD_ADDR | (sig == RADIO_M17_SIG_VALID ? RADIO_HEARD_SIG_OK : 0) |
+		(sig == RADIO_M17_SIG_INVALID || sig == RADIO_M17_SIG_SIGNER_DIFFERS ? RADIO_HEARD_SIG_BAD : 0) |
+		((m->flags & RADIO_M17_ENC) ? RADIO_HEARD_ENC : 0) | ((m->flags & RADIO_M17_PACKET) ? RADIO_HEARD_DATA : 0);
+	if (m17_det.gnss) {
+		h.flags |= RADIO_HEARD_GNSS;
+		h.lat_e7 = m17_det.lat_e7;
+		h.lon_e7 = m17_det.lon_e7;
+	}
+	memcpy(h.addr, m->orig, 6);
+	memcpy(h.to, m->dst, 6);
+	h.rssi_dbm = m->rssi_dbm;
+	radio_heard_add(&h);
+#endif
+	changed();
+	advance(300);
+	return true;
+}
+
+// M17's tokens: true when t is one, *ok its outcome
+static bool m17_token(const char *t, char *arg, char *err, size_t len, bool *ok)
+{
+	*ok = true;
+	if (strcmp(t, "m17") == 0) {
+		m17_radio = true;
+		m17_refresh();
+	} else if (strcmp(t, "m17caps") == 0) {
+		m17_caps = 0;
+		for (char *p = arg != NULL ? strtok(arg, ",") : NULL; p != NULL; p = strtok(NULL, ","))
+			m17_caps |= strcmp(p, "sig") == 0 ? UI_M17_SIG : strcmp(p, "enc") == 0 ? UI_M17_ENC :
+				strcmp(p, "sms") == 0 ? UI_M17_SMS : strcmp(p, "bert") == 0 ? UI_M17_BERT : 0;
+		m17_refresh();
+	} else if (strcmp(t, "m17call") == 0) {	// our callsign; none, or bad: a value that is no callsign
+		m17_call_bad = arg != NULL && strcmp(arg, "bad") == 0;
+		m17_wide.src = 0;
+		if (arg != NULL && !m17_call_bad)
+			(void)m17_addr_from_text(arg, &m17_wide.src);
+		m17_refresh();
+	} else if (strcmp(t, "m17name") == 0) {
+		m17_name_ok = true;
+		m17_refresh();
+	} else if (strcmp(t, "m17text") == 0 && arg != NULL) {	// the record's call text as another tool stored it ('_': a
+		m17_spaces(arg);					// space; bytes as they are, UTF-8 or not)
+		size_t n = strlen(arg);
+		m17_wide.text_len = (uint8_t)(n > M17_TEXT_MAX ? M17_TEXT_MAX : n);
+		memcpy(m17_wide.text, arg, m17_wide.text_len);
+	} else if (strcmp(t, "m17sign") == 0) {	// Sign M17 calls on (the radio-wide record)
+		m17_wide.sign = true;
+		m17_refresh();
+	} else if (strcmp(t, "m17rx") == 0 && arg != NULL) {
+		*ok = m17_rx(arg, err, len);
+	} else if (strcmp(t, "m17rxend") == 0) {
+		*ok = m17_rx_end(arg);
+	} else if (strcmp(t, "m17key") == 0 && arg != NULL && m17_n_keys < SIM_M17_KEYS) {
+		m17_put(m17_keys[m17_n_keys].addr, arg);
+		for (uint8_t i = 0; i < 33; i++)
+			m17_keys[m17_n_keys].q[i] = (uint8_t)(i == 0 ? 2 : arg[i % strlen(arg)] * (i + 3u));
+		m17_n_keys++;
+		sim_kv_serial++;
+	} else if (strcmp(t, "m17sk") == 0) {
+		m17_sk = true;
+		m17_sk_bad = arg != NULL && strcmp(arg, "bad") == 0;
+		m17_refresh();
+	} else if (strcmp(t, "m17enc") == 0 && arg != NULL) {	// the channel encrypts, its key on file
+		m17_enc = strncmp(arg, "scr", 3) == 0 ? (uint8_t)(M17_ENC_SCRAMBLER << 4 | (arg[3] == '8' ? 0 :
+			arg[3] == '2' ? 2 : 1)) : (uint8_t)(M17_ENC_AES << 4 | (strcmp(arg, "aes256") == 0 ? 2 : 0));
+		m17_enc_key = true;
+		m17_refresh();
+	} else if (strcmp(t, "m17nokey") == 0) {	// the channel's key removed (a CPS write)
+		m17_enc_key = false;
+		m17_refresh();
+#if CONFIG_M17_PACKET
+	} else if (strcmp(t, "m17msg") == 0 && arg != NULL) {
+		char *text = strchr(arg, ',');
+		uint8_t peer[M17_ADDR_BYTES];
+		if (text == NULL) {
+			snprintf(err, len, "bad m17msg");
+			*ok = false;
+			return true;
+		}
+		*text++ = '\0';
+		m17_put(peer, arg);
+		m17_spaces(text);
+		m17_sms_add(peer, text, false);
+		advance(200);
+	} else if (strcmp(t, "m17sent") == 0 && arg != NULL) {
+		m17_sms_result = strcmp(arg, "ok") == 0 ? RADIO_M17_SMS_SENT : RADIO_M17_SMS_BUSY;
+		m17_sms_seq++;
+		advance(200);
+	} else if (strcmp(t, "m17pkt") == 0 && arg != NULL) {	// another packet heard: m17pkt:<src>,<type>
+		char *type = strchr(arg, ',');
+		if (type == NULL) {
+			snprintf(err, len, "bad m17pkt");
+			*ok = false;
+			return true;
+		}
+		*type++ = '\0';
+		memset(&m17_det, 0, sizeof m17_det);
+		m17_put(view.m17.orig, arg);
+		memcpy(view.m17.src, view.m17.orig, 6);
+		memset(view.m17.dst, 0xFF, 6);
+		memcpy(m17_det.orig, view.m17.orig, 6);
+		memcpy(m17_det.src, view.m17.orig, 6);
+		memcpy(m17_det.dst, view.m17.dst, 6);
+		m17_det.packet = true;
+		m17_det.pkt_type = (uint32_t)atoi(type);
+		m17_det.pkt_len = 120;
+		// a packet is never signed: no verdict, or "not signed" from a station whose key is on file (the radio
+		// core's call_view)
+		bool known = false;
+		for (uint8_t i = 0; i < m17_n_keys; i++)
+			known |= memcmp(m17_keys[i].addr, view.m17.orig, M17_ADDR_BYTES) == 0;
+		view.m17.sig = known ? RADIO_M17_SIG_UNSIGNED_KNOWN : RADIO_M17_SIG_NONE;
+		m17_det.sig = view.m17.sig;
+		m17_det.end_ms = now_ms;
+		m17_det_have = true;
+		view.m17.flags = (view.m17.flags & ~RADIO_M17_RX) | RADIO_M17_PACKET | RADIO_M17_LSF | RADIO_M17_HAS_DETAILS;
+		view.m17.end_ms = now_ms;
+		view.m17.call_seq++;
+		changed();
+		advance(300);
+#endif
+#if CONFIG_M17_BERT
+	} else if (strcmp(t, "m17bert") == 0 && arg != NULL) {	// m17bert:<bits>,<errors>,<search|lock|lost|none>
+		char state[8] = "";
+		unsigned bits = 0, errs = 0;
+		if (sscanf(arg, "%u,%u,%7s", &bits, &errs, state) != 3) {
+			snprintf(err, len, "bad m17bert");
+			*ok = false;
+			return true;
+		}
+		m17_bert.bits = bits;
+		m17_bert.errs = errs;
+		m17_bert.frames = bits / 196u;
+		m17_bert.rssi_dbm = -71;
+		m17_bert.state = strcmp(state, "lock") == 0 ? RADIO_M17_BERT_LOCKED : strcmp(state, "lost") == 0 ?
+			RADIO_M17_BERT_LOST : strcmp(state, "search") == 0 ? RADIO_M17_BERT_SEARCHING :
+			RADIO_M17_BERT_NO_SIGNAL;
+		changed();
+		advance(200);
+#endif
+	} else {
+		return false;
+	}
+	advance(100);	// the screen shows the change (a state token's, as the radio core's next view)
+	return true;
+}
+
+static void m17_reset(void)
+{
+	ui_svc_setting_set(UI_SET_M17_CAN, 0);	// the settings flows change: each flow starts from the defaults
+	ui_svc_setting_set(UI_SET_M17_VOICE, 0);
+	ui_svc_setting_set(UI_SET_M17_SIGN, 0);
+	ui_svc_setting_set(UI_SET_M17_GNSS, 0);
+	m17_radio = m17_name_ok = m17_call_bad = m17_sk = m17_sk_bad = m17_enc_key = m17_det_have = false;
+	m17_caps = m17_enc = m17_n_keys = 0;
+	sim_kv_serial++;
+	memset(&m17_wide, 0, sizeof m17_wide);
+	memset(&m17_set, 0, sizeof m17_set);
+	memset(m17_set.dst, 0xFF, sizeof m17_set.dst);
+	m17_pend_on = false;
+	memset(&m17_det, 0, sizeof m17_det);
+	m17_tail_until = 0;
+	memset(&view.m17, 0, sizeof view.m17);
+#if CONFIG_M17_PACKET
+	m17_n_sms = 0;
+	m17_sms_result = m17_sms_seq = 0;
+#endif
+#if CONFIG_M17_BERT
+	memset(&m17_bert, 0, sizeof m17_bert);
+	m17_bert_mode = false;
+#endif
+#if CONFIG_HEARD_LIST
+	radio_heard_clear();
+#endif
+}
+#endif
 
 // ---------------- time, keys, scripts ----------------
 
@@ -2560,6 +3329,10 @@ void sim_set_tick_hook(void (*hook)(uint32_t now_ms)) { tick_hook = hook; }
 static void step(void)
 {
 	now_ms += TICK_MS;
+#if CONFIG_M17
+	m17_take();	// the radio task's turn: the latest settings request
+	m17_step();
+#endif
 	if (view.state == RS_TX)
 		view.tx_elapsed_ms += TICK_MS;
 	if (ptt_up_at && now_ms >= ptt_up_at) {
@@ -2588,7 +3361,7 @@ static void step(void)
 		memset(&ev, 0, sizeof ev);
 		ev.kind = UI_EV_RADIO_CHECK;
 		ev.ok = true;
-		ev.id = check_id;
+		ui_addr_set_dmr(&ev.from, check_id, false);
 		ev.ms = 800;
 		strcpy(ev.name, contact_name(check_id, false));
 		ui_notify(&ev);
@@ -2731,6 +3504,11 @@ void sim_reset(const sim_geom_t *g, sim_map_t map)
 	bcast_rx = false;
 	p25_radio = false;
 	nxdn_radio = false;
+#if CONFIG_M17
+	m17_reset();
+#else
+	m17_radio = false;
+#endif
 #if CONFIG_NXDN
 	memset(&view.nxdn, 0, sizeof view.nxdn);
 	view.nxdn.flags = RADIO_NXDN_9600;	// the NXDN settings' defaults (radio_nxdn.c): 9600 bit/s, RAN 1, group 1
@@ -2944,12 +3722,38 @@ static bool check(const char *kv, char *err, size_t len)
 #endif
 	else if (strcmp(key, "mode") == 0) snprintf(got, sizeof got, "%s", view.ch.mode == RADIO_MODE_DMR ? "dmr" :
 								     view.ch.mode == RADIO_MODE_P25 ? "p25" :
-								     view.ch.mode == RADIO_MODE_NXDN ? "nxdn" : "fm");
+								     view.ch.mode == RADIO_MODE_NXDN ? "nxdn" :
+								     view.ch.mode == RADIO_MODE_M17 ? "m17" : "fm");
 	else if (strcmp(key, "tx") == 0) snprintf(got, sizeof got, "%u", (unsigned)sim_rec.tx_count);
 	else if (strcmp(key, "txid") == 0) snprintf(got, sizeof got, "%u", (unsigned)sim_rec.tx_id);
 	else if (strcmp(key, "txpriv") == 0) snprintf(got, sizeof got, "%u", sim_rec.tx_private);
+#if CONFIG_M17
+	else if (strcmp(key, "talk") == 0 && view.ch.mode == RADIO_MODE_M17) {	// the destination's text ("ALL": broadcast)
+		char t[M17_ADDR_TEXT];
+		if (m17_addr_text(m17_addr_get(view.m17.talk), t) == M17_ADDR_KIND_BROADCAST)
+			strcpy(t, "ALL");
+		snprintf(got, sizeof got, "%s", t);
+	}
+#endif
 	else if (strcmp(key, "talk") == 0) snprintf(got, sizeof got, "%u", (unsigned)view.dmr.target_id);
 	else if (strcmp(key, "vol") == 0) snprintf(got, sizeof got, "%d", (int)ui_svc_setting_get(UI_SET_VOLUME));
+#if CONFIG_M17
+	else if (strcmp(key, "m17set") == 0)	// the M17 settings: CAN, voice (1: 1600), sign, send position
+		snprintf(got, sizeof got, "%d,%d,%d,%d", (int)ui_svc_setting_get(UI_SET_M17_CAN),
+			 (int)ui_svc_setting_get(UI_SET_M17_VOICE), (int)ui_svc_setting_get(UI_SET_M17_SIGN),
+			 (int)ui_svc_setting_get(UI_SET_M17_GNSS));
+	else if (strcmp(key, "m17ram") == 0) {	// the radio's M17 settings in force: CAN, TX CAN, 1600, squelch, destination
+		char t[M17_ADDR_TEXT];
+		if (m17_addr_text(m17_addr_get(m17_set.dst), t) == M17_ADDR_KIND_BROADCAST)
+			strcpy(t, "ALL");
+		snprintf(got, sizeof got, "%u,%u,%u,%u,%s", m17_set.can, m17_set.tx_can, m17_set.mode1600, m17_set.squelch, t);
+	}
+	else if (strcmp(key, "m17text") == 0)	// the record's call text, its bytes as stored
+		snprintf(got, sizeof got, "%.*s", (int)m17_wide.text_len, (const char *)m17_wide.text);
+#endif
+#if CONFIG_M17_BERT
+	else if (strcmp(key, "m17bertmode") == 0) snprintf(got, sizeof got, "%u", m17_bert_mode);	// the engine's BERT mode
+#endif
 	else if (strcmp(key, "locked") == 0) snprintf(got, sizeof got, "%u", s.locked);
 	else if (strcmp(key, "gps") == 0) snprintf(got, sizeof got, "%u", s.gps);	// UI_GPS_*: the strip's icon
 	else if (strcmp(key, "volhold") == 0) snprintf(got, sizeof got, "%u", vol_held);
@@ -3103,6 +3907,22 @@ static bool run_token(char *t, char *err, size_t len)
 		*arg++ = 0;
 	if (strcmp(t, "long") == 0)
 		return press(arg, true, err, len);
+#if CONFIG_M17
+	bool m17_ok;
+	if (m17_token(t, arg, err, len, &m17_ok))
+		return m17_ok;
+#endif
+	if (strcmp(t, "push") == 0 && arg != NULL) {	// a screen by its name (an empty state no key reaches)
+		for (uint8_t i = 0; i < SCR_COUNT; i++) {
+			if (ui_scr[i] != NULL && strcmp(ui_scr[i]->name, arg) == 0) {
+				ui_push(i, 0);
+				advance(200);
+				return true;
+			}
+		}
+		snprintf(err, len, "no screen %s", arg);
+		return false;
+	}
 	if (strcmp(t, "ptt") == 0) {
 		uint32_t ms = arg != NULL ? (uint32_t)atoi(arg) : 1000u;
 		if (!on_map(ACT_PTT, false)) {
@@ -3430,7 +4250,7 @@ static bool run_token(char *t, char *err, size_t len)
 	}
 	if (strcmp(t, "dlmode") == 0 && arg != NULL) {	// the debug link sets the mode (DMR_FIELDS): fm, dmr, p25 or nxdn
 		ui_svc_mode(strcmp(arg, "p25") == 0 ? RADIO_MODE_P25 : strcmp(arg, "nxdn") == 0 ? RADIO_MODE_NXDN :
-			    strcmp(arg, "dmr") == 0 ? RADIO_MODE_DMR : RADIO_MODE_FM);
+			    strcmp(arg, "m17") == 0 ? RADIO_MODE_M17 : strcmp(arg, "dmr") == 0 ? RADIO_MODE_DMR : RADIO_MODE_FM);
 		advance(100);
 		return true;
 	}
@@ -3462,8 +4282,8 @@ static bool run_token(char *t, char *err, size_t len)
 		sim_rec.codeplug_writes--;	// the codeplug as found, not a write of the UI's
 		return true;
 	}
-#if CONFIG_P25 || CONFIG_NXDN
-	if (strcmp(t, "chkind") == 0) {		// stored channel n is a P25 or NXDN channel: its tag, over a stand-in record
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
+	if (strcmp(t, "chkind") == 0) {		// stored channel n is a P25, NXDN or M17 channel: its tag, over a stand-in record
 		unsigned n = 0;
 		char k[8] = "";
 		channel_t c;
@@ -3479,13 +4299,16 @@ static bool run_token(char *t, char *err, size_t len)
 				if (*ch == '_')
 					*ch = ' ';
 		}
-		c.kind = strcmp(k, "nxdn") == 0 ? CODEPLUG_KIND_NXDN : CODEPLUG_KIND_P25;
+		c.kind = strcmp(k, "nxdn") == 0 ? CODEPLUG_KIND_NXDN : strcmp(k, "m17") == 0 ? CODEPLUG_KIND_M17 :
+			CODEPLUG_KIND_P25;
 		c.mode = RADIO_MODE_DMR;
 		if (sim_write((uint16_t)n, &c) < 0) {
 			snprintf(err, len, "no room for %s", t);
 			return false;
 		}
 		sim_rec.codeplug_writes--;	// the codeplug as found, not a write of the UI's
+		if (c.kind == CODEPLUG_KIND_M17 && !view.vfo && view.channel_number == n)
+			load_channel();		// the channel on view: as the radio core takes it
 		return true;
 	}
 #endif
@@ -3592,9 +4415,9 @@ static bool run_token(char *t, char *err, size_t len)
 		ui_event_t ev;
 		memset(&ev, 0, sizeof ev);
 		ev.kind = t[0] == 'a' ? UI_EV_CALL_ALERT : t[0] == 'e' ? UI_EV_EMERGENCY : UI_EV_PRIVATE_CALL;
-		ev.id = (uint32_t)atoi(arg);
+		ui_addr_set_dmr(&ev.from, (uint32_t)atoi(arg), false);
 		const char *name = strchr(arg, ',');
-		strncpy(ev.name, name != NULL ? name + 1 : contact_name(ev.id, false), sizeof ev.name - 1);
+		strncpy(ev.name, name != NULL ? name + 1 : contact_name(ev.from.id, false), sizeof ev.name - 1);
 		for (char *p = ev.name; *p; p++)
 			if (*p == '_')
 				*p = ' ';
@@ -3610,9 +4433,9 @@ static bool run_token(char *t, char *err, size_t len)
 		zs_sim.src = (uint32_t)atoi(arg);
 		zs_sim.serial++;
 		ev.kind = UI_EV_ZONE_OFFER;
-		ev.id = zs_sim.src;
+		ui_addr_set_dmr(&ev.from, zs_sim.src, false);
 		ev.index = zs_sim.channel;
-		strcpy(ev.name, contact_name(ev.id, false));
+		strcpy(ev.name, contact_name(ev.from.id, false));
 		strcpy(ev.text, zs_sim.channel ? "Channel Club rpt" : "Zone Club net, 6 channels");
 		ui_notify(&ev);
 		advance(200);

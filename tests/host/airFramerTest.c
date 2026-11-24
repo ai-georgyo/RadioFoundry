@@ -516,6 +516,167 @@ static void testShortSync(void)
 	}
 }
 
+// M17's geometry (docs/spec/m17.md 1): 192-symbol frames each opened by an 8-symbol sync of outer symbols, the
+// first behind a preamble whose last 16 symbols with the LSF sync are a START_ONLY pattern (frame_at 16). The head
+// hook can't confirm a sync from a field right behind it (the interleaver spreads the LICH over the frame): at 24
+// symbols it says end (EoT) or asks again at 192, where it checks the whole frame (here a CRC of the frame's kind
+// and payload in its last 16 symbols, standing in for the mode's). A chance match in the payload before the call is
+// refused at 192 and replayed into the preamble behind it; a sync 1 symbol from two patterns goes to the first listed
+enum { M17_PRE_LSF = 0x10, M17_PRE_BERT, M17_STREAM, M17_PACKET, M17_LSF, M17_BERT };
+static const uint8_t M17_EOT[2] = { 0x55, 0x5D };
+static uint16_t m17_eots, m17_agains;
+
+static uint32_t m17_crc(const uint8_t *d, uint16_t n, uint8_t kind)
+{
+	uint32_t c = 0xFFFFFFFFu ^ kind;
+
+	for (uint16_t i = 0; i < n; i++) {
+		c ^= d[i];
+		for (uint8_t b = 0; b < 8; b++)
+			c = (c >> 1) ^ (0xEDB88320u & -(c & 1u));
+	}
+	return c;
+}
+
+static uint8_t m17_kind(uint8_t id)
+{
+	return id == M17_PRE_LSF ? M17_LSF : id == M17_PRE_BERT ? M17_BERT : id;
+}
+
+static uint16_t m17_head(const air_frame_t *f, void *ctx)
+{
+	uint8_t d[192];
+	uint32_t c = 0;
+	uint8_t eot_errs = 0;
+
+	(void)ctx;
+	nhead++;
+	if (f->nsyms < 192) {
+		// EoT where a sync was due: 555D three times, within a few symbols
+		for (uint16_t i = 0; i < 24; i++)
+			eot_errs += air_sym_get(f->hard, i) != air_sym_get(M17_EOT, (uint16_t)(i & 7));
+		if (eot_errs <= 3) {
+			m17_eots++;
+			return 0;
+		}
+		m17_agains++;
+		return AIR_HEAD_AGAIN | 192;
+	}
+	for (uint16_t i = 0; i < 192; i++)
+		d[i] = air_sym_get(f->hard, i);
+	for (uint8_t i = 0; i < 16; i++)
+		c = c << 2 | d[176 + i];
+	return c == m17_crc(d + 8, 168, m17_kind(f->sync_id)) ? 192 : 0;
+}
+
+// One frame of kind (sync id) at the stream's end, sync symbols `sync` (the pattern, or a corrupted one)
+static uint32_t m17_frame(const uint8_t *sync, uint8_t kind)
+{
+	uint32_t at = st_n, c;
+
+	st_packed(sync, 8);
+	st_random(168);
+	c = m17_crc(&st_sym[at + 8], 168, kind);
+	for (uint8_t i = 0; i < 16; i++)
+		st_sym[st_n++] = (uint8_t)(c >> (30 - 2 * i) & 3);
+	return at;
+}
+
+static void testM17Geometry(void)
+{
+	static const uint8_t STREAM[2] = { 0xFF, 0x5D }, PACKET[2] = { 0x75, 0xFF }, LSF[2] = { 0x55, 0xF7 },
+		BERT[2] = { 0xDF, 0x55 };
+	static const uint8_t STREAM_1[2] = { 0xFF, 0x1D };	// stream, symbol 4 a +1 (a level off, its sign right)
+	static const uint8_t BETWEEN[2] = { 0x55, 0xFF };	// 1 from packet (symbol 1) and 1 from LSF (symbol 6)
+	uint32_t at[40], fa, lead;
+	uint8_t kind[40], n = 0;
+
+	for (uint8_t pass = 0; pass < 3; pass++) {
+		memset(&mode, 0, sizeof(mode));
+		mode.name = "m17";
+		mode.profile.sym_rate = 4800;
+		mode.profile.levels = 4;
+		mode.profile.sync_any_syms = 192;
+		mode.profile.flags = AIR_PROFILE_SYNC_GRID;
+		mode.profile.nsyncs = 6;
+		mode.profile.sync[0] = (air_sync_t){ .id = M17_PRE_LSF, .nsyms = 24, .max_errs = 1, .flags = AIR_SYNC_START_ONLY,
+						     .frame_at = 16, .syms = { 0x77, 0x77, 0x77, 0x77, 0x55, 0xF7 } };
+		mode.profile.sync[1] = (air_sync_t){ .id = M17_PRE_BERT, .nsyms = 24, .max_errs = 1, .flags = AIR_SYNC_START_ONLY,
+						     .frame_at = 16, .syms = { 0xDD, 0xDD, 0xDD, 0xDD, 0xDF, 0x55 } };
+		mode.profile.sync[2] = (air_sync_t){ .id = M17_STREAM, .nsyms = 8, .max_errs = 1, .syms = { 0xFF, 0x5D } };
+		mode.profile.sync[3] = (air_sync_t){ .id = M17_PACKET, .nsyms = 8, .max_errs = 1, .syms = { 0x75, 0xFF } };
+		mode.profile.sync[4] = (air_sync_t){ .id = M17_LSF, .nsyms = 8, .max_errs = 1, .syms = { 0x55, 0xF7 } };
+		mode.profile.sync[5] = (air_sync_t){ .id = M17_BERT, .nsyms = 8, .max_errs = 1, .syms = { 0xDF, 0x55 } };
+		mode.frame_syms = 192;
+		mode.head_syms = 24;
+		mode.lost_frames = 3;
+		mode.head = m17_head;
+		mode.rx_frame = on_frame;
+		mode.rx_lost = on_lost;
+		sym_rate = 4800;
+		m17_eots = m17_agains = 0;
+		n = 0;
+		st_reset();
+		st_random(1500);
+		// A chance stream sync in the payload ahead of the call: its frame would run into the preamble
+		fa = st_n;
+		st_packed(STREAM, 8);
+		st_random(40);
+		lead = st_n;
+		for (uint16_t k = 0; k < 192; k++)
+			st_sym[st_n++] = pass == 2 ? (k & 1 ? 1 : 3) : (k & 1 ? 3 : 1);	// +3 -3 ..., BERT's -3 +3 ...
+		kind[n] = pass == 2 ? M17_BERT : M17_LSF;
+		at[n++] = m17_frame(pass == 2 ? BERT : LSF, kind[0]);
+		for (uint8_t f = 0; f < 30; f++) {
+			const uint8_t *sy = pass == 0 ? STREAM : pass == 1 ? PACKET : BERT;
+			uint8_t k = pass == 0 ? M17_STREAM : pass == 1 ? M17_PACKET : M17_BERT;
+
+			if (pass == 0 && f == 7)
+				sy = STREAM_1;
+			if (pass == 1 && f == 9)
+				sy = BETWEEN;		// a packet frame's sync 1 symbol off: PACKET is listed before LSF
+			kind[n] = k;
+			at[n++] = m17_frame(sy, k);
+		}
+		for (uint16_t k = 0; k < 192; k++)
+			st_sym[st_n++] = air_sym_get(M17_EOT, (uint16_t)(k & 7));
+		st_random(600);
+		begin(192, pass != 1);
+		feed(0, st_n, 0, pass == 1 ? &HARD : &CLEAN);
+		{
+			uint16_t good = 0, typed = 0;
+
+			for (uint16_t i = 0; i < nseen; i++) {
+				for (uint8_t k = 0; k < n; k++) {
+					if (seen[i].at != at[k] || seen[i].nsyms != 192 || seen[i].errs)
+						continue;
+					if (m17_kind(seen[i].sync_id) == kind[k] && !(seen[i].flags & AIR_FRAME_NO_SYNC))
+						good++;
+					else
+						typed++;
+				}
+			}
+			CHECK(good == n && nseen == n && typed == 0, "M17 pass %u: %u of %u frames right, %u seen, %u of another kind",
+			      pass, good, n, nseen, typed);
+			CHECK(nseen && seen[0].at == at[0] && (seen[0].sync_id == (pass == 2 ? M17_PRE_BERT : M17_PRE_LSF)),
+			      "M17 pass %u: the first frame by its preamble (sync %x)", pass, nseen ? seen[0].sync_id : 0);
+			CHECK(fr.stats.rejects >= 1 && seen[0].at > fa && lead < at[0], "M17 pass %u: the chance match ahead (rejects %u)",
+			      pass, fr.stats.rejects);
+			CHECK(nlost == 1 && m17_eots == 1, "M17 pass %u: the end %u times, EoT %u", pass, nlost, m17_eots);
+			CHECK(m17_agains >= n, "M17 pass %u: the hook asked again at 192 %u times", pass, m17_agains);
+			for (uint16_t i = 0; i < nseen; i++) {
+				if (pass == 0 && seen[i].at == at[8])
+					CHECK(seen[i].sync_errs <= 1 && seen[i].sync_id == M17_STREAM && !(seen[i].flags & AIR_FRAME_NO_SYNC),
+					      "a stream sync 1 off: %x, %u errors", seen[i].sync_id, seen[i].sync_errs);
+				if (pass == 1 && seen[i].at == at[10])
+					CHECK(seen[i].sync_errs == 1 && seen[i].sync_id == M17_PACKET, "the close pair: %x, %u errors",
+					      seen[i].sync_id, seen[i].sync_errs);
+			}
+		}
+	}
+	printf("M17: 3 calls, the chance match ahead refused and replayed, EoT ends each\n");
+}
+
 // Nothing but noise: how often does a 24-symbol sync "lock"?
 static void testNoise(void)
 {
@@ -669,6 +830,7 @@ int main(void)
 	testSyncInside();
 	testTakeover();
 	testShortSync();
+	testM17Geometry();
 	testNoise();
 	testFuzz();
 	testTx();

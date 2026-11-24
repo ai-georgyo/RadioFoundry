@@ -35,6 +35,8 @@
 #define LONG_SMS "Your_Special_Configuration_is:_Active_SMS:_LONG_SMS_Delay:_2.5_s_Retries:_3_Language:_English_" \
 	"Time_zone:_UTC_Units:_metric_Echo:_off_Thanks."
 
+#define M17_GAL	"m17 dlmode:m17 m17call:W1AW "
+
 // Screens for the gallery: a name and the script that reaches it from Home (zone 0, channel 3, a DMR channel)
 static const struct { const char *name, *script; } gallery[] = {
 	{ "boot", "splash" },
@@ -224,6 +226,18 @@ static const struct { const char *name, *script; } gallery[] = {
 #endif
 	{ "volume_muted", "softvol volkey down down down down down down down down" },
 	{ "hotspot", "hotspot:on" },
+#if CONFIG_M17
+	// M17 (docs/ux/m17.md): a radio that runs it, on an M17 channel, our callsign W1AW
+	{ "home_m17", M17_GAL },
+	{ "home_m17_rx", M17_GAL "m17rx:N0CALL,ALL,t=Hello_from_Lisbon" },
+	{ "home_m17_rx_signed", M17_GAL "m17caps:sig m17key:N0CALL m17rx:N0CALL,W1AW,s" },
+	{ "home_m17_tx", M17_GAL "pttdown" },
+	{ "call_details", M17_GAL "m17caps:sig m17key:N0CALL m17rx:N0CALL,ALL,s,t=Hello_from_Lisbon m17rxend:ok ctx 3" },
+	{ "m17_bert", M17_GAL "m17caps:bert ok 6 up up ok m17bert:98304,12,lock" },
+	{ "m17_key", M17_GAL "m17caps:sig m17sk ok 7 4 down down down ok" },
+	{ "m17_keys", M17_GAL "m17caps:sig m17key:N0CALL m17key:K1ABC m17key:VE3XYZ/P ok 7 4 down down down down ok" },
+	{ "callsign", "m17 ok 7 0 down down ok 9 long:1 2 9" },
+#endif
 };
 
 // More screens for --ellipsis: every settings group and the pages under them, lists scrolled through
@@ -258,6 +272,10 @@ static const struct { const char *name, *script; } audit_extra[] = {
 // Worst-case screens for --layout (they run with sim_worst on, as the gallery screens do a second time)
 #define LONG_MSG "Meet_at_the_north_lot_of_the_county_fairgrounds_at_1500._Bring_the_spare_battery,_the_mag_mount_" \
 	"antenna_and_the_printed_ICS-205_for_the_net_control."
+#if CONFIG_M17
+#define M17_W		"m17 m17caps:sig,enc,sms,bert dlmode:m17 m17call:W1ABCD/MM "
+#define LONG_TEXT17	"Portable_on_the_ridge,_52_char_text_at_most_here_ok"
+#endif
 static const struct { const char *name, *script; } worst_screens[] = {
 	{ "w_rx_alias", "rx:9999999,16776415,g,QD9ABC_Christopher_W,_Boston_MA" },
 	{ "w_rx_unknown", "rx:9991999,16776414,g,QD9ABC_Christopher_W,_Boston_MA" },
@@ -326,6 +344,34 @@ static const struct { const char *name, *script; } worst_screens[] = {
 	{ "w_settings_range", "ok 7 7 down down ok 9 9 ok" },
 	{ "w_hotspot", "hotspot:on" },
 	{ "w_hotspot_tx", "hotspot:on pttdown" },
+#if CONFIG_M17
+	// M17 at its longest: nine-character callsigns, a reflector, text, a position, a signature that failed
+	{ "w_m17_home", "m17 dlmode:m17 m17call:W1ABCD/MM m17caps:sig,enc m17sk m17sign m17enc:aes256" },
+	{ "w_m17_rx", M17_W "m17rx:VE3ABC/QR,M17-M17_C,r=M17-M17_C,t=" LONG_TEXT17 ",g=38.72,-9.14" },
+	{ "w_m17_rx_repeater", M17_W "m17rx:VE3RPT/R1,ALL,o=VE3ABC/QR,s,p" },
+	{ "w_m17_rx_blocked", M17_W "m17rx:VE3ABC/QR,ALL,e" },
+	{ "w_m17_rx_other_can", M17_W "m17rx:VE3ABC/QR,ALL,can=15" },
+	{ "w_m17_rx_late", M17_W "m17rx:VE3ABC/QR,ALL,l" },
+	{ "w_m17_banner_sig", M17_W "m17rx:VE3ABC/QR,ALL,s m17rxend:by=W1ABCD/MM" },
+	{ "w_m17_banner_bad", M17_W "m17rx:VE3ABC/QR,ALL,s m17rxend:bad" },
+	{ "w_m17_last", M17_W "m17rx:VE3ABC/QR,W1ABCD/MM,s m17rxend:bad" },
+	{ "w_m17_details", M17_W "m17rx:VE3RPT/R1,M17-M17_C,r=M17-M17_C,o=VE3ABC/QR,s,t=" LONG_TEXT17 ",g=38.72,-9.14 "
+		"m17rxend:by=W1ABCD/MM ctx 3" },
+	{ "w_m17_tx", M17_W "m17sk m17sign m17rx:VE3ABC/QR,ALL m17rxend long:ctx down ok pttdown" },
+	{ "w_m17_tx_signing", M17_W "m17sk m17sign pttdown pttup" },
+	{ "w_m17_deny", "m17 dlmode:m17 pttdown" },
+	{ "w_m17_quick", M17_W "quick" },
+	{ "w_m17_picker", M17_W "m17rx:VE3ABC/QR,ALL m17rxend m17rx:W1ABCD/MM,ALL m17rxend long:ctx" },
+	{ "w_m17_recent", M17_W "m17rx:VE3ABC/QR,ALL,s m17rxend:bad m17rx:VE3RPT/R1,ALL,e m17rxend ok 3" },
+	{ "w_m17_recent_by", M17_W "m17rx:VE3ABC/QR,ALL,s m17rxend:by=W1ABCD/MM ok 3" },
+	{ "w_m17_heard", M17_W "m17rx:VE3ABC/QR,ALL,s m17rxend:bad m17rx:VE3RPT/R1,ALL m17rxend ok 6 up ok" },
+	{ "w_m17_bert", "m17 m17caps:bert dlmode:m17 ok 6 up up ok m17bert:4294967295,4294967,lost" },
+	{ "w_m17_key", M17_W "m17sk ok 7 4 down down down ok" },
+	{ "w_m17_keys", M17_W "m17key:VE3ABC/QR m17key:W1ABCD/MM ok 7 4 down down down down ok" },
+	{ "w_m17_editor", M17_W "ok 5 ok down down ok down down down down down down down down" },
+	{ "w_m17_callsign", "m17 ok 7 0 down down ok 9 long:1 2 9 2 2 2 3 3 3 long:9 6 6" },
+	{ "w_m17_message", "m17 m17caps:sms dlmode:m17 m17call:W1ABCD/MM m17msg:VE3ABC/QR," LONG_MSG " ctx" },
+#endif
 };
 
 // The layout check also counts texts shortened in the middle (gfx_text_fit) with the usability-test codeplug: a name

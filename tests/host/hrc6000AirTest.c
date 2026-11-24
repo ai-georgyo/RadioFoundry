@@ -13,6 +13,7 @@
 #include <string.h>
 #include "modem/hrc_common/hrc6000_air.h"
 #include "modem/hrc6000/hrc6000.h"
+#include "air/air_verify.h"
 #include "fuzz.h"
 
 static int failures, checks;
@@ -1410,10 +1411,53 @@ static void test_fuzz(void)
 	CHECK(!AIR->pa);
 }
 
+// The verified set (core/air/air_verify.h, as both glues apply it to the chip's fit): a board names the profiles
+// checked on air on it; a fit for any other profile says UNTESTED, a profile with verify 0 always, the raw bench's
+// AIR_VERIFY_ALL as the old yes / no. The boards that had the old yes have P25 and NXDN: their fits are as they were
+static void test_verified(void)
+{
+	static const hal_baseband_t tap = { .rx_rate_hz = HRC6000_AIR_COPY_HZ, .rx_hi_hz = HRC6000_AIR_COPY_HI_HZ };
+	const uint8_t was_yes = AIR_VERIFY_P25 | AIR_VERIFY_NXDN;
+	air_profile_t p = p25(), nxdn = p25(), m17 = p25(), z = p25(), all = p25();
+	uint32_t f;
+
+	p.verify = AIR_VERIFY_P25;
+	nxdn.verify = AIR_VERIFY_NXDN;
+	nxdn.sym_rate = 2400;			// (the chip doubles it)
+	m17.verify = AIR_VERIFY_M17;
+	m17.sync_every_syms = 0;		// 8-symbol syncs only: receive through the copy
+	m17.nsyncs = 1;
+	m17.sync[0].nsyms = 8;
+	m17.sync[0].flags = 0;
+	z.verify = 0;
+	all.verify = AIR_VERIFY_ALL;
+
+	f = hrc6000_air_fit_tap(&p, NULL, &tap);
+	CHECK(f != 0 && (f & AIR_FIT_UNTESTED) == 0);
+	CHECK(air_fit_verify(f, was_yes, &p) == f);			// unchanged on the verified boards
+	CHECK(air_fit_verify(f, 0, &p) == (f | AIR_FIT_UNTESTED));	// ... and on the others
+	CHECK(air_fit_verify(f, AIR_VERIFY_NXDN, &p) == (f | AIR_FIT_UNTESTED));	// a set without P25's bit
+	f = hrc6000_air_fit_tap(&nxdn, NULL, &tap);
+	CHECK(f != 0 && air_fit_verify(f, was_yes, &nxdn) == f);
+	CHECK(air_fit_verify(f, AIR_VERIFY_P25, &nxdn) == (f | AIR_FIT_UNTESTED));
+	f = hrc6000_air_fit_tap(&m17, NULL, &tap);
+	CHECK((f & (AIR_FIT_RX | AIR_FIT_TX)) == (AIR_FIT_RX | AIR_FIT_TX));
+	CHECK(air_fit_verify(f, was_yes, &m17) == (f | AIR_FIT_UNTESTED));	// M17: untested everywhere until a record
+	CHECK(air_fit_verify(f, was_yes | AIR_VERIFY_M17, &m17) == f);
+	f = hrc6000_air_fit_tap(&z, NULL, &tap);
+	CHECK(air_fit_verify(f, 0xFF, &z) == (f | AIR_FIT_UNTESTED));	// verify 0: never verified
+	f = hrc6000_air_fit_tap(&all, NULL, &tap);
+	CHECK(air_fit_verify(f, was_yes, &all) == f);			// the bench's 15-byte header: the old yes
+	CHECK(air_fit_verify(f, AIR_VERIFY_M17, &all) == f);
+	CHECK(air_fit_verify(f, 0, &all) == (f | AIR_FIT_UNTESTED));	// ... and the old no
+	CHECK(air_fit_verify(0, 0, &z) == 0);				// no fit stays none
+}
+
 int main(void)
 {
 	_Static_assert(sizeof(air_mem_t) <= sizeof(eng.evq), "the session fits the engine's event queue");
 	test_fit();
+	test_verified();
 	test_golden();
 	test_receive();
 	test_reassembly();

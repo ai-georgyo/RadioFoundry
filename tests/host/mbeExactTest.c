@@ -15,7 +15,7 @@
 
 #include "mbe/imbe.h"
 #include "mbe/mbe_est.h"
-#include "mbe/mbe_dsp.h"
+#include "dsp/dsp.h"
 
 static int failures, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -87,22 +87,22 @@ static void speech(int16_t *out, uint32_t n)
 	}
 }
 
-// The cosine the oscillators and mbe_cos read, from the unfolded table (built with -DFXP_SPLIT16) or folded: each
+// The cosine the oscillators and dsp_cos read, from the unfolded table (built with -DFXP_SPLIT16) or folded: each
 // entry the quarter wave's own value
 static void test_cos_table(void)
 {
 	int same = 0;
 
 	for (uint32_t i = 0; i < 1024u; i++)
-		same += mbe_cos_idx(i) == mbe_sin_idx(i + 256u);
-	CHECK(same == 1024, "%d of 1024 cosine entries as mbe_sin_idx gives them", same);
+		same += dsp_cos_idx(i) == dsp_sin_idx(i + 256u);
+	CHECK(same == 1024, "%d of 1024 cosine entries as dsp_sin_idx gives them", same);
 	same = 0;
 	for (uint32_t k = 0; k < 4096u; k++) {
 		uint32_t ph = k * 1048573u + (k << 20);
 
-		same += mbe_cos(ph) == mbe_sin_idx(((ph + 0x200000u) >> 22) + 256u);
+		same += dsp_cos(ph) == dsp_sin_idx(((ph + 0x200000u) >> 22) + 256u);
 	}
-	CHECK(same == 4096, "%d of 4096 phases: mbe_cos as the folded lookup", same);
+	CHECK(same == 4096, "%d of 4096 phases: dsp_cos as the folded lookup", same);
 }
 
 int main(void)

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 
 // Host test for the P25 FEC library in core/fec: GF(64), RS(63,k) shortened codes, Golay,
-// Hamming, BCH(63,16,23), the data trellis and the K=5 convolutional code with its Viterbi decoder. The reference matrices below are the numeric
+// Hamming, BCH(63,16,23), the data trellis and the K=5 convolutional code with its Viterbi decoder, and the CRCs of the
+// air-framed modes (crc.h). The reference matrices below are the numeric
 // code definitions of TIA-102.BAAA-A (clauses 5.7-5.9, 7, 8.5); the codecs are checked
 // against them and against brute-force or exhaustive references.
 
@@ -18,6 +19,7 @@
 #include "fec/bch63.h"
 #include "fec/trellis.h"
 #include "fec/conv.h"
+#include "fec/crc.h"
 
 static int g_checks;
 static int g_fail;
@@ -1051,6 +1053,91 @@ static void test_conv(void)
 	CHECK(bad_soft * 2 < bad_hard);
 }
 
+// The CRC as polynomial arithmetic, apart from crc.c's register: (M(x) x^w + I(x) x^n) mod G(x), M the n message bits,
+// I the initial register, G the polynomial with its top term
+static uint16_t crc_ref(const uint8_t *bits, unsigned n, unsigned w, uint16_t poly, uint16_t init)
+{
+	uint8_t p[8 * 1100 + 16] = { 0 };
+	unsigned len = n + w;
+
+	for (unsigned i = 0; i < n; i++)
+		p[i] = cbit(bits, i);
+	for (unsigned i = 0; i < w; i++)
+		p[i] ^= (uint8_t)((init >> (w - 1 - i)) & 1);	// I x^n: the top w places
+	for (unsigned i = 0; i < n; i++) {
+		if (!p[i])
+			continue;
+		p[i] = 0;	// x^w of G
+		for (unsigned k = 0; k < w; k++)
+			p[i + 1 + k] ^= (uint8_t)((poly >> (w - 1 - k)) & 1);
+	}
+	uint16_t r = 0;
+	for (unsigned i = n; i < len; i++)
+		r = (uint16_t)(r << 1 | p[i]);
+	return r;
+}
+
+static void test_crc(void)
+{
+	static const uint8_t check[] = "123456789";
+	uint8_t all[256], buf[1100];
+
+	for (unsigned i = 0; i < 256; i++)
+		all[i] = (uint8_t)i;
+	// M17 (width 16, 0x5935, init FFFF; docs/spec/m17.md 2.8): its four check values, bytes and bits alike
+	CHECK(fec_crc16(0xFFFF, 0x5935, check, 0) == 0xFFFF);
+	CHECK(fec_crc16(0xFFFF, 0x5935, (const uint8_t *)"A", 1) == 0x206E);
+	CHECK(fec_crc16(0xFFFF, 0x5935, check, 9) == 0x772B);
+	CHECK(fec_crc16(0xFFFF, 0x5935, all, 256) == 0x1C31);
+	CHECK(fec_crc_bits(check, 0, 16, 0x5935, 0xFFFF) == 0xFFFF);
+	CHECK(fec_crc_bits((const uint8_t *)"A", 8, 16, 0x5935, 0xFFFF) == 0x206E);
+	CHECK(fec_crc_bits(check, 72, 16, 0x5935, 0xFFFF) == 0x772B);
+	CHECK(fec_crc_bits(all, 2048, 16, 0x5935, 0xFFFF) == 0x1C31);
+	// In pieces: one call continues another
+	CHECK(fec_crc16(fec_crc16(fec_crc16(0xFFFF, 0x5935, all, 100), 0x5935, all + 100, 1), 0x5935, all + 101, 155) ==
+	      0x1C31);
+	// NXDN's (any width, init all ones, TS 1-A 4.5.5): CRC6 x6 + x5 + x2 + x + 1 is the catalog's CRC-6/CDMA2000-A
+	// (check 0D); CRC12 x12 + x11 + x3 + x2 + x + 1 from zero is CRC-12/DECT (check F5B)
+	CHECK(fec_crc_bits(check, 72, 6, 0x27, 0x3F) == 0x0D);
+	CHECK(fec_crc_bits(check, 72, 12, 0x80F, 0) == 0xF5B);
+	CHECK(fec_crc_bits(check, 72, 12, 0x80F, 0xFFF) == crc_ref(check, 72, 12, 0x80F, 0xFFF));
+	// Random messages of every length a mode uses and more: register = polynomial remainder; the CRC appended
+	// leaves 0; bits and bytes agree at width 16
+	for (unsigned rep = 0; rep < 600; rep++) {
+		static const struct { uint8_t w; uint16_t poly; } c[] = { { 6, 0x27 }, { 12, 0x80F }, { 16, 0x5935 },
+									    { 1, 0x1 }, { 5, 0x15 } };
+		unsigned k = rep % 5, w = c[k].w, n = rep < 300 ? rep % 97 : rndn(8 * 1000);
+		uint16_t init = (uint16_t)(rep & 1 ? (1u << w) - 1 : rnd() & ((1u << w) - 1)), r, r2;
+
+		for (unsigned i = 0; i < sizeof buf; i++)
+			buf[i] = (uint8_t)rnd();
+		r = fec_crc_bits(buf, (uint16_t)n, (uint8_t)w, c[k].poly, init);
+		CHECK(r == crc_ref(buf, n, w, c[k].poly, init));
+		CHECK(r < (1u << w));
+		for (unsigned i = 0; i < w; i++) {
+			unsigned at = n + i;
+			uint8_t m = (uint8_t)(0x80u >> (at & 7));
+
+			buf[at >> 3] = (uint8_t)(((r >> (w - 1 - i)) & 1) ? buf[at >> 3] | m : buf[at >> 3] & ~m);
+		}
+		r2 = fec_crc_bits(buf, (uint16_t)(n + w), (uint8_t)w, c[k].poly, init);
+		CHECK(r2 == 0);
+		if (w == 16 && (n & 7) == 0)
+			CHECK(fec_crc16(init, c[k].poly, buf, n / 8) == r);
+	}
+	// A single bit flipped anywhere is always caught (any polynomial with more than one term)
+	for (unsigned rep = 0; rep < 200; rep++) {
+		unsigned n = 1 + rndn(400), at = rndn(n);
+		uint16_t r;
+
+		for (unsigned i = 0; i < 60; i++)
+			buf[i] = (uint8_t)rnd();
+		r = fec_crc_bits(buf, (uint16_t)n, 12, 0x80F, 0xFFF);
+		buf[at >> 3] ^= (uint8_t)(0x80u >> (at & 7));
+		CHECK(fec_crc_bits(buf, (uint16_t)n, 12, 0x80F, 0xFFF) != r);
+	}
+}
+
 int main(void)
 {
 	test_gf();
@@ -1060,6 +1147,7 @@ int main(void)
 	test_bch();
 	test_trellis();
 	test_conv();
+	test_crc();
 	printf("fecTest: %d checks, %d failed\n", g_checks, g_fail);
 	return g_fail ? 1 : 0;
 }

@@ -80,11 +80,25 @@ int main(void)
 	// Text a table marks but no catalog translates (TRX): the English, in any language
 	CHECK(strcmp(tr(TRX(CHAN_LABEL_RX, "RX")), "RX") == 0 && strcmp(tr_en(TRX(CHAN_LABEL_RX, "RX")), "RX") == 0);
 	CHECK(tr(TR_NONE) == NULL);
-	// A key's English, every one of them: the English table is whole and in step with tr_en
-	for (tr_id_t id = 1; id < TR_KEYS; id++) {
-		CHECK(tr_en(id) != NULL && tr_en(id)[0] != 0);
-		CHECK(tr(id) != NULL && tr(id)[0] != 0);
+	// A key's English, every one of them: the English table is whole and in step with tr_en. A key built only under
+	// switches this test leaves off has no text (only its NUL: no flash for a feature not built), and the keys
+	// after it still find theirs
+	static const struct { tr_id_t first, end; bool built; } segs[] = TR_SEGMENTS;
+	uint16_t off = 0, on = 0;
+	for (size_t g = 0; g < sizeof segs / sizeof segs[0]; g++) {
+		CHECK(segs[g].first == (g == 0 ? 0 : segs[g - 1].end));
+		for (tr_id_t id = segs[g].first; id < segs[g].end; id++) {
+			if (id == TR_NONE)
+				continue;
+			CHECK(tr_en(id) != NULL && (tr_en(id)[0] != 0) == segs[g].built);
+			CHECK(tr(id) != NULL && (tr(id)[0] != 0) == segs[g].built);
+			if (segs[g].built)
+				on++;
+			else
+				off++;
+		}
 	}
+	CHECK(segs[sizeof segs / sizeof segs[0] - 1].end == TR_KEYS && on > 0 && off > 0);
 	CHECK(lang_set(LANG_ENGLISH) && strcmp(TR(TITLE_SETTINGS, "Settings"), "Settings") == 0);
 	CHECK(tr(settings) == tr_en(settings));
 #else

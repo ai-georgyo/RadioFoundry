@@ -218,7 +218,7 @@ static void *v_lend(size_t *len)
 	return lend_refuse ? NULL : lend_mem;
 }
 #else
-// P25 runs in its own memory, which NXDN shares
+// P25 and NXDN run in the radio core's arena (radio_air_mem.c), one at a time
 #define LENDS	0u
 #define v_lend NULL
 #endif
@@ -430,11 +430,20 @@ static void air_step1(uint8_t i)
 // 4800 symbols/s (P25, NXDN at 9600 bit/s): everything. 2400 symbols/s (NXDN at 4800 bit/s): what air_fit2400 says
 // for each provider (a provider that transmits a profile only, or receives it only)
 static uint32_t air_fit2400[2] = { AIR_FIT_RX | AIR_FIT_TX | AIR_FIT_SOFT, AIR_FIT_RX | AIR_FIT_TX | AIR_FIT_SOFT };
+#if CONFIG_M17
+#include "m17/m17_engine.h"
+static uint32_t m17_fit[2];	// what provider i gives M17's profile (0: as every 4800 symbols/s profile)
+#endif
 static uint32_t air_fit(uint8_t i, const air_profile_t *pr)
 {
 	if (air_nofit) {
 		return 0;
 	}
+#if CONFIG_M17
+	if (pr == &m17_air_mode.profile && m17_fit[i] != 0) {
+		return m17_fit[i];
+	}
+#endif
 	return pr->sym_rate == 4800 ? AIR_FIT_RX | AIR_FIT_TX | AIR_FIT_SOFT : pr->sym_rate == 2400 ? air_fit2400[i] : 0;
 }
 static bool air_open(uint8_t i, air_event_cb_t cb, void *ctx)
@@ -478,7 +487,9 @@ static void air_abort(uint8_t i) { fair[i].qn = 0; fair[i].on = false; fair[i].a
 					       air_space##i, air_end##i, air_abort##i, air_now##i, NULL, NULL, air_load##i, NULL, AIR_CHUNK, \
 					       AIR_DEPTH, 60, 100 };
 FAKE_AIR(0)
-FAKE_AIR(1)
+#if CONFIG_P25 || CONFIG_NXDN || CONFIG_M17
+FAKE_AIR(1)		// the far radio's (with its engine: none for the fake row of radioCoreTestAirRow)
+#endif
 static void air_step(void);	// with the far radio's engine, below
 #else
 static bool far_on_air(void) { return false; }
@@ -672,8 +683,16 @@ static bool kv_set(uint16_t key, const uint8_t *v, uint16_t len)
 	return true;
 }
 uint8_t codeplug_kv_serial(void) { return kv_serial; }
-// The tag layer's writes (codeplug_tag.c): none in these tests
-bool codeplug_kv_set(uint16_t key, const void *value, uint16_t len) { (void)key; (void)value; (void)len; return false; }
+// The tag layer's writes (codeplug_tag.c): none in these tests, except where one turns them on (kv_tag_writes, M17's
+// stored blocks: test_m17_ui_store), into the Tier III keys
+static bool kv_tag_writes;
+bool codeplug_kv_set(uint16_t key, const void *value, uint16_t len)
+{
+	if (!kv_tag_writes || len > sizeof(kv_t3[0].v))
+		return false;
+	kv_t3_set(key, value, (uint8_t)len);
+	return true;
+}
 bool codeplug_kv_remove(uint16_t key) { (void)key; return false; }
 // The walk: c->at the next single key to try, up to CODEPLUG_KEY_TX_DENY_TONE, then the Tier III keys in order
 void codeplug_kv_begin(codeplug_kv_cursor_t *c, uint16_t lo, uint16_t hi)
@@ -2325,7 +2344,15 @@ static void test_vfo_dmr(void)
 	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 1, 0xFF, 0 }, 3) == DL_ST_OK);
 	CHECK(sm.view.ch.mode == RADIO_MODE_DMR && sim.started && !radio_nxdn_running());
 #endif
-	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 4, 0xFF, 0 }, 3) == DL_ST_BAD_ARG);
+	// M17 (4) where it is built; past M17: a bad argument
+	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 4, 0xFF, 0 }, 3) ==
+	      (CONFIG_M17 ? DL_ST_OK : DL_ST_UNAVAILABLE));
+#if CONFIG_M17
+	CHECK(sm.view.ch.mode == RADIO_MODE_M17 && radio_m17_running() && !sim.started);
+	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 1, 0xFF, 0 }, 3) == DL_ST_OK);
+	CHECK(sm.view.ch.mode == RADIO_MODE_DMR && sim.started && !radio_m17_running());
+#endif
+	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 5, 0xFF, 0 }, 3) == DL_ST_BAD_ARG);
 	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 0xFF, 16, 0 }, 3) == DL_ST_BAD_ARG);
 	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 0xFF, 0xFF, 3 }, 3) == DL_ST_BAD_ARG);
 	CHECK(debuglink_radio_feature_op(DL_OP_DMR_FIELDS, (const uint8_t[]){ 0xFF, 0xFF }, 2) == DL_ST_BAD_ARG);
@@ -3888,7 +3915,7 @@ static void test_dmr_emergency(void)
 	n_ev = 0;
 	ui_svc_poll();		// the UI's pass: the alert as UI_EV_EMERGENCY, once
 	ui_svc_poll();
-	CHECK(n_ev == 1 && last_ev.kind == UI_EV_EMERGENCY && last_ev.id == 9991234 && !last_ev.ok &&
+	CHECK(n_ev == 1 && last_ev.kind == UI_EV_EMERGENCY && last_ev.from.id == 9991234 && !last_ev.ok &&
 	      strcmp(last_ev.name, "Joe") == 0);
 	dmr_emergency_dismiss();
 	run(20);
@@ -3908,7 +3935,7 @@ static void test_dmr_emergency(void)
 		CHECK(sms_inbox_count() == before + 1);
 		n_ev = 0;
 		ui_svc_poll();
-		CHECK(n_ev == 1 && last_ev.kind == UI_EV_MESSAGE && last_ev.id == 9991234);
+		CHECK(n_ev == 1 && last_ev.kind == UI_EV_MESSAGE && last_ev.from.id == 9991234);
 		sms_inbox_mark_read(0);
 		ui_svc_poll();
 		CHECK(sms_inbox_delete(0));
@@ -4179,6 +4206,16 @@ void radio_req_nxdn_settings(const radio_nxdn_settings_t *s)
 	req(RREQ_NXDN_SET, 0);
 }
 #endif
+#if CONFIG_M17
+// The same for M17 (the UI's M17 settings and talk target go through it, ui_svc_radio.c)
+void radio_req_m17_settings(const radio_m17_settings_t *s)
+{
+	radio_m17_set_settings(s);
+	req(RREQ_M17_SET, 0);
+}
+// Taken at once here: nothing waits
+void radio_m17_settings_next(radio_m17_settings_t *out) { radio_m17_settings(out); }
+#endif
 // Not under test here: debuglink_view_radio.c, linked for the volume operation, refers to them
 void radio_req_scan_dual(uint16_t pos) { (void)pos; }
 void radio_req_zone_pos(uint16_t pos) { req(RREQ_ZONE_POS, pos); }
@@ -4270,7 +4307,7 @@ static ui_event_t last_ev;
 static int n_ev;
 bool ui_notify(const ui_event_t *ev) { last_ev = *ev; n_ev++; return true; }
 // Zone sharing's events are formatted by ui_svc_zone.c, not built here: passed on as they are
-bool ui_svc_zone_event(uint8_t kind, uint32_t id, ui_event_t *ev) { (void)kind; ev->id = id; return true; }
+bool ui_svc_zone_event(uint8_t kind, uint32_t id, ui_event_t *ev) { (void)kind; ui_addr_set_dmr(&ev->from, id, false); return true; }
 static int cp_writes;
 static bool cp_write_fails;
 // Another firmware's codeplug (codeplug.h): the UI's writes ask first (ui_svc_storage.c)
@@ -5387,8 +5424,8 @@ static void test_ui_glue(void)
 	CHECK(!sm.set.tx_inhibit && sm.set.tot_s == 180 && sm.set.key_beep);
 	fake_power.mic_level = NULL;
 
-	// Messages: delete through the data service
-	CHECK(!ui_svc_msg_delete(0));
+	// Messages: delete through the data service (the DMR message provider)
+	CHECK(!ui_msg_dmr.del(0));
 
 	// Factory reset: a job; the settings are the defaults afterwards (no flash here: RAM only, no restart)
 	CHECK(ui_svc_factory_reset() && !ui_svc_factory_reset());
@@ -6444,7 +6481,9 @@ static void test_factory_reset(void)
 	memset(&sim_flash_data[0x10000u], 0x24, 64);		// the calibration copy
 	static const uint8_t magic[4] = { 0x4F, 0x44, 0x52, 0x4E };
 	CHECK(sim_flash.write(reset_map.native_addr, magic, 4));
-	settings_begin()->squelch = 2;
+	settings_t *rw = settings_begin();
+	rw->squelch = 2;
+	settings_set_boot_count(rw, 77);	// the nonce counter's start-ups: a reset keeps them (settings-store.md 3)
 	settings_end(now);
 	CHECK(settings_flush());
 	n_ev = 0;
@@ -6455,7 +6494,7 @@ static void test_factory_reset(void)
 	CHECK(sim_flash_data[0x20000u] == 0x42 && sim_flash_data[0x10000u] == 0x24);
 	settings_init();				// what the next boot finds
 	settings_read(&sv);
-	CHECK(sv.squelch == SETTINGS_UNSET8);
+	CHECK(sv.squelch == SETTINGS_UNSET8 && settings_boot_count(&sv) == 77);
 	// The settings can't be written (a worn ring): the toast says so
 	settings_begin()->squelch = 4;
 	settings_end(now);
@@ -6957,7 +6996,7 @@ static void test_volume_step_of(void)
 	}
 }
 
-#if CONFIG_AIR && CONFIG_SCAN
+#if (CONFIG_P25 || CONFIG_NXDN || CONFIG_M17) && CONFIG_SCAN
 // Run the scan (or dual watch) for up to ms: the stops it makes on channel number (visits), and whether it holds there.
 // Returns at the hold
 static bool scan_holds_on(uint16_t number, uint32_t ms, uint16_t *visits)
@@ -9540,6 +9579,1460 @@ static void test_nxdn(void)
 }
 #endif
 
+#if CONFIG_M17
+// ---- M17 in the radio core (docs/spec/m17.md, the radio core): the far radio is an M17 engine on the other fake
+// provider, the test its radio core (it signs with its own key). The radio under test runs the real voice path
+// (Codec 2), its codeplug's M17 records (core/m17/m17_codeplug.c over the fake key store) and P-256 ----
+#include "radio/radio_m17.h"
+#include "radio/radio_m17_mem.h"
+#include "radio/radio_heard.h"
+#include "radio/radio_air_modes.h"
+#include "radio/radio_air_mem.h"
+#include "m17/m17_engine.h"
+#include "m17/m17_codeplug.h"
+#include "m17/m17_voice.h"
+#include "codeplug/codeplug_records.h"
+#include "crypto/p256.h"
+#include "crypto/entropy.h"
+#include "position/position_utc.h"
+
+// The radio's microsecond clock: the test's milliseconds, and a millisecond more at each read, so timed work is not 0
+static uint32_t micros_extra;
+uint32_t hal_micros(void)
+{
+	micros_extra += 1000u;
+	return now * 1000u + micros_extra;
+}
+
+#define M17_HZ		446100000u
+#define M17_CH		3u		// zone Local, position 2
+#define M17_SYS		0u		// the channel's M17 system
+
+// docs/spec/m17.md 7.5: our key
+static const uint8_t our_d[32] = {
+	0x3F, 0x9B, 0xC0, 0x00, 0xFA, 0xB8, 0x3A, 0xED, 0x45, 0x51, 0xEC, 0x40, 0xA5, 0xF6, 0xA7, 0xC1,
+	0x78, 0xB2, 0x55, 0xBA, 0x65, 0x4C, 0x06, 0x84, 0xD2, 0x42, 0xBC, 0x8F, 0x59, 0xF8, 0xDA, 0x18,
+};
+static uint8_t our_q[64], our_qc[33];
+static uint8_t far_d[32], far_q[64], far_qc[33];
+static uint8_t other_qc[5][33];		// keys of nobody's
+static p256_scratch_t tp256;
+
+static uint64_t m17a(const char *call)
+{
+	uint64_t a = 0;
+	CHECK(m17_addr_from_text(call, &a));
+	return a;
+}
+
+static bool addr_is(const uint8_t b[6], const char *call)
+{
+	return m17_addr_get(b) == m17a(call);
+}
+
+static bool all_ff(const uint8_t b[6])
+{
+	return m17_addr_get(b) == M17_ADDR_BROADCAST;
+}
+
+// ---- the far radio ----
+static m17_engine_t mfar;
+static bool mfar_on, mfar_tx, mfar_sign_null;
+static struct {
+	uint16_t starts, ends, voice;
+	m17_call_t call;
+} mheard;
+static m17_sig_check_t mfar_chk;
+static bool mfar_chk_got;
+
+static void mf_start(const m17_call_t *c, void *ctx) { (void)ctx; mheard.starts++; mheard.call = *c; }
+static void mf_update(const m17_call_t *c, void *ctx) { (void)ctx; mheard.call = *c; }
+static void mf_voice(const uint8_t s[M17_STREAM_BYTES], uint8_t errs, void *ctx) { (void)s; (void)errs; (void)ctx; mheard.voice++; }
+static void mf_end(void *ctx) { (void)ctx; mheard.ends++; }
+static const m17_engine_hooks_t mfar_hooks = { mf_start, mf_update, mf_voice, mf_end, NULL };
+
+static void mfar_step(void)
+{
+	uint8_t h[32], rs[64];
+
+	if (!mfar_on) {
+		return;
+	}
+	if (m17_engine_sig_want(&mfar, h)) {
+		if (mfar_sign_null) {
+			m17_engine_sig_give(&mfar, NULL);
+		} else {
+			CHECK(p256_sign(far_d, h, rs, &tp256));
+			m17_engine_sig_give(&mfar, rs);
+		}
+	}
+	if (m17_engine_sig_take(&mfar, &mfar_chk)) {
+		mfar_chk_got = true;
+	}
+	if (mfar_tx && m17_engine_tx_state(&mfar) == AIR_TX_DONE) {
+		m17_engine_tx_clear(&mfar);
+		mfar_tx = false;
+	}
+}
+
+// The far radio on the channel as call, sending on CAN can, signed or not; it hears everything
+static void mfar_begin(const char *call, uint8_t can, bool sign)
+{
+	m17_engine_cfg_t c;
+
+	memset(&c, 0, sizeof c);
+	c.src = m17a(call);
+	c.dst = M17_ADDR_BROADCAST;
+	c.rx_can = M17_CAN_ANY;
+	c.tx_can = can;
+	c.squelch = M17_SQUELCH_ANY;
+	c.voice = M17_DATA_VOICE;
+	c.sign = sign;
+	c.sig_tail = 4;
+	c.silence = m17_voice_silence(C2_MODE_3200);
+	if (mfar_on) {
+		m17_engine_end(&mfar);
+	}
+	memset(&mheard, 0, sizeof mheard);
+	mfar_tx = mfar_chk_got = mfar_sign_null = false;
+	mfar_on = m17_engine_begin(&mfar, &fake_air1, &c, &mfar_hooks, NULL);
+	CHECK(mfar_on);
+}
+
+static void mfar_stop(void)
+{
+	if (mfar_on) {
+		m17_engine_end(&mfar);
+		mfar_on = mfar_tx = false;
+	}
+}
+
+static void mfar_wait_done(void)
+{
+	for (int i = 0; i < 400 && mfar_tx; i++) {
+		run(10);
+	}
+	CHECK(!mfar_tx);
+}
+
+// The far radio sends a transmission of kind for ms (ts its timestamp), signed as signer when not 0, then lets go;
+// held: still keyed when it returns
+static void mfar_key(uint8_t kind, uint32_t ts)
+{
+	m17_tx_req_t r;
+
+	memset(&r, 0, sizeof r);
+	r.kind = kind;
+	r.ts = ts;
+	CHECK(m17_engine_tx_prepare(&mfar, &r) && m17_engine_tx_go(&mfar));
+	mfar_tx = true;
+}
+
+static void mfar_send(uint32_t ms, uint32_t ts, uint64_t signer)
+{
+	while (now % 30 != 0) {		// the same place in the chunk grid each time: the same frames for the same call
+		run(5);
+	}
+	mfar_key(M17_TX_STREAM, ts);
+	if (signer != 0) {
+		mfar.cfg.src = signer;	// the authentication frame's signer, not the LSF's SRC (its tail reads cfg.src)
+	}
+	run(ms);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);			// the radio's verification, one key a tick
+}
+
+// ---- the codeplug's M17 records over the fake key store ----
+static void kv_t3_del(uint16_t key)
+{
+	for (uint8_t i = 0; i < kv_t3_n; i++) {
+		if (kv_t3[i].key == key) {
+			memmove(&kv_t3[i], &kv_t3[i + 1], (size_t)(kv_t3_n - i - 1) * sizeof kv_t3[0]);
+			kv_t3_n--;
+			kv_serial++;
+			return;
+		}
+	}
+}
+
+static void cp_m17_system(uint8_t n, bool tx)
+{
+	uint8_t v[CODEPLUG_SYS_HDR];
+
+	memset(v, 0, sizeof v);
+	v[0] = CODEPLUG_SYSTYPE_M17;
+	v[1] = tx ? CODEPLUG_SYS_TX : 0;
+	snprintf((char *)&v[12], 16, "M17 %u", n);
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_SYSTEM + n), v, sizeof v);
+}
+
+// System n's secret: d and, unless qc is NULL, a compressed Q
+static void cp_m17_secret(uint8_t n, const uint8_t d[32], const uint8_t *qc)
+{
+	uint8_t v[M17_CP_SECRET_LEN];
+
+	memcpy(v, d, 32);
+	if (qc != NULL) {
+		memcpy(&v[32], qc, 33);
+	}
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_SYS_KEY + n), v, qc != NULL ? (uint8_t)sizeof v : 32u);
+}
+
+static void cp_m17_station(uint8_t entry, uint8_t sys, const char *call, const uint8_t qc[33])
+{
+	uint8_t v[CODEPLUG_SYS_ENTRY_HDR + M17_CP_STATION_LEN] = { sys, M17_CP_ENTRY_STATION, CODEPLUG_GROUP_NONE, 0 };
+
+	m17_addr_put(&v[CODEPLUG_SYS_ENTRY_HDR], m17a(call));
+	memcpy(&v[CODEPLUG_SYS_ENTRY_HDR + 6], qc, 33);
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_SYS_CHAN + entry), v, sizeof v);
+}
+
+static void cp_m17_traffic(uint8_t entry, uint8_t sys, uint8_t alg, uint16_t id, const uint8_t *key, uint8_t len)
+{
+	uint8_t v[5 + 32] = { sys, alg, (uint8_t)id, (uint8_t)(id >> 8), 0 };
+
+	memcpy(&v[5], key, len);
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_TRAFFIC + entry), v, (uint8_t)(5 + len));
+}
+
+// The radio-wide record: our callsign (NULL none; "#" an extended address the record can't use), sign, position
+static void cp_m17_wide(const char *call, bool sign, bool gnss, const char *text)
+{
+	m17_wide_t w;
+	uint8_t b[M17_CP_WIDE_LEN];
+
+	memset(&w, 0, sizeof w);
+	w.src = call == NULL ? 0 : call[0] == '#' ? 0xF00000000001ull : m17a(call);
+	w.sign = sign;
+	w.gnss = gnss;
+	w.station = M17_STATION_HANDHELD;
+	if (text != NULL) {
+		w.text_len = (uint8_t)strlen(text);
+		memcpy(w.text, text, w.text_len);
+	}
+	m17_wide_encode(&w, b);
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_MODE_SET + CODEPLUG_KIND_M17), b, sizeof b);
+}
+
+// Channel n as a stored M17 channel (the base record DMR, receive only, the tag allowing transmit) with block conv
+static void cp_m17_channel(uint16_t n, const char *name, uint32_t hz, uint8_t system, const m17_conv_t *conv)
+{
+	uint8_t t[CODEPLUG_TAG_HDR + M17_CP_CONV_LEN];
+	uint16_t check;
+
+	add(n, name, hz, RADIO_MODE_DMR, true, 2);
+	check = codeplug_name_check(chans[n].name);
+	t[0] = CODEPLUG_KIND_M17;
+	t[1] = system;
+	t[2] = (uint8_t)check;
+	t[3] = (uint8_t)(check >> 8);
+	t[4] = CODEPLUG_TAG_TX;
+	m17_conv_encode(conv, &t[CODEPLUG_TAG_HDR]);
+	kv_t3_set((uint16_t)(CODEPLUG_KEY_CH_TAG + n - 1u), t, sizeof t);
+}
+
+static m17_conv_t conv_plain(uint8_t can)
+{
+	m17_conv_t c = { .squelch = M17_SQUELCH_CAN, .can = can, .tx_can = can, .dst = M17_ADDR_BROADCAST };
+	return c;
+}
+
+static const uint8_t aes_key[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+static const uint8_t uid[4] = { 0xA5, 0x5A, 0x12, 0x34 };
+
+static void m17_keys(void)
+{
+	static bool made;
+	uint8_t d[32];
+
+	if (made) {
+		return;
+	}
+	made = true;
+	CHECK(p256_pub_from_priv(our_d, our_q, &tp256));
+	p256_pub_compress(our_q, our_qc);
+	for (int i = 0; i < 32; i++) {
+		far_d[i] = (uint8_t)(0x40 + 3 * i);
+	}
+	CHECK(p256_pub_from_priv(far_d, far_q, &tp256));
+	p256_pub_compress(far_q, far_qc);
+	for (int k = 0; k < 5; k++) {
+		uint8_t q[64];
+		memset(d, 0, sizeof d);
+		d[31] = (uint8_t)(k + 2);
+		CHECK(p256_pub_from_priv(d, q, &tp256));
+		p256_pub_compress(q, other_qc[k]);
+	}
+}
+
+// The codeplug every M17 test starts from: our callsign W1AW, system 0 (transmit allowed) with our signing key and
+// the far radio's key for N0CALL, channel 3 an M17 channel on CAN 0
+static void m17_setup(void)
+{
+	m17_keys();
+	setup_codeplug();
+	kv_t3_clear();
+	cp_m17_system(M17_SYS, true);
+	cp_m17_secret(M17_SYS, our_d, our_qc);
+	cp_m17_station(0, M17_SYS, "N0CALL", far_qc);
+	cp_m17_wide("W1AW", false, false, NULL);
+	m17_conv_t c = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	start();
+	radio_m17_reset_stats();
+	radio_heard_clear();
+	air_nofit = false;
+	m17_fit[0] = m17_fit[1] = 0;
+	memset(fair, 0, sizeof(fair));
+	far_hz = 0;
+	aud.feed = true;
+	entropy_init(NULL, uid, sizeof uid, 7, true);
+	utc_set(0, now, UTC_SRC_NONE);
+}
+
+// To another channel and back: the channel's records are read again at begin
+static void m17_reenter(void)
+{
+	req(RREQ_ZONE_POS, 0);
+	run(30);
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(sm.view.channel_number == M17_CH && sm.view.ch.mode == RADIO_MODE_M17 && radio_m17_running());
+}
+
+// PTT pressed for ms: what the radio core said, or NONE when it transmitted
+static uint8_t m17_ptt(uint32_t ms)
+{
+	uint8_t why;
+
+	req(RREQ_PTT, 1);
+	run(ms);
+	why = sm.view.state == RS_TX_DENIED ? sm.view.tx_deny : TXDENY_NONE;
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && (sm.view.state == RS_TX || hw.keyed); i++) {
+		run(10);
+	}
+	run(50);
+	return why;
+}
+
+static void test_m17_table(void)
+{
+	radio_m17_settings_t s;
+
+	m17_setup();
+	printf("# sizeof(m17_mem_t) %zu (engine %zu, voice %zu), host layout\n", sizeof(m17_mem_t), sizeof(m17_engine_t),
+	       sizeof(m17_voice_mem_t));
+	CHECK(sizeof(m17_mem_t) == sizeof(m17_engine_t) + sizeof(m17_voice_mem_t) || sizeof(m17_mem_t) > sizeof(m17_engine_t));
+	CHECK(strcmp(radio_mode_key(RADIO_MODE_M17), "m17") == 0 && strcmp(radio_mode_name(RADIO_MODE_M17), "M17") == 0);
+	CHECK(radio_air_mode_for(RADIO_MODE_M17) == &radio_m17_mode && strcmp(radio_m17_mode.features, "M17,") == 0);
+	CHECK(radio_m17_mode.tx_deny == radio_m17_tx_deny && radio_m17_mode.auto_tx == radio_m17_auto_tx);
+	CHECK(CODEPLUG_RUNS_M17 && radio_m17_fits() && strstr(build_modes_now(), "M17,") != NULL);
+	CHECK(strstr(build_features_now(), "M17_PACKET,") != NULL && strstr(build_features_now(), "M17_SIG,") != NULL &&
+	      strstr(build_features_now(), "M17_AES,") != NULL && strstr(build_features_now(), "HEARD_LIST,") != NULL);
+	CHECK((strstr(build_features_now(), "M17_SCRAMBLER,") != NULL) == (CONFIG_M17_SCRAMBLER != 0));
+	air_nofit = true;
+	CHECK(!radio_m17_fits() && strstr(build_modes_now(), "M17,") == NULL);
+	air_nofit = false;
+	// The settings: broadcast is all 0xFF; zero is never a destination
+	radio_m17_settings(&s);
+	CHECK(all_ff(s.dst) && s.can == 0 && s.squelch == M17_SQUELCH_CAN && !s.mode1600);
+	memset(s.dst, 0, sizeof s.dst);
+	s.can = 0x13;
+	radio_m17_set_settings(&s);
+	radio_m17_settings(&s);
+	CHECK(all_ff(s.dst) && s.can == 3);
+	s.can = 0;
+	radio_m17_set_settings(&s);
+	// The stored channel: kind 6 becomes the M17 mode, the board in its digital mode, the engine running
+	req(RREQ_ZONE_POS, 2);
+	run(50);
+	CHECK(sm.view.channel_number == M17_CH && sm.view.ch.mode == RADIO_MODE_M17 && sm.view.ch.kind == CODEPLUG_KIND_M17);
+	CHECK(radio_m17_running() && hw_mode == RADIO_MODE_DMR && (sm.view.m17.flags & RADIO_M17_ON));
+	CHECK(all_ff(sm.view.m17.talk) && addr_is(sm.view.m17.own, "W1AW") && sm.view.m17.rx_can == 0);
+	CHECK(sm.view.m17.fit == (AIR_FIT_RX | AIR_FIT_TX | AIR_FIT_SOFT) && sm.view.m17.tot_s == 180);
+	// The memory: the vocoder's loan where it lends, else the arena; back when M17 stops
+	radio_m17_stats_t st;
+	radio_m17_stats(&st);
+#ifdef HAL_VOCODER_LEND_BYTES
+	CHECK(radio_air_mem_lent(RADIO_MODE_M17) && st.mem_lent == 1);
+#else
+	CHECK(!radio_air_mem_lent(RADIO_MODE_M17) && st.mem_lent == 0 && radio_air_mem_arena() >= sizeof(m17_mem_t));
+#endif
+	CHECK(st.begins >= 1 && st.begin_fails == 0);
+	CHECK(radio_air_mem_get(RADIO_MODE_NXDN, 1) == NULL);	// held
+	req(RREQ_ZONE_POS, 0);
+	run(30);
+	CHECK(!radio_m17_running() && !(sm.view.m17.flags & RADIO_M17_ON));
+	void *p = radio_air_mem_get(RADIO_MODE_M17, sizeof(m17_mem_t));
+	CHECK(p != NULL);
+	radio_air_mem_put(RADIO_MODE_M17);
+	// No fit: the channel stays parked, nothing runs
+	air_nofit = true;
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(sm.view.ch.mode != RADIO_MODE_M17 && !radio_m17_running());
+	air_nofit = false;
+	req(RREQ_ZONE_POS, 0);
+	// The VFO in M17: the settings, a mode change for now
+	req(RREQ_VFO, 1);
+	req(RREQ_VFO_SET, M17_HZ);
+	req(RREQ_MODE, RADIO_MODE_M17);
+	run(30);
+	CHECK(sm.view.vfo && sm.view.ch.mode == RADIO_MODE_M17 && radio_m17_running());
+	s.can = 7;
+	s.mode1600 = true;
+	m17_addr_put(s.dst, m17a("M17-M17 C"));
+	radio_m17_set_settings(&s);
+	req(RREQ_M17_SET, 0);
+	run(30);
+	CHECK(sm.view.m17.rx_can == 7 && sm.view.m17.tx_can == 0 && addr_is(sm.view.m17.talk, "M17-M17 C"));
+	CHECK(sm.view.m17.flags & RADIO_M17_TX_1600);
+	CHECK(radio_m17_in_force(&s) && s.can == 7 && s.mode1600);
+	req(RREQ_MODE, RADIO_MODE_FM);
+	CHECK(!radio_m17_running());
+	req(RREQ_VFO, 0);
+	radio_m17_set_settings(&(radio_m17_settings_t){ .dst = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF } });
+}
+
+static void test_m17_rx(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_details_t d;
+	radio_heard_t h;
+	m17_voice_stats_t vs0, vs1;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	uint8_t seq = v->call_seq;
+	CHECK(!radio_m17_details(&d));
+	// A call on our CAN: received, played, the voice through Codec 2
+	mfar_begin("N0CALL", 0, false);
+	m17_voice_stats(&vs0);
+	mfar_key(M17_TX_STREAM, 0);
+	run(600);
+	CHECK(sm.view.state == RS_RX && (v->flags & RADIO_M17_RX) && (v->flags & RADIO_M17_PLAYED) && hw.led[LED_GREEN]);
+	CHECK((v->flags & RADIO_M17_LSF) && !(v->flags & (RADIO_M17_LATE | RADIO_M17_ENC | RADIO_M17_SIGNED)));
+	CHECK(addr_is(v->src, "N0CALL") && addr_is(v->orig, "N0CALL") && all_ff(v->dst) && m17_addr_get(v->via) == 0);
+	CHECK(v->call_seq == (uint8_t)(seq + 1) && v->end_ms == 0 && v->why == M17_WHY_NONE && v->can == 0);
+	CHECK(v->sig == RADIO_M17_SIG_UNSIGNED_KNOWN && !(v->flags & RADIO_M17_TO_US));	// N0CALL's key is on file
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(300);
+	m17_voice_stats(&vs1);
+	CHECK(sm.view.state == RS_IDLE && !(v->flags & RADIO_M17_RX) && v->end_ms != 0 && addr_is(v->src, "N0CALL"));
+	CHECK(vs1.rx_in > vs0.rx_in && vs1.rx_frames > vs0.rx_frames && vs1.rx_calls == vs0.rx_calls + 1);
+	CHECK(radio_m17_details(&d) && addr_is(d.src, "N0CALL") && all_ff(d.dst) && d.played && d.can == 0 &&
+	      d.voice == M17_DATA_VOICE && d.sig == RADIO_M17_SIG_UNSIGNED_KNOWN && !d.packet && d.end_ms == v->end_ms);
+	CHECK(v->flags & RADIO_M17_HAS_DETAILS);
+	// The heard list: the caller, newest first, counted
+	CHECK(radio_heard_count() == 1 && radio_heard_get(0, &h) && h.mode == RADIO_MODE_M17 && addr_is(h.addr, "N0CALL"));
+	CHECK(h.count == 1 && (h.flags & RADIO_HEARD_ADDR) && all_ff(h.to) && h.last_ms == v->end_ms);
+	mfar_send(300, 0, 0);
+	CHECK(radio_heard_count() == 1 && radio_heard_get(0, &h) && h.count == 2 && v->call_seq == (uint8_t)(seq + 2));
+	// Another CAN: heard, shown, not played (the CAN squelch, the default)
+	mfar_begin("K1ABC", 5, false);
+	mfar_key(M17_TX_STREAM, 0);
+	run(600);
+	CHECK((v->flags & RADIO_M17_RX) && !(v->flags & RADIO_M17_PLAYED) && v->why == M17_WHY_CAN && v->can == 5);
+	CHECK(sm.view.state == RS_RX && !hw.led[LED_GREEN] && addr_is(v->src, "K1ABC"));
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(300);
+	CHECK(radio_heard_count() == 2 && radio_heard_get(0, &h) && addr_is(h.addr, "K1ABC"));
+	CHECK(radio_m17_details(&d) && addr_is(d.src, "K1ABC") && !d.played && d.can == 5);
+	// The channel on CAN 5: played
+	m17_conv_t c = conv_plain(5);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	m17_reenter();
+	mfar_key(M17_TX_STREAM, 0);
+	run(600);
+	CHECK((v->flags & RADIO_M17_PLAYED) && v->rx_can == 5);
+	// A retune to a silent frequency while it is heard: the reception goes with it
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	far_hz = M17_HZ;
+	mfar_key(M17_TX_STREAM, 0);
+	run(400);
+	CHECK(v->flags & RADIO_M17_RX);
+	req(RREQ_VFO, 1);
+	req(RREQ_VFO_SET, M17_HZ + 25000u);
+	req(RREQ_MODE, RADIO_MODE_M17);
+	run(100);
+	CHECK(sm.view.vfo && radio_m17_running() && !(v->flags & RADIO_M17_RX) && sm.view.state == RS_IDLE);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	req(RREQ_MODE, RADIO_MODE_FM);
+	req(RREQ_VFO, 0);
+	far_hz = 0;
+	mfar_stop();
+}
+
+static void test_m17_tx(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_stats_t st;
+
+	m17_setup();
+	cp_m17_wide("W1AW", false, false, "Hello from the test");
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	req(RREQ_PTT, 1);
+	run(800);
+	CHECK(sm.view.state == RS_TX && hw.keyed && v->tx != AIR_TX_IDLE && v->tx_phase == M17_TXP_DATA);
+	CHECK(mheard.starts == 1 && mheard.call.src == m17a("W1AW") && mheard.call.dst == M17_ADDR_BROADCAST);
+	CHECK(mheard.voice > 5 && (mheard.call.flags & M17_CALL_TEXT));
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && hw.keyed; i++) {
+		run(10);
+	}
+	run(50);
+	CHECK(!hw.keyed && sm.view.state == RS_IDLE && v->tx == AIR_TX_IDLE && mheard.ends == 1);
+	char text[M17_TEXT_MAX + 1];
+	m17_engine_text(&mfar, text);
+	CHECK(strcmp(text, "Hello from the test") == 0);
+	radio_m17_stats(&st);
+	CHECK(st.tx_calls == 1 && st.tx_syms > 0);
+	CHECK(fair[0].keyed_violations == 0);
+	mfar_stop();
+}
+
+static void test_m17_deny(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_stats_t st;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(m17_ptt(300) == TXDENY_NONE);
+	// No callsign (and no radio name that is one)
+	cp_m17_wide(NULL, false, false, NULL);
+	m17_reenter();
+	CHECK((v->flags & RADIO_M17_NO_CALL) && m17_addr_get(v->own) == 0);
+	CHECK(m17_ptt(100) == TXDENY_NO_CALLSIGN && !hw.keyed && hw.tx_calls == 1);
+	// A record whose address is not a standard one
+	cp_m17_wide("#", false, false, NULL);
+	m17_reenter();
+	CHECK((v->flags & RADIO_M17_CALL_BAD) && !(v->flags & RADIO_M17_NO_CALL));
+	CHECK(m17_ptt(100) == TXDENY_CALLSIGN_BAD);
+	cp_m17_wide("W1AW", false, false, NULL);
+	// Encryption the channel asks for: without a key
+	m17_conv_t c = conv_plain(0);
+	c.tx_enc = M17_ENC_AES;
+	c.key_id = 9;
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	m17_reenter();
+	CHECK(m17_ptt(100) == TXDENY_ENC_NO_KEY);
+	// With its key, but no nonce can be promised new (the boot count not saved, the pool not seeded yet)
+	cp_m17_traffic(0, M17_SYS, M17_CP_ALG_AES, 9, aes_key, sizeof aes_key);
+	m17_reenter();
+	CHECK((v->flags & RADIO_M17_TX_ENC) && v->tx_enc == (M17_ENC_AES << 4 | M17_AES_128));
+	entropy_init(NULL, uid, sizeof uid, 8, false);
+	radio_m17_stats(&st);
+	uint32_t refused = st.nonce_refused;
+	CHECK(m17_ptt(100) == TXDENY_ENC_NOT_READY && !hw.keyed);
+	radio_m17_stats(&st);
+	CHECK(st.nonce_refused == refused + 1);
+	// The boot count saved: it goes out, encrypted; the far radio with the key plays it
+	entropy_init(NULL, uid, sizeof uid, 9, true);
+	mfar_begin("N0CALL", 0, false);
+	mfar.cfg.key_len = sizeof aes_key;
+	memcpy(mfar.cfg.key, aes_key, sizeof aes_key);
+	mfar.recheck = true;
+	CHECK(m17_ptt(600) == TXDENY_NONE);
+	CHECK(mheard.starts == 1 && M17_TYPE_ENC(mheard.call.type) == M17_ENC_AES && mheard.voice > 5);
+	// An encrypted stream ends at 7FFA whatever the time-out: the time-out shown is that limit when the radio's is
+	// longer or none
+	CHECK(v->tot_s == 180);
+	radio_settings_t rs = sm.set;
+	rs.tot_s = 0;
+	radio_sm_set_settings(&sm, &rs, now);
+	run(30);
+	CHECK(v->tot_s == 1310);
+	rs.tot_s = 180;
+	radio_sm_set_settings(&sm, &rs, now);
+#if !CONFIG_M17_SCRAMBLER
+	// The scrambler, not in this build: refused, never sent in the clear
+	c.tx_enc = M17_ENC_SCRAMBLER;
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	m17_reenter();
+	CHECK(!(v->flags & RADIO_M17_TX_ENC) && m17_ptt(100) == TXDENY_ENC_NOT_BUILT);
+#endif
+	c = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	// Signing on without a key
+	kv_t3_del((uint16_t)(CODEPLUG_KEY_SYS_KEY + M17_SYS));
+	cp_m17_wide("W1AW", true, false, NULL);
+	m17_reenter();
+	radio_m17_key_t k;
+	CHECK(radio_m17_key(&k) && !k.present && !(v->flags & RADIO_M17_TX_SIGN));
+	CHECK(m17_ptt(100) == TXDENY_SIG_NO_KEY);
+	// A key whose stored Q is not d * G: the key check, idle for 2 s, finds it; then PTT is refused
+	cp_m17_secret(M17_SYS, our_d, far_qc);
+	m17_reenter();
+	CHECK(radio_m17_key(&k) && k.present && !k.checked);
+	run(1000);
+	CHECK(radio_m17_key(&k) && !k.checked);	// not idle long enough yet
+	run(1500);
+	radio_m17_stats(&st);
+	CHECK(radio_m17_key(&k) && k.checked && k.damaged && st.key_damaged == 1 && st.key_checks == 1);
+	CHECK(memcmp(k.q, our_q, 64) == 0);	// the one d gives
+	CHECK(m17_ptt(100) == TXDENY_SIG_KEY_BAD);
+	// A board whose provider receives M17 only
+	cp_m17_wide("W1AW", false, false, NULL);
+	m17_fit[0] = AIR_FIT_RX | AIR_FIT_SOFT;
+	m17_reenter();
+	CHECK(sm.view.m17.fit == (AIR_FIT_RX | AIR_FIT_SOFT) && m17_ptt(100) == TXDENY_AIR_NO_TX);
+	m17_fit[0] = 0;
+	mfar_stop();
+}
+
+static void test_m17_sig(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_details_t d;
+	radio_m17_key_t k;
+	radio_m17_stats_t st;
+	radio_heard_t h;
+
+	m17_setup();
+	cp_m17_wide("W1AW", true, false, NULL);
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	// The key check: d * G is the stored Q; its fingerprint; the kG time is sig_tail's first measure
+	CHECK(radio_m17_key(&k) && k.present && !k.checked && (v->flags & RADIO_M17_TX_SIGN));
+	run(2500);
+	radio_m17_stats(&st);
+	CHECK(radio_m17_key(&k) && k.checked && !k.damaged && k.system == M17_SYS && memcmp(k.q, our_q, 64) == 0);
+	uint8_t fp[8];
+	m17_key_fp(our_qc, fp);
+	CHECK(memcmp(k.fp, fp, 8) == 0 && k.sign_us != 0 && st.key_checks == 1);
+	run(2500);
+	radio_m17_stats(&st);
+	CHECK(st.key_checks == 1);	// once per codeplug change
+	// A signed transmission: signed in the radio task at the release, verified at the far end with our key
+	mfar_begin("N0CALL", 0, false);
+	CHECK(m17_ptt(600) == TXDENY_NONE);
+	run(200);
+	radio_m17_stats(&st);
+	CHECK(mfar_chk_got && mfar_chk.state == M17_SIG_PENDING && mfar_chk.signer == m17a("W1AW"));
+	CHECK(p256_verify(our_q, mfar_chk.hash, mfar_chk.rs, &tp256));
+	CHECK(st.sig_signed == 1 && st.sig_late == 0 && st.sign_us != 0 && st.sig_tail >= 1 && st.sig_tail <= 8);
+	// The FN limit while PTT is still held (no time-out shorter than it): the engine starts the tail on its own, with
+	// the encoder still on; the signature still comes, the voice path's scratch lent for it
+	radio_settings_t rs = sm.set;
+	rs.tot_s = 0;
+	radio_sm_set_settings(&sm, &rs, now);
+	uint32_t lim0 = st.fn_limit, late0 = st.sig_late, signed0 = st.sig_signed;
+	req(RREQ_PTT, 1);
+	run(300);
+	m17_engine_t *me = (m17_engine_t *)fair[0].ctx;	// the session is the engine's first member
+	CHECK(sm.view.state == RS_TX && me != NULL && me->tx_phase == M17_TXP_DATA);
+	me->tx_fn = (uint16_t)(M17_FN_ENC_LAST - 12u);
+	run(1500);
+	radio_m17_stats(&st);
+	CHECK(st.fn_limit == lim0 + 1 && st.sig_signed == signed0 + 1 && st.sig_late == late0);
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && (sm.view.state == RS_TX || hw.keyed); i++) {
+		run(10);
+	}
+	run(50);
+	CHECK(!hw.keyed && sm.view.state != RS_TX);
+	rs.tot_s = 180;
+	radio_sm_set_settings(&sm, &rs, now);
+	// A signed call heard, verified with the key on file: running, then valid; no clock, so freshness unknown
+	mfar_begin("N0CALL", 0, true);
+	while (now % 30 != 0) {		// where mfar_send keys: the replay below sends the same frames
+		run(5);
+	}
+	mfar_key(M17_TX_STREAM, 0);
+	run(400);
+	CHECK((v->flags & RADIO_M17_SIGNED) && v->sig == RADIO_M17_SIG_RUNNING);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);
+	CHECK(v->sig == RADIO_M17_SIG_VALID);
+	CHECK(radio_m17_details(&d) && d.sig == RADIO_M17_SIG_VALID && addr_is(d.signer, "N0CALL") && all_ff(d.sig_dst) &&
+	      d.sig_ts == 0 && d.sig_fresh == RADIO_M17_FRESH_UNKNOWN);
+	CHECK(radio_heard_get(0, &h) && addr_is(h.addr, "N0CALL") && (h.flags & RADIO_HEARD_SIG_OK));
+	// The same stream again: its hash repeats
+	mfar_send(400, 0, 0);
+	CHECK(v->sig == RADIO_M17_SIG_REPLAY);
+	// A trusted clock (the host set it): a timestamp 1000 s off is old, one within the window is fresh
+	uint32_t unix_now = 1795000000u;
+	utc_set(unix_now, now, UTC_SRC_HOST);
+	mfar_send(300, utc_since_2020(unix_now) - 1000u, 0);
+	CHECK(v->sig == RADIO_M17_SIG_OLD && radio_m17_details(&d) && d.sig_fresh == RADIO_M17_FRESH_NO);
+	mfar_send(300, utc_since_2020(unix_now) + 2u, 0);
+	CHECK(v->sig == RADIO_M17_SIG_VALID && radio_m17_details(&d) && d.sig_fresh == RADIO_M17_FRESH_YES);
+	utc_set(0, now, UTC_SRC_NONE);
+	// Signed by another station than the originator (its key on file too)
+	cp_m17_station(1, M17_SYS, "W2XYZ", far_qc);
+	m17_reenter();
+	mfar_send(300, 0, m17a("W2XYZ"));
+	CHECK(v->sig == RADIO_M17_SIG_SIGNER_DIFFERS && addr_is(v->orig, "N0CALL"));
+	CHECK(radio_m17_details(&d) && addr_is(d.signer, "W2XYZ"));
+	// No key on file for the signer
+	mfar_begin("K9ZZZ", 0, true);
+	mfar_send(300, 0, 0);
+	CHECK(v->sig == RADIO_M17_SIG_NO_KEY);
+	// Unsigned from a station whose key is on file: "not signed"
+	mfar_begin("N0CALL", 0, false);
+	mfar_send(300, 0, 0);
+	CHECK(v->sig == RADIO_M17_SIG_UNSIGNED_KNOWN && !(v->flags & RADIO_M17_SIGNED));
+	mfar_begin("K9ZZZ", 0, false);
+	mfar_send(300, 0, 0);
+	CHECK(v->sig == RADIO_M17_SIG_NONE);
+	// The sender's signature came too late (zeros): the check fails
+	mfar_begin("N0CALL", 0, true);
+	mfar_sign_null = true;
+	mfar_send(300, 0, 0);
+	CHECK(v->sig == RADIO_M17_SIG_INVALID);
+	// Five keys on file for the signer, none its own: four tried, the fifth counted
+	for (uint8_t i = 0; i < 5; i++) {
+		cp_m17_station((uint8_t)(10 + i), M17_SYS, "K5CAP", other_qc[i]);
+	}
+	m17_reenter();
+	radio_m17_stats(&st);
+	uint32_t capped = st.sig_keys_capped;
+	mfar_begin("K5CAP", 0, true);
+	mfar_send(300, 0, 0);
+	run(100);
+	radio_m17_stats(&st);
+	CHECK(v->sig == RADIO_M17_SIG_INVALID && st.sig_keys_capped == capped + 1);
+	// Joined after frame 0: not checked
+	mfar_begin("N0CALL", 0, true);
+	req(RREQ_ZONE_POS, 0);
+	run(30);
+	mfar_key(M17_TX_STREAM, 0);
+	run(500);
+	req(RREQ_ZONE_POS, 2);
+	run(600);
+	CHECK((v->flags & RADIO_M17_LATE) && (v->flags & RADIO_M17_SIGNED));
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);
+	CHECK(v->sig == RADIO_M17_SIG_LATE);
+	mfar_stop();
+}
+
+static void test_m17_sms(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_sms_t m;
+	radio_m17_stats_t st;
+	uint8_t seq, to[6];
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	// Sent on its own once the channel is clear (CSMA), seen by the far radio as an SMS
+	(void)radio_m17_sms_result(&seq, NULL);
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Meet at the north lot"));
+	CHECK(!radio_m17_sms_send(m17a("N0CALL"), "Second"));	// one at a time
+	run(20);
+	CHECK(v->flags & RADIO_M17_SMS_WAIT);
+	uint8_t got[M17_ENGINE_PKT_KEEP];
+	m17_packet_info_t info;
+	uint16_t n = 0;
+	for (int i = 0; i < 300 && n == 0; i++) {
+		run(10);
+		n = m17_engine_packet_take(&mfar, &info, got, sizeof got);
+	}
+	CHECK(n == 22 && info.type == M17_PKT_SMS && memcmp(got, "Meet at the north lot", 22) == 0 &&
+	      info.src == m17a("W1AW") && info.dst == m17a("N0CALL"));
+	run(200);
+	uint8_t seq2;
+	CHECK(radio_m17_sms_result(&seq2, to) == RADIO_M17_SMS_SENT && seq2 == (uint8_t)(seq + 1) && addr_is(to, "N0CALL"));
+	CHECK(!hw.keyed && sm.view.state == RS_IDLE && !(v->flags & RADIO_M17_SMS_WAIT));
+	CHECK(radio_m17_sms_count() == 1 && radio_m17_sms_get(0, &m) && m.sent && !m.unread && addr_is(m.peer, "N0CALL") &&
+	      strcmp(m.text, "Meet at the north lot") == 0);
+	// One coming in: into the inbox, unread, newest first
+	static const uint8_t pkt[] = "\x05" "On my way";
+	CHECK(m17_engine_packet_load(&mfar, m17a("W1AW"), pkt, sizeof pkt));
+	mfar_key(M17_TX_PACKET, 0);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);
+	radio_m17_stats(&st);
+	CHECK(radio_m17_sms_count() == 2 && radio_m17_sms_unread() == 1 && radio_m17_sms_get(0, &m) && !m.sent && m.unread &&
+	      addr_is(m.peer, "N0CALL") && strcmp(m.text, "On my way") == 0 && !m.cut);
+	CHECK(st.sms_rx == 1 && st.sms_tx == 1 && st.pkt_rx >= 1);
+	radio_m17_details_t d;
+	CHECK(radio_m17_details(&d) && d.packet && d.pkt_type == M17_PKT_SMS && d.pkt_len == sizeof pkt &&
+	      addr_is(d.src, "N0CALL") && addr_is(d.dst, "W1AW"));
+	radio_m17_sms_read(0);
+	CHECK(radio_m17_sms_unread() == 0);
+	CHECK(radio_m17_sms_delete(1) && radio_m17_sms_count() == 1 && radio_m17_sms_get(0, &m) && strcmp(m.text, "On my way") == 0);
+	CHECK(!radio_m17_sms_delete(5));
+	// A long one is cut on a character boundary: 140 ASCII bytes, then a 3-byte character across the 143-byte line
+	static uint8_t lp[1 + 150 + 1];
+	lp[0] = M17_PKT_SMS;
+	memset(&lp[1], 'x', 140);
+	memcpy(&lp[141], "\xE2\x82\xAC\xE2\x82\xAC", 6);
+	lp[147] = 0;
+	CHECK(m17_engine_packet_load(&mfar, m17a("W1AW"), lp, 148));
+	mfar_key(M17_TX_PACKET, 0);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);
+	CHECK(radio_m17_sms_get(0, &m) && m.cut && strlen(m.text) == 143 && m.text[142] == (char)0xAC);
+	// The channel busy for longer than 10 s: the send gives up
+	(void)radio_m17_sms_result(&seq, NULL);
+	mfar_key(M17_TX_STREAM, 0);
+	run(300);
+	CHECK(sm.view.state == RS_RX);
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Busy"));
+	run(RADIO_M17_SMS_BUSY_MS + 300);
+	radio_m17_stats(&st);
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY && seq2 == (uint8_t)(seq + 1) && st.sms_busy == 1);
+	CHECK(hw.tx_calls == 1 && !(v->flags & RADIO_M17_SMS_WAIT));	// never keyed over the call
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	// A channel set to encrypt: a packet can't be encrypted (m17.md 8), and the channel never sends in the clear, so
+	// an SMS is refused there (m17.md 17.5), with its key or without, and nothing keys
+	m17_conv_t ce = conv_plain(0);
+	ce.tx_enc = M17_ENC_AES;
+	ce.key_id = 9;
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	m17_reenter();
+	CHECK(m17_ptt(100) == TXDENY_ENC_NO_KEY);
+	(void)radio_m17_sms_result(&seq, NULL);
+	int calls0 = hw.tx_calls;
+	CHECK(!radio_m17_sms_send(m17a("N0CALL"), "Secret") && !radio_m17_sms_stage(m17a("N0CALL"), "Secret"));
+	cp_m17_traffic(0, M17_SYS, M17_CP_ALG_AES, 9, aes_key, sizeof aes_key);
+	m17_reenter();
+	CHECK((v->flags & RADIO_M17_TX_ENC) && !radio_m17_sms_send(m17a("N0CALL"), "Secret") &&
+	      !radio_m17_sms_stage(m17a("N0CALL"), "Secret"));
+	run(1000);
+	CHECK(hw.tx_calls == calls0 && radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY && seq2 == seq &&
+	      m17_engine_packet_take(&mfar, &info, got, sizeof got) == 0);
+	// Queued on a clear channel, then the channel edited to encrypt before it went: given up, never sent
+	ce = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	m17_reenter();
+	mfar_key(M17_TX_STREAM, 0);
+	run(300);
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Secret"));
+	ce.tx_enc = M17_ENC_AES;
+	ce.key_id = 9;
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	req(RREQ_RELOAD, 0);
+	run(50);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(1000);
+	CHECK(hw.tx_calls == calls0 && radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY &&
+	      seq2 == (uint8_t)(seq + 1) && m17_engine_packet_take(&mfar, &info, got, sizeof got) == 0);
+	kv_t3_del(CODEPLUG_KEY_TRAFFIC);
+	// Sign M17 calls on without a signing key: PTT is refused, but a packet is never signed (m17.md 8): an SMS goes
+	kv_t3_del((uint16_t)(CODEPLUG_KEY_SYS_KEY + M17_SYS));
+	cp_m17_wide("W1AW", true, false, NULL);
+	ce = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	m17_reenter();
+	CHECK(m17_ptt(100) == TXDENY_SIG_NO_KEY);
+	(void)radio_m17_sms_result(&seq, NULL);
+	calls0 = hw.tx_calls;
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Plain"));
+	n = 0;
+	for (int i = 0; i < 300 && n == 0; i++) {
+		run(10);
+		n = m17_engine_packet_take(&mfar, &info, got, sizeof got);
+	}
+	CHECK(n == 6 && memcmp(got, "Plain", 6) == 0);
+	run(200);
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_SENT && seq2 == (uint8_t)(seq + 1));
+	CHECK(hw.tx_calls == calls0 + 1);
+	// PTT while an SMS waits for the channel: still refused (the prepare checks a stream)
+	mfar_key(M17_TX_STREAM, 0);
+	run(300);
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Later"));
+	run(20);
+	CHECK((v->flags & RADIO_M17_SMS_WAIT) && m17_ptt(100) == TXDENY_SIG_NO_KEY && hw.tx_calls == calls0 + 1);
+	CHECK(v->flags & RADIO_M17_SMS_WAIT);	// still waiting: let go of PTT, the call is still on the channel
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(1000);
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_SENT && seq2 == (uint8_t)(seq + 2));
+	cp_m17_secret(M17_SYS, our_d, our_qc);
+	ce = conv_plain(0);
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &ce);
+	cp_m17_wide("W1AW", false, false, NULL);
+	m17_reenter();
+	// Without a callsign, or off M17: refused
+	cp_m17_wide(NULL, false, false, NULL);
+	m17_reenter();
+	CHECK(!radio_m17_sms_send(m17a("N0CALL"), "x"));
+	req(RREQ_ZONE_POS, 0);
+	run(30);
+	CHECK(!radio_m17_sms_send(m17a("N0CALL"), "x") && !radio_m17_sms_stage(m17a("N0CALL"), "x"));
+	// The inbox outlives the mode
+	CHECK(radio_m17_sms_count() == RADIO_M17_SMS_INBOX);
+	mfar_stop();
+}
+
+static void test_m17_bert(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_bert_t b;
+	m17_engine_view_t fv;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	// The debug link's run: keyed on its own and held until off
+	radio_m17_bert_tx(true);
+	run(1500);
+	m17_engine_view(&mfar, &fv);
+	CHECK(sm.view.state == RS_TX && sm.view.tx_auto && hw.keyed && (v->flags & RADIO_M17_BERT));
+	CHECK(fv.bert_frames > 20 && fv.bert_state == M17_BERT_COUNT && fv.bert_errs == 0);
+	radio_m17_bert_get(&b);
+	CHECK(b.tx_ms > 1000 && b.tx_frames > 20);
+	radio_m17_bert_tx(false);
+	for (int i = 0; i < 100 && hw.keyed; i++) {
+		run(10);
+	}
+	run(50);
+	radio_m17_bert_get(&b);
+	CHECK(!hw.keyed && sm.view.state == RS_IDLE && b.tx_ms == 0 && b.tx_frames > 20);
+	// The BER test page: PTT sends BERT, not voice
+	radio_m17_bert_mode(true);
+	run(20);
+	CHECK(v->flags & RADIO_M17_BERT_MODE);
+	uint32_t f0 = mfar.stats.bert;
+	uint16_t starts = mheard.starts;
+	CHECK(m17_ptt(800) == TXDENY_NONE);
+	CHECK(mfar.stats.bert > f0 + 10 && mheard.starts == starts);
+	radio_m17_bert_mode(false);
+	CHECK(m17_ptt(400) == TXDENY_NONE && mheard.starts == starts + 1);
+	// Received: the counters lock, count no errors, start over at reset
+	mfar_key(M17_TX_BERT, 0);
+	run(1500);
+	radio_m17_bert_get(&b);
+	CHECK(b.state == RADIO_M17_BERT_LOCKED && b.frames > 20 && b.bits > 3000 && b.errs == 0 && b.locks == 1);
+	CHECK((v->flags & RADIO_M17_BERT) && (v->flags & RADIO_M17_RX));
+	radio_m17_bert_reset();
+	run(100);
+	radio_m17_bert_get(&b);
+	CHECK(b.frames < 5);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(1200);
+	radio_m17_bert_get(&b);
+	CHECK(b.state == RADIO_M17_BERT_NO_SIGNAL);
+	// The time-out ends a run, which isn't keyed again
+	radio_settings_t rs = sm.set;
+	rs.tot_s = 2;
+	radio_sm_set_settings(&sm, &rs, now);
+	radio_m17_bert_tx(true);
+	run(2600);
+	CHECK(!hw.keyed);
+	run(500);
+	CHECK(!hw.keyed && sm.view.state != RS_TX);
+	rs.tot_s = 180;
+	radio_sm_set_settings(&sm, &rs, now);
+	mfar_stop();
+}
+
+// Our position as GNSS META, at most once every 5 s whatever the transmissions: a call right after another carries none
+static void test_m17_gnss(void)
+{
+	position_cfg_t was, pc;
+
+	m17_setup();
+	position_get_cfg(&was);
+	pc = was;
+	pc.pref = POSITION_FIXED;
+	pc.fix_lat = 515000000;
+	pc.fix_lon = -1250000;
+	pc.ambiguity = 0;
+	position_set_cfg(&pc, now);
+	cp_m17_wide("W1AW", false, true, NULL);
+	req(RREQ_ZONE_POS, 2);
+	run(1500);
+	mfar_begin("N0CALL", 0, false);
+	CHECK(m17_ptt(400) == TXDENY_NONE);
+	CHECK(mheard.starts == 1 && (mheard.call.flags & M17_CALL_GNSS));
+	int32_t lat, lon, alt;
+	uint16_t sp;
+	m17_gnss_to_fix(&mheard.call.gnss, &lat, &lon, &alt, &sp);
+	CHECK(lat > 514999000 && lat < 515001000 && lon > -1251000 && lon < -1249000);
+	CHECK(mheard.call.gnss.station == M17_STATION_HANDHELD);
+	CHECK(m17_ptt(400) == TXDENY_NONE);
+	CHECK(mheard.starts == 2 && !(mheard.call.flags & M17_CALL_GNSS));	// 5 s have not passed
+	run(5000);
+	CHECK(m17_ptt(400) == TXDENY_NONE);
+	CHECK(mheard.starts == 3 && (mheard.call.flags & M17_CALL_GNSS));
+	// Send position off: none
+	cp_m17_wide("W1AW", false, false, NULL);
+	m17_reenter();
+	run(5500);
+	CHECK(m17_ptt(400) == TXDENY_NONE);
+	CHECK(mheard.starts == 4 && !(mheard.call.flags & M17_CALL_GNSS));
+	position_set_cfg(&was, now);
+	mfar_stop();
+}
+
+// The benches: the signature bench signs m17.md 7.5's hash to its r || s and verifies it; the codec bench runs a phase
+static void test_m17_bench(void)
+{
+	radio_m17_stats_t st;
+	m17_voice_stats_t vs;
+	bool ok = false;
+
+	m17_setup();
+	CHECK(!radio_m17_bench_sig(&ok) && !ok);	// not running
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(radio_m17_bench_sig(&ok) && ok);
+	radio_m17_stats(&st);
+	CHECK(st.sign_us != 0 && st.verify_us != 0);
+	m17_voice_reset_stats();
+	radio_m17_bench_codec(M17_VOICE_BENCH_DEC, 0);
+	run(200);
+	m17_voice_stats(&vs);
+	CHECK(vs.dec_blocks >= 5);
+	radio_m17_bench_codec(M17_VOICE_BENCH_OFF, 0);
+	run(50);
+}
+
+#if CONFIG_SCAN
+// A zone scan stops on the M17 channel and holds on a call that plays; dual watch watches it too
+static void test_m17_scan(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	uint16_t visits;
+
+	m17_setup();
+	far_hz = M17_HZ;
+	req(RREQ_ZONE_POS, 0);
+	req(RREQ_SCAN, RSCAN_ZONE);
+	CHECK(sm.view.scan == SCAN_ZONE);
+	CHECK(!scan_holds_on(M17_CH, 3000, &visits) && visits >= 2);
+	mfar_begin("N0CALL", 0, false);
+	mfar_key(M17_TX_STREAM, 0);
+	CHECK(scan_holds_on(M17_CH, 4000, &visits));
+	// A late join (the scan came mid-call): played from TYPE on, its source once the LICH has it
+	CHECK(radio_m17_running() && (v->flags & RADIO_M17_PLAYED) && (v->flags & RADIO_M17_LATE));
+	run(600);
+	CHECK(sm.view.channel_number == M17_CH && addr_is(v->src, "N0CALL") && sm.view.scan_phase == SCAN_PH_HOLD);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(RADIO_SCAN_DELAY_MS + 1200);
+	CHECK(sm.view.channel_number != M17_CH && sm.view.scan == SCAN_ZONE);
+	// Another CAN: not held
+	mfar_begin("K1ABC", 9, false);
+	mfar_key(M17_TX_STREAM, 0);
+	CHECK(!scan_holds_on(M17_CH, 4000, &visits) && visits >= 1);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	req(RREQ_SCAN, RSCAN_STOP);
+#if CONFIG_DUAL_WATCH
+	const ui_dual_ref_t a = { false, 0, 0 }, b2 = { false, 0, 2 }, pair[2] = { a, b2 };
+	req(RREQ_ZONE_POS, 0);
+	CHECK(ui_svc_dual(pair, 0) && sm.view.scan == SCAN_DUAL);
+	CHECK(!scan_holds_on(M17_CH, 3000, &visits) && visits >= 2);
+	mfar_begin("N0CALL", 0, false);
+	mfar_key(M17_TX_STREAM, 0);
+	CHECK(scan_holds_on(M17_CH, 4000, &visits) && (v->flags & RADIO_M17_PLAYED));
+	// No key check on a dual watch visit
+	radio_m17_key_t k;
+	CHECK(radio_m17_key(&k) && !k.checked);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	CHECK(ui_svc_dual(NULL, 0) && sm.view.scan == SCAN_OFF);
+#endif
+	far_hz = 0;
+	mfar_stop();
+}
+#endif
+
+// The UI's writes to a stored M17 channel (ui_svc_storage.c): the channel editor's block and a talk target keep the
+// transmit encryption as stored, also one this build doesn't have (m17_conv_decode reads it as none: written back so,
+// an edit of the CAN would have turned the channel's encryption off for good); Quick 6 turns it off
+static void test_m17_ui_store(void)
+{
+	uint8_t b[M17_CP_CONV_LEN + CODEPLUG_TAG_HEAD_MAX], dst[M17_ADDR_BYTES];
+	m17_conv_t c = conv_plain(3);
+	ui_air_conv_t air;
+	channel_t ed;
+
+	m17_setup();
+	c.tx_enc = M17_ENC_SCRAMBLER;
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	req(RREQ_RELOAD, 0);
+	run(50);
+	m17_reenter();
+	ed = sm.view.ch;
+	CHECK(ed.kind == CODEPLUG_KIND_M17);
+	kv_tag_writes = true;
+	memset(&air, 0, sizeof air);
+	c.can = c.tx_can = 5;
+	m17_conv_encode(&c, air.m17);
+	CHECK(ui_svc_write_channel_air(M17_CH, &ed, M17_CH, &air));
+	storage_job_poll();
+	CHECK(codeplug_tag_params(M17_CH, &ed, b, M17_CP_CONV_LEN) >= 10 && b[1] == 5 && b[9] == M17_ENC_SCRAMBLER);
+	run(50);
+	m17_addr_put(dst, m17a("W1XYZ"));
+	CHECK(ui_svc_m17_write_block(dst, false));
+	storage_job_poll();
+	CHECK(codeplug_tag_params(M17_CH, &ed, b, M17_CP_CONV_LEN) >= 10 && b[9] == M17_ENC_SCRAMBLER &&
+	      m17_addr_get(&b[3]) == m17a("W1XYZ") && b[1] == 5);
+	run(50);
+	CHECK(ui_svc_m17_write_block(NULL, true));
+	storage_job_poll();
+	CHECK(codeplug_tag_params(M17_CH, &ed, b, M17_CP_CONV_LEN) >= 10 && b[9] == M17_ENC_NONE &&
+	      m17_addr_get(&b[3]) == m17a("W1XYZ"));
+	kv_tag_writes = false;
+}
+
+// The far radio's LSF as queued just after mfar_key (its symbols 192-383: in the provider's queue, then in the
+// framer's chunk being filled), made again with TYPE | bits: what a sender that sets other bits would send
+static void mfar_lsf_or(uint16_t bits)
+{
+	uint8_t lsf[M17_LSF_BYTES], f[M17_FRAME_BYTES], meta[M17_META_BYTES];
+	air_tx_chunk_t *txc = &mfar.session.fr.txc;
+
+	CHECK(fair[1].qn * AIR_CHUNK + txc->nsyms == 2u * M17_FRAME_SYMS);
+	memcpy(meta, mfar.tx_lsf + M17_LSF_META, sizeof meta);
+	m17_lsf_make(lsf, m17_addr_get(mfar.tx_lsf + M17_LSF_DST), m17_addr_get(mfar.tx_lsf + M17_LSF_SRC),
+		     (uint16_t)(m17_lsf_type(mfar.tx_lsf) | bits), meta);
+	m17_frame_lsf(lsf, f);
+	for (uint16_t k = 0; k < M17_FRAME_SYMS; k++) {
+		uint16_t at = (uint16_t)(M17_FRAME_SYMS + k);
+		uint8_t d = air_sym_get(f, k);
+
+		if (at / AIR_CHUNK < fair[1].qn) {
+			air_sym_put(fair[1].q[at / AIR_CHUNK].syms, at % AIR_CHUNK, d);
+		} else {
+			air_sym_put(txc->syms, (uint16_t)(at - fair[1].qn * AIR_CHUNK), d);
+		}
+	}
+}
+
+// A packet whose TYPE has the signed-stream bit (reserved in packet mode) and encryption bits set: the receiver
+// ignores both (m17.md 3.1), so it is never "signed, not checked" then "lost", never encrypted, one heard entry
+static void test_m17_reserved(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	static const uint8_t pkt[] = "\x05" "Reserved bits";
+	radio_heard_t h;
+	radio_m17_sms_t m;
+	bool sig_ok = true, flags_ok = true, seen = false;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	CHECK(m17_engine_packet_load(&mfar, m17a("W1AW"), pkt, sizeof pkt));
+	mfar_key(M17_TX_PACKET, 0);
+	mfar_lsf_or(M17_TYPE_SIGNED | (uint16_t)(M17_ENC_AES << 3));
+	m17_engine_tx_stop(&mfar);
+	for (int i = 0; i < 150; i++) {
+		run(10);
+		if (v->flags & RADIO_M17_PACKET) {
+			seen = true;
+			sig_ok = sig_ok && (v->sig == RADIO_M17_SIG_NONE || v->sig == RADIO_M17_SIG_UNSIGNED_KNOWN);
+			flags_ok = flags_ok && !(v->flags & (RADIO_M17_SIGNED | RADIO_M17_ENC)) && v->enc == 0;
+		}
+	}
+	CHECK(!mfar_tx && seen && sig_ok && flags_ok && v->sig == RADIO_M17_SIG_UNSIGNED_KNOWN);
+	CHECK(radio_heard_count() == 1 && radio_heard_get(0, &h) && h.count == 1 && (h.flags & RADIO_HEARD_DATA) &&
+	      !(h.flags & (RADIO_HEARD_ENC | RADIO_HEARD_SIG_OK | RADIO_HEARD_SIG_BAD)));
+	CHECK(radio_m17_sms_get(0, &m) && strcmp(m.text, "Reserved bits") == 0);
+	mfar_stop();
+}
+
+// A GNSS META without its position bit (velocity alone) is no position: not in the view, the details or the heard
+// list (m17.md 4.2); one that follows a position in the same call keeps the position
+static void test_m17_gnss_valid(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	radio_m17_details_t d;
+	radio_heard_t h;
+	m17_gnss_t g;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	mfar.cfg.gnss = true;
+	memset(&g, 0, sizeof g);
+	g.valid = M17_GNSS_VALID_VEL;
+	g.bearing = 90;
+	g.speed = 40;
+	m17_engine_gnss(&mfar, &g);
+	mfar_send(400, 0, 0);
+	CHECK(!(v->flags & RADIO_M17_GNSS) && radio_m17_details(&d) && !d.gnss && d.lat_e7 == 0 && d.lon_e7 == 0);
+	CHECK(radio_heard_get(0, &h) && addr_is(h.addr, "N0CALL") && !(h.flags & RADIO_HEARD_GNSS));
+	// A position in the LSF, then velocity alone at the next 5 s boundary (superframe 21): the position stays
+	radio_heard_clear();
+	g.valid = M17_GNSS_VALID_POS;
+	g.lat = 4000000;
+	g.lon = -1000000;
+	m17_engine_gnss(&mfar, &g);
+	mfar_key(M17_TX_STREAM, 0);
+	run(1000);
+	CHECK((v->flags & RADIO_M17_GNSS) && radio_m17_details(&d) && d.gnss && d.lat_e7 != 0);
+	int32_t lat0 = d.lat_e7, lon0 = d.lon_e7;
+	g.valid = M17_GNSS_VALID_VEL;
+	g.lat = g.lon = 0;
+	m17_engine_gnss(&mfar, &g);
+	run(5500);
+	CHECK(mfar_tx && sm.view.state == RS_RX);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(300);
+	CHECK((v->flags & RADIO_M17_GNSS) && radio_m17_details(&d) && d.gnss && d.lat_e7 == lat0 && d.lon_e7 == lon0 &&
+	      d.vel_ok && d.bearing_deg == 90);
+	CHECK(radio_heard_get(0, &h) && (h.flags & RADIO_HEARD_GNSS) && h.lat_e7 == lat0 && h.lon_e7 == lon0);
+	mfar_stop();
+}
+
+// SMS heard on the channel: only one addressed to us, to everyone or to what the channel calls goes into the inbox;
+// another station's, or our own sent back, is counted (sms_dropped) and shown in the details only (m17.md 17.5)
+static void sms_from_far(const char *to, const char *text)
+{
+	static uint8_t p[1 + 40];
+
+	p[0] = M17_PKT_SMS;
+	strcpy((char *)&p[1], text);
+	CHECK(m17_engine_packet_load(&mfar, m17a(to), p, (uint16_t)(strlen(text) + 2u)));
+	mfar_key(M17_TX_PACKET, 0);
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(100);
+}
+
+static void test_m17_sms_ours(void)
+{
+	radio_m17_sms_t m;
+	radio_m17_stats_t st;
+	radio_m17_details_t d;
+
+	m17_setup();
+	while (radio_m17_sms_delete(0)) {	// (the inbox outlives a mode: the tests before left theirs)
+	}
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	sms_from_far("K1ABC", "for K1ABC only");
+	radio_m17_stats(&st);
+	CHECK(radio_m17_sms_count() == 0 && radio_m17_sms_unread() == 0 && st.sms_dropped == 1 && st.sms_rx == 0);
+	CHECK(radio_m17_details(&d) && d.packet && d.pkt_type == M17_PKT_SMS && addr_is(d.dst, "K1ABC") &&
+	      addr_is(d.src, "N0CALL"));
+	sms_from_far("W1AW", "for us");
+	CHECK(radio_m17_sms_count() == 1 && radio_m17_sms_unread() == 1 && radio_m17_sms_get(0, &m) &&
+	      strcmp(m.text, "for us") == 0);
+	{
+		static const uint8_t p[] = "\x05" "for all";
+		CHECK(m17_engine_packet_load(&mfar, M17_ADDR_BROADCAST, p, sizeof p));
+		mfar_key(M17_TX_PACKET, 0);
+		m17_engine_tx_stop(&mfar);
+		mfar_wait_done();
+		run(100);
+	}
+	CHECK(radio_m17_sms_count() == 2 && radio_m17_sms_get(0, &m) && strcmp(m.text, "for all") == 0);
+	// What the channel calls (a group): ours
+	m17_conv_t c = conv_plain(0);
+	c.dst = m17a("M17-GRP");
+	cp_m17_channel(M17_CH, "M17", M17_HZ, M17_SYS, &c);
+	m17_reenter();
+	sms_from_far("M17-GRP", "for the group");
+	CHECK(radio_m17_sms_count() == 3 && radio_m17_sms_get(0, &m) && strcmp(m.text, "for the group") == 0);
+	sms_from_far("K1ABC", "again not ours");
+	// Our own, sent back (a repeater's): not one received
+	mfar_begin("W1AW", 0, false);
+	sms_from_far("N0CALL", "ours, repeated");
+	radio_m17_stats(&st);
+	CHECK(radio_m17_sms_count() == 3 && radio_m17_sms_unread() == 3 && st.sms_dropped == 3 && st.sms_rx == 3);
+	mfar_stop();
+}
+
+// PTT while a call is heard: the radio sends (simplex: the reception ends), then hears the call again, joined late
+static void test_m17_talk_over(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	mfar_key(M17_TX_STREAM, 0);
+	run(600);
+	CHECK(sm.view.state == RS_RX && (v->flags & RADIO_M17_PLAYED));
+	int calls0 = hw.tx_calls;
+	req(RREQ_PTT, 1);
+	run(500);
+	CHECK(sm.view.state == RS_TX && hw.keyed && hw.tx_calls == calls0 + 1 && v->tx_phase == M17_TXP_DATA &&
+	      !(v->flags & RADIO_M17_RX));
+	req(RREQ_PTT, 0);
+	for (int i = 0; i < 100 && hw.keyed; i++) {
+		run(10);
+	}
+	run(800);
+	CHECK(!hw.keyed && sm.view.state == RS_RX && (v->flags & RADIO_M17_PLAYED) && (v->flags & RADIO_M17_LATE) &&
+	      addr_is(v->src, "N0CALL"));
+	m17_engine_tx_stop(&mfar);
+	mfar_wait_done();
+	run(300);
+	CHECK(sm.view.state == RS_IDLE && !(v->flags & RADIO_M17_RX));
+	mfar_stop();
+}
+
+// The SMS give-ups of m17.md 17.5 that are not the 10 s busy one, and the CSMA of 1.4 and 17.3 (p = 0.25 in 40 ms
+// slots of a clear channel)
+static void test_m17_sms_giveup(void)
+{
+	const radio_m17_view_t *v = &sm.view.m17;
+	uint8_t seq, seq2;
+
+	m17_setup();
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	mfar_begin("N0CALL", 0, false);
+	// Cut short three times (the board won't key): given up at the third, long before the 10 s
+	(void)radio_m17_sms_result(&seq, NULL);
+	tx_fail = true;
+	uint32_t t0 = now;
+	int tries = 0;
+	bool was_tx = false;
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Fails"));
+	for (int i = 0; i < 300 && radio_m17_sms_result(&seq2, NULL) != RADIO_M17_SMS_BUSY; i++) {
+		run(10);
+		tries += sm.view.state == RS_TX && !was_tx;
+		was_tx = sm.view.state == RS_TX;
+	}
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY && seq2 == (uint8_t)(seq + 1) && tries == 3 &&
+	      now - t0 < 3000u && !(v->flags & RADIO_M17_SMS_WAIT));
+	// Twice, then the board keys: sent
+	(void)radio_m17_sms_result(&seq, NULL);
+	tries = 0;
+	was_tx = false;
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Third time"));
+	for (int i = 0; i < 300 && tries < 2; i++) {
+		run(10);
+		tries += sm.view.state == RS_TX && !was_tx;
+		was_tx = sm.view.state == RS_TX;
+	}
+	tx_fail = false;
+	for (int i = 0; i < 300; i++) {
+		(void)radio_m17_sms_result(&seq2, NULL);
+		if (seq2 != seq) {
+			break;
+		}
+		run(10);
+	}
+	run(300);
+	CHECK(tries == 2 && radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_SENT && seq2 == (uint8_t)(seq + 1));
+	// The channel left while one waits (a call holds it), and one only staged: not sent, said at once
+	mfar_key(M17_TX_STREAM, 0);
+	run(300);
+	int calls0 = hw.tx_calls;
+	(void)radio_m17_sms_result(&seq, NULL);
+	CHECK(radio_m17_sms_send(m17a("N0CALL"), "Leaving"));
+	run(50);
+	CHECK(v->flags & RADIO_M17_SMS_WAIT);
+	req(RREQ_ZONE_POS, 0);
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY && seq2 == (uint8_t)(seq + 1) && hw.tx_calls == calls0);
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	CHECK(radio_m17_sms_stage(m17a("N0CALL"), "Staged"));
+	req(RREQ_ZONE_POS, 0);
+	CHECK(radio_m17_sms_result(&seq2, NULL) == RADIO_M17_SMS_BUSY && seq2 == (uint8_t)(seq + 2) && hw.tx_calls == calls0);
+	req(RREQ_ZONE_POS, 2);
+	run(30);
+	// Never over a call: a PTT refused (Sign M17 calls on, no key) and let go while the call goes on shows the radio
+	// idle for a moment; the SMS still waits, every time
+	kv_t3_del((uint16_t)(CODEPLUG_KEY_SYS_KEY + M17_SYS));
+	cp_m17_wide("W1AW", true, false, NULL);
+	m17_reenter();
+	run(300);
+	calls0 = hw.tx_calls;
+	CHECK(sm.view.state == RS_RX && radio_m17_sms_send(m17a("N0CALL"), "Polite"));
+	bool polite = true;
+	for (int k = 0; k < 12; k++) {
+		polite = polite && m17_ptt(60 + 10 * k) == TXDENY_SIG_NO_KEY;
+		run(30 + 10 * k);
+		polite = polite && hw.tx_calls == calls0 && (v->flags & RADIO_M17_SMS_WAIT);
+	}
+	CHECK(polite);
+	// The slot: nothing keys within 40 ms of the channel clearing
+	m17_engine_tx_stop(&mfar);
+	uint32_t clear_at = 0;
+	for (int i = 0; i < 300 && hw.tx_calls == calls0; i++) {
+		run(5);
+		if (clear_at == 0 && sm.view.state != RS_RX && !(v->flags & RADIO_M17_RX)) {
+			clear_at = now;
+		}
+	}
+	CHECK(hw.tx_calls == calls0 + 1 && clear_at != 0 && now - clear_at >= 40u);
+	run(500);
+	cp_m17_secret(M17_SYS, our_d, our_qc);
+	cp_m17_wide("W1AW", false, false, NULL);
+	m17_reenter();
+	// p = 0.25 a slot: N sends on a clear channel, the slots each waited (geometric, mean 4)
+	uint32_t slots = 0, first = 0;
+	const int n = 150;
+	for (int k = 0; k < n; k++) {
+		int c = hw.tx_calls;
+		uint32_t q = now;
+
+		CHECK(radio_m17_sms_send(m17a("N0CALL"), "csma"));
+		for (int i = 0; i < 400 && hw.tx_calls == c; i++) {
+			run(5);
+		}
+		uint32_t s = (now - q + 20u) / 40u;
+		slots += s;
+		first += s <= 1u;
+		for (int i = 0; i < 100 && (hw.keyed || (v->flags & RADIO_M17_SMS_WAIT)); i++) {
+			run(10);
+		}
+		run(10);
+	}
+	printf("# M17 CSMA: %d sends, %.2f slots each on average (p = 0.25: 4), %u in the first\n", n, (double)slots / n,
+	       first);
+	CHECK(slots >= 3u * n && slots <= 5u * n && first < (uint32_t)n / 2u && first > 0);
+	mfar_stop();
+}
+
+static void test_m17(void)
+{
+	test_m17_table();
+	test_m17_rx();
+	test_m17_tx();
+	test_m17_deny();
+	test_m17_sig();
+	test_m17_sms();
+	test_m17_sms_ours();
+	test_m17_sms_giveup();
+	test_m17_reserved();
+	test_m17_talk_over();
+	test_m17_bert();
+	test_m17_gnss();
+	test_m17_gnss_valid();
+	test_m17_bench();
+#if CONFIG_SCAN
+	test_m17_scan();
+#endif
+	test_m17_ui_store();
+	kv_t3_clear();
+	setup_codeplug();
+	req(RREQ_RELOAD, 0);
+	run(50);
+	if (radio_m17_running()) {
+		radio_m17_end();
+	}
+}
+#endif
+
 #if CONFIG_AIR
 static void air_step(void)
 {
@@ -9550,6 +11043,9 @@ static void air_step(void)
 #endif
 #if CONFIG_NXDN
 	nfar_step();
+#endif
+#if CONFIG_M17
+	mfar_step();
 #endif
 }
 #endif
@@ -11744,6 +13240,474 @@ static void test_t3_stun(void)
 }
 #endif
 
+// ---- The air modes' table (radio_air_modes.h), their names and the memory they run in (radio_air_mem.h) ----
+#include "radio/radio_air_modes.h"
+#include "radio/radio_air_mem.h"
+#if CONFIG_P25
+#include "radio/radio_p25_mem.h"
+#endif
+#if CONFIG_NXDN
+#include "nxdn/nxdn_engine.h"
+#endif
+#if CONFIG_M17
+#include "radio/radio_m17_mem.h"
+#endif
+
+#ifdef RADIO_AIR_TEST_ROW
+#define TEST_MODE	7u		// a radio_mode_t no real mode has: the fake row's (test_air_auto)
+extern const radio_air_mode_t test_air_row;
+#endif
+
+// The names each table had before radio_mode_key / radio_mode_name: debuglink_view.c's mode_key and radio_udp.c's
+// mode_names (the same list), and debuglink.c summary_line's mode word
+static const char *const old_keys[] = { "fm", "dmr", "p25", "nxdn", "m17" };
+static const char *old_word(uint8_t m)
+{
+	return m == RADIO_MODE_M17 ? "M17" : m == RADIO_MODE_NXDN ? "NXDN" : m == RADIO_MODE_P25 ? "P25" :
+	       m == RADIO_MODE_DMR ? "DMR" : "FM";
+}
+
+// The largest block of the built modes that don't run in the vocoder's loan: the arena's size
+static size_t arena_expected(void)
+{
+	size_t n = 0;
+#if CONFIG_P25 && !defined(HAL_VOCODER_LEND_BYTES)
+	n = sizeof(p25_mem_t);
+#endif
+#if CONFIG_NXDN
+	if (sizeof(nxdn_engine_t) > n) {
+		n = sizeof(nxdn_engine_t);
+	}
+#endif
+#if CONFIG_M17 && !defined(HAL_VOCODER_LEND_BYTES)
+	if (sizeof(m17_mem_t) > n) {
+		n = sizeof(m17_mem_t);
+	}
+#endif
+	return n;
+}
+
+static void test_air_table(void)
+{
+	setup_codeplug();
+	start();		// on an FM channel: no air mode runs, no block is held
+	// Mode names, for every mode the build knows and none it doesn't, byte for byte as the old tables had them
+	for (unsigned m = 0; m < 256; m++) {
+		bool known = m == RADIO_MODE_FM || m == RADIO_MODE_DMR || (m == RADIO_MODE_P25 && CONFIG_P25) ||
+			     (m == RADIO_MODE_NXDN && CONFIG_NXDN) || (m == RADIO_MODE_M17 && CONFIG_M17);
+#ifdef RADIO_AIR_TEST_ROW
+		if (m == TEST_MODE) {
+			CHECK(strcmp(radio_mode_key((uint8_t)m), "test") == 0 && strcmp(radio_mode_name((uint8_t)m), "TEST") == 0);
+			continue;
+		}
+#endif
+		if (known) {
+			CHECK(strcmp(radio_mode_key((uint8_t)m), old_keys[m]) == 0);
+			CHECK(strcmp(radio_mode_name((uint8_t)m), old_word((uint8_t)m)) == 0);
+		} else {
+			CHECK(strcmp(radio_mode_key((uint8_t)m), "?") == 0 && strcmp(radio_mode_name((uint8_t)m), "?") == 0);
+		}
+	}
+#if CONFIG_AIR
+	// One row per built mode, in the feature string's order, each with every member it must have
+	uint8_t rows = (uint8_t)(CONFIG_P25 + CONFIG_NXDN + CONFIG_M17);
+#ifdef RADIO_AIR_TEST_ROW
+	rows++;
+	CHECK(radio_air_mode_for(TEST_MODE) == &test_air_row);
+#endif
+	CHECK(radio_air_mode_count == rows && radio_air_modes[rows] == NULL);
+	CHECK(radio_air_mode_for(RADIO_MODE_FM) == NULL && radio_air_mode_for(RADIO_MODE_DMR) == NULL);
+#if CONFIG_P25
+	CHECK(radio_air_modes[0] == &radio_p25_mode && radio_air_mode_for(RADIO_MODE_P25) == &radio_p25_mode);
+	CHECK(strcmp(radio_p25_mode.features, CONFIG_P25_TRUNK ? "P25,P25_TRUNK," : "P25,") == 0);
+#else
+	CHECK(radio_air_mode_for(RADIO_MODE_P25) == NULL);
+#endif
+#if CONFIG_NXDN
+	CHECK(radio_air_modes[CONFIG_P25] == &radio_nxdn_mode && radio_air_mode_for(RADIO_MODE_NXDN) == &radio_nxdn_mode);
+	CHECK(strcmp(radio_nxdn_mode.features, "NXDN,") == 0);
+#else
+	CHECK(radio_air_mode_for(RADIO_MODE_NXDN) == NULL);
+#endif
+#if CONFIG_M17
+	CHECK(radio_air_modes[CONFIG_P25 + CONFIG_NXDN] == &radio_m17_mode &&
+	      radio_air_mode_for(RADIO_MODE_M17) == &radio_m17_mode);
+	CHECK(strcmp(radio_m17_mode.features, "M17,") == 0);
+#else
+	CHECK(radio_air_mode_for(RADIO_MODE_M17) == NULL);
+#endif
+	for (uint8_t i = 0; i < radio_air_mode_count; i++) {
+		const radio_air_mode_t *m = radio_air_modes[i];
+		CHECK(radio_air_mode_for(m->mode) == m && m->mode > RADIO_MODE_DMR);
+		CHECK(strcmp(m->key, radio_mode_key(m->mode)) == 0 && strcmp(m->name, radio_mode_name(m->mode)) == 0);
+		CHECK(m->features != NULL && m->fits != NULL && m->take != NULL && m->begin != NULL && m->end != NULL &&
+		      m->running != NULL && m->retuned != NULL && m->apply != NULL && m->poll != NULL && m->rx != NULL &&
+		      m->heard != NULL && m->played != NULL && m->view_off != NULL && m->ops != NULL);
+		const radio_air_ops_t *o = m->ops;
+		CHECK(o->running == m->running && o->tx_prepare != NULL && o->tx_go != NULL && o->tx_stop != NULL &&
+		      o->tx_abort != NULL && o->tx_state != NULL && o->tx_clear != NULL);
+		CHECK(!m->running());
+	}
+#if CONFIG_P25
+	CHECK(radio_p25_mode.tx_deny == NULL && radio_p25_mode.auto_tx == NULL && radio_p25_mode.receives == NULL);
+#endif
+#if CONFIG_NXDN
+	CHECK(radio_nxdn_mode.tx_deny == NULL && radio_nxdn_mode.auto_tx == NULL &&
+	      radio_nxdn_mode.receives == radio_nxdn_receives);
+#endif
+
+	// The feature string: what build_modes_now gave before the table (build_info.c's literals), and the fitting rows'
+	// features in the table's order. Where the board carries nothing, nothing
+	static const char old_modes[] =
+#if CONFIG_P25_TRUNK
+		"P25,P25_TRUNK,"
+#elif CONFIG_P25
+		"P25,"
+#endif
+#if CONFIG_NXDN
+		"NXDN,"
+#endif
+#if CONFIG_M17
+		"M17,"
+#endif
+		"";
+	char cat[64] = "";
+	for (uint8_t i = 0; i < radio_air_mode_count; i++) {
+		if (radio_air_modes[i]->fits()) {
+			strcat(cat, radio_air_modes[i]->features);
+		}
+	}
+#ifdef RADIO_AIR_TEST_ROW
+	CHECK(strcmp(cat, "") == 0);	// the fake row adds nothing
+#endif
+	CHECK(strcmp(build_modes_now(), old_modes) == 0 && strcmp(build_modes_now(), cat) == 0);
+	air_nofit = true;
+	CHECK(strcmp(build_modes_now(), "") == 0);
+	air_nofit = false;
+#endif
+
+	// The arena: the largest built block not lent, 8-byte aligned, one mode at a time
+	CHECK(radio_air_mem_arena() == arena_expected());
+	if (radio_air_mem_arena() != 0) {
+		uint8_t a = CONFIG_NXDN ? RADIO_MODE_NXDN : RADIO_MODE_P25;
+		uint8_t b = a == RADIO_MODE_NXDN ? RADIO_MODE_FM : RADIO_MODE_NXDN;
+		void *p = radio_air_mem_get(a, radio_air_mem_arena());
+		CHECK(p != NULL && ((uintptr_t)p & 7u) == 0 && !radio_air_mem_lent(a));
+		CHECK(radio_air_mem_get(a, 16) == NULL && radio_air_mem_get(b, 16) == NULL);	// held: twice fails
+		radio_air_mem_put(b);			// not the holder's: nothing
+		CHECK(radio_air_mem_get(a, 16) == NULL);
+		radio_air_mem_put(a);			// put frees
+		CHECK(radio_air_mem_get(b, 16) == p);
+		radio_air_mem_put(b);
+		CHECK(radio_air_mem_get(a, radio_air_mem_arena() + 1u) == NULL);	// too big
+		CHECK(radio_air_mem_get(a, 1) == p);
+		radio_air_mem_put(a);
+	} else {
+		CHECK(radio_air_mem_get(RADIO_MODE_NXDN, 1) == NULL && radio_air_mem_get(RADIO_MODE_FM, 1) == NULL);
+	}
+#ifdef HAL_VOCODER_LEND_BYTES
+#if CONFIG_P25
+	// P25 runs in the vocoder's loan: lent, refused when the vocoder lends nothing or too little
+	void *l = radio_air_mem_get(RADIO_MODE_P25, sizeof(p25_mem_t));
+	CHECK(l == (void *)lend_mem && radio_air_mem_lent(RADIO_MODE_P25) && !radio_air_mem_lent(RADIO_MODE_NXDN));
+#if CONFIG_NXDN || CONFIG_M17
+	// With the arena (or a second mode in the loan) one at a time: a second get fails, put frees
+	CHECK(radio_air_mem_get(RADIO_MODE_P25, sizeof(p25_mem_t)) == NULL);
+	CHECK(radio_air_mem_get(RADIO_MODE_NXDN, 1) == NULL);
+	radio_air_mem_put(RADIO_MODE_P25);
+	CHECK(!radio_air_mem_lent(RADIO_MODE_P25));
+#else
+	// The loan is P25's alone: nothing is kept, the vocoder is asked at each start as before the arena
+	CHECK(radio_air_mem_get(RADIO_MODE_P25, sizeof(p25_mem_t)) == l);
+	radio_air_mem_put(RADIO_MODE_P25);
+#endif
+	CHECK(radio_air_mem_get(RADIO_MODE_P25, HAL_VOCODER_LEND_BYTES + 1u) == NULL);
+	lend_refuse = true;
+	CHECK(radio_air_mem_get(RADIO_MODE_P25, 8) == NULL);
+	lend_refuse = false;
+	CHECK(radio_air_mem_get(RADIO_MODE_P25, 8) == l);
+	radio_air_mem_put(RADIO_MODE_P25);
+#endif
+#endif
+#if CONFIG_AIR
+	// What runs holds its block, what stops gives it back: the VFO in each built mode, then in FM again
+	static const uint8_t modes[] = { RADIO_MODE_P25, RADIO_MODE_NXDN, RADIO_MODE_M17 };
+	req(RREQ_VFO, 1);
+	req(RREQ_VFO_SET, 446100000);
+	for (unsigned i = 0; i < sizeof modes; i++) {
+		const radio_air_mode_t *m = radio_air_mode_for(modes[i]);
+		if (m == NULL) {
+			continue;
+		}
+		req(RREQ_MODE, modes[i]);
+		CHECK(sm.view.ch.mode == modes[i] && m->running());
+		CHECK(radio_air_mem_get(RADIO_MODE_FM, 1) == NULL);	// held while it runs (the arena or the loan)
+		req(RREQ_MODE, RADIO_MODE_FM);
+		CHECK(sm.view.ch.mode == RADIO_MODE_FM && !m->running());
+		void *p = radio_air_mem_get(modes[i], 1);
+		CHECK(p != NULL);
+		radio_air_mem_put(modes[i]);
+	}
+#if CONFIG_P25 && CONFIG_NXDN
+	// From one air mode straight to the other: the one running gives its block back before the next asks (the arena
+	// or the loan, one at a time), both ways
+	req(RREQ_MODE, RADIO_MODE_P25);
+	CHECK(radio_p25_running() && !radio_nxdn_running());
+	req(RREQ_MODE, RADIO_MODE_NXDN);
+	CHECK(sm.view.ch.mode == RADIO_MODE_NXDN && radio_nxdn_running() && !radio_p25_running());
+	req(RREQ_MODE, RADIO_MODE_P25);
+	CHECK(sm.view.ch.mode == RADIO_MODE_P25 && radio_p25_running() && !radio_nxdn_running());
+	req(RREQ_MODE, RADIO_MODE_FM);
+	CHECK(!radio_p25_running() && !radio_nxdn_running() && radio_air_mem_get(RADIO_MODE_NXDN, 1) != NULL);
+	radio_air_mem_put(RADIO_MODE_NXDN);
+#endif
+	req(RREQ_VFO, 0);
+#endif
+}
+
+#ifdef RADIO_AIR_TEST_ROW
+// ---- A fake air mode's row (RADIO_AIR_TEST_ROW, radioCoreTestAirRow): its own transmissions, ONCE and HOLD ----
+static struct {
+	bool on, rx, refuse;
+	uint8_t deny;		// tx_deny's answer (TXDENY_*)
+	uint8_t tx;		// air_tx_state_t
+	uint8_t ending;		// ticks from tx_stop to AIR_TX_DONE
+	uint8_t answer;		// auto_tx's answer while not keyed (ONCE: once, then NO)
+	uint8_t hold_for;	// keyed: HOLD this many more asks, then NO
+	uint32_t begins, asks, keyed_asks, stops, aborts, prepares;
+	bool busy;		// the last ask's
+} fk;
+
+static bool fk_fits(void) { return true; }
+static bool fk_take(channel_t *ch) { (void)ch; return false; }	// no codeplug kind: a mode change for now runs it
+static bool fk_begin(const channel_t *ch, uint16_t number, uint32_t own_id)
+{
+	(void)ch;
+	(void)number;
+	(void)own_id;
+	fk.on = true;
+	fk.tx = AIR_TX_IDLE;
+	fk.begins++;
+	return true;
+}
+static void fk_end(void) { fk.on = false; fk.tx = AIR_TX_IDLE; }
+static bool fk_running(void) { return fk.on; }
+static void fk_retuned(void) {}
+static void fk_apply(const channel_t *ch, uint16_t number, uint32_t own_id) { (void)ch; (void)number; (void)own_id; }
+// The engine's end of a transmission: some ticks after the stop
+static bool fk_poll(radio_view_t *v)
+{
+	(void)v;
+	if (fk.tx == AIR_TX_ENDING && fk.ending != 0 && --fk.ending == 0) {
+		fk.tx = AIR_TX_DONE;
+	}
+	return false;
+}
+static bool fk_rx(const radio_view_t *v) { (void)v; return fk.rx; }
+static uint8_t fk_heard(const radio_view_t *v) { (void)v; return fk.rx ? RADIO_AIR_HEARD_OTHER : RADIO_AIR_HEARD_NONE; }
+static bool fk_played(const radio_view_t *v) { (void)v; return false; }
+static void fk_view_off(radio_view_t *v) { (void)v; }
+static uint8_t fk_auto(bool busy, bool keyed, uint32_t now_ms)
+{
+	(void)now_ms;
+	fk.busy = busy;
+	if (keyed) {
+		fk.keyed_asks++;
+		if (fk.hold_for == 0) {
+			return RADIO_AIR_AUTO_NO;
+		}
+		fk.hold_for--;
+		return RADIO_AIR_AUTO_HOLD;
+	}
+	fk.asks++;
+	uint8_t a = fk.answer;
+	if (a == RADIO_AIR_AUTO_ONCE) {
+		fk.answer = RADIO_AIR_AUTO_NO;	// one packet
+	}
+	return a;
+}
+static uint8_t fk_tx_deny(void) { return fk.deny; }
+static bool fk_tx_prepare(void)
+{
+	fk.prepares++;
+	if (fk.refuse) {
+		return false;
+	}
+	fk.tx = AIR_TX_PRIMING;
+	return true;
+}
+static bool fk_tx_go(void) { fk.tx = AIR_TX_ON; return true; }
+static void fk_tx_stop(void)
+{
+	fk.stops++;
+	if (fk.tx == AIR_TX_ON || fk.tx == AIR_TX_PRIMING) {
+		fk.tx = AIR_TX_ENDING;
+		fk.ending = 3;
+	}
+}
+static void fk_tx_abort(void) { fk.aborts++; fk.tx = fk.tx == AIR_TX_IDLE ? AIR_TX_IDLE : AIR_TX_DONE; }
+static uint8_t fk_tx_state(void) { return fk.tx; }
+static void fk_tx_clear(void) { fk.tx = AIR_TX_IDLE; }
+static const radio_air_ops_t fk_ops = {
+	fk_running, NULL, fk_tx_prepare, fk_tx_go, fk_tx_stop, fk_tx_abort, fk_tx_state, fk_tx_clear,
+};
+const radio_air_mode_t test_air_row = {
+	.mode = TEST_MODE, .key = "test", .name = "TEST", .features = "", .fits = fk_fits, .take = fk_take,
+	.receives = NULL, .begin = fk_begin, .end = fk_end, .running = fk_running, .retuned = fk_retuned,
+	.apply = fk_apply, .poll = fk_poll, .rx = fk_rx, .heard = fk_heard, .played = fk_played,
+	.view_off = fk_view_off, .tx_deny = fk_tx_deny, .auto_tx = fk_auto, .ops = &fk_ops,
+};
+
+// Until the radio is idle again after the fake engine's end (at most ms)
+static void run_until_idle(uint32_t ms)
+{
+	for (uint32_t t = 0; t < ms && (sm.view.state != RS_IDLE || sm.air_tx); t += 5) {
+		run(5);
+	}
+}
+
+static void test_air_auto(void)
+{
+	setup_codeplug();
+	start();
+	memset(&fk, 0, sizeof(fk));
+	// A mode change for now puts the channel in the fake mode: the board in its digital mode, the engine started
+	req(RREQ_MODE, TEST_MODE);
+	CHECK(sm.view.ch.mode == TEST_MODE && fk.on && fk.begins == 1 && hw_mode == RADIO_MODE_DMR && !sim.started);
+	CHECK(hw.rx_bw == RADIO_BW_12K5);
+	run(100);
+	CHECK(fk.asks > 0 && sm.view.state == RS_IDLE && hw.tx_calls == 0 && !fk.busy);	// asked, NO: nothing
+
+	// ONCE: keyed as for PTT, the radio's own (tx_auto), let go at once; the engine ends it, the radio back to idle
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	uint32_t asks = fk.asks;
+	run(RADIO_TICK_MS);
+	CHECK(fk.asks == asks + 1 && sm.view.state == RS_TX && sm.view.tx_auto && hw.keyed && hw.tx_calls == 1);
+	CHECK(hw.tx_hz == sm.view.ch.tx_hz && hw.tx_bw == RADIO_BW_12K5 && hw.tx_tone.type == TONE_NONE);
+	CHECK(fk.stops == 1 && fk.tx == AIR_TX_ENDING && fk.keyed_asks == 0);
+	CHECK(!radio_view_wakes(&sm.view));	// not the user's: the screen stays as it was
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed && hw.tx_off_calls == 1 && fk.tx == AIR_TX_IDLE && fk.stops == 1);
+	CHECK(sm.view.tx_deny == TXDENY_NONE && fk.keyed_asks == 0);
+	run(200);
+	CHECK(hw.tx_calls == 1);		// one packet
+
+	// HOLD: keyed, asked again (keyed) every tick while it holds; NO lets go (tx_stop), then the end
+	fk.answer = RADIO_AIR_AUTO_HOLD;
+	fk.hold_for = 4;
+	run(RADIO_TICK_MS);
+	CHECK(sm.view.state == RS_TX && sm.view.tx_auto && hw.keyed && hw.tx_calls == 2 && fk.stops == 1);
+	fk.answer = RADIO_AIR_AUTO_NO;
+	for (int i = 0; i < 4; i++) {
+		uint32_t k = fk.keyed_asks;
+		run(RADIO_TICK_MS);
+		CHECK(fk.keyed_asks == k + 1 && sm.view.state == RS_TX && hw.keyed && fk.stops == 1);
+	}
+	run(RADIO_TICK_MS);			// the fifth keyed ask: NO
+	CHECK(fk.keyed_asks == 5 && fk.stops == 2 && fk.tx == AIR_TX_ENDING);
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed && hw.tx_off_calls == 2 && fk.keyed_asks == 5);
+
+	// HOLD past the TX time-out: cut (the abort), no refusal shown (no PTT), not asked again while it ends
+	sm.view.tot_s = 1;
+	fk.answer = RADIO_AIR_AUTO_HOLD;
+	fk.hold_for = 255;
+	run(RADIO_TICK_MS);
+	fk.answer = RADIO_AIR_AUTO_NO;
+	CHECK(sm.view.state == RS_TX && hw.keyed && hw.tx_calls == 3);
+	run(1100);
+	CHECK(fk.aborts == 1 && sm.view.state == RS_IDLE && !hw.keyed && hw.tx_off_calls == 3);
+	CHECK(sm.view.tx_deny == TXDENY_NONE);
+	uint32_t k = fk.keyed_asks;
+	run(200);
+	CHECK(fk.keyed_asks == k && hw.tx_calls == 3);
+	sm.view.tot_s = 180;
+
+	// busy: a reception (the engine hears a call) or a carrier by the noise reading
+	fk.rx = true;
+	run(RADIO_TICK_MS * 2);
+	CHECK(sm.view.state == RS_RX && fk.busy);
+	fk.rx = false;
+	run(RADIO_TICK_MS * 2);
+	CHECK(sm.view.state == RS_IDLE && !fk.busy);
+	rx_signal(10, true);
+	run(RADIO_POLL_MS + RADIO_TICK_MS);
+	CHECK(fk.busy);
+	rx_signal(120, true);
+	run(RADIO_POLL_MS + RADIO_TICK_MS);
+	CHECK(!fk.busy);
+	// ... and a ONCE while receiving ends the reception and keys
+	fk.rx = true;
+	run(RADIO_TICK_MS * 2);
+	CHECK(sm.view.state == RS_RX);
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	run(RADIO_TICK_MS);
+	CHECK(sm.view.state == RS_TX && sm.view.tx_auto && hw.tx_calls == 4 && fk.busy);
+	fk.rx = false;
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && hw.tx_off_calls == 4);
+
+	// Not asked where PTT wouldn't key (transmit inhibited), nor while PTT is held
+	asks = fk.asks;
+	sm.set.tx_inhibit = true;
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	run(200);
+	CHECK(fk.asks == asks && hw.tx_calls == 4 && sm.view.state == RS_IDLE);
+	sm.set.tx_inhibit = false;
+	fk.answer = RADIO_AIR_AUTO_NO;
+	req(RREQ_PTT, 1);
+	CHECK(sm.view.state == RS_TX && !sm.view.tx_auto && hw.tx_calls == 5);
+	asks = fk.asks;
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	run(200);
+	CHECK(fk.asks == asks && fk.keyed_asks == k);
+	req(RREQ_PTT, 0);
+	fk.answer = RADIO_AIR_AUTO_NO;
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed);
+
+	// The engine refuses the transmission: nothing keyed, no refusal shown or beeped, asked again later
+	fk.refuse = true;
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	uint32_t prepares = fk.prepares;
+	run(RADIO_TICK_MS);
+	CHECK(fk.prepares == prepares + 1 && sm.view.state == RS_IDLE && sm.view.tx_deny == TXDENY_NONE && !hw.keyed);
+	CHECK(!sm.deny_led);
+	fk.refuse = false;
+	fk.answer = RADIO_AIR_AUTO_NO;
+
+	// The mode's own refusal (tx_deny): PTT shows it with the mode's reason, nothing queued or keyed; the mode isn't
+	// asked for a transmission of its own while it would refuse it, and is once it wouldn't
+	int calls = hw.tx_calls;
+	prepares = fk.prepares;
+	fk.deny = TXDENY_MODE;
+	req(RREQ_PTT, 1);
+	CHECK(sm.view.state == RS_TX_DENIED && sm.view.tx_deny == TXDENY_MODE && fk.prepares == prepares);
+	CHECK(hw.tx_calls == calls && !hw.keyed);
+	req(RREQ_PTT, 0);
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && sm.view.tx_deny == TXDENY_NONE);
+	asks = fk.asks;
+	fk.answer = RADIO_AIR_AUTO_ONCE;
+	run(200);
+	CHECK(fk.asks == asks && fk.prepares == prepares && hw.tx_calls == calls && sm.view.state == RS_IDLE);
+	CHECK(sm.view.tx_deny == TXDENY_NONE);
+	fk.deny = TXDENY_NONE;
+	run(RADIO_TICK_MS);
+	CHECK(fk.asks == asks + 1 && sm.view.state == RS_TX && sm.view.tx_auto && hw.tx_calls == calls + 1);
+	run_until_idle(1000);
+	CHECK(sm.view.state == RS_IDLE && !hw.keyed);
+
+	// Off the mode: the engine ends, nothing asked
+	req(RREQ_MODE, RADIO_MODE_FM);
+	CHECK(!fk.on && sm.view.ch.mode == RADIO_MODE_FM);
+	asks = fk.asks;
+	run(200);
+	CHECK(fk.asks == asks && !hw.keyed);
+	CHECK(rekeys == 0);
+}
+#endif
+
 int main(void)
 {
 	test_tx_limit_op();
@@ -11877,6 +13841,13 @@ int main(void)
 #endif
 #if CONFIG_NXDN
 	test_nxdn();
+#endif
+#if CONFIG_M17
+	test_m17();
+#endif
+	test_air_table();
+#ifdef RADIO_AIR_TEST_ROW
+	test_air_auto();
 #endif
 	test_dmr_data_glue();	// (last: the data service's state carries over)
 	test_factory_reset();

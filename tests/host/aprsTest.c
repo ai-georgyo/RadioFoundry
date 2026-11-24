@@ -23,6 +23,22 @@
 #include "aprs/aprs_beacon.h"
 #include "aprs/aprs_igate.h"
 #include "fuzz.h"
+#include "position/position_geo.h"
+
+// The range and bearing Stations heard shows, from the one helper every mode uses (core/position/position_geo.c)
+static uint32_t geo_m(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2)
+{
+	uint32_t m;
+	position_range(lat1, lon1, lat2, lon2, &m, NULL);
+	return m;
+}
+
+static uint16_t geo_deg(int32_t lat1, int32_t lon1, int32_t lat2, int32_t lon2)
+{
+	uint16_t d;
+	position_range(lat1, lon1, lat2, lon2, NULL, &d);
+	return d;
+}
 
 static int failures = 0;
 
@@ -442,21 +458,21 @@ static void test_messages(void)
 static void test_geo(void)
 {
 	// one degree of latitude: 111.2 km
-	uint32_t d = aprs_distance_m(0, 0, APRS_DEG, 0);
+	uint32_t d = geo_m(0, 0, APRS_DEG, 0);
 	CHECK(d > 111100 && d < 111300, "1 deg %u", d);
-	CHECK(aprs_bearing_deg(0, 0, APRS_DEG, 0) == 0, "north");
-	CHECK(aprs_bearing_deg(0, 0, 0, APRS_DEG) == 90, "east");
-	CHECK(aprs_bearing_deg(0, 0, -APRS_DEG, 0) == 180, "south");
-	CHECK(aprs_bearing_deg(0, 0, 0, -APRS_DEG) == 270, "west");
+	CHECK(geo_deg(0, 0, APRS_DEG, 0) == 0, "north");
+	CHECK(geo_deg(0, 0, 0, APRS_DEG) == 90, "east");
+	CHECK(geo_deg(0, 0, -APRS_DEG, 0) == 180, "south");
+	CHECK(geo_deg(0, 0, 0, -APRS_DEG) == 270, "west");
 	// across the date line: 179.5 E to 179.5 W is 1 degree of longitude on the equator
-	d = aprs_distance_m(0, 1795000000, 0, -1795000000);
+	d = geo_m(0, 1795000000, 0, -1795000000);
 	CHECK(d > 111100 && d < 111300, "date line %u", d);
 	char b[4];
 	aprs_base91(15427503, 4, b);
 	CHECK(memcmp(b, "5L!!", 4) == 0 && aprs_base91_value("5L!!", 4) == 15427503, "base91");
 }
 
-// The range Stations heard shows (aprs_distance_m, aprs_bearing_deg), at its limits (BVA)
+// The range Stations heard shows (position_range), at its limits (BVA)
 #define HALF_EARTH_M	20015087u	// pi * 6371 km, the farthest two points can be
 #define LAT_MAX		(90 * APRS_DEG)
 #define LON_MAX		(180 * APRS_DEG)
@@ -494,8 +510,8 @@ static void test_geo_limits(void)
 		{ "0.6: 1", 0, 0, 1000000, 10472, 0, HALF_EARTH_M, 1 },
 	};
 	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-		uint32_t d = aprs_distance_m(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
-		uint16_t b = aprs_bearing_deg(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
+		uint32_t d = geo_m(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
+		uint16_t b = geo_deg(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
 		CHECK(d >= cases[i].lo && d <= cases[i].hi, "geo %s: %u m", cases[i].name, d);
 		CHECK(b < 360 && (cases[i].deg < 0 || b == cases[i].deg), "geo %s: %u deg", cases[i].name, b);
 	}
@@ -529,19 +545,19 @@ static void test_geo_props(void)
 			la2 = -la1 + (int32_t)fuzz_below(&f, 2001) - 1000;
 			lo2 = lo1 > 0 ? lo1 - LON_MAX : lo1 + LON_MAX;
 		}
-		uint32_t d12 = aprs_distance_m(la1, lo1, la2, lo2), d21 = aprs_distance_m(la2, lo2, la1, lo1);
-		uint32_t d13 = aprs_distance_m(la1, lo1, la3, lo3), d23 = aprs_distance_m(la2, lo2, la3, lo3);
-		uint16_t b = aprs_bearing_deg(la1, lo1, la2, lo2);
+		uint32_t d12 = geo_m(la1, lo1, la2, lo2), d21 = geo_m(la2, lo2, la1, lo1);
+		uint32_t d13 = geo_m(la1, lo1, la3, lo3), d23 = geo_m(la2, lo2, la3, lo3);
+		uint16_t b = geo_deg(la1, lo1, la2, lo2);
 		// The triangle with 5 km to spare: near the antipode, 1 - a in float steps by 1.2e-7, which is 2.2 km of arc
 		bool ok = d12 <= HALF_EARTH_M + 50u && (d12 > d21 ? d12 - d21 : d21 - d12) <= 2u &&
-			  aprs_distance_m(la1, lo1, la1, lo1) == 0 && b < 360 && d13 <= d12 + d23 + 5000u;
+			  geo_m(la1, lo1, la1, lo1) == 0 && b < 360 && d13 <= d12 + d23 + 5000u;
 		// 360 degrees on: float rounding of the angle (1e-7 rad is 0.6 m) is all that may change. The bearing only
 		// where it means something: not at the point itself, near its antipode or from a pole (every way leads there)
 		int64_t shifted = (int64_t)lo2 + (lo2 < 0 ? 360 : -360) * (int64_t)APRS_DEG;
 		if (shifted >= INT32_MIN && shifted <= INT32_MAX && d12 > 1000u && d12 < HALF_EARTH_M - 10000u &&
 		    la1 < LAT_MAX - 100000 && la1 > -LAT_MAX + 100000) {
-			uint32_t ds = aprs_distance_m(la1, lo1, la2, (int32_t)shifted);
-			int db = (int)aprs_bearing_deg(la1, lo1, la2, (int32_t)shifted) - (int)b;
+			uint32_t ds = geo_m(la1, lo1, la2, (int32_t)shifted);
+			int db = (int)geo_deg(la1, lo1, la2, (int32_t)shifted) - (int)b;
 			db = db < -180 ? db + 360 : db > 180 ? db - 360 : db;
 			uint32_t tol = d12 < HALF_EARTH_M / 2u ? 20u : 5000u;	// the far half: float as near the antipode
 			ok = ok && (ds > d12 ? ds - d12 : d12 - ds) <= tol && db >= -1 && db <= 1;
@@ -586,8 +602,8 @@ static void test_geo_known(void)
 		{ "over the pole", 899000000, 100000000, 899000000, -1700000000, 22239, 0 },
 	};
 	for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-		uint32_t d = aprs_distance_m(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
-		uint16_t b = aprs_bearing_deg(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
+		uint32_t d = geo_m(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
+		uint16_t b = geo_deg(cases[i].lat1, cases[i].lon1, cases[i].lat2, cases[i].lon2);
 		uint32_t tol = 2u + cases[i].m / 5000u;	// 2e-4 of the range (the measured worst: 1.4e-4 at 100 km)
 		CHECK(d + tol >= cases[i].m && d <= cases[i].m + tol, "known %s: %u m, want %u", cases[i].name, d,
 		      cases[i].m);
@@ -622,7 +638,7 @@ static void test_geo_accuracy(void)
 		    la2 < -LAT_MAX + 10000) {
 			continue;
 		}
-		uint32_t d = aprs_distance_m(la1, lo1, la2, lo2);
+		uint32_t d = geo_m(la1, lo1, la2, lo2);
 		long double e = d > m ? d - m : m - d;
 		bool ok = e <= 2.0L + m / 5000.0L;
 		// Nor near the antipode: the course to a point on the far side of the globe is any of them. The bearing's y
@@ -631,13 +647,13 @@ static void test_geo_accuracy(void)
 		// as the code is. The distance is checked all the same
 		if (m > 20.0L && m < 20015087.0L - 1000.0L && la1 < LAT_MAX - 10000000 && la1 > -LAT_MAX + 10000000 && la2 < LAT_MAX - 10000000 &&
 		    la2 > -LAT_MAX + 10000000) {
-			long double eb = fabsl((long double)aprs_bearing_deg(la1, lo1, la2, lo2) - deg);
+			long double eb = fabsl((long double)geo_deg(la1, lo1, la2, lo2) - deg);
 			ok = ok && (eb <= 0.6L || eb >= 359.4L);
 		}
 		if (!ok) {
 			bad++;
 			CHECK(false, "geo accuracy (%d,%d)-(%d,%d): %u m, ref %.1Lf, %u deg, ref %.2Lf", la1, lo1, la2, lo2, d,
-			      m, aprs_bearing_deg(la1, lo1, la2, lo2), deg);
+			      m, geo_deg(la1, lo1, la2, lo2), deg);
 		}
 	}
 }
