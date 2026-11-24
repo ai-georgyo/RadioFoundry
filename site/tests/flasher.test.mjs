@@ -397,6 +397,23 @@ test("the bootloader route's Install asks before an install without a codec", ()
 	assert.match(body.slice(0, ask), /S\.requested = null; S\.step--/);
 });
 
+// app.js needs the DOM, so its source is checked: a codeplug restore that kept protected data where the backup's differs
+// says so on the page, with the way to write it back, not only in the diagnostics trail
+test("the codeplug restore shows the protected data it kept", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const at = src.indexOf("const kept = keptDiffering(");
+	const step = src.slice(at, src.indexOf("S.forward(go);", at));
+	assert.match(step, /if \(kept\.length\) status\.append\(keptNotice\(\)\);/);
+	const fn = src.slice(src.indexOf("function keptNotice("));
+	const body = fn.slice(0, fn.indexOf("\n}\n"));
+	assert.match(body, /t\("flash\.restore\.kept_differs"\)/);
+	assert.match(body, /20-troubleshooting\.html#the-factory-calibration-differs-from-the-backup/);
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	assert.match(en["flash.restore.kept_differs"], /rfoundry_debug\.py storage factory --backup/);
+	const md = readFileSync(new URL("../../docs/user/20-troubleshooting.md", import.meta.url), "utf8");
+	assert.match(md, /^## The factory calibration differs from the backup$/m, "the anchor the notice links");
+});
+
 // app.js needs the DOM, so its source is checked: the bar under every step but the last offers Report a Problem, since
 // a page stuck waiting on the radio shows no error and so no error's button (#446); the done steps have their own
 test("every step's nav bar offers Report a Problem", () => {

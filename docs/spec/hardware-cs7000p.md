@@ -1217,7 +1217,7 @@ identity gate: nothing of ours writes them, so they are this radio's backup's an
 handshake, then polls op 3 and reads the window back. Until a restore runs, the kept rewrite keeps whatever the
 window holds, blank bytes included. A codeplug restore of the backup does not bring the table back: the CPS tools and
 the web flasher's Restore send none of its bytes (`cps_client.py` names `storage factory` on stderr, the web flasher
-names the range in its log). Under a firmware without the command, the CPS read of the codeplug regions
+names the range in its log and shows a notice that points to the command). Under a firmware without the command, the CPS read of the codeplug regions
 (`tools/cps_client.py --regions codeplug read FILE`) holds 0x1000-0x11FF, and its sha256 against the backup's says
 whether the table is still there.
 

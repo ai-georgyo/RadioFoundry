@@ -397,7 +397,7 @@ tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore
 
 The radio checks the bytes before it writes them, and refuses to replace a valid calibration with another one. The
 tool first checks that the backup is this radio's, by the maker's other data in it. [Troubleshooting](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)
-explains each refusal. The web installer's **Restore** doesn't write the calibration back yet: use the command.
+explains each refusal. The web installer's **Restore** doesn't write the calibration back yet: when the backup's differs from the radio's, it says so when it finishes and points to the command.
 
 ## Limits and notes
 

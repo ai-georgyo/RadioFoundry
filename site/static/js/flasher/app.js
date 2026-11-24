@@ -3022,6 +3022,9 @@ function afterRestore() {
 			const refused = await writeCodeplug(link, sectors, (d, n) => prog.set(d, n, t("flash.restore.writing_codeplug")));
 			status.append(notice(refused.length ? t("flash.restore.codeplug_refused", { n: refused.length, total: sectors.length })
 				: t("flash.restore.codeplug_done", { n: sectors.length }), refused.length ? "" : "ok"));
+			// never carved around silently: the backup's factory data that differs stays the radio's, and the one way to
+			// write it back is the debug link's factory restore (settings-store.md 4.2), from a terminal
+			if (kept.length) status.append(keptNotice());
 			S.forward(button(t("flash.nav.finish"), () => reset(), { primary: true }));
 		} catch (e) {
 			status.append(connectError(e), serialHelp());
@@ -3058,6 +3061,13 @@ function startHelp() {
 	S.recovering = false;
 	render();
 	app.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// A restore that kept the radio's protected data where the backup's differs: says so, and how to write it back
+function keptNotice() {
+	return notice(h("span", {}, t("flash.restore.kept_differs"), " ",
+		h("a", { href: `${HOME}docs/user/20-troubleshooting.html#the-factory-calibration-differs-from-the-backup`, target: "_blank", rel: "noopener" },
+			t("flash.restore.kept_differs_link"))), "action");
 }
 
 // Under every failure: troubleshooting, and the bug report
