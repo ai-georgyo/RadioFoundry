@@ -96,7 +96,13 @@ static bool op_rx_plan(void *ctx, uint32_t hz, uint32_t *vco_hz, uint16_t *tune_
 		return false;
 	}
 	*vco_hz = p.vco_hz;
-	*tune_dac = rf->tune_override != 0u ? cs7000p_cal_tune_clamp(rf->tune_override) : cs7000p_cal_rx_tune(rf->cal, hz);
+	// The bench's value (chip_reg 3:0), else the maker's tune row, else the model's or the nominal value
+	if (rf->tune_override != 0u) {
+		*tune_dac = cs7000p_cal_tune_clamp(rf->tune_override);
+		rf->tune_src = CS7000P_SRC_BENCH;
+	} else {
+		*tune_dac = cs7000p_cal_rx_tune_m(rf->cal, rf->maker, hz, &rf->tune_src);
+	}
 	rf->rx_tune = *tune_dac;
 	return true;
 }
@@ -134,6 +140,8 @@ void cs7000p_rf_init(cs7000p_rf_t *rf, const cs7000p_rf_io_t *io, const cs7000p_
 		.cal = cal,
 		.lo_high = CS7000P_LO_HIGH != 0,
 		.ref_offset = cs7000p_cal_ref_offset(cal),
+		.rx_ref = cs7000p_cal_ref_offset(cal),
+		.ref_why = CS7000P_RXREF_WHY_TABLE,	// until the radio gives the table in use and receives
 		.ops = {
 			.line = op_line,
 			.synth = op_synth,
@@ -376,6 +384,18 @@ uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t lev
 uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf)
 {
 	return rf->seq.state == CHAINSEQ_ST_TX ? cs7000p_rf_drive_level(rf, rf->seq.tx_hz, CS7000P_POWER_LEVELS - 1u) : 0u;
+}
+
+int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf)
+{
+	if (rf->ref_override) {
+		rf->ref_src = CS7000P_SRC_BENCH;
+		rf->ref_why = CS7000P_RXREF_WHY_NONE;
+		rf->rx_ref = rf->ref_offset;
+	} else {
+		rf->rx_ref = cs7000p_cal_rx_ref_m(rf->cal, rf->maker, &rf->ref_src, &rf->ref_why);
+	}
+	return rf->rx_ref;
 }
 
 bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *mod1)

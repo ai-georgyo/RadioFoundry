@@ -8,7 +8,8 @@
 // refused: no calibration (nothing is written), the bench drive's conditions one by one, the reference's settle
 // time, the battery, the power's off state, an unlocked synthesizer, a refused write, a safe request from outside.
 // Last the VCO line by frequency: the owner's 433.5 MHz receive set-up and bench key-up write for write as before
-// the rule, and the line on both sides of each switch point.
+// the rule, and the line on both sides of each switch point. Then the same run with the maker's table in use: only
+// the receive tuning values move, and nothing transmits on it.
 #include <stdio.h>
 #include <string.h>
 #include "rfops_cs7000p.h"
@@ -191,6 +192,9 @@ static void clear_log(void)
 	ev_n = 0;
 }
 
+// The maker's table the next bring-up gives the chain (NULL: none, as every test but test_maker_table runs)
+static const cs7000p_maker_t *run_maker;
+
 // A radio after reset and start-up, with the given calibration; receiving on rx_hz when that is not 0
 static void bring_up(const cs7000p_cal_t *cal, uint32_t rx_hz)
 {
@@ -207,6 +211,7 @@ static void bring_up(const cs7000p_cal_t *cal, uint32_t rx_hz)
 	drive_cap = CS7000P_DAC_MAX;
 	clear_log();
 	cs7000p_rf_init(&rf, &io, cal);
+	rf.maker = run_maker;	// as the radio sets it after the init
 	CHECK(cs7000p_rf_start(&rf, T0));
 	if (rx_hz != 0) {
 		CHECK(cs7000p_rf_rx(&rf, rx_hz, true));
@@ -1213,6 +1218,80 @@ static void test_vco_rule(void)
 #endif
 }
 
+// The maker's table in use, valid (invented: every group passed, a tune row of code 150 at 433.5 MHz): the chain
+// receives on the row and transmits as without the table. The owner's 433.5 MHz run writes as before but for the
+// receive tuning values, so a bench key-up's own writes are today's (the modem's held level, which carries trim A
+// with a table, is not this test's: cs7000pRadioTest); no level or mode is admitted without the bench drive
+static void test_maker_table(void)
+{
+	static cs7000p_maker_t m;
+	static const uint32_t pts[8] = { 400500000u, 420000000u, 440000000u, 460000000u, 478950000u, 479050000u,
+					 495000000u, 511500000u };
+	memset(&m, 0, sizeof(m));
+	m.state = CS7000P_MK_OK;
+	m.valid = true;
+	m.fields = CS7000P_MK_F_ALL;
+	m.trim_a = 0x7B;
+	m.trim_b = 0x7D;
+	m.rssi_lo = 60;
+	m.rssi_hi = 160;
+	for (unsigned i = 0; i < CS7000P_MAKER_POINTS; i++) {
+		m.rx_hz[i] = m.tx_hz[i] = pts[i];
+		m.rx_p10[i] = m.tx_p10[i] = pts[i] / 10u;
+		for (unsigned r = 0; r < CS7000P_MK_ROWS; r++) {
+			m.row[r][i] = 150;
+		}
+	}
+	m.row[CS7000P_MK_POWER_LO][0] = 100;	// high above low at every point
+	uint16_t tune = 0;
+	CHECK(cs7000p_maker_rx_tune(&m, F_OWNER, &tune, NULL) && tune == 16u * 150u && tune != CS7000P_RX_TUNE_NOMINAL);
+
+	run_maker = &m;
+	owner_ev_t want[sizeof(owner_fm) / sizeof(owner_fm[0])];
+	const int n = (int)(sizeof(want) / sizeof(want[0]));
+	int moved = 0;
+	for (int i = 0; i < n; i++) {
+		want[i] = owner_fm[i];
+		if (want[i].type == EV_DAC && want[i].a == CS7000P_RX_TUNE_NOMINAL) {
+			want[i].a = tune;	// the receive set-ups' tuning value; the key-up's ramp is the bench drive's
+			moved++;
+		}
+	}
+	CHECK(moved == 3);
+	owner_run(0);
+	owner_match(want, n, __LINE__);
+	CHECK(rf.tune_src == CS7000P_SRC_MAKER && rf.rx_tune == tune && inv_fail == 0 && trips == 0);
+#if CONFIG_DMR
+	owner_ev_t want_dmr[sizeof(owner_dmr) / sizeof(owner_dmr[0])];
+	const int n_dmr = (int)(sizeof(want_dmr) / sizeof(want_dmr[0]));
+	for (int i = 0; i < n_dmr; i++) {
+		want_dmr[i] = owner_dmr[i];
+		if (want_dmr[i].type == EV_DAC && want_dmr[i].a == CS7000P_RX_TUNE_NOMINAL) {
+			want_dmr[i].a = tune;
+		}
+	}
+	owner_run(1);
+	owner_match(want_dmr, n_dmr, __LINE__);
+	CHECK(inv_fail == 0 && trips == 0);
+#endif
+
+	// Nothing transmits on it: every level and mode is refused as uncalibrated, even with a list naming the
+	// frequency, and nothing is written; no modulation pair comes from it
+	for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+		for (int dmr = 0; dmr < 2; dmr++) {
+			bring_up(&cs7000p_cal_model, F_OWNER);
+			cs7000p_tx_req_t q = req(F_OWNER, level, dmr != 0);
+			q.limit_list = true;
+			q.bench_dmr = true;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL && !rf.admit && ev_n == 0);
+			uint8_t m2 = 9, m1 = 9;
+			CHECK(!cs7000p_rf_mod_pair(&rf, F_OWNER, dmr != 0, &m2, &m1));
+			CHECK(cs7000p_rf_drive_level(&rf, F_OWNER, level) == 0u);
+		}
+	}
+	run_maker = NULL;
+}
+
 int main(void)
 {
 	test_start();
@@ -1230,6 +1309,7 @@ int main(void)
 	test_bursts();
 #endif
 	test_vco_rule();
+	test_maker_table();
 	printf("# cs7000pRadioSeqTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

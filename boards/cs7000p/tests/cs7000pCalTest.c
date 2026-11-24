@@ -2,8 +2,11 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // The CS7000 M17 PLUS calibration (rfcal_cs7000p.c). As shipped every table is unset: no frequency, level or mode
 // may transmit and no level has a drive. On a made-up table: the interpolation, the ends, and that a row with one
-// point missing is no row. The RSSI and noise mappings never step back.
+// point missing is no row. The RSSI and noise mappings never step back. The receive getters with the maker's table
+// (invented here): a refused one, or none, gives every value as without it; a valid one each value from its own field
+// group, the tune row's lookup and trim A's receive bound falling back alone.
 #include <stdio.h>
+#include <string.h>
 #include "rfcal_cs7000p.h"
 
 static int failures;
@@ -184,12 +187,218 @@ static void test_status(void)
 	CHECK(cs7000p_noise(0xFFFFFFFFu, true) == 255);
 }
 
+// --- Receive, the maker's table first (cs7000p_cal_*_m) ---
+
+// An invented maker's table that passes every rule (calibration-cs7000p.md 3's layout, cs7000pMakerCalTest's values)
+static void put32be(uint8_t *t, unsigned off, uint32_t v)
+{
+	t[off] = (uint8_t)(v >> 24);
+	t[off + 1] = (uint8_t)(v >> 16);
+	t[off + 2] = (uint8_t)(v >> 8);
+	t[off + 3] = (uint8_t)v;
+}
+
+static void fill16(uint8_t *t, unsigned off, uint16_t v)
+{
+	for (unsigned i = 0; i < 8; i++) {
+		t[off + 2u * i] = (uint8_t)v;
+		t[off + 2u * i + 1u] = (uint8_t)(v >> 8);
+	}
+}
+
+static void invented(uint8_t t[CS7000P_MAKER_SIZE], const uint32_t rx[8])
+{
+	static const uint32_t tx[8] = { 400200000u, 429800000u, 430200000u, 445000000u, 458000000u, 472000000u,
+					492000000u, 511800000u };
+	static const uint8_t high[8] = { 190, 194, 195, 210, 213, 215, 212, 209 };
+	static const uint8_t low[8] = { 100, 99, 99, 108, 115, 122, 126, 127 };
+	static const uint8_t tune[8] = { 120, 124, 128, 132, 136, 140, 150, 160 };
+	memset(t, 0, CS7000P_MAKER_SIZE);
+	for (unsigned i = 0; i < 8; i++) {
+		put32be(t, 0x000u + 4u * i, tx[i]);
+		put32be(t, 0x020u + 4u * i, rx[i]);
+	}
+	t[0x040] = 60;
+	t[0x041] = 160;
+	memcpy(t + 0x044, tune, 8);
+	memset(t + 0x04C, 40, 8);
+	memset(t + 0x054, 50, 8);
+	memset(t + 0x05C, 120, 8);
+	memset(t + 0x064, 130, 8);
+	memcpy(t + 0x06C, high, 8);
+	memcpy(t + 0x074, low, 8);
+	memset(t + 0x084, 40, 8);
+	memset(t + 0x08C, 52, 8);
+	memset(t + 0x094, 200, 8);
+	memset(t + 0x0B4, 80, 8);
+	memset(t + 0x0BC, 100, 8);
+	memset(t + 0x0C4, 120, 8);
+	memset(t + 0x0CC, 135, 8);
+	t[0x0DC] = 0x7B;	// trim A: d -5
+	t[0x0DD] = 0xA0;
+	memset(t + 0x0EC, 20, 8);
+	memset(t + 0x0F4, 12, 8);
+	memset(t + 0x0FC, 19, 8);
+	memset(t + 0x124, 21, 8);
+	memset(t + 0x12C, 12, 8);
+	memset(t + 0x134, 20, 8);
+	fill16(t, 0x104, 300);
+	fill16(t, 0x114, 310);
+	fill16(t, 0x13C, 301);
+	fill16(t, 0x14C, 311);
+	memset(t + 0x15C, 61, 8);
+	memset(t + 0x164, 159, 8);
+	t[0x174] = 0x7D;
+}
+
+static const uint32_t rx_pts[8] = { 400500000u, 420000000u, 440000000u, 460000000u, 478950000u, 479050000u,
+				    495000000u, 511500000u };
+
+static bool parsed(const uint8_t *t, cs7000p_maker_t *m)
+{
+	return cs7000p_maker_parse(t, 0, 0, m);
+}
+
+// No table, or one refused: every receive value is the one without the maker's table, at every frequency and reading
+static void check_as_without(const cs7000p_cal_t *c, const cs7000p_maker_t *m)
+{
+	uint8_t src = 9, why = 9;
+	for (uint32_t hz = 395u * MHZ; hz <= 530u * MHZ; hz += 250000u) {
+		CHECK(cs7000p_cal_rx_tune_m(c, m, hz, &src) == cs7000p_cal_rx_tune(c, hz) && src == CS7000P_SRC_DEFAULT);
+	}
+	CHECK(cs7000p_cal_rx_ref_m(c, m, &src, &why) == cs7000p_cal_ref_offset(c));
+	CHECK(src == CS7000P_SRC_DEFAULT && why == CS7000P_RXREF_WHY_TABLE);
+	for (uint32_t mv = 0; mv <= 3400u; mv += 10u) {
+		CHECK(cs7000p_cal_rssi_m(m, mv, mv, &src) == cs7000p_rssi_dbm(mv) && src == CS7000P_SRC_DEFAULT);
+	}
+	CHECK(cs7000p_cal_rx_tune_m(c, m, 446u * MHZ, NULL) == cs7000p_cal_rx_tune(c, 446u * MHZ));	// src may be NULL
+}
+
+static void test_maker_rx(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	cs7000p_maker_t m;
+	uint8_t src = 9, why = 9;
+
+	// None, blank, zero, a damaged table: as without one, on the shipped model and on a filled one
+	check_as_without(&cs7000p_cal_model, NULL);
+	check_as_without(&synth, NULL);
+	memset(t, 0xFF, sizeof(t));
+	CHECK(!parsed(t, &m));
+	check_as_without(&cs7000p_cal_model, &m);
+	memset(t, 0, sizeof(t));
+	CHECK(!parsed(t, &m));
+	check_as_without(&synth, &m);
+	invented(t, rx_pts);
+	t[0x046] = 0;		// a tune code of 0
+	CHECK(!parsed(t, &m));
+	check_as_without(&cs7000p_cal_model, &m);
+	invented(t, rx_pts);
+	t[0x0DC] = 0xC1;	// trim A past the reader's 64 steps: the whole table refused, its tune too
+	CHECK(!parsed(t, &m));
+	check_as_without(&synth, &m);
+
+	// Valid: each value the table's, over the model's own rows
+	invented(t, rx_pts);
+	CHECK(parsed(t, &m) && m.fields == CS7000P_MK_F_ALL);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 433500000u, &src) == 16u * 127u && src == CS7000P_SRC_MAKER);	// t 506
+	CHECK(cs7000p_cal_rx_tune_m(&cs7000p_cal_model, &m, 400u * MHZ, &src) == 16u * 120u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_ref_m(&synth, &m, &src, &why) == -5 && src == CS7000P_SRC_MAKER &&
+	      why == CS7000P_RXREF_WHY_NONE);
+	CHECK(cs7000p_cal_rssi_m(&m, 110u << 4, 500u, &src) == -95 && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rssi_m(&m, 59u << 4, 500u, &src) == -121);	// a floor below the low point
+	// Outside the receive band no tune is looked up: today's value there
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 399u * MHZ, &src) == cs7000p_cal_rx_tune(&synth, 399u * MHZ) &&
+	      src == CS7000P_SRC_DEFAULT);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 527000001u, &src) == cs7000p_cal_rx_tune(&synth, 527000001u) &&
+	      src == CS7000P_SRC_DEFAULT);
+	// At a point, and on both sides of the receive VCO switch (points 478.95 and 479.05 MHz, codes 136 and 140): the
+	// end value on the frequency's side up to 479.00001 MHz and past it, never the line that mixes the two VCOs
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 460u * MHZ, &src) == 16u * 132u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 478950000u, &src) == 16u * 136u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 479000000u, &src) == 16u * 136u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 479000009u, &src) == 16u * 136u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 479000010u, &src) == 16u * 140u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 479050000u, &src) == 16u * 140u && src == CS7000P_SRC_MAKER);
+	// Past the last point the last segment extended (495 / 511.5 MHz, 150 / 160): t 660 at 520 MHz, 677 at 527 MHz
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 520u * MHZ, &src) == 16u * 165u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 527u * MHZ, &src) == 16u * 169u && src == CS7000P_SRC_MAKER);
+	// The RSSI at its two points, over the top of the 12-bit reading and at 0
+	CHECK(cs7000p_cal_rssi_m(&m, 60u << 4, 500u, &src) == -120 && cs7000p_cal_rssi_m(&m, 160u << 4, 500u, &src) == -70);
+	CHECK(cs7000p_cal_rssi_m(&m, 0xFFFFu, 500u, &src) == cs7000p_cal_rssi_m(&m, 4095u, 500u, NULL));
+	CHECK(cs7000p_cal_rssi_m(&m, 4095u, 500u, &src) == -23 && cs7000p_cal_rssi_m(&m, 0, 500u, &src) == -150);
+	// The extension held at the DAC buffer's range: 0 below the first point gives 250, 255 past the last 3850. A
+	// product the maker's 32 bits would wrap gives today's value
+	invented(t, rx_pts);
+	t[0x044] = 1;
+	t[0x045] = 254;
+	t[0x04A] = 200;
+	t[0x04B] = 254;
+	CHECK(parsed(t, &m));
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 400u * MHZ, &src) == CS7000P_TUNE_MIN && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 527u * MHZ, &src) == CS7000P_TUNE_MAX && src == CS7000P_SRC_MAKER);
+	t[0x04A] = 10;		// 4 x 244 x 3,200,000 (10 Hz units) at 527 MHz: over INT32_MAX
+	CHECK(parsed(t, &m));
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 527u * MHZ, &src) == cs7000p_cal_rx_tune(&synth, 527u * MHZ) &&
+	      src == CS7000P_SRC_DEFAULT);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 500u * MHZ, &src) != 0u && src == CS7000P_SRC_MAKER);
+	invented(t, rx_pts);
+	CHECK(parsed(t, &m));
+
+	// Trim A at the receive bound and one step past it (both inside the reader's 64): used, then today's offset
+	static const uint8_t trims[4] = { 0xA0, 0x60, 0xA1, 0x5F };
+	for (unsigned i = 0; i < 4; i++) {
+		invented(t, rx_pts);
+		t[0x0DC] = trims[i];
+		CHECK(parsed(t, &m));
+		const int8_t r = cs7000p_cal_rx_ref_m(&synth, &m, &src, &why);
+		if (i < 2u) {
+			CHECK(r == (i == 0u ? 32 : -32) && src == CS7000P_SRC_MAKER && why == CS7000P_RXREF_WHY_NONE);
+		} else {
+			CHECK(r == -7 && src == CS7000P_SRC_DEFAULT && why == CS7000P_RXREF_WHY_BOUND);	// the model's
+			CHECK(cs7000p_cal_rx_ref_m(&cs7000p_cal_model, &m, NULL, NULL) == CS7000P_REF_OFFSET);
+		}
+		// The bound is the bias's alone: the tune and the RSSI stay the table's
+		CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 433500000u, &src) == 16u * 127u && src == CS7000P_SRC_MAKER);
+		CHECK(cs7000p_cal_rssi_m(&m, 110u << 4, 500u, &src) == -95);
+	}
+	// A group the reader dropped: that value alone falls back. The RSSI by a use rule (a point at 0x00)
+	invented(t, rx_pts);
+	t[0x040] = 0;
+	CHECK(parsed(t, &m) && m.fields == (CS7000P_MK_F_ALL & ~CS7000P_MK_F_RSSI));
+	CHECK(cs7000p_cal_rssi_m(&m, 110u << 4, 500u, &src) == cs7000p_rssi_dbm(500u) && src == CS7000P_SRC_DEFAULT);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 433500000u, &src) == 16u * 127u && src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_cal_rx_ref_m(&synth, &m, &src, &why) == -5 && src == CS7000P_SRC_MAKER);
+	// The tune's and trim A's groups, cleared as a refusal would (no rule of the reader drops them alone today)
+	invented(t, rx_pts);
+	CHECK(parsed(t, &m));
+	m.fields &= (uint16_t)~CS7000P_MK_F_TUNE;
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 433500000u, &src) == cs7000p_cal_rx_tune(&synth, 433500000u) &&
+	      src == CS7000P_SRC_DEFAULT);
+	CHECK(cs7000p_cal_rx_ref_m(&synth, &m, &src, &why) == -5 && cs7000p_cal_rssi_m(&m, 110u << 4, 500u, NULL) == -95);
+	m.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_TRIM_A);
+	CHECK(cs7000p_cal_rx_ref_m(&synth, &m, &src, &why) == -7 && src == CS7000P_SRC_DEFAULT &&
+	      why == CS7000P_RXREF_WHY_GROUP);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 433500000u, &src) == 16u * 127u && src == CS7000P_SRC_MAKER);
+
+	// One lookup refused, not the table: every RX point above the receive switch, so 470 MHz would extend across it.
+	// Today's value there, the table's above the switch
+	static const uint32_t rx_high[8] = { 480000000u, 485000000u, 490000000u, 495000000u, 500000000u, 505000000u,
+					     510000000u, 520000000u };
+	invented(t, rx_high);
+	CHECK(parsed(t, &m));
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 470u * MHZ, &src) == cs7000p_cal_rx_tune(&synth, 470u * MHZ) &&
+	      src == CS7000P_SRC_DEFAULT);
+	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 485u * MHZ, &src) == 16u * 124u && src == CS7000P_SRC_MAKER);
+}
+
 int main(void)
 {
 	test_shipped();
 	test_interpolation();
 	test_verdict();
 	test_status();
+	test_maker_rx();
 	printf("# cs7000pCalTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

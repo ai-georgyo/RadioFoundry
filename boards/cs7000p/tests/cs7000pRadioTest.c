@@ -11,9 +11,11 @@
 // The maker's factory table, on core/storage and the factory copy as the board builds them (the board's map, kept
 // bytes, claimed first) over the simulated NOR flash: the table in use taken at init, the source and the view's keys
 // for a blank, zero, unstable and damaged window, with and without a valid record, a conflict, a use rule's failure;
-// a restore's request taken only at the status poll, never under a transmission; and no receive write changed by a
-// table. Built again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is
-// invented.
+// a restore's request taken only at the status poll, never under a transmission. Receive on the table: a refused
+// table (and none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only
+// the tune and the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back
+// alone; the bench's 3:0 and 3:4 over all of it. Built again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the
+// window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,10 +61,24 @@ static uint32_t now_us = 1000000u;
 // Every write to the hardware the fakes see (pins, the expander, the DAC, the modem's calls), hashed in order: two
 // runs that wrote the same things in the same order hash the same
 static uint32_t hw_hash = 2166136261u;
+// ... and the same writes kept in order, for the runs that compare where two differ
+typedef struct { uint32_t kind, a, b; } hw_ev_t;
+#define HW_LOG_MAX	(1u << 17)
+static hw_ev_t hw_log[HW_LOG_MAX];
+static uint32_t hw_n;
+
+// The kinds the receive comparisons look at: the shared DAC's writes, and the modem's held reference as the board
+// gives it at every receive entry (the level's offset, 4:0x04)
+#define HW_DAC		5u
+#define HW_REF		9u
 
 static void hw(uint32_t kind, uint32_t a, uint32_t b)
 {
 	const uint32_t w[3] = { kind, a, b };
+	if (hw_n < HW_LOG_MAX) {
+		hw_log[hw_n] = (hw_ev_t){ kind, a, b };
+	}
+	hw_n++;
 	for (unsigned i = 0; i < 3; i++) {
 		for (unsigned k = 0; k < 4; k++) {
 			hw_hash = (hw_hash ^ ((w[i] >> (8u * k)) & 0xFFu)) * 16777619u;
@@ -152,7 +168,7 @@ uint32_t cs7000p_exp_get(void) { return shadow; }
 
 bool cs7000p_apc_dac(uint16_t v)
 {
-	hw(5, v, 0);
+	hw(HW_DAC, v, 0);
 	if (v > CS7000P_DAC_MAX || (v != 0u && !exp_dac_ok(shadow, v, CS7000P_APC_FLOOR))) {
 		return false;
 	}
@@ -203,7 +219,10 @@ uint16_t cs7000p_adc_mv(uint8_t rank)
 	return rank == CS7000P_ADC_POW_DET ? 1910u : 500u;	// 7.4 V by the model; the rest a placeholder
 }
 
-uint16_t cs7000p_adc_raw(uint8_t rank) { (void)rank; return 0; }
+// The RSSI's 12-bit reading: code 110 (raw >> 4), -95 dBm on the invented table's two points
+static uint16_t rssi_raw = 110u << 4;
+
+uint16_t cs7000p_adc_raw(uint8_t rank) { return rank == CS7000P_ADC_RSSI ? rssi_raw : 0u; }
 
 // --- The modem ---
 
@@ -213,9 +232,26 @@ static struct {
 	bool refuse_fm_tx;
 } modem;
 
-bool cs7000p_c6000_init(void) { return true; }
-void cs7000p_c6000_mode(bool dmr, uint32_t hz) { hw(6, dmr, hz); modem.dmr = dmr; }
-void cs7000p_c6000_retune(uint32_t hz) { hw(7, hz, 0); modem.retunes++; }
+// The held reference as the real IF host asks for it at a receive entry (c6000_cs7000p.c's ref_offset and
+// rx_tx_offset): the level's offset, then 4:0x04
+static void ref_entry(void)
+{
+	hw(HW_REF, (uint32_t)(int32_t)cs7000p_rf_rx_ref(&cs7000p_rf), (uint8_t)cs7000p_rf.ref_offset);
+}
+
+// A run with no table at all, as before the board read one (the radio's own pointer cleared once set)
+static bool null_maker;
+
+bool cs7000p_c6000_init(void)
+{
+	if (null_maker) {
+		cs7000p_rf.maker = NULL;
+	}
+	ref_entry();
+	return true;
+}
+void cs7000p_c6000_mode(bool dmr, uint32_t hz) { hw(6, dmr, hz); modem.dmr = dmr; ref_entry(); }
+void cs7000p_c6000_retune(uint32_t hz) { hw(7, hz, 0); modem.retunes++; ref_entry(); }
 void cs7000p_c6000_rx_hold(void) { hw(8, 0, 0); }
 bool cs7000p_c6000_fm_rx(void) { return !modem.dmr && !modem.fm_tx; }
 void cs7000p_c6000_fm_audio(bool on) { modem.audio = on; }
@@ -240,6 +276,7 @@ void cs7000p_c6000_fm_tx_end(void)
 {
 	modem.fm_tx = false;
 	modem.fm_tx_ends++;
+	ref_entry();
 }
 
 void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25)
@@ -769,7 +806,7 @@ static void test_table_request(void)
 	chip(NULL, NULL);
 	boot(true, 0);
 	CHECK(strstr(tline, "cal_table=blank src=none") == tline);
-	CHECK(!cs7000p_factory_copy.busy());
+	CHECK(!cs7000p_factory_copy.busy() && cs7000p_rf.tune_src == CS7000P_SRC_DEFAULT);
 
 	// The copy's state moves on as a restore's job leaves it (the window written, the record after it)
 	memcpy(&sim_flash_data[WIN], table_a, N);
@@ -794,6 +831,7 @@ static void test_table_request(void)
 	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=1 restore=none", crc(table_a)));
 	CHECK(!cs7000p_factory_copy.busy());
 	CHECK(modem.retunes == retunes + 1 && cs7000p_rf.seq.state == CHAINSEQ_ST_RX);	// the receive set-up after it
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_ref == -5);	// ... on the table now in use
 	cs7000p_radio.status(&st);
 	CHECK(modem.retunes == retunes + 1);	// once
 	// busy() while a transmission is up, DMR's arm included
@@ -864,11 +902,12 @@ static void test_restore(void)
 #endif
 
 // The receive side, as a run of set-ups: FM wide and narrow, DMR, across the receive VCO switch, a sleep and a
-// wake-up, the status polls. Its hardware writes hashed, and the readings
+// wake-up, the status polls. Its hardware writes kept (hw_log, hw_n) and hashed, and the last reading's dBm
 static uint32_t rx_run(int16_t *dbm)
 {
 	radio_status_t st;
 	hw_hash = 2166136261u;
+	hw_n = 0;
 	now_us = 1000000u;
 	start();
 	CHECK(cs7000p_radio.rx(433500000u, RADIO_BW_12K5, NULL));
@@ -882,34 +921,230 @@ static uint32_t rx_run(int16_t *dbm)
 	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
 	cs7000p_radio.status(&st);
 	*dbm = st.rssi_dbm;
+	CHECK(hw_n <= HW_LOG_MAX);
 	return hw_hash;
 }
 
-// Nothing receives on the table yet: every receive write and reading is the same with a valid table, with none and
-// with a damaged one
-static void test_table_rx_unchanged(void)
+// A run's writes, kept to compare with the next
+static hw_ev_t base_log[HW_LOG_MAX];
+static uint32_t base_n;
+
+static void keep_log(void)
 {
-	uint8_t damaged[N];
-	memcpy(damaged, table_a, N);
-	damaged[0x046] = 0;
-	int16_t dbm[4];
-	uint32_t h[4];
+	memcpy(base_log, hw_log, sizeof(hw_ev_t) * (hw_n < HW_LOG_MAX ? hw_n : HW_LOG_MAX));
+	base_n = hw_n;
+}
+
+// The last run against the kept one, write for write: what differs may only be a DAC value (dac) or the held level's
+// offset with the same 4:0x04 (ref). Counts the differences of each kind
+static bool log_differs_only(bool dac, bool ref, unsigned *n_dac, unsigned *n_ref)
+{
+	*n_dac = *n_ref = 0;
+	if (hw_n != base_n) {
+		printf("  %u writes, %u before\n", (unsigned)hw_n, (unsigned)base_n);
+		return false;
+	}
+	for (uint32_t i = 0; i < hw_n && i < HW_LOG_MAX; i++) {
+		const hw_ev_t *x = &hw_log[i], *y = &base_log[i];
+		if (x->kind == y->kind && x->a == y->a && x->b == y->b) {
+			continue;
+		}
+		if (dac && x->kind == HW_DAC && y->kind == HW_DAC && x->a != 0u && y->a != 0u) {
+			(*n_dac)++;	// a tuning value, never a DAC switched on or off
+		} else if (ref && x->kind == HW_REF && y->kind == HW_REF && x->b == y->b) {
+			(*n_ref)++;
+		} else {
+			printf("  write %u: %u 0x%x 0x%x, before %u 0x%x 0x%x\n", (unsigned)i, (unsigned)x->kind,
+			       (unsigned)x->a, (unsigned)x->b, (unsigned)y->kind, (unsigned)y->a, (unsigned)y->b);
+			return false;
+		}
+	}
+	return true;
+}
+
+// A table refused, or none: the radio receives exactly as one without a table. A valid one: the tune row and trim A
+// in the held level, the RSSI on the table's points; 4:0x04, every line and every other write as before
+static void test_table_rx(void)
+{
+	static uint8_t refused[5][N];
+	static const char *const names[5] = { "blank", "zero", "points", "code", "trim" };
+	uint8_t valid_bound[N], valid_32[N], use_rssi[N];
+	unsigned n_dac, n_ref;
+	int16_t dbm, dbm0;
+	cs7000p_maker_t m;
+
+	// No table at all: what the radio wrote before it read one
+	null_maker = true;
 	chip(NULL, NULL);
 	boot(true, 0);
-	h[0] = rx_run(&dbm[0]);
+	const uint32_t h0 = rx_run(&dbm0);
+	null_maker = false;
+	keep_log();
+	CHECK(dbm0 == cs7000p_rssi_dbm(500u) && cs7000p_rf.rx_tune == CS7000P_RX_TUNE_NOMINAL);
+	CHECK(cs7000p_rf.rx_ref == CS7000P_REF_OFFSET && cs7000p_rf.ref_why == CS7000P_RXREF_WHY_TABLE);
+
+	// Refused: blank, zero, points out of order, a tune code of 0, trim A past the reader's 64 steps; and unstable
+	memset(refused[0], 0xFF, N);
+	memset(refused[1], 0, N);
+	memcpy(refused[2], table_a, N);
+	memcpy(refused[2] + 0x024, table_a + 0x028, 4);
+	memcpy(refused[2] + 0x028, table_a + 0x024, 4);
+	memcpy(refused[3], table_a, N);
+	refused[3][0x046] = 0;
+	memcpy(refused[4], table_a, N);
+	refused[4][0x0DC] = 0xC1;	// d +65
+	for (unsigned i = 0; i < 6; i++) {
+		chip(i < 5u ? refused[i] : table_a, NULL);
+		boot(true, i < 5u ? 0u : WIN + 0x40u);
+		CHECK(strstr(tline, " src=none ") != NULL);
+		if (i == 5u) {
+			sim_flash_misread(WIN + 0x40u, 2);	// without the copy, the run's own init reads the window again
+		}
+		uint32_t h = rx_run(&dbm);
+		sim_flash_misread(0, 0);
+		if (h != h0 || dbm != dbm0) {
+			printf("  %s: the receive run differs\n", i < 5u ? names[i] : "unstable");
+		}
+		CHECK(h == h0 && dbm == dbm0);
+		CHECK(log_differs_only(false, false, &n_dac, &n_ref));
+		CHECK(cs7000p_rf.tune_src == CS7000P_SRC_DEFAULT && cs7000p_rf.ref_src == CS7000P_SRC_DEFAULT);
+	}
+
+	// Valid: only the tune and the bias move, and the dBm is the table's (code 110 on 60 / 160: -95)
 	chip(table_a, NULL);
 	boot(true, 0);
 	CHECK(strstr(tline, "cal_table=ok src=window") == tline);
-	h[1] = rx_run(&dbm[1]);
-	chip(damaged, NULL);
+	(void)rx_run(&dbm);
+	CHECK(log_differs_only(true, true, &n_dac, &n_ref) && n_dac > 0u && n_ref > 0u);
+	CHECK(dbm == -95 && dbm0 != -95);
+	CHECK(cs7000p_maker_parse(table_a, crc(table_a), CS7000P_APC_FLOOR, &m));
+	uint16_t tune = 0;
+	CHECK(cs7000p_maker_rx_tune(&m, 446u * MHZ, &tune, NULL) && cs7000p_rf.rx_tune == tune && dac_now == tune);
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && tune != CS7000P_RX_TUNE_NOMINAL);
+	CHECK(cs7000p_rf.rx_ref == -5 && cs7000p_rf.ref_src == CS7000P_SRC_MAKER);	// trim A 0x7B
+	CHECK(cs7000p_rf.ref_offset == CS7000P_REF_OFFSET);	// 4:0x04 in receive: today's
+	keep_log();
+	char line[128];
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none"));
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq"));
+	// The same on a store not yet claimed (the window read, no copy written): using it is a reader's matter
+	chip(table_a, NULL);
+	boot(false, 0);
+	CHECK(storage_region() == STORAGE_REGION_FOREIGN && strstr(tline, "cal_table=ok src=window") == tline);
+	(void)rx_run(&dbm);
+	CHECK(log_differs_only(false, false, &n_dac, &n_ref) && dbm == -95);
+
+	// Trim A one step over the receive bound (d +33, inside the reader's 64): the tune still the table's, the bias
+	// today's. At +32 it is used
+	memcpy(valid_bound, table_a, N);
+	valid_bound[0x0DC] = 0xA1;
+	chip(valid_bound, NULL);
 	boot(true, 0);
-	h[2] = rx_run(&dbm[2]);
-	chip(NULL, NULL);
+	CHECK(strstr(tline, "cal_table=ok src=window") == tline);
+	(void)rx_run(&dbm);
+	CHECK(log_differs_only(false, true, &n_dac, &n_ref) && n_ref > 0u && dbm == -95);
+	CHECK(cs7000p_rf.rx_ref == CS7000P_REF_OFFSET && cs7000p_rf.ref_why == CS7000P_RXREF_WHY_BOUND);
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x200 r04=0x00 d_a=33 d_b=-3 src=default why=rx_bound"));
+	memcpy(valid_32, table_a, N);
+	valid_32[0x0DC] = 0xA0;
+	chip(valid_32, NULL);
 	boot(true, 0);
-	h[3] = rx_run(&dbm[3]);
-	CHECK(h[0] == h[1] && h[1] == h[2] && h[2] == h[3]);
-	CHECK(dbm[0] == dbm[1] && dbm[1] == dbm[2] && dbm[2] == dbm[3]);
+	(void)rx_run(&dbm);
+	CHECK(cs7000p_rf.rx_ref == 32 && cs7000p_rf.ref_src == CS7000P_SRC_MAKER);
+
+	// A use rule's failure (an RSSI point at 0x00): that group alone falls back; the tune and the bias stay the table's
+	memcpy(use_rssi, table_a, N);
+	use_rssi[0x040] = 0;
+	chip(use_rssi, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=ok src=window") == tline);
+	CHECK(fields_of(use_rssi) == (CS7000P_MK_F_ALL & ~CS7000P_MK_F_RSSI));
+	(void)rx_run(&dbm);
+	CHECK(log_differs_only(false, false, &n_dac, &n_ref) && dbm == dbm0);
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_ref == -5);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=sheet vco=low vco_rule=freq"));
+#if CONFIG_FACTORY_COPY
+	// The table in use from the record (a blank window): the same receive as from the window
+	chip(NULL, table_a);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=blank src=record") == tline);
+	(void)rx_run(&dbm);
+	CHECK(log_differs_only(false, false, &n_dac, &n_ref) && dbm == -95);
+#endif
 }
+
+#if CONFIG_DEBUGLINK
+// The bench's knobs win over the table: 3:0 the tune, 3:4 the held level and 4:0x04 together, and 0x100 gives both
+// back. The owner's A/B on the radio: 3:4 = 0 is today's level, 0x100 the table's
+static void test_table_rx_bench(void)
+{
+	radio_status_t st;
+	char line[128];
+	uint32_t v = 0;
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_MAKER && cs7000p_rf.rx_ref == -5);
+
+	v = 1500;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true) && dac_now == 1500);
+	CHECK(cs7000p_rf.rx_tune == 1500 && cs7000p_rf.tune_src == CS7000P_SRC_BENCH);	// the view at once
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	CHECK(cs7000p_rf.rx_tune == 1500 && cs7000p_rf.tune_src == CS7000P_SRC_BENCH);
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true));
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL) && cs7000p_rf.tune_src == CS7000P_SRC_MAKER);
+	// The A/B on one channel: 0 gives the table's row back at the next status poll, no channel change needed
+	const uint16_t row = cs7000p_rf.rx_tune;
+	v = 2048;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true) && dac_now == 2048 && row != 2048u);
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true) && dac_now == 2048);
+	cs7000p_radio.status(&st);
+	CHECK(dac_now == row && cs7000p_rf.rx_tune == row && cs7000p_rf.tune_src == CS7000P_SRC_MAKER);
+
+	// 3:4 reads 0x100 while none is set; 0 is today's level, over trim A, and moves 4:0x04 as before
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, false) && v == 0x100u);
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && v == 0u);
+	cs7000p_radio.status(&st);	// the receive set-up it asks for
+	CHECK(cs7000p_rf.rx_ref == 0 && cs7000p_rf.ref_src == CS7000P_SRC_BENCH && cs7000p_rf.ref_offset == 0);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x200 r04=0x00 d_a=-5 d_b=-3 src=bench why=none"));
+	v = 0xFFFFFFF0u;	// -16, sign extended
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && v == 0xF0u);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.rx_ref == -16 && cs7000p_rf.ref_offset == -16);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x1f0 r04=0xf0 d_a=-5 d_b=-3 src=bench why=none"));
+	v = 0x101;
+	CHECK(!cs7000p_chip_reg(3, 0, 4, &v, true) && cs7000p_rf.ref_override);
+	// Released: the table's trim A again, 4:0x04 today's
+	v = 0x100;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && v == 0x100u);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.rx_ref == -5 && cs7000p_rf.ref_src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_rf.ref_offset == CS7000P_REF_OFFSET && !cs7000p_rf.ref_override);
+	// The maker's coding (3:5) takes the same offset in its own form: the signed level
+	v = CS7000P_REF_MAKER;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	cs7000p_radio.status(&st);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=maker bias=0x3fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none"));
+	v = CS7000P_REF_HOLD;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	cs7000p_radio.status(&st);
+	// Never stored: a new start has no bench offset
+	v = 7;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
+	start();
+	CHECK(!cs7000p_rf.ref_override && cs7000p_rf.rx_ref == -5);
+}
+#endif
 
 #if CONFIG_DEBUGLINK
 // chip_reg 3:5, the reference DAC's coding for a receive test: RAM only, taken at the next status poll by a receive
@@ -966,9 +1201,10 @@ int main(void)
 	test_table_request();
 	test_restore();
 #endif
-	test_table_rx_unchanged();
+	test_table_rx();
 #if CONFIG_DEBUGLINK
 	test_ref_coding();
+	test_table_rx_bench();
 #endif
 	sim_flash_free();
 	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",

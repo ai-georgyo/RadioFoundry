@@ -104,10 +104,12 @@ cs7000pRfTest: $(CS7000P_RF) $(CS7000P_H) $(CS7000P_RF_H)
 run-boards:: cs7000pRfTest
 	./cs7000pRfTest
 
-# The calibration tables as shipped (unset: no transmission) and on a synthetic table (rfcal_cs7000p.c)
-CS7000P_CAL := $(CS7000P_T)/cs7000pCalTest.c $(CS7000P)/rfcal_cs7000p.c
+# The calibration tables as shipped (unset: no transmission) and on a synthetic table (rfcal_cs7000p.c); the receive
+# getters on invented maker's tables, over the reader
+CS7000P_CAL := $(CS7000P_T)/cs7000pCalTest.c $(CS7000P)/rfcal_cs7000p.c \
+	$(CS7000P)/makercal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c $(CS7000P_RF_DRV)
 TESTS   += cs7000pCalTest
-cs7000pCalTest: $(CS7000P_CAL) $(CS7000P_H)
+cs7000pCalTest: $(CS7000P_CAL) $(CS7000P_H) $(CS7000P_RF_H)
 	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_CAL)
 run-boards:: cs7000pCalTest
 	./cs7000pCalTest
@@ -115,7 +117,8 @@ run-boards:: cs7000pCalTest
 # The RF chain's sequences on this board's lines (rfops_cs7000p.c under drivers/rf/chainseq) with a fake expander
 # and DAC
 CS7000P_SEQ := $(CS7000P_T)/cs7000pRadioSeqTest.c $(CS7000P)/rfops_cs7000p.c $(CS7000P)/rfcal_cs7000p.c \
-	$(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c $(CS7000P_RF_DRV)
+	$(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c $(CS7000P_RF_DRV) \
+	$(CS7000P)/makercal_cs7000p.c
 TESTS   += cs7000pRadioSeqTest
 cs7000pRadioSeqTest: $(CS7000P_SEQ) $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/rf/chainseq/chainseq.h \
                      $(CORE)/radio/apc_ramp.h $(CORE)/radio/pa_keyup.h

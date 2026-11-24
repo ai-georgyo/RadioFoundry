@@ -8,8 +8,9 @@
 //
 // The radio has no calibration, so it refuses every transmission (rfcal_cs7000p.h, rfops_cs7000p.h): the one way to
 // key it is the bench's drive override under a test TX limit. The maker's factory table is taken at init (the bytes
-// in use the core's factory copy chose, core/storage/factory_copy.h) and parsed (makercal_cs7000p.h), and shown;
-// nothing receives or transmits on it yet (hardware-cs7000p.md 13.1).
+// in use the core's factory copy chose, core/storage/factory_copy.h) and parsed (makercal_cs7000p.h), and shown.
+// Receive uses it (the tune row, trim A in the held level, the RSSI points), each value with today's as its fallback;
+// nothing transmits on it (hardware-cs7000p.md 13.1).
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
@@ -76,6 +77,7 @@ static bool dmr_armed;		// the burst runner holds a transmission
 static bool asleep;
 static bool rx_valid;		// a receive set-up exists to go back to
 static radio_bw_t rx_bw;
+static uint8_t rssi_src;	// where the last status poll's dBm came from (CS7000P_SRC_*), for the view
 // A receive set-up asked for from outside the radio task (the bench's LO side or reference offset): status() runs it
 static volatile bool retune_req;
 
@@ -863,6 +865,9 @@ static void init(void)
 		speaker_lock = xSemaphoreCreateMutex();
 	}
 	cs7000p_rf_init(&cs7000p_rf, &rf_io, &cs7000p_cal_model);	// the chain safe
+	// The table in use for receive, from the modem's first set-up on. Always this one struct: a later cal_take()
+	// parses into it on this task, and the receive set-up that follows takes the new values
+	cs7000p_rf.maker = &maker;
 	radio_up = true;
 	cal_tx = cs7000p_cal_any_tx(&cs7000p_cal_model);
 	// The synthesizer rail and its settle time. The reference oscillator's control voltage is only defined with
@@ -958,7 +963,10 @@ static void status(radio_status_t *st)
 		}
 	}
 	bool receiving = cs7000p_rf.seq.state == CHAINSEQ_ST_RX;
-	st->rssi_dbm = cs7000p_rssi_dbm(cs7000p_adc_mv(CS7000P_ADC_RSSI));
+	// The table's two RSSI points when they passed, else the data sheet's line. The S-meter and the DMR scan's
+	// strength test read it; the FM squelch reads the noise
+	st->rssi_dbm = cs7000p_cal_rssi_m(cs7000p_rf.maker, cs7000p_adc_raw(CS7000P_ADC_RSSI),
+					  cs7000p_adc_mv(CS7000P_ADC_RSSI), &rssi_src);
 	st->noise = cs7000p_noise(cs7000p_adc_raw(CS7000P_ADC_NOISE), receiving);
 	st->carrier = receiving && st->rssi_dbm >= CARRIER_DBM;
 #if CONFIG_SUBTONE
@@ -1070,6 +1078,49 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len)
 #endif
 	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=%s", cal_rec_name(cal_st.rec), crc, cal_st.wrote, restore);
 }
+
+static const char *src_name(uint8_t src)
+{
+	return src == CS7000P_SRC_MAKER ? "maker" : (src == CS7000P_SRC_BENCH ? "bench" : "default");
+}
+
+// A trim of the table in use as d, or "-" when its group did not pass
+static void trim_text(char *t, uint8_t len, bool b)
+{
+	int16_t d;
+	if (cs7000p_maker_trim(&maker, b, &d)) {
+		dl_fmt(t, len, "%d", d);
+	} else {
+		t[0] = '-';
+		t[1] = '\0';
+	}
+}
+
+// The receive reference (hardware-cs7000p.md 6.5, 15): the coding chip_reg 3:5 asks for, the level the last receive
+// entry wrote in it (the bias), 4:0x04 in receive, the two trims of the table in use, the level's source and, when it
+// is not trim A, why
+void cs7000p_ref_line(char *buf, uint8_t len)
+{
+	static const char *const codings[] = { "hold", "maker", "maker7d" };
+	static const char *const whys[] = { "none", "table", "group", "rx_bound" };
+	const uint8_t k = cs7000p_rf.ref_coding, w = cs7000p_rf.ref_why;
+	const int8_t off = cs7000p_rf.rx_ref;
+	const unsigned bias = k == CS7000P_REF_HOLD ? (unsigned)(0x200 + off) : ((unsigned)(uint16_t)off & 0x3FFu);
+	char a[8], b[8];
+	trim_text(a, sizeof(a), false);
+	trim_text(b, sizeof(b), true);
+	dl_fmt(buf, len, "ref=%s bias=0x%03x r04=0x%02x d_a=%s d_b=%s src=%s why=%s", k < 3u ? codings[k] : "?", bias,
+	       (unsigned)(uint8_t)cs7000p_rf.ref_offset, a, b, src_name(cs7000p_rf.ref_src), w < 4u ? whys[w] : "?");
+}
+
+// The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
+// receive (chip_reg 3:6)
+void cs7000p_rx_cal_line(char *buf, uint8_t len)
+{
+	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s", src_name(cs7000p_rf.tune_src),
+	       rssi_src == CS7000P_SRC_MAKER ? "maker" : "sheet", (cs7000p_exp_get() & EXP_VCO_LOW) != 0u ? "low" : "high",
+	       cs7000p_rf.vco_rx_dir ? "dir" : "freq");
+}
 #endif
 
 // --- chip_reg (hardware-cs7000p.md 14): the bench's way to the chips, from the debug link's task ---
@@ -1077,11 +1128,12 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len)
 #if CONFIG_DEBUGLINK
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
 enum { BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE };
+#define REF_RELEASE	0x100u	// chip_reg 3:4: no bench offset (written: released; read: none set)
 
 // The receive tuning value. Refused whenever a transmit bit is set: the same DAC is the PA's reference then, and
 // the board's interlock alone would let a value through with both bits set. Test and write under one mask, so the
 // radio task can't key up in between; a key-up that was already past its DAC write meets the interlock at its
-// transmit rail. 0: the table's value again, at the next receive set-up
+// transmit rail. 0: the table's value again, at the receive set-up it asks for (the next status poll)
 static bool board_rx_tune(uint32_t v)
 {
 	if (v > CS7000P_DAC_MAX) {
@@ -1098,6 +1150,11 @@ static bool board_rx_tune(uint32_t v)
 		cs7000p_rf.tune_override = (uint16_t)v;
 		if (v != 0u && receiving) {
 			cs7000p_rf.rx_tune = code;
+			cs7000p_rf.tune_src = CS7000P_SRC_BENCH;
+		}
+		if (v == 0u) {
+			// The A/B's other half (the maker's row, or today's value) without waiting for a channel change
+			retune_req = true;
 		}
 	}
 	portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
@@ -1137,14 +1194,21 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 		return true;
 	case BOARD_REF_OFFSET:
 		if (write) {
-			// A signed byte: 0..127 as it is, -128..-1 as its two's complement byte or sign extended
-			if (*val > 0xFFu && *val < 0xFFFFFF80u) {
+			// A signed byte: 0..127 as it is, -128..-1 as its two's complement byte or sign extended. It is the
+			// receive level's offset and 4:0x04's, over trim A. REF_RELEASE gives the level back to trim A (or
+			// today's value) and 4:0x04 back to today's
+			if (*val == REF_RELEASE) {
+				cs7000p_rf.ref_override = false;
+				cs7000p_rf.ref_offset = cs7000p_cal_ref_offset(cs7000p_rf.cal);
+			} else if (*val > 0xFFu && *val < 0xFFFFFF80u) {
 				return false;
+			} else {
+				cs7000p_rf.ref_offset = (int8_t)(uint8_t)*val;
+				cs7000p_rf.ref_override = true;
 			}
-			cs7000p_rf.ref_offset = (int8_t)(uint8_t)*val;	// written at the next receive set-up
-			retune_req = true;
+			retune_req = true;	// written at the next receive set-up
 		}
-		*val = (uint8_t)cs7000p_rf.ref_offset;
+		*val = cs7000p_rf.ref_override ? (uint8_t)cs7000p_rf.ref_offset : REF_RELEASE;
 		return true;
 	case BOARD_REF_CODING:
 		// The reference DAC's coding in receive (hardware-cs7000p.md 6.5): 0 the measured hold, 1 the maker's

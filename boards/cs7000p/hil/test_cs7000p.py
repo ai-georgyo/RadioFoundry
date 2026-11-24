@@ -37,6 +37,8 @@ EXP_TX_BITS = EXP_APC_LOOP | EXP_TX_RAIL
 # chip_reg 3:5 (hardware-cs7000p.md 14): the reference DAC's coding in receive, 0 the measured hold, 1 the maker's
 # state, 2 the same with 4:0x26 = 0x7D. Chip 0 page 4 is the HR_C6000
 BOARD_CHIP, REF_CODING = 3, 5
+# chip_reg 3:4: the bench's reference offset, 0x100 while none is set; trim A's receive bound (makercal_cs7000p.h)
+REF_OFFSET, REF_RELEASE, REF_RX_BOUND = 4, 0x100, 32
 HRC_CHIP, HRC_PAGE = 0, 4
 
 
@@ -307,6 +309,38 @@ def test_reference_coding_knob(radio):
     if start != 0:
         print(f"chip_reg 3:5 was {start} before the test (a bench test in progress?) and is set back to it")
 
+
+@pytest.mark.feature("fm", optional=True)
+def test_receive_calibration_sources(radio):
+    """What receive takes from the maker's table (hardware-cs7000p.md 13.1, 15): with no table in use every value is
+    today's, a trim A past the receive bound leaves the level at today's, and the modem holds the level and the 4:0x04
+    that board.ref gives. Read only: it writes no knob and keys nothing. Whether the table's values receive better is
+    bring-up stage 9's A/B with chip_reg 3:0 and 3:4."""
+    b = board_view(radio)
+    if "ref" not in b or "rx_cal" not in b:
+        skip("not_built", "firmware without the receive calibration keys (older than the table's receive use)")
+    _, t = fields(b["cal_table"])
+    coding, r = fields(b["ref"])
+    tune, c = fields(b["rx_cal"])
+    print(f"ref {b['ref']}; rx_cal {b['rx_cal']}; cal_table src={t['src']}")
+    assert coding in ("hold", "maker", "maker7d"), b["ref"]
+    assert r["src"] in ("maker", "default", "bench") and tune in ("maker", "default", "bench"), b
+    assert c["rssi"] in ("maker", "sheet") and c["vco"] in ("low", "high"), b["rx_cal"]
+    if t["src"] == "none":
+        assert r["src"] != "maker" and tune != "maker" and c["rssi"] == "sheet", b
+    if r["src"] == "maker":
+        assert r["why"] == "none" and abs(int(r["d_a"])) <= REF_RX_BOUND, b["ref"]
+    if r["why"] == "rx_bound":
+        assert r["src"] == "default" and abs(int(r["d_a"])) > REF_RX_BOUND, b["ref"]
+    # chip_reg 3:4 reads 0x100 while no bench offset is set, and the level is the bench's while one is
+    assert (radio.link.chip_reg(BOARD_CHIP, REF_OFFSET) == REF_RELEASE) == (r["src"] != "bench"), b["ref"]
+    if coding != "hold" or fields(b["hrc"])[0] != "1":
+        skip("state", "the modem is not up, or chip_reg 3:5 holds the maker's coding: no held level to compare")
+    lo = radio.link.chip_reg(HRC_CHIP, 0x47, page=HRC_PAGE)
+    hi = radio.link.chip_reg(HRC_CHIP, 0x48, page=HRC_PAGE)
+    r04 = radio.link.chip_reg(HRC_CHIP, 0x04, page=HRC_PAGE)
+    assert ((hi & 0x03) << 8 | lo) == int(r["bias"], 16), f"4:0x47/0x48 0x{hi:02x}{lo:02x}, the view's {b['ref']}"
+    assert r04 == int(r["r04"], 16), f"4:0x04 0x{r04:02x}, the view's {b['ref']}"
 
 @pytest.mark.feature("beep", optional=True)
 def test_i2s_direction(radio):
