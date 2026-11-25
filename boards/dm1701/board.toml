@@ -34,6 +34,9 @@ FM, DMR voice and data, text messages, alerts, emergency, scan, the hotspot, sin
 duplex half and the USB network services work on air. Open: standalone SFR and a two-radio split duplex pair."""
 release = "stable"
 
+[features]
+tx_arm = { state = "n/a", reason = "no transmit arm (hal_radio_t.tx_arm): this radio transmits on its calibration without one" }
+
 # The audio tap's probe build: without LTO it no longer fits, so ci keeps it building with LTO=1
 [ci]
 extra = [
