@@ -75,9 +75,10 @@ static hw_ev_t hw_log[HW_LOG_MAX];
 static uint32_t hw_n;
 
 // The kinds the receive comparisons look at: the shared DAC's writes, and the modem's held reference as the board
-// gives it at every receive entry (the level's offset, 4:0x04)
+// gives it at every receive entry (the level's offset, 4:0x04); and the FM transmit set-up's 4:0x04 and bias
 #define HW_DAC		5u
 #define HW_REF		9u
+#define HW_TXREF	10u
 
 static void hw(uint32_t kind, uint32_t a, uint32_t b)
 {
@@ -296,11 +297,11 @@ static struct {
 	bool refuse_fm_tx;
 } modem;
 
-// The held reference as the real IF host asks for it at a receive entry (c6000_cs7000p.c's ref_offset and
-// rx_tx_offset): the level's offset, then 4:0x04
+// The held reference as the real IF host asks for it at a receive entry, through the calls c6000_cs7000p.c's
+// ref_offset and rx_tx_offset make: the level's offset, then 4:0x04
 static void ref_entry(void)
 {
-	hw(HW_REF, (uint32_t)(int32_t)cs7000p_rf_rx_ref(&cs7000p_rf), (uint8_t)cs7000p_rf.ref_offset);
+	hw(HW_REF, (uint32_t)(int32_t)cs7000p_rf_ref_for(&cs7000p_rf, false), (uint8_t)cs7000p_rf_rx_r04(&cs7000p_rf));
 }
 
 // A run with no table at all, as before the board read one (the radio's own pointer cleared once set)
@@ -343,6 +344,8 @@ bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
 	if (modem.refuse_fm_tx) {
 		return false;
 	}
+	// The transmit set-up's 4:0x04 and bias, asked as the glue asks it (ref_offset with fm_tx_setup)
+	hw(HW_TXREF, (uint32_t)(int32_t)cs7000p_rf_ref_for(&cs7000p_rf, true), 0);
 	modem.fm_tx = true;
 	return true;
 }
@@ -873,14 +876,19 @@ static void test_table_sources(void)
 }
 
 // The held level's offset the modem was given at its last receive entry since hw_n was cleared (INT32_MIN: none)
-static int32_t last_ref(void)
+static int32_t last_of(uint32_t kind)
 {
 	for (uint32_t i = hw_n < HW_LOG_MAX ? hw_n : HW_LOG_MAX; i-- > 0u;) {
-		if (hw_log[i].kind == HW_REF) {
+		if (hw_log[i].kind == kind) {
 			return (int32_t)hw_log[i].a;
 		}
 	}
 	return INT32_MIN;
+}
+
+static int32_t last_ref(void)
+{
+	return last_of(HW_REF);
 }
 
 #if CONFIG_FACTORY_COPY
@@ -1880,6 +1888,7 @@ static void test_arm_bench_keyup(void)
 	hw_n = 0;
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
 	CHECK(cs7000p_rf.admit_ovr && hw_n > 0u && last_ref() == INT32_MIN);	// the key-up asks no receive level
+	CHECK(last_of(HW_TXREF) == CS7000P_REF_OFFSET);
 	keep_log();
 	cs7000p_radio.tx_off();
 	for (uint8_t stage = HAL_TX_ARM_OFF; stage <= ARM_TOP; stage++) {
@@ -1893,6 +1902,8 @@ static void test_arm_bench_keyup(void)
 		hw_n = 0;
 		CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
 		CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);
+		// The transmit set-up's 4:0x04 and bias today's, not trim A: FM transmit is the same on the table
+		CHECK(last_of(HW_TXREF) == CS7000P_REF_OFFSET);
 		CHECK(log_differs_only(false, false, &nd, &nr) && nd == 0u && nr == 0u);
 		cs7000p_radio.tx_off();
 	}

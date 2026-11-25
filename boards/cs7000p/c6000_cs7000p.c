@@ -39,7 +39,6 @@
 #define FM_MIC_GAIN		7	// the same
 #define RX_GAIN_DB		2	// 4:0x37, as the tree's other IF-fed HR_C6000 (unverified here)
 #define SAFE_GAIN		0x80u	// the DMR modulation pair while the calibration has none
-#define MAKER_ADC_CTL		0x7Du	// 4:0x26 as the maker's program leaves it (calibration-cs7000p.md 5.13)
 #define VOICE_SPI_PINS		(PIN_MASK(PIN_DMR_VCLK) | PIN_MASK(PIN_DMR_VMISO) | PIN_MASK(PIN_DMR_VMOSI))
 
 // The configuration port on PB12-PB15 and the voice port on SPI1 (PB3-PB5, chip select PB6) at 48 MHz / 16 = 3 MHz
@@ -74,32 +73,27 @@ static bool mod_pair(void *ctx, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *m
 // held level of a receive entry
 static bool fm_tx_setup;
 
-// A receive entry's held level: the bench's, else trim A within its receive bound, else today's (rfops_cs7000p.h).
-// The FM transmit set-up's 4:0x04: today's value, as the bench drive's key-up wrote it before the table was read
+// The values are the chain's choice, host-tested there (rfops_cs7000p.h): the held level or the FM transmit set-up's
+// 4:0x04, the coding chip_reg 3:5 asks for, 4:0x04 in receive
 static int8_t ref_offset(void *ctx, uint32_t hz)
 {
 	(void)ctx;
 	(void)hz;
-	return fm_tx_setup ? cs7000p_rf.ref_offset : cs7000p_rf_rx_ref(&cs7000p_rf);
+	return cs7000p_rf_ref_for(&cs7000p_rf, fm_tx_setup);
 }
 
-// The bench's choice of coding (chip_reg 3:5): the measured hold unless a receive test asks for the maker's state
 static uint8_t ref_coding(void *ctx, uint8_t *adc_ctl)
 {
 	(void)ctx;
-	uint8_t k = cs7000p_rf.ref_coding;
-	*adc_ctl = k == CS7000P_REF_MAKER_ADC ? MAKER_ADC_CTL : 0u;
-	return k == CS7000P_REF_HOLD ? HRC6000_IF_REF_MID : HRC6000_IF_REF_SIGNED;
+	return cs7000p_ref_signed(cs7000p_rf.ref_coding, adc_ctl) ? HRC6000_IF_REF_SIGNED : HRC6000_IF_REF_MID;
 }
 
-// 4:0x04 in receive: the reference offset, as before the option, never trim A. Whether 4:0x04 moves the held level
-// under 0x0C is not measured, so nothing else goes there while receiving
 static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 {
 	(void)ctx;
 	(void)hz;
 	(void)dmr;
-	return cs7000p_rf.ref_offset;
+	return cs7000p_rf_rx_r04(&cs7000p_rf);
 }
 
 static const hrc6000_if_cfg_t host_cfg = {
