@@ -157,10 +157,11 @@ CS7000P_RADIO := $(CS7000P_T)/cs7000pRadioTest.c $(CS7000P)/radio_cs7000p.c $(CS
 	$(CS7000P)/rfcal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c \
 	$(CS7000P_RF_DRV) $(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.c $(CORE)/radio/tx_limit.c $(CORE)/radio/pa_keyup.c \
 	$(CS7000P)/makercal_cs7000p.c $(CS7000P)/store_cs7000p.c $(CORE)/storage/storage.c \
-	$(CORE)/storage/factory_copy.c $(CORE)/support/sha256.c $(CORE)/debuglink/dl_fmt.c sim/sim_flash.c
+	$(CORE)/storage/factory_copy.c $(CORE)/support/sha256.c $(CORE)/debuglink/dl_fmt.c $(CORE)/debuglink/dl_txarm.c \
+	sim/sim_flash.c
 CS7000P_RADIO_H := $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/rf/chainseq/chainseq.h \
 	$(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.h $(ROOT)/platform/stm32/dmr_keyup/dmr_keyup.h \
-	$(wildcard $(CORE)/storage/*.h) sim/sim_flash.h $(ROOT)/hal/hal_flash.h
+	$(wildcard $(CORE)/storage/*.h) sim/sim_flash.h $(ROOT)/hal/hal_flash.h $(CORE)/debuglink/dl_txarm.h
 CS7000P_RADIO_F := $(CS7000P_INC) -I$(ROOT)/platform/stm32 -I. -Wshadow -DCS7000P_STUB_MASK_HOOK \
 	-DSTORAGE_CLAIM_FIRST=1 -DSTORAGE_FACTORY_KEEP=1
 TESTS   += cs7000pRadioTest cs7000pRadioNoCopyTest cs7000pRadioRxOffTest

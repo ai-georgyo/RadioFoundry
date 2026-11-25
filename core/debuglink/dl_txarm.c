@@ -4,6 +4,28 @@
 #include "debuglink/dl_txarm.h"
 #include "debuglink/dl_frame.h"
 
+static volatile bool soc_written;	// zero at every start, as the arm
+
+void dl_soc_write_note(void)
+{
+	soc_written = true;
+}
+
+bool dl_soc_written(void)
+{
+	return soc_written;
+}
+
+bool dl_tx_arm_on(const hal_radio_t *r)
+{
+	if (r == NULL || r->tx_arm_info == NULL || r->tx_arm == NULL) {
+		return false;
+	}
+	hal_tx_arm_info_t info = { 0 };
+	r->tx_arm_info(&info);
+	return info.stage != HAL_TX_ARM_OFF;
+}
+
 static void put32(uint8_t *p, uint32_t v)
 {
 	p[0] = (uint8_t)v;

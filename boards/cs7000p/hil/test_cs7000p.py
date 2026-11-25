@@ -209,9 +209,10 @@ def test_factory_info_matches_view(radio):
 @pytest.mark.feature("tx_arm", optional=True)
 def test_tx_arm_key(radio):
     """board2's tx_arm says what RADIO op 44 says (hardware-cs7000p.md 13.2, 15): the stage, the id it was armed with
-    (0 when off), list=1 exactly while the core view's test TX limit is a list; the info's range is the maker's table
-    and its CRC the table in use's (cal_table's for the window, cal_rec's for the record), and the top stage is dmr
-    in a DMR build, fm without. Read only: nothing is armed"""
+    (0 when off), list=1 exactly while the core view's test TX limit is a list; the flags of what refuses the arm
+    (chips, soc, bench_keyup) only as 1, and no bench drive (bench_drive) while armed: the two exclude each other; the
+    info's range is the maker's table and its CRC the table in use's (cal_table's for the window, cal_rec's for the
+    record), and the top stage is dmr in a DMR build, fm without. Read only: nothing is armed"""
     b = board_view(radio)
     if "tx_arm" not in b:
         skip("not_built", "firmware without board2's tx_arm key (older than the owner's transmit arm)")
@@ -224,6 +225,8 @@ def test_tx_arm_key(radio):
     assert stage == ("off", "fm-low", "fm", "dmr")[info["stage"]], (b["tx_arm"], info)
     assert stage != "off" or a["id"] == "0x00000000", b["tx_arm"]
     assert a["list"] == ("1" if radio.view(["core"]).get("txlim") == "list" else "0"), b["tx_arm"]
+    assert all(a.get(k, "1") == "1" for k in ("chips", "soc", "bench_keyup")), b["tx_arm"]
+    assert stage == "off" or "bench_drive" not in a, f"a bench drive while armed: {b['tx_arm']}"
     assert (info["addr"], info["len"]) == (TABLE_ADDR, TABLE_SIZE), info
     assert info["max"] == (3 if "DMR" in radio.features() else 2), info
     assert info["cal_ok"] == (t["src"] != "none"), (info, b["cal_table"])

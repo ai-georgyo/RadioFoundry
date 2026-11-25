@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // DL_CMD_CHIP_REG (core/debuglink/debuglink_chipreg.c, docs/spec/debuglink.md 3.24): an RF chip register through
-// board.chip_reg, a SoC register through board.system->reg, the request lengths, a SoC write refused on the air, and
-// boards without the hooks. The board, the transmit check and the log are faked
+// board.chip_reg, a SoC register through board.system->reg, the request lengths, a SoC write refused on the air and
+// while the owner's transmit arm is not off, the note of a SoC write tried (dl_soc_written), and boards without the
+// hooks: a radio without the arm's hooks, or none, sees every SoC request as before. The board, the transmit check and
+// the log are faked
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +14,7 @@
 #undef board
 #include "debuglink/debuglink.h"
 #include "debuglink/debuglink_proto.h"
+#include "debuglink/dl_txarm.h"
 
 static int failures, checks;
 
@@ -78,6 +81,25 @@ static bool soc_reg(uint32_t addr, uint32_t *val, bool write)
 static hal_system_t sys = { .reg = soc_reg };
 board_t board;
 
+// The owner's transmit arm, as a board answers it (only the stage matters here)
+static uint8_t arm_stage;
+
+static void arm_info(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){ .stage = arm_stage, .max = HAL_TX_ARM_ALL };
+}
+
+static uint8_t arm(uint8_t stage, uint32_t id)
+{
+	(void)id;
+	arm_stage = stage;
+	return HAL_TX_ARM_OK;
+}
+
+static const hal_radio_t radio_arm = { .tx_arm_info = arm_info, .tx_arm = arm };
+static const hal_radio_t radio_info_only = { .tx_arm_info = arm_info };	// one hook: no arm
+static const hal_radio_t radio_plain = { 0 };
+
 // --- helpers ---
 
 static uint8_t out[16];
@@ -99,6 +121,8 @@ static void reset(void)
 	board.system = &sys;
 	sys.reg = soc_reg;
 	fake_tx = false;
+	board.radio = NULL;
+	arm_stage = HAL_TX_ARM_OFF;
 	memset(chip0, 0, sizeof chip0);
 	soc_word = 0;
 	soc_calls = logs = 0;
@@ -131,9 +155,13 @@ static void test_chip(void)
 	CHECK(cmd(rd, 3) == 1 && out[0] == DL_ST_UNAVAILABLE);
 }
 
-static void test_soc(void)
+// The same requests and answers on every radio the arm's refusal leaves alone: none, one without the hooks, one with a
+// single hook whatever its stage, one with both and the arm off
+static void test_soc(const hal_radio_t *r, uint8_t stage)
 {
 	reset();
+	board.radio = r;
+	arm_stage = stage;
 	uint8_t rd[5] = { DL_CHIP_SOC, 0x08, 0x00, 0x00, 0x17 };
 	CHECK(cmd(rd, 5) == 5 && out[0] == DL_ST_OK && reply32() == 0x80000000u);
 	uint8_t wr[9] = { DL_CHIP_SOC, 0x08, 0x00, 0x00, 0x17, 0x40, 0x00, 0x00, 0x00 };
@@ -162,6 +190,41 @@ static void test_soc(void)
 	CHECK(cmd(chip_rd, 3) == 5 && out[0] == DL_ST_OK);
 	board.system = NULL;
 	CHECK(cmd(rd, 5) == 1 && out[0] == DL_ST_UNAVAILABLE);
+	CHECK(dl_soc_written());
+}
+
+// The owner's transmit arm not off: a SoC write refused before the platform sees it, and not noted; a read answers,
+// an RF chip's write goes to the board. The note: none before a write is tried (reads, RF chips' writes, a write
+// refused on the air or while armed don't count), then from the first one tried on (one the platform refuses too).
+// First: the note can't be cleared but by a restart
+static void test_soc_arm(void)
+{
+	reset();
+	board.radio = &radio_arm;
+	uint8_t rd[5] = { DL_CHIP_SOC, 0x08, 0x00, 0x00, 0x17 };
+	uint8_t wr[9] = { DL_CHIP_SOC, 0x08, 0x00, 0x00, 0x17, 0x40, 0x00, 0x00, 0x00 };
+	uint8_t chip_wr[7] = { 0, 0, 0x05, 0x34, 0x12, 0, 0 };
+	CHECK(!dl_tx_arm_on(NULL) && !dl_tx_arm_on(&radio_plain) && !dl_tx_arm_on(&radio_info_only));
+	for (uint8_t s = HAL_TX_ARM_FM_LOW; s <= HAL_TX_ARM_ALL; s++) {
+		arm_stage = s;
+		CHECK(dl_tx_arm_on(&radio_arm) && !dl_tx_arm_on(&radio_info_only));
+		soc_calls = 0;
+		CHECK(cmd(wr, 9) == 1 && out[0] == DL_ST_REFUSED && soc_calls == 0 && soc_word == 0u && logs == 0);
+		CHECK(cmd(rd, 5) == 5 && out[0] == DL_ST_OK && soc_calls == 1);
+		CHECK(cmd(chip_wr, 7) == 5 && out[0] == DL_ST_OK && chip0[0][5] == 0x1234u);
+		logs = 0;
+	}
+	arm_stage = HAL_TX_ARM_OFF;
+	CHECK(!dl_tx_arm_on(&radio_arm));
+	fake_tx = true;
+	CHECK(cmd(wr, 9) == 1 && out[0] == DL_ST_REFUSED);
+	fake_tx = false;
+	CHECK(!dl_soc_written());
+	// Outside the platform's windows: refused by it, but tried
+	uint8_t off[9] = { DL_CHIP_SOC, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00 };
+	CHECK(cmd(off, 9) == 1 && out[0] == DL_ST_REFUSED && soc_calls > 0u);
+	CHECK(dl_soc_written());
+	CHECK(cmd(wr, 9) == 5 && out[0] == DL_ST_OK && soc_word == 0x40u && dl_soc_written());
 }
 
 static void test_short_buffer(void)
@@ -175,7 +238,13 @@ static void test_short_buffer(void)
 int main(void)
 {
 	test_chip();
-	test_soc();
+	test_soc_arm();
+	test_soc(NULL, HAL_TX_ARM_OFF);
+	test_soc(&radio_plain, HAL_TX_ARM_OFF);
+	for (uint8_t s = HAL_TX_ARM_OFF; s <= HAL_TX_ARM_ALL; s++) {
+		test_soc(&radio_info_only, s);
+	}
+	test_soc(&radio_arm, HAL_TX_ARM_OFF);
 	test_short_buffer();
 	printf("debuglinkChipRegTest: %d checks, %d failures\n", checks, failures);
 	return failures != 0;

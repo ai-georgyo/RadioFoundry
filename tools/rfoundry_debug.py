@@ -299,7 +299,8 @@ TX_ARM_REASONS = {
     1: ("no_cal", "the radio has no calibration in use that the arm could cover"),
     2: ("id", "the backup's CRC-32 is not that of the calibration in use"),
     3: ("stage", "a stage over the radio's highest"),
-    4: ("state", "a state forbids it now: the radio not started yet, a bench state, a stored reference trim "
+    4: ("state", "a state forbids it now: the radio not started yet, a bench state (a knob, a bench PA drive or "
+                 "key-up constants, a register written with reg since the start), a stored reference trim "
                  "(Settings > Freq trim), the power's off state, or a restore of the calibration pending"),
 }
 P25_TALKAROUND = {"auto": 0, "on": 1, "off": 2}
