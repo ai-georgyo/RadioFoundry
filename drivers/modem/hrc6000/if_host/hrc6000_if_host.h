@@ -3,8 +3,8 @@
 // The HR_C6000 on a board that feeds it a 450 kHz IF (docs/spec/modem-hrc6000.md 2, 3, 8): the order of driver calls
 // such a board needs. The values belong to a board; the order does not: tones off before the chip can find DMR sync,
 // the receive I/Q order for the first LO's side, the reference offset per frequency, the modulation pair and a
-// receiver restart on a new DMR channel, and the two registers a mode set-up leaves in a state such a board cannot
-// use (the DAC control word 4:0x25 and the codec inputs 4:0xE0).
+// receiver restart on a new DMR channel, the pair of a DMR transmission's own frequency, and the two registers a mode
+// set-up leaves in a state such a board cannot use (the DAC control word 4:0x25 and the codec inputs 4:0xE0).
 //
 // An opt-in subdirectory of the driver: only a board that lists drivers/modem/hrc6000/if_host compiles it. Pure C
 // over hrc_t and callbacks: no RTOS call, no platform header. Every function but hrc6000_if_rx_hold is for one task
@@ -48,8 +48,10 @@ typedef struct {
 	// or an answer that is neither: HRC6000_IF_REF_MID and 0
 	uint8_t (*ref_coding)(void *ctx, uint8_t *adc_ctl);
 	// ref_dac_hold only. The 4:0x04 value written with the held level at every receive entry (the value a DMR
-	// burst then carries: nothing else writes 4:0x04 before it). NULL: ref_offset's value. FM transmit is not
-	// affected: its set-up writes 4:0x04 from ref_offset
+	// burst then carries: nothing else writes 4:0x04 before it), hz the receive frequency; and again by
+	// hrc6000_if_tx_freq before a DMR transmission, hz the transmit frequency, dmr true. NULL: ref_offset's value at
+	// a receive entry, and no write at hrc6000_if_tx_freq. FM transmit is not affected: its set-up writes 4:0x04
+	// from ref_offset
 	int8_t (*rx_tx_offset)(void *ctx, uint32_t hz, bool dmr);
 	// Rows the board writes after the FM transmit set-up on hz (the codec inputs included), before it keys: its own
 	// values for registers the driver's set-up chose (a calibration that was set under other ones). *n of them, at
@@ -86,6 +88,13 @@ void hrc6000_if_mode(hrc6000_if_t *h, bool dmr, uint32_t hz);	// DMR <-> FM rece
 // answered other than at the last set-up, and the mode's whole receive set-up ran instead (in DMR with the engine
 // off and on again around it), so the FM audio's feed-through is open as after a mode change
 bool hrc6000_if_retune(hrc6000_if_t *h, uint32_t hz);
+// DMR, before a transmission's first burst, where the transmit frequency hz is first known (a split channel's
+// differs from the receive frequency the entry and a retune looked the pair up at): the modulation pair for hz, or
+// safe_gain when mod_pair has none, and with ref_dac_hold and rx_tx_offset the 4:0x04 the bursts carry,
+// rx_tx_offset(hz, true). No restart, no other register. Both stay until a receive entry on another channel (the
+// pair; receive does not modulate) or any receive entry (4:0x04). True: the board's pair is written. False: not up
+// or not in DMR (nothing written), or no pair at hz (safe_gain written). A failed write is counted
+bool hrc6000_if_tx_freq(hrc6000_if_t *h, uint32_t hz);
 bool hrc6000_if_fm_tx(hrc6000_if_t *h, uint32_t hz, bool wide, uint8_t mic_gain);	// false and nothing written: no pair
 void hrc6000_if_fm_tx_end(hrc6000_if_t *h);			// back to FM receive
 void hrc6000_if_rx_hold(hrc6000_if_t *h);			// the 4:0x25 rewrite alone (after a DMR burst sequence)

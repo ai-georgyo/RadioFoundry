@@ -760,6 +760,7 @@ Unverified on a radio.
 | `hrc6000_if_mode`, to DMR | The feed-through off (a board with the chip's FM audio), the I/Q order, the DMR entry (3.1) with the frequency's modulation pair or the board's safe gain, the codec inputs, the reference offset, the receive hold, then the engine on |
 | `hrc6000_if_mode`, to FM | The engine off, the FM receive rows, the FM audio path, 0x01 if the first LO's side changed, the reference offset, the receive hold |
 | `hrc6000_if_retune` | The reference offset; 0x01 if the first LO's side changed; in DMR on a new frequency its pair (0x45 / 0x46) and a receiver restart (5.1); the receive hold. During an FM transmission the frequency is only noted. When the reference coding's answer changed (below): the mode's whole receive set-up instead (in DMR with the engine off and on around it), and true |
+| `hrc6000_if_tx_freq` | DMR only, before a transmission's first burst, at task level (the radio's key-up, where the transmit frequency is first known): the pair for the transmit frequency (0x45 / 0x46), or the board's safe gain without one, then with the receive hold and `rx_tx_offset` 0x04 = `rx_tx_offset(f_tx, true)`. Nothing else: no restart, the held level and 0x25 as they were. True when the board's pair was written. Not up, or not in DMR: nothing written. The pair stays through a receive entry on the same channel (receive does not modulate), 0x04 until the next receive entry |
 | `hrc6000_if_fm_tx` | Refused, with nothing written, when the board has no pair for the frequency, in DMR, or when the chip is not up. Else the feed-through off, the FM TX rows above, the codec inputs, then the board's own transmit rows (below) |
 | `hrc6000_if_fm_tx_end` | The board's transmit rows' registers back to the set-up's values, then the FM receive rows, the FM audio path, 0xA1 = 0x00, the reference offset of the receive frequency, the receive hold, then its I/Q order |
 | `hrc6000_if_rx_hold` | The receive hold alone: one write, for the end of a DMR burst sequence |
@@ -818,8 +819,14 @@ write, because bit 9 differs for the same voltage. Where that happens:
 The rows of FM receive and of the DMR entry do not write 0x25, so a mode change in the hold never passes through 0x0E.
 
 **Receive 0x04** (`rx_tx_offset`, with `ref_dac_hold` only): the 0x04 value written with the held level at every
-receive entry, which a DMR burst then carries (nothing else writes 0x04 before it). NULL: the reference offset, as
-above. The FM transmit set-up still writes 0x04 from `ref_offset`.
+receive entry, which a DMR burst then carries (nothing else writes 0x04 before it), and again by
+`hrc6000_if_tx_freq` for the transmission, with the transmit frequency and `dmr` true: a board may give a
+transmission another value than receive. NULL: the reference offset at a receive entry, as above, and no 0x04 write
+at `hrc6000_if_tx_freq`. The FM transmit set-up still writes 0x04 from `ref_offset`.
+
+**A DMR transmission's frequency** (`hrc6000_if_tx_freq`). The DMR entry and a retune look the pair up at the
+frequency they are given, the receive frequency. On a split channel (a repeater's) the transmit frequency's pair
+differs, and a board whose pair follows frequency gives it here, once per transmission, before the first burst.
 
 **FM transmit rows** (`fm_tx_rows`): register writes of the board's own after the FM transmit set-up of a frequency
 and width (after the codec inputs, so after 0x60 = 0x80, and before the board keys the PA): a calibration that was
