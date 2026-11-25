@@ -238,6 +238,43 @@ def test_tx_arm_key(radio):
         assert a["id"] == f"0x{info['crc']:08x}", (b["tx_arm"], info)
 
 
+@pytest.mark.feature("tx_arm", optional=True)
+def test_tx_maker_key(radio):
+    """board2's tx_maker (hardware-cs7000p.md 15): what a key-up on the table in use would take, read without arming
+    and without keying. Its form: ok or none, at=tx or rx, the transmit frequency, the mode and level, each value a
+    number or "-", no= and why= exactly when none. With no valid table in use (cal_table src=none) nothing is served;
+    an FM key-up served means a table that could transmit once armed (board.cal=maker); where both levels' drives are
+    given the low level's is below the high level's, and both are DAC codes over 0. Read only: nothing is armed or
+    keyed. The values are this unit's: printed for the owner, never recorded"""
+    b = board_view(radio)
+    if "tx_maker" not in b:
+        skip("not_built", "firmware without board2's tx_maker key (older than the view of what the table would key)")
+    if b["tx_maker"] == "busy":
+        skip("state", "board2 was busy (a restore's take): ask again")
+    verdict, x = fields(b["tx_maker"])
+    _, t = fields(b["cal_table"])
+    print(f"tx_maker {b['tx_maker']}")
+    assert verdict in ("ok", "none"), b["tx_maker"]
+    assert x["at"] in ("tx", "rx") and x["mode"] in ("fm", "dmr"), b["tx_maker"]
+    assert x["hz"].isdigit() and x["lvl"].isdigit(), b["tx_maker"]
+    assert ("no" in x) == (verdict == "none") and ("why" in x) == (verdict == "none"), b["tx_maker"]
+    assert verdict == "ok" or x["no"] in ("band", "table", "drive", "pair", "trim_a", "trim_b", "burst", "tone"), \
+        b["tx_maker"]
+    assert ("d_b" in x) == (x["mode"] == "dmr") and ("tone_pm" not in x or x["mode"] == "fm"), b["tx_maker"]
+    for k in ("lo", "hi", "d_a", "d_b", "tone_pm"):
+        assert k not in x or x[k] == "-" or x[k].lstrip("-").isdigit(), b["tx_maker"]
+    assert x["pair"] == "-" or len(x["pair"].split(",")) == 2, b["tx_maker"]
+    if t["src"] == "none":
+        assert verdict == "none" and x["no"] in ("band", "table"), (b["tx_maker"], b["cal_table"])
+    if verdict == "ok":
+        assert x[("lo", "hi")[int(x["lvl"])]] != "-" and x["pair"] != "-" and x["d_a"] != "-", b["tx_maker"]
+        if x["mode"] == "fm":
+            assert b["cal"] == "maker", (b["tx_maker"], b["cal"])
+    if x["lo"] != "-" and x["hi"] != "-":
+        lo, hi = int(x["lo"]), int(x["hi"])
+        assert 0 < lo < hi <= 4095, f"the table's drives here: low {lo}, high {hi}: stop before arming and look"
+
+
 @pytest.mark.feature("ui_navigation", optional=True)
 def test_lcd_board(radio):
     """The LCD board is not in the maker's schematic. The check reads five of its lines before anything is driven:
