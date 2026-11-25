@@ -791,7 +791,7 @@ Unverified on a radio.
 | `hrc6000_if_mode`, to FM | The engine off, the FM receive rows, the FM audio path, 0x01 if the first LO's side changed, the reference offset, the receive hold |
 | `hrc6000_if_retune` | The reference offset; 0x01 if the first LO's side changed; in DMR on a new frequency its pair (0x45 / 0x46) and a receiver restart (5.1); the receive hold. During an FM transmission the frequency is only noted. When the reference coding's answer changed (below): the mode's whole receive set-up instead (in DMR with the engine off and on around it), and true |
 | `hrc6000_if_fm_tx` | Refused, with nothing written, when the board has no pair for the frequency, in DMR, or when the chip is not up. Else the feed-through off, the FM TX rows above, the codec inputs |
-| `hrc6000_if_fm_tx_end` | The FM receive rows, the FM audio path, 0xA1 = 0x00, the reference offset and I/Q order of the receive frequency, the receive hold |
+| `hrc6000_if_fm_tx_end` | The FM receive rows, the FM audio path, 0xA1 = 0x00, the reference offset of the receive frequency, the receive hold, then its I/Q order |
 | `hrc6000_if_rx_hold` | The receive hold alone: one write, for the end of a DMR burst sequence |
 
 **FM audio path** (`fm_audio_chip`). Set: the chip demodulates FM and plays it on its line out, 0x10 = 0x80 and
@@ -829,12 +829,23 @@ Any other answer is the hold with the driver's 0x26.
 | 0x26 | the driver's (0xFD after the FM receive rows and the DMR entry) | the same, or the callback's value after the level at every receive entry |
 
 The answer is asked once per receive state, at the start of a full set-up (the init, a mode change, the end of an FM
-transmission), and kept in `hrc6000_if_t`: every write of the level and of 0x25 until the next set-up uses it, so
-the level is never written in one coding under the other's word (that puts the DAC near 0 V, about 10 kHz off on the
-radio measured). `hrc6000_if_rx_hold` asks nothing. A retune that finds the answer changed runs the mode's whole
-set-up, whose rows give 0x26 the driver's value back. When the coding changes, one write between the low byte and
-the high bits (0x25 before 0x48) is unavoidable. The board decides when to ask for the other coding, and whether to
-refuse a transmission meanwhile.
+transmission), and kept in `hrc6000_if_t`: every write of the level and of 0x25 until the next set-up uses it.
+`hrc6000_if_rx_hold` asks nothing. A retune that finds the answer changed runs the mode's whole set-up, whose rows
+give 0x26 the driver's value back. The board decides when to ask for the other coding, and whether to refuse a
+transmission meanwhile.
+
+Within a receive state the level is never written under the other coding's word: that puts the DAC near one rail,
+about 10 kHz off on the radio measured. A set-up that starts with the other word in 0x25 cannot avoid it for one bus
+write, because bit 9 differs for the same voltage. Where that happens:
+
+| Set-up | 0x25 before it | The write in between |
+|---|---|---|
+| Into the signed coding | 0x0C | 0x25 = 0x0E, between 0x47 and 0x48: the new low byte with the old high bits, under 0x0E |
+| Out of the signed coding | 0x0E | 0x48, the hold's high bits, under 0x0E; the hold's 0x0C is the next write |
+| The end of an FM transmission, into the hold | 0x0E, the transmit set-up's | the same as out of the signed coding: the hold right after 0x48, the I/Q order's 0x01 after the hold |
+| The init, into the hold | 0x0E, the init's rows | the whole level (0x04, 0x47, 0x48) under 0x0E, then the hold: the DAC was not holding anything before it |
+
+The rows of FM receive and of the DMR entry do not write 0x25, so a mode change in the hold never passes through 0x0E.
 
 **Receive 0x04** (`rx_tx_offset`, with `ref_dac_hold` only): the 0x04 value written with the held level at every
 receive entry, which a DMR burst then carries (nothing else writes 0x04 before it). NULL: the reference offset, as
