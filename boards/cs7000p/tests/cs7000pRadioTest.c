@@ -308,6 +308,7 @@ static struct {
 	uint8_t coding;		// the reference coding taken at the last full receive set-up (CS7000P_REF_*)
 	const hrc6000_if_row_t *rows;	// the board's rows at the last FM transmit set-up, n_rows of them
 	uint8_t n_rows;
+	int reg_writes;		// the bench's register writes (chip_reg chip 0)
 } modem;
 
 // The IF host's coding as the glue answers it (ref_coding: cs7000p_ref_signed), in the board's numbering again
@@ -368,10 +369,16 @@ void cs7000p_c6000_retune(uint32_t hz)
 void cs7000p_c6000_rx_hold(void) { hw(8, 0, 0); }
 bool cs7000p_c6000_fm_rx(void) { return !modem.dmr && !modem.fm_tx; }
 void cs7000p_c6000_fm_audio(bool on) { modem.audio = on; }
+// The bench's register access (chip_reg chip 0): every write counted, a read answers 0
 bool cs7000p_c6000_reg(uint8_t page, uint8_t reg, uint32_t *val, bool write)
 {
-	(void)page; (void)reg; (void)val; (void)write;
-	return false;
+	(void)page; (void)reg;
+	if (write) {
+		modem.reg_writes++;
+	} else {
+		*val = 0;
+	}
+	return true;
 }
 
 // The FM transmit set-up as the real IF host asks the glue's callbacks, one call each into the chain: the pair (none:
@@ -2000,6 +2007,59 @@ static void test_tx_arm_before_init(void)
 	CHECK(i.stage == HAL_TX_ARM_OFF && i.max == ARM_TOP && !i.cal_ok && i.crc == 0u);
 }
 
+// The bench's writes to the modem and the synthesizer (chip_reg chips 0 and 1): refused while transmission is armed
+// and while a transmission admitted on the arm is up, nothing reaching either chip; the synthesizer's also under a
+// bench carrier. Reads always answer
+static void test_bench_writes(void)
+{
+	const uint32_t a = crc(table_a);
+	uint32_t v = 0x12;
+	chip(table_a, NULL);
+	boot(true, 0);
+	// Unarmed, receiving: both written
+	int writes = modem.reg_writes;
+	CHECK(cs7000p_chip_reg(0, 4, 0x47, &v, true) && modem.reg_writes == writes + 1);
+	v = 0x123;
+	hw_n = 0;
+	CHECK(cs7000p_chip_reg(1, 0, 0, &v, true) && hw_n > 0u);
+	// Armed, receiving: neither, the chips untouched; a read answers
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	writes = modem.reg_writes;
+	hw_n = 0;
+	static const uint8_t page4[] = { 0x04, 0x25, 0x45, 0x46, 0x47, 0x48, 0x60, 0x35 };
+	for (unsigned k = 0; k < sizeof(page4); k++) {
+		v = 0x40;
+		CHECK(!cs7000p_chip_reg(0, 4, page4[k], &v, true));
+	}
+	v = 0x40;
+	CHECK(!cs7000p_chip_reg(0, 1, 0x10, &v, true));
+	v = 0x123;
+	CHECK(!cs7000p_chip_reg(1, 0, 0, &v, true));
+	CHECK(modem.reg_writes == writes && hw_n == 0u);
+	CHECK(cs7000p_chip_reg(0, 4, 0x04, &v, false));
+	// Keyed on the table: neither while it is up, nor after it until the arm is off
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, NULL) && cs7000p_rf.admit_arm);
+	v = 0x40;
+	CHECK(!cs7000p_chip_reg(0, 4, 0x04, &v, true) && modem.reg_writes == writes);
+	v = 0x123;
+	hw_n = 0;
+	CHECK(!cs7000p_chip_reg(1, 0, 0, &v, true) && hw_n == 0u);
+	cs7000p_radio.tx_off();
+	v = 0x40;
+	CHECK(!cs7000p_chip_reg(0, 4, 0x25, &v, true) && modem.reg_writes == writes);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	CHECK(cs7000p_chip_reg(0, 4, 0x25, &v, true) && modem.reg_writes == writes + 1);
+	// A bench carrier: the modem is the bench's (the deviation, 4:0xE0 while keyed into a load), the synthesizer not
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && cs7000p_rf.admit_ovr);
+	v = 0x8B;
+	CHECK(cs7000p_chip_reg(0, 4, 0xE0, &v, true) && modem.reg_writes == writes + 2);
+	v = 0x123;
+	hw_n = 0;
+	CHECK(!cs7000p_chip_reg(1, 0, 0, &v, true) && hw_n == 0u);
+	cs7000p_radio.tx_off();
+	CHECK(cs7000p_chip_reg(1, 0, 0, &v, true) && hw_n > 0u);
+}
+
 static void test_tx_arm(void)
 {
 	radio_status_t st;
@@ -2437,6 +2497,7 @@ int main(void)
 	test_if_words();
 	test_sq_maker();
 	test_tx_arm();
+	test_bench_writes();
 #if CONFIG_DMR
 	test_tx_arm_dmr();
 #endif
