@@ -10,7 +10,8 @@
 // key it is the bench's drive override under a test TX limit. The maker's factory table is taken at init (the bytes
 // in use the core's factory copy chose, core/storage/factory_copy.h) and parsed (makercal_cs7000p.h), and shown.
 // Receive uses it (the tune row, trim A in the held level, the RSSI points), each value with today's as its fallback;
-// nothing transmits on it (hardware-cs7000p.md 13.1).
+// nothing transmits on it (hardware-cs7000p.md 13.1). The owner's transmit arm (hal_radio_t.tx_arm, 13.2) is checked
+// against it and refuses a key-up it would serve until armed; even armed, none of its transmit values is served yet.
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
@@ -19,8 +20,8 @@
 //
 // Everything here is the radio task's, but: status readers (cs7000p_radio_state, the table's view lines), the bench
 // drive (tx_drive, tx_drive_now), chip_reg (the debug link's task), cs7000p_speaker_pcm (the audio task),
-// cs7000p_radio_rf_safe (any context), the factory copy's busy() and changed() (the restore's task) and the burst
-// runner's ops (the modem's and the timer's interrupts).
+// cs7000p_radio_rf_safe (any context), the factory copy's busy() and changed() (the restore's task), the transmit arm
+// (the debug link's task) and the burst runner's ops (the modem's and the timer's interrupts).
 #include <stddef.h>
 #include <string.h>
 #include "cs7000p.h"
@@ -256,11 +257,11 @@ static void cal_take(void)
 }
 
 #if CONFIG_FACTORY_COPY
-// The restore (settings-store.md 4.2) is refused while a transmission is up or a table it wrote is not taken yet (and,
-// once the owner's transmit arm exists, while it is not off)
+// The restore (settings-store.md 4.2) is refused while a transmission is up, a table it wrote is not taken yet, or the
+// owner's transmit arm is not off: the arm was made against the table in use, which a restore would change
 static bool cal_busy(void)
 {
-	return tx_on || dmr_armed || cal_req;
+	return tx_on || dmr_armed || cal_req || cs7000p_rf.arm != CS7000P_ARM_OFF;
 }
 
 // Only the request: the table in use changes at the radio task's next status poll
@@ -973,6 +974,8 @@ static void status(radio_status_t *st)
 	if (take) {
 		cal_gen_step();
 		cal_take();
+		// The parse's stores before the request's end: the transmit arm reads the table once cal_req is false
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
 		cal_req = false;
 		retune_req = true;
 	}
@@ -1015,6 +1018,90 @@ static bool ref_trim(int16_t ppb)
 }
 #endif
 
+#if CONFIG_DEBUGLINK
+// --- The owner's transmit arm (hardware-cs7000p.md 13.2), from the debug link's task ---
+
+_Static_assert((int)CS7000P_ARM_OFF == (int)HAL_TX_ARM_OFF && (int)CS7000P_ARM_FM_LOW == (int)HAL_TX_ARM_FM_LOW &&
+	       (int)CS7000P_ARM_FM == (int)HAL_TX_ARM_FM && (int)CS7000P_ARM_ALL == (int)HAL_TX_ARM_ALL,
+	       "the arm's stages are the hal's");
+// DMR's stage only where DMR is built
+#define ARM_MAX	(CONFIG_DMR ? CS7000P_ARM_ALL : CS7000P_ARM_FM)
+
+static const char *arm_name(uint8_t stage)
+{
+	static const char *const names[] = { "off", "fm-low", "fm", "dmr" };
+	return stage < sizeof(names) / sizeof(names[0]) ? names[stage] : "?";
+}
+
+// The table in use is about to change: a restore's job pending or running, its outcome not yet taken by the copy, or
+// its changed() not yet taken here. An arm made now would be checked against the table before it
+static bool cal_pending(void)
+{
+#if CONFIG_FACTORY_COPY
+	return cal_req || factory_copy_restore_busy();
+#else
+	return cal_req;
+#endif
+}
+
+// The table in use: its range, its CRC-32 (the window's or the record's, whichever it came from), valid or not. The
+// radio task changes it only in a take, which it ends before it waits, so this task never reads one half made
+static void tx_arm_info(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){
+		.stage = cs7000p_rf.arm,
+		.max = ARM_MAX,
+		.addr = CS7000P_STORE_TABLE_ADDR,
+		.len = CS7000P_MAKER_SIZE,
+		.crc = maker.valid ? maker.crc : 0u,
+		.cal_ok = maker.valid,
+	};
+}
+
+// Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. Every state that refuses it is
+// asked under the interrupt mask with the change itself, so a power-off (its off state, then a safe request that
+// clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
+// transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
+// is set after it). A change of stage asks for a receive set-up at the next status poll (the values written at
+// receive entries follow the arm); the same stage again asks for none
+static uint8_t tx_arm(uint8_t stage, uint32_t id)
+{
+	if (stage > ARM_MAX) {
+		return HAL_TX_ARM_STAGE;
+	}
+	uint8_t why = HAL_TX_ARM_OK;
+	const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
+	const uint8_t was = cs7000p_rf.arm;
+	if (stage != CS7000P_ARM_OFF && stage >= was) {
+		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending()) {
+			why = HAL_TX_ARM_STATE;
+		} else if (!maker.valid) {
+			why = HAL_TX_ARM_NO_CAL;
+		} else if (id != maker.crc) {
+			why = HAL_TX_ARM_ID;
+		}
+	} else {
+		id = stage != CS7000P_ARM_OFF ? cs7000p_rf.arm_id : 0u;
+	}
+	if (why == HAL_TX_ARM_OK) {
+		if (cs7000p_rf_arm_ends(&cs7000p_rf, stage)) {
+			board_rf_safe();
+		}
+		cs7000p_rf_arm_set(&cs7000p_rf, stage, id);
+		if (stage != was) {
+			retune_req = true;
+		}
+	}
+	portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
+	if (why == HAL_TX_ARM_OK) {
+		dlog("radio: transmit arm %s id=0x%08x", arm_name(stage), (unsigned)id);
+	} else {
+		dlog("radio: transmit arm %s refused (%u)", arm_name(stage), why);
+	}
+	return why;
+}
+#endif
+
 // No volume: the pot is in the analog path. No mic_gain: the modem's microphone gain steps are in no document, so
 // the transmit set-up keeps one value. No tx_tone, tx_dtmf, rx_am, tx_mark: not written
 const hal_radio_t cs7000p_radio = {
@@ -1040,6 +1127,10 @@ const hal_radio_t cs7000p_radio = {
 	.tx_drive = tx_drive,
 	.tx_drive_top = tx_drive_top,
 	.tx_drive_now = tx_drive_now,
+#if CONFIG_DEBUGLINK
+	.tx_arm_info = tx_arm_info,
+	.tx_arm = tx_arm,
+#endif
 };
 
 // --- For the base's files ---
@@ -1101,6 +1192,10 @@ typedef struct {
 	// The maker's squelch thresholds at the receive frequency, or the lookup's reason
 	bool sq_ok;
 	uint8_t o1, c1, o9, c9, sq_why;
+	// The owner's transmit arm, its id, and whether a test TX limit list is set (an armed key-up needs one)
+	uint8_t arm;
+	uint32_t arm_id;
+	bool list;
 	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
 } cal_view_t;
 
@@ -1132,6 +1227,11 @@ static void view_fill(cal_view_t *v)
 	v->sq_why = CS7000P_MK_LK_OK;
 	v->sq_ok = cs7000p_maker_squelch(&maker, hz, 1, &v->o1, &v->c1, &v->sq_why) &&
 		   cs7000p_maker_squelch(&maker, hz, 9, &v->o9, &v->c9, &v->sq_why);
+	v->arm = cs7000p_rf.arm;
+	v->arm_id = cs7000p_rf.arm_id;
+	tx_limit_info_t limit;
+	tx_limit_get(&limit, NULL, 0);
+	v->list = limit.on && !limit.block && limit.n != 0u;
 	v->busy = false;
 }
 
@@ -1244,10 +1344,19 @@ static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
 	}
 }
 
+// The owner's transmit arm (13.2): the stage, the id it was armed with (the CRC-32 of the table in use then), and
+// whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15)
+static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
+{
+	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u);
+}
+
 static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {
-	fmt_cal_table, fmt_cal_rec, fmt_ref, fmt_rx_cal, fmt_sq_maker,
+	fmt_cal_table, fmt_cal_rec, fmt_ref, fmt_rx_cal, fmt_sq_maker, fmt_tx_arm,
 };
-static const char *const view_keys[CS7000P_CAL_VIEW_LINES] = { "cal_table", "cal_rec", "ref", "rx_cal", "sq_maker" };
+static const char *const view_keys[CS7000P_CAL_VIEW_LINES] = {
+	"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm",
+};
 
 static void view_line(uint8_t k, char *buf, uint8_t len)
 {
@@ -1299,6 +1408,12 @@ void cs7000p_sq_maker_line(char *buf, uint8_t len)
 {
 	view_take();
 	view_line(4, buf, len);
+}
+
+void cs7000p_tx_arm_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(5, buf, len);
 }
 #endif
 

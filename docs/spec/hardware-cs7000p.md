@@ -1420,8 +1420,30 @@ reason as `why=`:
 | 10 | the synthesizer not locked on the carrier |
 | 11 | a line or DAC write refused or failed (the interlock, a safe request from outside) |
 | 12 | the power's off state (5.4): the radio let go of the supply and the knob still powers it. Checked before everything else: an armed bench drive is neither used nor dropped |
-| 13 | not used yet: kept for the owner's transmit arm, which this build does not have |
+| 13 | the maker's table in use holds this transmission's values, but the owner's transmit arm does not cover its mode and level (below). Only when no bench drive is armed: a bench key-up keeps its own reasons, 3 to 6 |
 | 14 | the reference DAC in the maker's coding for a receive test (`chip_reg` 3:5 not 0, 6.5). Checked after the off state and before everything else: an armed bench drive is neither used nor dropped |
+| 15 | ... the arm covers it, but no test TX limit list names the frequency |
+
+**The owner's transmit arm** ([radio-features.md](radio-features.md) 6.3, RADIO op 44). A key-up the maker's table
+would serve (`cs7000p_cal_maker_tx`: FM the level's drive row, the FM pair and trim A at f_tx; DMR also the DMR pair,
+trim B and the level's burst fields, every one passing the reader's transmit rules there) is refused until the owner
+arms transmission, and is still refused while none of the table's transmit values is served by this build: armed and
+listed, the reason is 2. The arm:
+
+| Rule | Detail |
+|---|---|
+| Stages | 0 off; 1 FM at the low level (`1W`); 2 FM at both levels; 3 FM and DMR (`CONFIG_DMR` builds; the top stage is 2 without) |
+| Handshake | stage 1 to 3 needs the CRC-32 of the table in use (the window's, or the copy's record's when that is the source: 10.3), which the owner's tool computes from its backup: a window restored from the backup and a record copied from the original window both have it. Refused with reason 1 when no table is in use, 2 for another CRC, 3 over the top stage, 4 before the radio's init, while 3:5 is not 0, in the power's off state, or while a restore's job is pending or running or its outcome is not yet taken (the table is about to change). Off, and a stage below the one armed, are always taken (the id kept) |
+| The list | a key-up on the maker's values also needs a test TX limit list that names the frequency (`why=15`): the frequencies the owner named are the radio's rule, and clearing the limit makes it refuse again |
+| RAM only | off at every start; off at every safe request (a fault path, the power's off state); never stored |
+| Lower or off | a transmission on the table's values the new stage no longer covers ends at once, by the safe request (`board_rf_safe`); a bench carrier is not the arm's and stays up |
+| The restore | refused while the arm is not off (`busy`, [settings-store.md](settings-store.md) 4.2), and the arm while a restore is pending |
+| The bench drive | as before, unarmed: its four conditions, no pair. With a valid table its key-up's writes are those of a radio without one; the receive bias it inherits from the receive entry before it carries trim A (13.1) |
+| Lifting it | `CS7000P_TX_ARM_REQUIRED` in `rfops_cs7000p.h`, 1 and not a build option: 0 makes every stage cover every mode, level and frequency |
+
+`cs7000pRadioSeqTest` checks 13, 14 and 15 at every level, mode and stage, and that no stage admits a key-up, writes
+anything or gives a drive, a pair or a burst drive; `cs7000pRadioTest` the handshake against each source, every
+refusal, the restore and the arm excluding each other, and the bench key-up's writes at every stage.
 
 The only way the firmware keys an uncalibrated radio is the debug link's drive override (`tx_drive`, 1 to 4095).
 (A raw SoC `CHIP_REG` write to DAC1 or GPIOE can key the PA outside every check here, 4.3: the bench must not make
@@ -1469,7 +1491,7 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 
 ## 15. Debug link view keys
 
-`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last five, which are in section 39
+`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last six, which are in section 39
 (`board2`, `board_t.view_split`: `board` is near the size of one reply; [debuglink.md](debuglink.md) 3.7). The
 diagnostics page shows the bring-up readings.
 
@@ -1505,11 +1527,12 @@ diagnostics page shows the bring-up readings.
 | `ref` (`board2`) | the receive reference (6.5): the coding 3:5 asks for, `hold` / `maker` / `maker7d`; `bias=` the level the last receive entry wrote in it (0x200 + the offset under the hold); `r04=` 4:0x04 in receive; `d_a=`, `d_b=` the table's trims as d (`-` with none); `src=` the level's offset, `maker` (trim A) / `default` / `bench` (3:4); `why=` when it is not trim A, `table` (none valid) / `group` / `rx_bound` (over 32 steps), else `none`. `ref=hold bias=0x1fb r04=0x00 d_a=-5 d_b=-3 src=maker why=none` |
 | `rx_cal` (`board2`) | the tune's source, `maker` / `default` / `bench` (3:0); `rssi=` `maker` / `sheet`; `vco=` the VCO line now, `low` / `high`; `vco_rule=` `freq` / `dir` (3:6); `ifw=` the IF chip's words, `port` / `maker` (3:7) |
 | `sq_maker` (`board2`) | the maker's squelch thresholds at the receive frequency, shown and never applied (13.1): `ok o1= c1= o9= c9=`, open and close at levels 1 and 9 as 8-bit noise codes (the scale of `noise_raw` >> 4; [calibration-cs7000p.md](calibration-cs7000p.md) 5.7), by the receive rows' lookup (inside the 479 MHz switch segment the end value on the frequency's VCO side; past the end points extended, where their order need not hold); `none why=` the lookup's reason, `table` (none valid) / `group` / `band` (out of the receive band, or no receive yet) / `switch` / `math`. `sq_maker=ok o1=120 c1=130 o9=40 c9=50` |
+| `tx_arm` (`board2`) | the owner's transmit arm (13.2): `off` / `fm-low` / `fm` / `dmr`; `id=` the CRC-32 it was armed with (0 when off); `list=` 1 while a test TX limit list is set (an armed key-up on the maker's values needs one naming its frequency, `why=15`). `tx_arm=off id=0x00000000 list=0` after every start |
 
-The five `board2` keys of one reply describe one state: the table in use and the receive set-up on it. A restore's
+The six `board2` keys of one reply describe one state: the table in use and the receive set-up on it. A restore's
 take changes the table and sets receive up on it in one step of the radio task; the reply copies the state at its
 first `board2` line, never during such a step, and its other lines format that copy. A reply asked during the step
-waits for its end; one that waited 250 ms gives `<key>=busy` for each of the five instead (not expected: the step is
+waits for its end; one that waited 250 ms gives `<key>=busy` for each of the six instead (not expected: the step is
 one receive set-up). The other keys, in `board`, are read one by one.
 
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read

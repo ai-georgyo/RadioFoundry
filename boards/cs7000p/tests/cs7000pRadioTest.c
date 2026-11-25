@@ -16,8 +16,13 @@
 // table (and none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only
 // the tune and the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back
 // alone; the bench's 3:0 and 3:4 over all of it. The bench's 3:7: the IF chip's words (read off its pins) the port's
-// or the maker's for the mode, and no part of a key-up; the maker's squelch thresholds at f_rx shown. Built again
-// without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
+// or the maker's for the mode, and no part of a key-up; the maker's squelch thresholds at f_rx shown. The owner's
+// transmit arm (hal_radio_t.tx_arm): its handshake against the CRC of the table in use (the window's, the record's,
+// a restored one's), every refusal (a stage over the top, another id, no table, the bench's coding, the off state, a
+// restore pending or its request untaken), the restore refused while armed, a lower stage always taken, the arm gone
+// at a safe request and a start; unarmed, armed without a list and armed with one, no key-up the table would serve
+// goes ahead; the bench drive's key-up writes as without a table, at every stage, but for the bias it inherits. Built
+// again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -235,6 +240,14 @@ static void rf_safe_now(void)
 	dac_now = 0;
 	shadow = exp_rf_safe_word(shadow);
 	cs7000p_radio_rf_safe();
+}
+
+// board_rf_safe() itself (exp_cs7000p.c): the transmit arm's lowering ends a transmission it no longer covers by it
+static int board_safes;
+void board_rf_safe(void)
+{
+	board_safes++;
+	rf_safe_now();
 }
 
 // --- The power side: the supply reading and the off state ---
@@ -859,7 +872,6 @@ static void test_table_sources(void)
 #endif
 }
 
-#if CONFIG_FACTORY_COPY
 // The held level's offset the modem was given at its last receive entry since hw_n was cleared (INT32_MIN: none)
 static int32_t last_ref(void)
 {
@@ -870,6 +882,8 @@ static int32_t last_ref(void)
 	}
 	return INT32_MIN;
 }
+
+#if CONFIG_FACTORY_COPY
 
 // A restore's changed() only raises the request; the table in use changes at the radio task's status poll, never
 // under a transmission, and a receive set-up follows. busy() holds from the request until it is taken
@@ -969,7 +983,9 @@ static void view_mid_setup(void)
 
 static void test_view_whole(void)
 {
-	static const char *const keys[CS7000P_CAL_VIEW_LINES] = { "cal_table", "cal_rec", "ref", "rx_cal", "sq_maker" };
+	static const char *const keys[CS7000P_CAL_VIEW_LINES] = {
+		"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm",
+	};
 	radio_status_t st;
 	char line[128], want[32];
 	chip(NULL, NULL);
@@ -1595,8 +1611,299 @@ static void test_sq_maker(void)
 }
 #endif
 
+#if CONFIG_DEBUGLINK
+// --- The owner's transmit arm (hal_radio_t.tx_arm, hardware-cs7000p.md 13.2) ---
+
+#define ARM_TOP	(CONFIG_DMR ? HAL_TX_ARM_ALL : HAL_TX_ARM_FM)
+
+static hal_tx_arm_info_t arm_info(void)
+{
+	hal_tx_arm_info_t i;
+	memset(&i, 0x5A, sizeof(i));
+	cs7000p_radio.tx_arm_info(&i);
+	return i;
+}
+
+// A key-up on the test TX limit's frequency, FM at a level or DMR's arm, refused with why: nothing keyed, no
+// microphone, nothing admitted
+static void keyup_refused(uint8_t level, bool dmr, uint8_t why)
+{
+	int writes = mic_writes;
+	cs7000p_rf.tx_refused_why = 0;
+	if (dmr) {
+		cs7000p_radio.set_mode(RADIO_MODE_DMR);
+		runner.answer = runner.plan = true;
+	}
+	CHECK(!cs7000p_radio.tx(446u * MHZ, dmr ? RADIO_BW_12K5 : RADIO_BW_25K, level, NULL));
+	CHECK(cs7000p_rf.tx_refused_why == why && !modem.fm_tx && !runner.armed && mic_writes == writes);
+	CHECK((shadow & EXP_TX_BITS) == 0u && dac_now <= CS7000P_TUNE_MAX && !cs7000p_rf.admit);
+	if (dmr) {
+		runner.answer = runner.plan = false;
+		cs7000p_radio.set_mode(RADIO_MODE_FM);
+	}
+}
+
+// Every key-up the invented table would serve, at both levels and in both modes, with the arm's reason for the stage
+// armed now; listed: the test TX limit names 446 MHz (start() sets it)
+static void keyups_refused(uint8_t stage, bool listed)
+{
+	static const uint8_t from[2][2] = { { 1, 2 }, { 3, 3 } };	// [dmr][level]: the first stage that covers it
+	for (uint8_t level = 0; level < 2; level++) {
+		for (int dmr = 0; dmr < (CONFIG_DMR ? 2 : 1); dmr++) {
+			const bool covered = stage >= from[dmr][level];
+			keyup_refused(level, dmr != 0, !covered ? CS7000P_TX_UNARMED :
+						      (listed ? CS7000P_TX_UNCAL : CS7000P_TX_ARM_NO_LIST));
+		}
+	}
+}
+
+// Before the radio's init (its chain not up): every arm but off refused, a state; the info says off
+static void test_tx_arm_before_init(void)
+{
+	CHECK(cs7000p_radio.tx_arm_info != NULL && cs7000p_radio.tx_arm != NULL);
+	for (uint8_t stage = HAL_TX_ARM_FM_LOW; stage <= ARM_TOP; stage++) {
+		CHECK(cs7000p_radio.tx_arm(stage, 0) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	}
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	hal_tx_arm_info_t i = arm_info();
+	CHECK(i.stage == HAL_TX_ARM_OFF && i.max == ARM_TOP && !i.cal_ok && i.crc == 0u);
+}
+
+static void test_tx_arm(void)
+{
+	radio_status_t st;
+	char line[128];
+	const uint32_t a = crc(table_a), b = crc(table_b);
+	uint8_t blank[N];
+	memset(blank, 0xFF, sizeof(blank));
+	const uint32_t blank_crc = crc(blank);
+	CHECK(cs7000p_radio.tx_arm != NULL && cs7000p_radio.tx_arm_info != NULL);
+
+	// A valid table in the window: the info, off at the start
+	chip(table_a, NULL);
+	boot(true, 0);
+	hal_tx_arm_info_t i = arm_info();
+	CHECK(i.stage == HAL_TX_ARM_OFF && i.max == ARM_TOP && i.addr == WIN && i.len == N && i.crc == a && i.cal_ok);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1"));
+	// Unarmed: every key-up the table would serve refused, why 13; nothing keyed
+	keyups_refused(HAL_TX_ARM_OFF, true);
+	// Refused, each leaving it off: a stage over the top, another table's CRC, the window's own read back as 0
+	CHECK(cs7000p_radio.tx_arm(ARM_TOP + 1u, a) == HAL_TX_ARM_STAGE);
+	CHECK(cs7000p_radio.tx_arm(0xFF, a) == HAL_TX_ARM_STAGE);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, b) == HAL_TX_ARM_ID && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_ID && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	int retunes0 = modem.retunes;
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, b) == HAL_TX_ARM_OK);	// off: always
+	CHECK(strstr(log_last, "radio: transmit arm off id=0x00000000") == log_last);
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes0);	// off while off: no receive set-up
+
+	// Each stage, against the table's CRC: a receive set-up at the next poll; the arm's reasons at each, and with a
+	// list nothing goes ahead either (none of the table's transmit values is served)
+	for (uint8_t stage = HAL_TX_ARM_FM_LOW; stage <= ARM_TOP; stage++) {
+		int retunes = modem.retunes;
+		CHECK(cs7000p_radio.tx_arm(stage, a) == HAL_TX_ARM_OK && cs7000p_rf.arm == stage && cs7000p_rf.arm_id == a);
+		cs7000p_radio.status(&st);
+		CHECK(modem.retunes == retunes + 1 && arm_info().stage == stage);
+		CHECK(cs7000p_radio.tx_arm(stage, a) == HAL_TX_ARM_OK);	// the same stage again: no set-up
+		cs7000p_radio.status(&st);
+		CHECK(modem.retunes == retunes + 1);
+		keyups_refused(stage, true);
+		CHECK(tx_limit_set(false, NULL, 0));	// no list: 15 where the stage covers it
+		keyups_refused(stage, false);
+		cs7000p_tx_arm_line(line, sizeof(line));
+		CHECK(line_is(line, "tx_arm=%s id=0x%08x list=0", stage == 1 ? "fm-low" : stage == 2 ? "fm" : "dmr", a));
+		// A block is no list either (the radio core refuses before the board; the view says list=0)
+		CHECK(tx_limit_set(true, NULL, 0));
+		cs7000p_tx_arm_line(line, sizeof(line));
+		CHECK(strstr(line, " list=0") != NULL);
+		static const uint32_t limit[1] = { 446u * MHZ };
+		CHECK(tx_limit_set(false, limit, 1));
+#if CONFIG_FACTORY_COPY
+		CHECK(cs7000p_factory_copy.busy());	// the restore is refused while armed
+#endif
+	}
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=%s id=0x%08x list=1", CONFIG_DMR ? "dmr" : "fm", a));
+	CHECK(strstr(log_last, "radio: transmit arm ") == log_last);
+	// The same stage again with another id: refused, the arm as it was. A lower one: always taken, the id kept
+	CHECK(cs7000p_radio.tx_arm(ARM_TOP, b) == HAL_TX_ARM_ID && cs7000p_rf.arm == ARM_TOP && cs7000p_rf.arm_id == a);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == HAL_TX_ARM_FM_LOW);
+	CHECK(cs7000p_rf.arm_id == a);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=fm-low id=0x%08x list=1", a));
+	// A bench carrier is not the arm's: a disarm leaves it up (no safe request), and the arm's lowering ends only a
+	// transmission on the table's values (cs7000pRadioSeqTest)
+	const int safes = board_safes;
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_TX && cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(board_safes == safes && cs7000p_rf.seq.state == CHAINSEQ_ST_TX && modem.fm_tx);
+	cs7000p_radio.tx_off();
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1"));
+	// One on the table's values (none is admitted on them yet: this carrier marked as one, FM at level 1 under stage
+	// 2). Stage 2 again keeps it; stage 1 ends it at once by the safe request, and the new stage stands after it
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, a) == HAL_TX_ARM_OK);
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 1, NULL));
+	cs7000p_rf.admit_arm = true;
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, a) == HAL_TX_ARM_OK && board_safes == safes);
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_TX && (shadow & EXP_TX_BITS) == EXP_TX_BITS && dac_now == 600);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_OK && board_safes == safes + 1);
+	CHECK((shadow & EXP_TX_BITS) == 0u && dac_now == 0 && cs7000p_rf.safed);
+	CHECK(cs7000p_rf.arm == CS7000P_ARM_FM_LOW && cs7000p_rf.arm_id == a);
+	CHECK(!cs7000p_radio.tx_drive_now(600) && (shadow & EXP_TX_BITS) == 0u);	// nothing keys it again
+	cs7000p_radio.tx_off();
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_RX && (shadow & EXP_TX_BITS) == 0u && mic_off());
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+
+	// A bench state forbids it: the maker's reference coding (3:5); back to the hold, it is taken
+	uint32_t v = CS7000P_REF_MAKER;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	v = CS7000P_REF_HOLD;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	// The power's off state: its safe request disarms, and no arm is taken in it
+	latch_off();
+	CHECK(cs7000p_rf.arm == CS7000P_ARM_OFF && cs7000p_rf.arm_id == 0u);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	off_state = false;
+	cs7000p_radio.status(&st);
+	// Any safe request (a fault path) disarms; and every start is off
+	CHECK(cs7000p_radio.tx_arm(ARM_TOP, a) == HAL_TX_ARM_OK);
+	rf_safe_now();
+	CHECK(cs7000p_rf.arm == CS7000P_ARM_OFF && arm_info().stage == HAL_TX_ARM_OFF);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_radio.tx_arm(ARM_TOP, a) == HAL_TX_ARM_OK);
+	start();
+	CHECK(cs7000p_rf.arm == CS7000P_ARM_OFF && arm_info().stage == HAL_TX_ARM_OFF);
+
+	// No table in use: refused; off still taken
+	chip(NULL, NULL);
+	boot(true, 0);
+	i = arm_info();
+	CHECK(i.crc == 0u && !i.cal_ok && i.stage == HAL_TX_ARM_OFF);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, blank_crc) == HAL_TX_ARM_NO_CAL);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_NO_CAL && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	keyup_refused(0, false, CS7000P_TX_UNCAL);	// and nothing the table would serve: 2, as before the arm
+#if CONFIG_FACTORY_COPY
+	// The record as the source (the window blank): the handshake is against the record's CRC, not the window's
+	chip(NULL, table_a);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=blank src=record ") == tline);
+	i = arm_info();
+	CHECK(i.crc == a && i.cal_ok);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, blank_crc) == HAL_TX_ARM_ID);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	keyups_refused(HAL_TX_ARM_FM_LOW, true);
+	// Window and record both valid and different: neither is used, nothing to arm
+	chip(table_a, table_b);
+	boot(true, 0);
+	CHECK(strstr(tline, " src=none ") != NULL && !arm_info().cal_ok);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_NO_CAL);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, b) == HAL_TX_ARM_NO_CAL);
+#endif
+}
+
+#if CONFIG_FACTORY_COPY
+// The arm and the restore exclude each other. A restore's job pending, its outcome not taken by the copy, or its
+// changed() not taken by the radio task: every arm but off refused (reason 4), the table about to change. Armed: the
+// restore refused (busy). Once taken, the handshake is against the restored table's CRC
+static void test_tx_arm_restore(void)
+{
+	radio_status_t st;
+	uint8_t req[2u + FACTORY_COPY_LOAD_CHUNK], out[FACTORY_COPY_OP_OUT];
+	size_t n = 0;
+	const uint32_t a = crc(table_a);
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_NO_CAL);
+	for (uint32_t at = 0; at < N; at += FACTORY_COPY_LOAD_CHUNK) {
+		uint32_t k = N - at < FACTORY_COPY_LOAD_CHUNK ? N - at : FACTORY_COPY_LOAD_CHUNK;
+		req[0] = (uint8_t)at;
+		req[1] = (uint8_t)(at >> 8);
+		memcpy(req + 2, table_a + at, k);
+		CHECK(factory_copy_load_op(&cs7000p_factory_copy, req, (uint16_t)(2u + k), out, &n) == DL_ST_OK);
+	}
+	uint32_t w = storage_crc32(0, &sim_flash_data[WIN], N);
+	uint8_t r5[10] = { (uint8_t)N, (uint8_t)(N >> 8), (uint8_t)a, (uint8_t)(a >> 8), (uint8_t)(a >> 16),
+			   (uint8_t)(a >> 24), (uint8_t)w, (uint8_t)(w >> 8), (uint8_t)(w >> 16), (uint8_t)(w >> 24) };
+	CHECK(factory_copy_restore_op(&cs7000p_factory_copy, r5, sizeof(r5), out, &n) == DL_ST_OK);
+	// The job pending: refused, the id right or not; off taken
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	// The job done: its outcome and the board's request not taken yet: refused still
+	storage_job_poll();
+	CHECK(memcmp(&sim_flash_data[WIN], table_a, N) == 0 && factory_copy_result() == FACTORY_COPY_RS_OK);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(!arm_info().cal_ok);	// the table in use is still the one before the restore
+	// Taken at the status poll: the restored table in use, and the arm against its CRC
+	cs7000p_radio.status(&st);
+	CHECK(arm_info().cal_ok && arm_info().crc == a);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	// Armed: busy() holds, and a restore is refused before any check of its own
+	CHECK(cs7000p_factory_copy.busy());
+	req[0] = req[1] = 0;
+	memcpy(req + 2, table_a, 8);
+	CHECK(factory_copy_load_op(&cs7000p_factory_copy, req, 10, out, &n) == DL_ST_OK);
+	CHECK(factory_copy_restore_op(&cs7000p_factory_copy, r5, sizeof(r5), out, &n) == DL_ST_REFUSED);
+	CHECK(out[0] == FACTORY_COPY_RS_BUSY);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && !cs7000p_factory_copy.busy());
+	// A changed() alone (its request untaken by the radio task): refused until the poll takes it
+	factory_copy_load(&cs7000p_factory_copy);
+	cs7000p_factory_copy.changed();
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+	factory_copy_taken();	// the copy's own state taken: the board's request alone still refuses
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+}
+#endif
+
+// The bench drive's key-up with a valid table in use writes what it writes without one, from the call to the
+// carrier, at every stage of the arm: the one difference is the receive bias the modem kept from the receive entry
+// before it, which carries trim A (-5) with the table and today's 0 without
+static void test_arm_bench_keyup(void)
+{
+	radio_status_t st;
+	unsigned nd = 0, nr = 0;
+	chip(NULL, NULL);
+	boot(true, 0);
+	CHECK(last_ref() == CS7000P_REF_OFFSET);
+	hw_n = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	CHECK(cs7000p_rf.admit_ovr && hw_n > 0u && last_ref() == INT32_MIN);	// the key-up asks no receive level
+	keep_log();
+	cs7000p_radio.tx_off();
+	for (uint8_t stage = HAL_TX_ARM_OFF; stage <= ARM_TOP; stage++) {
+		chip(table_a, NULL);
+		boot(true, 0);
+		if (stage != HAL_TX_ARM_OFF) {
+			CHECK(cs7000p_radio.tx_arm(stage, crc(table_a)) == HAL_TX_ARM_OK);
+		}
+		cs7000p_radio.status(&st);
+		CHECK(last_ref() == -5);	// what the key-up inherits
+		hw_n = 0;
+		CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+		CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);
+		CHECK(log_differs_only(false, false, &nd, &nr) && nd == 0u && nr == 0u);
+		cs7000p_radio.tx_off();
+	}
+}
+#endif
+
 int main(void)
 {
+#if CONFIG_DEBUGLINK
+	test_tx_arm_before_init();	// first: the chain is not up yet
+#endif
 	test_fm_mic();
 	test_dmr_mic();
 	test_off_state();
@@ -1615,6 +1922,11 @@ int main(void)
 	test_table_rx_bench();
 	test_if_words();
 	test_sq_maker();
+	test_tx_arm();
+	test_arm_bench_keyup();
+#if CONFIG_FACTORY_COPY
+	test_tx_arm_restore();
+#endif
 #endif
 	sim_flash_free();
 	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",

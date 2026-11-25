@@ -9,7 +9,8 @@
 // for the modulation pairs, a counter for the reference). The maker's own factory table (data flash
 // 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md, read by makercal_cs7000p.h) serves receive only so far: the
 // front-end tune, the receive reference level and the RSSI scale (the cs7000p_cal_*_m getters below), each from its
-// own field group, with today's value whenever that group or that lookup gives none. No transmit value comes from it.
+// own field group, with today's value whenever that group or that lookup gives none. No transmit value comes from it:
+// whether it would serve a transmission is asked (cs7000p_cal_maker_tx), for the owner's arm, and nothing more.
 //
 // A row is nine points, 400 to 520 MHz in steps of 15 MHz, read with linear interpolation between two points and
 // held flat past the ends. A row with one point unset is unset as a whole: half a row is never used.
@@ -100,6 +101,14 @@ int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, ui
 // The RSSI in dBm: the table's two points on the 12-bit reading (raw12 >> 4), else cs7000p_rssi_dbm(mv). The FM
 // squelch never reads it (it is the noise reading's), so FM receive cannot change through it
 int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv, uint8_t *src);
+
+// --- Transmit, the maker's table (hardware-cs7000p.md 13.2): asked, not served ---
+// The table in use (m: NULL or not valid is none) holds every value a transmission in this mode at this power level
+// would need at hz: FM the level's drive, the FM pair and trim A; DMR also the DMR pair, trim B and the level's burst
+// fields (checked though not applied: a damaged timing field is a damaged table). Each from its own field group,
+// with the reader's transmit rules at hz (the band, the VCO switch, no clamped, wrapped, 0 or 255 result). Asks
+// nothing of the arm: this is what an armed key-up would find. No getter serves these values yet
+bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr);
 
 // The IF chip's RSSI output in millivolts as dBm at its input, from the data sheet's two typical points (0.3 V at
 // -100 dBm, 2.0 V at -30 dBm), less CS7000P_FE_GAIN_DB. A relative reading until it has been measured
