@@ -1676,20 +1676,41 @@ static void test_arm_admit(void)
 			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_NO_LIST);
 		}
 	}
+	// A bench write to the modem or the synthesizer since the start refuses them too (17), after the arm's reasons and
+	// after 16
+	CHECK(CS7000P_TX_ARM_CHIPS == 17);
+	rf.ref_src = src0;
+	for (int dmr = 0; dmr < 2; dmr++) {
+		q = req(446u * MHZ, 1, dmr != 0);
+		q.limit_list = true;
+		q.bench_dmr = true;
+		q.bench_chips = true;
+		const uint32_t refused = rf.tx_refused;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_CHIPS && rf.tx_refused == refused + 1u);
+		nothing_live_at(446u * MHZ, 1, dmr != 0, level_drive(&armed_table, CS7000P_ARM_ALL, 446u * MHZ, 1));
+		q.pc8_bench = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_REF);
+		q.pc8_bench = false;
+		q.limit_list = false;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_NO_LIST);
+	}
 	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM_LOW, 0x5EEDu);
 	q = req(446u * MHZ, 1, false);
 	q.limit_list = true;
 	q.pc8_bench = true;
+	q.bench_chips = true;
 	rf.ref_override = true;
 	rf.ref_offset = 12;
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
-	// A bench carrier: its own rules, the trim, PC8 and the bench's 3:4 as they are (the offset in its FM set-up)
+	// A bench carrier: its own rules, the trim, PC8, the bench's 3:4 (the offset in its FM set-up) and its chip
+	// writes as they are
 	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm);
 	CHECK(cs7000p_rf_ref_for(&rf, true) == 12 && cs7000p_rf_r04(&rf, false, true) == 12);
 	cs7000p_rf_tx_off(&rf, false);
 	rf.trim_ppb = 0;
 	q.pc8_bench = false;
+	q.bench_chips = false;
 	rf.ref_override = false;
 	rf.ref_offset = CS7000P_REF_OFFSET;
 	rf.ref_src = src0;

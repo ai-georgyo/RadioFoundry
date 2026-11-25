@@ -309,6 +309,7 @@ static struct {
 	const hrc6000_if_row_t *rows;	// the board's rows at the last FM transmit set-up, n_rows of them
 	uint8_t n_rows;
 	int reg_writes;		// the bench's register writes (chip_reg chip 0)
+	bool refuse_reg;	// ... the bus refusing them
 } modem;
 
 // The IF host's coding as the glue answers it (ref_coding: cs7000p_ref_signed), in the board's numbering again
@@ -373,6 +374,9 @@ void cs7000p_c6000_fm_audio(bool on) { modem.audio = on; }
 bool cs7000p_c6000_reg(uint8_t page, uint8_t reg, uint32_t *val, bool write)
 {
 	(void)page; (void)reg;
+	if (write && modem.refuse_reg) {
+		return false;
+	}
 	if (write) {
 		modem.reg_writes++;
 	} else {
@@ -2157,19 +2161,48 @@ static void test_tx_arm_ref_offset(void)
 
 // The bench's writes to the modem and the synthesizer (chip_reg chips 0 and 1): refused while transmission is armed
 // and while a transmission admitted on the arm is up, nothing reaching either chip; the synthesizer's also under a
-// bench carrier. Reads always answer
+// bench carrier. Reads always answer. One written since the start (either chip, a write the chip refused too)
+// refuses the arm (a state) until a restart, and the view says so (chips=1); a read, or a write refused before it
+// was tried, does not
 static void test_bench_writes(void)
 {
 	const uint32_t a = crc(table_a);
+	char line[128];
 	uint32_t v = 0x12;
 	chip(table_a, NULL);
 	boot(true, 0);
-	// Unarmed, receiving: both written
+	// Unarmed, receiving: both written; then the arm refused until a restart
 	int writes = modem.reg_writes;
 	CHECK(cs7000p_chip_reg(0, 4, 0x47, &v, true) && modem.reg_writes == writes + 1);
 	v = 0x123;
 	hw_n = 0;
 	CHECK(cs7000p_chip_reg(1, 0, 0, &v, true) && hw_n > 0u);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1 chips=1"));
+	keyup_refused(0, false, CS7000P_TX_UNARMED);
+	for (int c = 0; c < 2; c++) {
+		boot(true, 0);
+		cs7000p_tx_arm_line(line, sizeof(line));
+		CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1"));
+		// Reads, and a write refused before it reaches a chip: nothing latched
+		CHECK(cs7000p_chip_reg(0, 4, 0x47, &v, false));
+		v = 0x1000;
+		CHECK(!cs7000p_chip_reg(1, 0, 0, &v, true));
+		CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+		CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+		v = 0x12;
+		modem.refuse_reg = true;	// the bus refused it: it may still have landed
+		CHECK(!cs7000p_chip_reg(0, 4, 0x47, &v, true));
+		modem.refuse_reg = false;
+		CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+		boot(true, 0);
+		v = 0x12;
+		CHECK(c == 0 ? cs7000p_chip_reg(0, 4, 0x47, &v, true) : cs7000p_chip_reg(1, 0, 0, &v, true));
+		CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	}
+	boot(true, 0);
+	CHECK(cs7000p_chip_reg(0, 4, 0x47, &v, false));
 	// Armed, receiving: neither, the chips untouched; a read answers
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
 	writes = modem.reg_writes;
@@ -2197,6 +2230,7 @@ static void test_bench_writes(void)
 	CHECK(!cs7000p_chip_reg(0, 4, 0x25, &v, true) && modem.reg_writes == writes);
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
 	CHECK(cs7000p_chip_reg(0, 4, 0x25, &v, true) && modem.reg_writes == writes + 1);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);	// written since the start
 	// A bench carrier: the modem is the bench's (the deviation, 4:0xE0 while keyed into a load), the synthesizer not
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && cs7000p_rf.admit_ovr);
 	v = 0x8B;
