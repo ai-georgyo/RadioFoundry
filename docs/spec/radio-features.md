@@ -853,6 +853,8 @@ transmission on that calibration until the owner arms it (`hal_radio_t.tx_arm_in
 | RAM only | off at every start and at every safe request; never stored |
 | Live | a transmission on that calibration also needs the test TX limit (3.1) as a list naming its frequency, so the frequencies the owner named hold on the radio, not only in the tool; a block, no limit or a cleared one refuses again |
 | Elsewhere | a transmission the arm doesn't concern (a calibration of the tree's own, the bench's PA drive, `tx_drive`) follows its own rules unchanged |
+| The owner's tool | `tools/rfoundry_debug.py radio tx-arm fm-low\|fm\|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf`: says what the stage lets out before it asks for the three options, compares the calibration in use with the backup's bytes, sets the test TX limit to those frequencies, then arms with the backup's CRC-32 and reads the stage back. `radio tx-arm off` disarms, `radio tx-arm` shows the info |
+| HIL | no test arms by itself: an arm with the calibration's CRC goes only with `--allow-rf` and the test TX limit at block; a transmit test whose key-up the arm doesn't cover skips (`state`) instead of meeting the refusal ([tests/hil/README.md](../../tests/hil/README.md), "Transmit frequencies") |
 
 What the board answers for a refused key-up, and which values the arm makes available when, is on its hardware page;
 [feature-matrix.md](../feature-matrix.md) lists each radio's features. Tools and tests transmit only with

@@ -67,7 +67,8 @@ def pytest_addoption(parser):
     g.addoption("--data-flash-backup", default=os.environ.get("RFOUNDRY_HIL_DATA_FLASH_BACKUP"), metavar="FILE",
                 help="the radio's own backup of its data flash (env RFOUNDRY_HIL_DATA_FLASH_BACKUP): a backup .zip, a "
                      "raw image or the factory range alone; test_factory_copy loads its factory range to check a "
-                     "refusal, and never writes it")
+                     "refusal, and never writes it; test_tx_arm arms with its CRC-32 under a blocking test TX limit "
+                     "(with --allow-rf)")
     g.addoption("--firmware-image", default=os.environ.get("RFOUNDRY_HIL_FIRMWARE_IMAGE"),
                 help="the .bin the radio was flashed with (env RFOUNDRY_HIL_FIRMWARE_IMAGE; _install.bin for a board with a "
                      "first stage): test_support_info checks the radio's image hash against its SHA-256")

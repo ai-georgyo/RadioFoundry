@@ -165,6 +165,7 @@ is `tools/bringup.py list --radio <id>`.
 | `codeplug_foreign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
 | `nand_storage` | ✕ | ✕ | ✕ | not recorded | ✕ | ✕ | ✕ | ✕ | ✕ |
 | `factory_copy` | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | not recorded | ✕ |
+| `tx_arm` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded |
 | `codec_check` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | ✕ | pass, needs re-run |
 | `air_raw` | off | off | off | off | off | off | off | off | off |
 | `debuglink_dmrip` | off | off | off | off | off | off | off | off | off |

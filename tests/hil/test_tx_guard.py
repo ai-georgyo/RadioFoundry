@@ -295,3 +295,140 @@ def test_factory_restore_guard(rig, monkeypatch, allow_rf):
     H._guarded_request(FactoryLink(), H.STORAGE, bytes([STORAGE_OP_FACTORY_INFO]))   # the other ops pass
     assert [p[0] for _, p in rig] == [H.STORAGE_OP_FACTORY_RESTORE, H.STORAGE_OP_FACTORY_RESTORE,
                                       STORAGE_OP_FACTORY_INFO]
+
+
+def arm_goes(*request):
+    """A guarded request that must go: a skip it raised fails the test (pytest would count it a skip, not a failure)"""
+    try:
+        H._guarded_request(*request)
+    except BaseException as e:
+        if H.skip_kind(e) is not None:
+            pytest.fail(f"skipped where it must go: {e}")
+        raise
+
+
+def arm_skipped(*request):
+    """The skip a guarded request raised (rfoundry_hil.skip, kind state: pytest's skip is no Exception), else None"""
+    try:
+        H._guarded_request(*request)
+    except BaseException as e:
+        if H.skip_kind(e) is None:
+            raise
+        assert H.skip_kind(e) == "state", e
+        return e
+    return None
+
+
+class ArmLink(FakeLink):
+    """A radio with the owner's transmit arm (RADIO op 44's info, None: none), the core view's power level and test
+    TX limit, in a test that may transmit (may: Radio.tx_gate gave it the run's frequencies)"""
+
+    def __init__(self, stage=0, cal_ok=True, crc=0x1234ABCD, mode="fm", power=0, txlim="list", may=True, arm=True):
+        super().__init__(461.4625, mode)
+        self.views["core"].update({"power": str(power), "txlim": txlim})
+        self.info = {"stage": stage, "max": 3, "addr": 0x1000, "len": 512, "crc": crc, "cal_ok": cal_ok} if arm else None
+        self._tx_may = may
+
+    def tx_arm_info(self):
+        return dict(self.info) if self.info else None
+
+
+def arm_req(stage, ident):
+    return H.RADIO, struct.pack("<BBI", H.OP_TX_ARM, stage, ident)
+
+
+@pytest.mark.parametrize("link,dmr,level,armed", [
+    (ArmLink(arm=False), True, 1, True),                # no arm: nothing the arm holds back
+    (ArmLink(cal_ok=False), True, 1, True),             # no calibration the arm covers: the board's own rules
+    (ArmLink(stage=0), False, 0, False),
+    (ArmLink(stage=1), False, 0, True),
+    (ArmLink(stage=1), False, 1, False),
+    (ArmLink(stage=1), False, None, False),             # an unknown level needs FM at every level
+    (ArmLink(stage=2), False, 3, True),
+    (ArmLink(stage=2), True, 0, False),
+    (ArmLink(stage=3), True, 1, True),
+])
+def test_tx_armed(link, dmr, level, armed):
+    assert H.tx_armed(link, dmr, level) == armed
+
+
+@pytest.mark.parametrize("stage,mode,power,keys", [(0, "fm", 0, False), (1, "fm", 0, True), (1, "fm", 1, False),
+                                                   (2, "fm", 1, True), (2, "dmr", 0, False), (3, "dmr", 0, True)])
+def test_arm_skip_by_mode_and_level(rig, stage, mode, power, keys):
+    """A key-up the arm doesn't cover skips the test (state) before anything is sent; one it covers goes"""
+    link = ArmLink(stage=stage, mode=mode, power=power)
+    if keys:
+        arm_goes(link, *ptt(True))
+        assert len(rig) == 1
+        return
+    e = arm_skipped(link, *ptt(True))
+    assert e is not None and "radio tx-arm" in str(e) and rig == []
+
+
+def test_arm_skip_only_where_it_applies(rig, monkeypatch):
+    """No skip: in a test that may not transmit (its key-up meets the blocking limit, which is what it checks), on a
+    radio without the arm, with no calibration the arm covers, for a request that doesn't key, without --allow-rf"""
+    for link in (ArmLink(may=False), ArmLink(arm=False), ArmLink(cal_ok=False)):
+        arm_goes(link, *ptt(True))
+    arm_goes(ArmLink(), *ptt(False))
+    monkeypatch.setattr(hil_config, "CONFIG", FakeConfig(False, []))
+    arm_goes(ArmLink(), *ptt(True))
+    assert len(rig) == 5
+
+
+def test_arm_skip_other_ways_out(rig):
+    """An APRS message is FM at any level; a position by its way out; a Tier III request digital"""
+    assert arm_skipped(ArmLink(stage=1), H.APRS, bytes([H.APRS_OP_STATUS]) + b"x")
+    link = ArmLink(stage=2)
+    link.views["aprs"] = {"aprs.freq_hz": "461462500", "aprs.block": "ok"}
+    link.views["aprs_set"]["set.aprs_via"] = "rf"
+    arm_goes(link, H.APRS, bytes([H.APRS_OP_SEND_NOW]))
+    link.views["aprs_set"]["set.aprs_via"] = "both"
+    arm_goes(link, H.APRS, bytes([H.APRS_OP_SEND_NOW]))      # from an FM channel: AFSK alone
+    link.views["core"]["mode"] = "dmr"
+    assert arm_skipped(link, H.APRS, bytes([H.APRS_OP_SEND_NOW]))       # from a DMR channel: over DMR too
+    link.views["aprs_set"]["set.aprs_via"] = "dmr"
+    assert arm_skipped(link, H.APRS, bytes([H.APRS_OP_SEND_NOW]))
+    link.views["t3"] = {"t3.on": "1", "t3.tx_hz": "461462500"}
+    assert arm_skipped(link, H.T3, bytes([H.T3_OP_START]))
+    assert len(rig) == 2
+
+
+def test_arm_skip_not_for_a_bench_drive(rig):
+    """The one key-up after a bench drive (RADIO op 36) is the bench's, which the arm doesn't concern; the next is not"""
+    link = ArmLink(stage=0)
+    arm_goes(link, H.RADIO, struct.pack("<BH", H.OP_TX_DRIVE, 300))
+    arm_goes(link, *ptt(True))
+    assert arm_skipped(link, *ptt(True))
+    arm_goes(link, H.RADIO, struct.pack("<BH", H.OP_TX_DRIVE, 300))
+    arm_goes(link, H.RADIO, struct.pack("<BH", H.OP_TX_DRIVE, 0))      # dropped again
+    assert arm_skipped(link, *ptt(True))
+    assert [p[0] for _, p in rig] == [H.OP_TX_DRIVE, 1, H.OP_TX_DRIVE, H.OP_TX_DRIVE]
+
+
+@pytest.mark.parametrize("allow_rf", [False, True])
+def test_tx_arm_guard(rig, monkeypatch, allow_rf):
+    """No HIL test arms by itself: an op 44 raising the stage with the calibration's CRC goes only with --allow-rf and
+    the test TX limit at block; another id (the radio refuses it), off, a lower stage and the info always go"""
+    monkeypatch.setattr(hil_config, "CONFIG", FakeConfig(allow_rf, []))
+    crc = 0x1234ABCD
+    for txlim in ("list", "off"):
+        with pytest.raises(RuntimeError, match="RADIO op 44 not sent"):
+            arm_goes(ArmLink(txlim=txlim), *arm_req(1, crc))
+        with pytest.raises(RuntimeError, match="RADIO op 44 not sent"):
+            arm_goes(ArmLink(stage=1, txlim=txlim), *arm_req(1, crc))    # the same stage again: guarded
+        with pytest.raises(RuntimeError, match="RADIO op 44 not sent"):
+            arm_goes(ArmLink(stage=1, txlim=txlim), *arm_req(3, crc))
+    assert rig == []
+    if allow_rf:
+        arm_goes(ArmLink(txlim="block"), *arm_req(1, crc))
+    else:
+        with pytest.raises(RuntimeError, match="--allow-rf"):
+            arm_goes(ArmLink(txlim="block"), *arm_req(1, crc))
+    arm_goes(ArmLink(), *arm_req(1, crc ^ 1))             # another id: refused by the radio, reason 2
+    arm_goes(ArmLink(stage=2), *arm_req(1, crc))          # lower: always taken, arms nothing new
+    arm_goes(ArmLink(stage=2), *arm_req(0, 0))            # off
+    arm_goes(ArmLink(arm=False), *arm_req(1, crc))        # no arm: the radio answers unavailable
+    arm_goes(ArmLink(cal_ok=False), *arm_req(1, crc))     # none in use: refused, reason 1
+    arm_goes(ArmLink(), H.RADIO, bytes([H.OP_TX_ARM]))    # the info
+    assert len(rig) == (7 if allow_rf else 6)

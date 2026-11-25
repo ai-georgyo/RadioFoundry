@@ -30,6 +30,7 @@ from rfoundry_debug import (DebugLink, DebugLinkError, as_int, find_network_radi
                        DATA_OP_RADIO_CHECK, DATA_OP_SMS, DETOUR, DMR_DATA, KEY, OP_CHANNEL_STEP, OP_CLEAR_TEMP,
                        OP_DMR_FIELDS, OP_NXDN, OP_P25, OP_SETTING, OP_TONE_BURST, OP_VFO, OP_VFO_COPY, OP_VFO_SET,
                        OP_VFO_STEP, OP_ZONE, OP_ZONE_POS, PTT, RADIO, STORAGE, STORAGE_OP_FACTORY_RESTORE, T3)
+from rfoundry_debug import OP_TX_ARM, OP_TX_DRIVE, tx_arm_name  # noqa: E402
 
 
 # Layer 1 of the TX guard (README.md, "Transmit frequencies"): with --allow-rf, every debug link request that keys the
@@ -174,11 +175,83 @@ def factory_restore_guard(link, payload):
                            "accept it and write its data flash; no HIL test runs a restore that writes")
 
 
+def tx_arm_guard(link, payload):
+    """No HIL test arms transmission by itself (radio-features.md 6.3): a RADIO op 44 that raises the owner's transmit
+    arm with the CRC-32 of the calibration in use goes out only with --allow-rf and the test TX limit at block (the
+    core view's txlim), so nothing can key while a test holds the arm. One with another id (the radio refuses it,
+    reason 2), off, a lower stage and the info always go. Raises RuntimeError before anything is sent otherwise"""
+    import hil_config
+    if len(payload) != 6 or payload[1] == 0:
+        return
+    info = link.tx_arm_info()
+    if info is None or not info["cal_ok"] or payload[1] < info["stage"] or \
+            int.from_bytes(payload[2:6], "little") != info["crc"]:
+        return
+    if hil_config.CONFIG is None or not hil_config.CONFIG.getoption("--allow-rf"):
+        raise RuntimeError("RADIO op 44 not sent: it would arm transmission on the radio's calibration, and the run "
+                           "has no --allow-rf")
+    if link.view(["core"]).get("txlim") != "block":
+        raise RuntimeError("RADIO op 44 not sent: a HIL test arms transmission only while the test TX limit blocks "
+                           "every transmission (tx_limit(block=True) first)")
+
+
+def tx_arm_need(dmr, level):
+    """The lowest arm stage (HAL_TX_ARM_*) that covers a transmission: 3 in any mode but FM, 1 in FM at the lowest
+    power level (index 0), 2 at any other or an unknown one (None)"""
+    return 3 if dmr else 1 if level == 0 else 2
+
+
+def tx_armed(radio, dmr=False, level=0):
+    """The owner's transmit arm (radio-features.md 6.3, RADIO op 44) lets the radio transmit in this mode (dmr: any
+    but FM) at this power level (the index, 0 the lowest; None: any): True on a radio without the arm (no hooks, or
+    firmware older than the op) or with no calibration in use that the arm covers (its transmissions follow the
+    board's own rules), else whether the stage covers it. radio: a Radio or a DebugLink. Reads only"""
+    info = getattr(radio, "link", radio).tx_arm_info()
+    return info is None or not info["cal_ok"] or info["stage"] >= tx_arm_need(dmr, level)
+
+
+def tx_arm_skip(link, where):
+    """In a test that may transmit (Radio.tx_gate), a request that keys on `where` (keys_tx) skips the test (state)
+    when the owner's transmit arm doesn't cover it, instead of keying into the radio's refusal: the channel's mode
+    and power level (core view), an APRS status or message FM at any level, a position FM or digital by its way out,
+    a Tier III request digital. Not for the one key-up after a bench drive set through this link (RADIO op 36): the
+    bench's PA drive is not the arm's. Not over the air (debuglink.md 7.3): op 44 is cable only, and the radio
+    refuses there every request that keys outside a detour"""
+    if not getattr(link, "_tx_may", False) or link.__dict__.pop("_bench_drive", False):
+        return
+    if getattr(link, "air", False):
+        return
+    info = link.tx_arm_info()
+    if info is None or not info["cal_ok"]:
+        return                  # tx_armed's True, without reading the views on a radio the arm doesn't concern
+    if where == "channel":
+        core = link.view(["core"])
+        dmr, level = core.get("mode", "fm") != "fm", as_int(core.get("power"))
+        what = f"{core.get('mode', 'fm')} at power level {core.get('power', '?')}"
+    elif where == "aprs":
+        dmr, level, what = False, None, "an APRS status or message (FM)"
+    elif where == "position":
+        # over DMR only from a DMR channel, as tx_freqs has it: from an FM channel a position goes out by AFSK alone
+        dmr = link.view(["aprs_set"]).get("set.aprs_via", "both") != "rf" and \
+            link.view(["core"]).get("mode") == "dmr"
+        level, what = None, "an APRS position"
+    else:
+        dmr, level, what = True, None, "a Tier III request (DMR)"
+    if info["stage"] < tx_arm_need(dmr, level):
+        skip("state", f"the radio's transmit arm is {tx_arm_name(info['stage'])} and doesn't cover {what} "
+                      f"(radio-features.md 6.3): the owner arms {tx_arm_name(tx_arm_need(dmr, level))} with "
+                      f"tools/rfoundry_debug.py radio tx-arm before the run")
+
+
 def _guarded_request(self, cmd, payload=b"", *args, **kwargs):
     import hil_config
     p = bytes(payload)
     if cmd == STORAGE and p[:1] == bytes([STORAGE_OP_FACTORY_RESTORE]):
         factory_restore_guard(self, p)
+    if cmd == RADIO and p[:1] == bytes([OP_TX_ARM]):
+        tx_arm_guard(self, p)
+    if cmd == RADIO and p[:1] == bytes([OP_TX_DRIVE]) and len(p) >= 3:       # tx_arm_skip: one bench key-up
+        self.__dict__["_bench_drive"] = int.from_bytes(p[1:3], "little") != 0
     if cmd == T3 and p[:1]:     # what tx_freqs needs to know of a system staged through this link
         staged = self.__dict__.setdefault("_t3_staged", {})
         if p[0] == 1:
@@ -198,6 +271,8 @@ def _guarded_request(self, cmd, payload=b"", *args, **kwargs):
                 if not hil_config.tx_allowed(None, mhz):
                     raise RuntimeError(f"TX refused: this request keys on {mhz:.5f} MHz, not one of the rig's "
                                        f"transmit frequencies (tx_mhz)")
+            if where is not None:
+                tx_arm_skip(self, where)
     if cmd in (RADIO, DETOUR):
         self.__dict__.pop("_guard_core", None)      # checked above; the radio may be elsewhere after this
     return _request(self, cmd, payload, *args, **kwargs)
@@ -503,6 +578,7 @@ class Radio:
                         if uid is not None:
                             foreign.add(port)
                         continue
+                    link._tx_may = getattr(self.link, "_tx_may", False)    # tx_arm_skip: the test's tx_gate holds
                     self.link, self.port = link, port
                     # The UI drops keys pressed during its start-up splash (ui.screen reads home already): wait for
                     # its first draw, so a test's first key after a restart counts
@@ -535,6 +611,8 @@ class Radio:
         what the radio sends by itself (data replies, registration, beacons, roaming probes) can't go out either. The
         firmware sets it before it answers. False: firmware without the limit (no txlim in the core view)."""
         import hil_config
+        mhz = hil_config.run_tx_mhz() if may_transmit else []
+        self.link._tx_may = bool(mhz)       # tx_arm_skip: only a test that may transmit skips where the arm is off
         if self._txlim is None and getattr(self.link, "air", False):
             # Over the air (debuglink.md 7.3) the radio takes reads and detours only: the limit can't be set, so the
             # request check (layer 1) guards each detour's keying alone, and every write a test makes is refused
@@ -547,7 +625,6 @@ class Radio:
                 print("rfoundry-hil: firmware without the test TX limit (RADIO op 35): only the request check guards TX")
         if not self._txlim:
             return False
-        mhz = hil_config.run_tx_mhz() if may_transmit else []
         self.link.tx_limit(block=not mhz, mhz=mhz)
         return True
 
@@ -568,6 +645,7 @@ class Radio:
                 for _ in range(20):
                     try:
                         self.link = DebugLink(self.port, timeout=1.5)
+                        self.link._tx_may = getattr(closed, "_tx_may", False)     # tx_arm_skip, as reconnect
                         break
                     except DebugLinkError:
                         time.sleep(0.25)
