@@ -3157,6 +3157,19 @@ static void test_tx_maker_keyed(void)
 	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
 	CHECK(cs7000p_radio.rx(447500000u, RADIO_BW_25K, NULL) && cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
 	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=rx hz=446000000 ") == txm);
+	// One copy per reply: a key-up asked between a reply's first board2 line and its tx_maker line shows in the next
+	// reply, not in that one
+	{
+		char line[sizeof(txm)];
+		CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+		cs7000p_cal_view_line(0, line, sizeof(line));
+		CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
+		cs7000p_cal_view_line(CS7000P_CAL_VIEW_LINES - 1u, line, sizeof(line));
+		CHECK(strstr(line, "tx_maker=ok at=rx hz=446000000 ") == line);
+		cs7000p_cal_view_line(0, line, sizeof(line));
+		cs7000p_cal_view_line(CS7000P_CAL_VIEW_LINES - 1u, line, sizeof(line));
+		CHECK(strstr(line, "tx_maker=ok at=tx hz=441000000 mode=fm lvl=1 ") == line);
+	}
 	// A restart drops it, before the core's first receive set-up too
 	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
 	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=tx ") == txm);
