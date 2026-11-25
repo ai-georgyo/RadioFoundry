@@ -69,8 +69,8 @@ typedef struct {
 typedef enum {
 	CS7000P_TX_OK = 0,
 	CS7000P_TX_BAND = 1,		// outside 400.0-405.9875 and 406.1125-512.0 MHz
-	CS7000P_TX_UNCAL = 2,		// no calibration for this frequency, level and mode, and no bench drive armed (a
-					// tone channel on the maker's table too: no sub-audio level is served yet)
+	CS7000P_TX_UNCAL = 2,		// no calibration for this frequency, level and mode, and no bench drive armed (on
+					// the maker's table also a tone channel whose level the table doesn't give)
 	CS7000P_TX_OVR_NO_LINK = 3,	// a bench drive is armed, but the build has no debug link
 	CS7000P_TX_OVR_NO_LIST = 4,	// ... but no test TX limit names this frequency
 	CS7000P_TX_OVR_DMR = 5,		// ... but the mode is DMR and the build has no CS7000P_BENCH_DMR_TX
@@ -150,7 +150,8 @@ typedef struct {
 	bool limit_list;		// a test TX limit is set as a list of frequencies, and hz is on it
 	bool bench_dmr;			// the build allows the bench drive in DMR (CS7000P_BENCH_DMR_TX)
 	bool off;			// the power's off state (cs7000p_power_off_state)
-	bool tone;			// FM with a sub-audio tone (CTCSS or DCS): the maker's table serves none yet
+	bool tone;			// FM with a sub-audio tone (CTCSS or DCS) ...
+	subtone_t tone_sel;		// ... this one: on the maker's values the table must give its level at hz
 	// The modem still holds another coding than the measured hold: it takes the one chip_reg 3:5 asks for only at
 	// its next full receive set-up (the status poll's), and a burst keeps the one it holds
 	bool ref_other;
@@ -228,8 +229,9 @@ void cs7000p_rf_sleep(cs7000p_rf_t *rf, bool sleep);
 // is refused and counted, and an earlier admission is gone. In the power's off state that is all: an armed bench
 // drive is neither used nor dropped, and a safe request stands. With no bench drive armed, the maker's table wins
 // over the model wherever it holds the transmission's values: then the arm decides (13, 15), and once it covers
-// the transmission and a list names hz, an FM one without a tone or a DMR one is admitted on the table's drive at hz
-// (admit_arm); a tone channel is refused as without values (2)
+// the transmission and a list names hz, an FM one or a DMR one is admitted on the table's drive at hz (admit_arm), a
+// tone channel only when the table gives its tone's level there too (cs7000p_cal_maker_tone); a tone channel without
+// one is refused as without values (2)
 cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q);
 // FM, in this order around the modem's transmit set-up. tx_begin: the DAC to 0 (it held the tuning voltage and must
 // not become a power request) and the receive rail off. tx_key: the VCO line for the carrier, the synthesizer on it
@@ -308,6 +310,13 @@ int8_t cs7000p_rf_r04(cs7000p_rf_t *rf, bool dmr, bool tx_setup);
 // The RSSI in dBm at a status poll: the data sheet's line while the bench asks for it (chip_reg 3:8; src
 // CS7000P_SRC_BENCH), else cs7000p_cal_rssi_m on the table in use. src may be NULL
 int16_t cs7000p_rf_rssi(const cs7000p_rf_t *rf, uint32_t raw12, uint32_t mv, uint8_t *src);
+
+// The sub-audio depth for the FM transmission admitted now (cs7000p_subtone_tx_start, subpwm_cs7000p.h), at its f_tx
+// hz on a 25 kHz channel or not: on the maker's values the table's level for the tone (cs7000p_cal_maker_tone) as
+// cs7000p_subpwm_depth_pm gives it, while the arm still covers the transmission, and false once it doesn't or the
+// table has no level; on the model's rows or the bench drive the build's CS7000P_CTCSS_DEPTH_PM, the same on both
+// bandwidths. False with nothing admitted, or DMR. Radio task, at the key-up, before anything is written
+bool cs7000p_rf_tone_depth(const cs7000p_rf_t *rf, uint32_t hz, bool wide, const subtone_t *tone, uint16_t *depth_pm);
 
 // The modem's callbacks (hrc6000_if_cfg_t). The pair: for the transmission admitted on the maker's values (at its
 // f_tx) the table's pair of its mode while the arm covers it, and false once it doesn't or for the other mode or

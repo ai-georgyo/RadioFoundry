@@ -5,6 +5,7 @@
 #include "rfops_cs7000p.h"
 #include "rfplan_cs7000p.h"
 #include "exp_cs7000p.h"
+#include "subpwm_cs7000p.h"
 #include "rf/sky72310/sky72310.h"
 
 // --- The sequencer's ops ---
@@ -269,19 +270,21 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 			ovr = true;
 		} else if (ovr_why == CS7000P_TX_UNCAL && cs7000p_cal_maker_tx(rf->maker, q->hz, q->power, q->dmr)) {
 			// The maker's table has this transmission's values, and wins over the model's (it is this unit's).
-			// No bench drive armed: a bench key-up keeps its own reasons. A tone channel is refused as without
-			// values, at every stage and never on the model's rows either: the table serves no sub-audio level
-			// yet, and one would be a guess (hardware-cs7000p.md 13.2). Else the owner's arm decides first, then
-			// a list must name hz; then the transmission keys on the table's drive at hz, the pair and the trim
+			// No bench drive armed: a bench key-up keeps its own reasons. The owner's arm decides first, then a
+			// list must name hz; then the transmission keys on the table's drive at hz, the pair and the trim
 			// following from the same getter: FM's in the modem's set-up, DMR's at the burst plan (the pair at
-			// f_tx, trim B in 4:0x04). The bursts' timing stays the port's key-up
-			why = q->tone && !q->dmr ? CS7000P_TX_UNCAL
-						 : cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
+			// f_tx, trim B in 4:0x04). An FM tone channel also needs the table's level for its tone at hz
+			// (hardware-cs7000p.md 13.2), else it is refused as without values, never on the model's rows nor at
+			// the build's depth. The bursts' timing stays the port's key-up
+			cs7000p_fm_tx_t v;
+			cs7000p_dmr_tx_t w;
+			uint8_t tone_level;
+			why = cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
 			if (why == CS7000P_TX_OK) {
-				cs7000p_fm_tx_t v;
-				cs7000p_dmr_tx_t w;
 				if (q->dmr ? !cs7000p_rf_maker_dmr(rf, q->hz, q->power, &w)
-					   : !cs7000p_rf_maker_fm(rf, q->hz, q->power, &v)) {
+					   : (!cs7000p_rf_maker_fm(rf, q->hz, q->power, &v) ||
+					      (q->tone && !cs7000p_cal_maker_tone(rf->maker, q->hz, &q->tone_sel, false,
+										  &tone_level)))) {
 					why = CS7000P_TX_UNCAL;
 				} else {
 					drive = q->dmr ? w.drive : v.drive;
@@ -582,6 +585,25 @@ static const hrc6000_if_row_t maker_fm_rows[2][5] = {
 	{ { 4, 0x3F, 0x04 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x20 } },
 	{ { 4, 0x3F, 0x07 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x22 } },
 };
+
+bool cs7000p_rf_tone_depth(const cs7000p_rf_t *rf, uint32_t hz, bool wide, const subtone_t *tone, uint16_t *depth_pm)
+{
+	cs7000p_fm_tx_t v;
+	uint8_t level;
+	if (!rf->admit || rf->admit_dmr) {
+		return false;
+	}
+	if (!rf->admit_arm) {
+		*depth_pm = (uint16_t)(CS7000P_CTCSS_DEPTH_PM);	// the model's rows or the bench drive: the build's depth
+		return true;
+	}
+	// The table's level or none, while the arm still covers the transmission: never the build's depth on it
+	if (!armed_fm(rf, hz, &v) || !cs7000p_cal_maker_tone(rf->maker, hz, tone, wide, &level)) {
+		return false;
+	}
+	*depth_pm = cs7000p_subpwm_depth_pm(level);
+	return true;
+}
 
 const hrc6000_if_row_t *cs7000p_rf_fm_tx_rows(const cs7000p_rf_t *rf, uint32_t hz, bool wide, uint8_t *n)
 {

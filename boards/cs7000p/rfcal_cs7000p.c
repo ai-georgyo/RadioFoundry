@@ -209,6 +209,24 @@ bool cs7000p_cal_maker_dmr(const cs7000p_maker_t *m, uint32_t hz, uint8_t level,
 	return true;
 }
 
+bool cs7000p_cal_maker_tone(const cs7000p_maker_t *m, uint32_t hz, const subtone_t *tone, bool wide, uint8_t *level)
+{
+	if (m == NULL || !m->valid || tone == NULL) {
+		return false;
+	}
+	switch (tone->type) {
+	case TONE_CTCSS:
+		// The maker's line runs on past its two tones; no level was ever set there
+		return tone->value >= CS7000P_MAKER_CTCSS_X0 && tone->value <= CS7000P_MAKER_CTCSS_X1 &&
+		       cs7000p_maker_ctcss(m, hz, tone->value, wide, level, NULL);
+	case TONE_DCS:
+	case TONE_DCS_INV:
+		return cs7000p_maker_dcs(m, hz, wide, level, NULL);
+	default:
+		return false;
+	}
+}
+
 static bool maker_any(const cs7000p_maker_t *m, bool dmr)
 {
 	if (m == NULL || !m->valid) {

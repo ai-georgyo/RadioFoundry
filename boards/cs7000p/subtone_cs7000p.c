@@ -9,7 +9,8 @@
 // sub-audio filter ahead of the pin runs from the audio rail, which every receive set-up turns on.
 //
 // Transmit: one generator sample per scan tick (the scan timer's interrupt, 2,400 a second) becomes the PWM's duty
-// by the rule of subpwm_cs7000p.h. The tick is on only while a tone is sent.
+// by the rule of subpwm_cs7000p.h, at the depth the radio gave for the transmission (the maker's level for the tone at
+// f_tx, or the build's CS7000P_CTCSS_DEPTH_PM). The tick is on only while a tone is sent.
 //
 // PC8 always carries the PWM: its mean level is part of the reference's control voltage and the line has no pull
 // resistor. With no tone the duty is 50 % (board.c starts the timer there), or the value the bench put in its place.
@@ -25,6 +26,7 @@
 static uint16_t pc8_idle = CS7000P_SUBPWM_IDLE;			// the duty with no tone
 static volatile uint16_t pc8_duty = CS7000P_SUBPWM_IDLE;	// what the timer has now
 static volatile bool tx_running;				// the tick's interrupt moves the duty
+static volatile uint16_t tx_depth_pm;				// ... by this depth, set before it runs
 
 static void pc8_write(uint16_t duty)
 {
@@ -110,7 +112,7 @@ bool cs7000p_subtone_rx_match(void)
 static void gen_tick(void)
 {
 	if (tx_running) {
-		pc8_write(cs7000p_subpwm_duty(subaudio_tx_next(&gen), (uint8_t)(CS7000P_CTCSS_DEPTH)));
+		pc8_write(cs7000p_subpwm_duty(subaudio_tx_next(&gen), tx_depth_pm));
 	}
 }
 
@@ -124,17 +126,18 @@ void cs7000p_subtone_tx_stop(void)
 	pc8_write(pc8_idle);			// never released: back to the idle duty
 }
 
-void cs7000p_subtone_tx_start(const subtone_t *tone)
+void cs7000p_subtone_tx_start(const subtone_t *tone, uint16_t depth_pm)
 {
 	cs7000p_subtone_tx_stop();
 	subaudio_kind_t kind = (subaudio_kind_t)subaudio_kind(tone);
 	if (kind == SUBAUDIO_NONE) {
 		return;
 	}
-	// The generator at its full scale; the depth is the duty rule's (subpwm_cs7000p.h). The same swing on a 12.5 and
-	// a 25 kHz channel: what deviation it gives is unmeasured on both
+	// The generator at its full scale; the depth is the duty rule's (subpwm_cs7000p.h), the caller's for this tone,
+	// frequency and bandwidth. What deviation it gives is unmeasured
 	subaudio_tx_init(&gen, CS7000P_SCAN_HZ, CS7000P_SUBPWM_FULL, 100);
 	subaudio_tx_start(&gen, kind, tone->value, CS7000P_DCS_INVERT != 0);
+	tx_depth_pm = depth_pm;	// the tick is off (stopped above) until tx_running
 	tx_running = true;
 	cs7000p_subaudio_feed(det_batch, gen_tick);
 }
