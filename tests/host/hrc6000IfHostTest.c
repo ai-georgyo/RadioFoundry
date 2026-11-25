@@ -6,7 +6,8 @@
 // input bits after a DMR entry and an FM transmit set-up; the modulation pair and one receiver restart on a new DMR
 // channel; FM transmit refused without a pair; the FM receive audio path either way; every bus failure counted, and
 // a chip that is not there found by its mode register on a bus that reports nothing. The held reference's other
-// coding (one per receive state, 4:0x26 only when asked) and a receive 4:0x04 of the board's own; with those options
+// coding (one per receive state, 4:0x26 only when asked) and a receive 4:0x04 of the board's own; the board's FM
+// transmit rows, after the set-up and written back at its end (page 4 then as without them); with those options
 // left NULL, or answering what NULL means, every transaction as before they existed (a hash of the log).
 // Against the fake register file of hrc6000ToneTest.c. Built a second time without DMR (hrc6000IfHostTestFm)
 #include <stdio.h>
@@ -211,6 +212,52 @@ static const hrc6000_if_cfg_t cfg_opts = {
 	.dmr_mic_gain = 7, .rx_gain_db = 2, .fm_audio_chip = true, .ref_dac_hold = true, .e0_set = 0x02, .e0_clear = 0x40,
 	.lo_high = lo_high, .mod_pair = mod_pair, .ref_offset = ref_offset, .ref_coding = ref_coding,
 	.rx_tx_offset = rx_tx_offset,
+	.dmr_enter = cb_enter, .dmr_leave = cb_leave, .dmr_rx_restart = cb_restart, .safe_gain = SAFE_GAIN, .ctx = &ctx_seen,
+};
+// The board's FM transmit rows (a calibration's registers, invented here), as the callback gives them: rows_n of
+// rows_at, or none while rows_on is false
+static const hrc6000_if_row_t rows_narrow[] = {
+	{ 4, 0x3F, 0x04 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x20 },
+};
+static const hrc6000_if_row_t rows_wide[] = {
+	{ 4, 0x3F, 0x07 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x22 },
+};
+#define ROWS_N	((uint8_t)(sizeof(rows_narrow) / sizeof(rows_narrow[0])))
+static hrc6000_if_row_t rows_many[HRC6000_IF_TX_ROWS_MAX + 1u];
+// A row on a register the transmit set-up never writes: only the host's write-back brings it back
+static const hrc6000_if_row_t rows_free[] = { { 4, 0x3B, 0x5A } };
+static bool rows_on, rows_too_many, rows_untouched;
+static uint32_t rows_hz;
+static bool rows_wide_asked;
+static int n_rows_asked;
+
+static const hrc6000_if_row_t *fm_tx_rows(void *ctx, uint32_t hz, bool wide, uint8_t *n)
+{
+	see_ctx(ctx);
+	n_rows_asked++;
+	rows_hz = hz;
+	rows_wide_asked = wide;
+	*n = 0;
+	if (!rows_on) {
+		return NULL;
+	}
+	if (rows_too_many) {
+		*n = (uint8_t)(sizeof(rows_many) / sizeof(rows_many[0]));
+		return rows_many;
+	}
+	if (rows_untouched) {
+		*n = 1;
+		return rows_free;
+	}
+	*n = ROWS_N;
+	return wide ? rows_wide : rows_narrow;
+}
+
+// cfg_opts with the rows
+static const hrc6000_if_cfg_t cfg_rows = {
+	.dmr_mic_gain = 7, .rx_gain_db = 2, .fm_audio_chip = true, .ref_dac_hold = true, .e0_set = 0x02, .e0_clear = 0x40,
+	.lo_high = lo_high, .mod_pair = mod_pair, .ref_offset = ref_offset, .ref_coding = ref_coding,
+	.rx_tx_offset = rx_tx_offset, .fm_tx_rows = fm_tx_rows,
 	.dmr_enter = cb_enter, .dmr_leave = cb_leave, .dmr_rx_restart = cb_restart, .safe_gain = SAFE_GAIN, .ctx = &ctx_seen,
 };
 // cfg_plain with the same two: they are for the hold, and never asked without it
@@ -828,6 +875,154 @@ static void test_rx_tx_offset(void)
 	CHECK(h.errors == 0);
 }
 
+// Page 4 as a run leaves it, for runs with and without the rows to compare
+static uint8_t page_tx[256], page_end[256];
+
+// The steps of a transmission the rows must not outlive: an FM key-up (wide or narrow), keyed again on the other
+// width when twice, then its end or (dmr_end) a DMR entry. Page 4 after the set-up and after the end
+static void rows_run(const hrc6000_if_cfg_t *cfg, bool on, bool wide, bool twice, bool dmr_end, hrc6000_if_t *h)
+{
+	fake_reset();
+	rows_on = on;
+	rows_too_many = false;
+	CHECK(hrc6000_if_init(h, &dev, cfg, HZ_A));
+	CHECK(hrc6000_if_fm_tx(h, HZ_B, wide, 7));
+	if (twice) {
+		CHECK(hrc6000_if_fm_tx(h, HZ_B, !wide, 7));
+	}
+	memcpy(page_tx, regs[4], sizeof(page_tx));
+	if (dmr_end) {
+		hrc6000_if_mode(h, true, HZ_B);
+	} else {
+		hrc6000_if_fm_tx_end(h);
+	}
+	memcpy(page_end, regs[4], sizeof(page_end));
+}
+
+// Page 4 after the set-up with the rows differs from without them in the rows' registers alone, which hold the rows'
+static bool rows_over(const uint8_t *with, const uint8_t *without, const hrc6000_if_row_t *rows)
+{
+	for (unsigned r = 0; r < 256u; r++) {
+		bool row = false;
+		for (unsigned i = 0; i < ROWS_N; i++) {
+			if (rows[i].reg == r) {
+				row = true;
+				if (with[r] != rows[i].val) {
+					return false;
+				}
+			}
+		}
+		if (!row && with[r] != without[r]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// The board's FM transmit rows: written after the whole set-up (the codec inputs, analog transmit on), each register's
+// set-up value read before the first row is written; the end and a DMR entry write those values back before the
+// receive rows, so page 4 after the transmission is what it is without the rows, register for register. Keyed again
+// without an end, the set-up's values come back, not the rows'. A failed read writes no row; too many rows, none;
+// both counted. None given: nothing read or written for them
+static void test_fm_tx_rows(void)
+{
+	hrc6000_if_t h;
+	static uint8_t base_tx[256], base_end[256];
+	for (int wide = 0; wide < 2; wide++) {
+		const hrc6000_if_row_t *rows = wide ? rows_wide : rows_narrow;
+		rows_run(&cfg_rows, false, wide != 0, false, false, &h);
+		memcpy(base_tx, page_tx, sizeof(base_tx));
+		memcpy(base_end, page_end, sizeof(base_end));
+		CHECK(h.n_back == 0u && h.errors == 0 && n_r[0x3F] == 0 && n_r[0x35] == 0);
+		n_rows_asked = 0;
+		rows_run(&cfg_rows, true, wide != 0, false, false, &h);
+		CHECK(n_rows_asked == 1 && rows_hz == HZ_B && rows_wide_asked == (wide != 0) && h.errors == 0);
+		CHECK(rows_over(page_tx, base_tx, rows));
+		CHECK(memcmp(page_end, base_end, sizeof(base_end)) == 0 && h.n_back == 0u);
+		// Read once each, after the set-up; written after the codec inputs and analog transmit
+		for (unsigned i = 0; i < ROWS_N; i++) {
+			CHECK(n_r[rows[i].reg] >= 1u);
+		}
+		// The order of the key-up and of its end, on the write log of one more run
+		fake_reset();
+		rows_on = true;
+		CHECK(hrc6000_if_init(&h, &dev, &cfg_rows, HZ_A));
+		uint32_t from = n_wl;
+		CHECK(hrc6000_if_fm_tx(&h, HZ_B, wide != 0, 7));
+		int i60 = wl_next(from, 0x60), ie0 = wl_next(from, 0xE0), i3f = -1;
+		for (uint32_t k = from; k < n_wl; k++) {
+			if (wl[k].reg == 0x3F && wl[k].val == rows[0].val && k > (uint32_t)i60) {
+				i3f = (int)k;
+			}
+		}
+		CHECK(i60 >= 0 && ie0 >= 0 && i3f > i60 && i3f > wl_next((uint32_t)ie0 + 1u, 0xE0));
+		CHECK(h.n_back == ROWS_N && h.tx_back[0].reg == 0x3F && h.tx_back[0].val == base_tx[0x3F]);
+		from = n_wl;
+		hrc6000_if_fm_tx_end(&h);
+		int b3f = wl_next(from, 0x3F), b34 = wl_next(from, 0x34), r60 = wl_next(from, 0x60);
+		CHECK(b3f >= 0 && wl[b3f].val == base_tx[0x3F] && b34 >= 0 && wl[b34].val == base_tx[0x34]);
+		CHECK(r60 > b3f && r60 > b34 && wl[r60].val == 0x00);	// before the receive rows (their first: 4:0x60)
+	}
+	// Keyed again without an end: the set-up's values back, the second width's rows on
+	rows_run(&cfg_rows, false, false, true, false, &h);
+	memcpy(base_tx, page_tx, sizeof(base_tx));
+	memcpy(base_end, page_end, sizeof(base_end));
+	rows_run(&cfg_rows, true, false, true, false, &h);
+	CHECK(rows_over(page_tx, base_tx, rows_wide) && memcmp(page_end, base_end, sizeof(base_end)) == 0);
+	CHECK(h.errors == 0);
+	// The same with a row on a register the set-up never writes: the second set-up reads the set-up's value, not the
+	// first transmission's row, so the end leaves the register as it was
+	rows_untouched = true;
+	rows_run(&cfg_rows, true, false, true, false, &h);
+	rows_untouched = false;
+	CHECK(page_tx[0x3B] == 0x5A && base_end[0x3B] != 0x5A && memcmp(page_end, base_end, sizeof(base_end)) == 0);
+	CHECK(h.errors == 0);
+#if CONFIG_DMR
+	// A DMR entry that ends the transmission writes them back too
+	rows_run(&cfg_rows, false, true, false, true, &h);
+	memcpy(base_end, page_end, sizeof(base_end));
+	rows_run(&cfg_rows, true, true, false, true, &h);
+	CHECK(memcmp(page_end, base_end, sizeof(base_end)) == 0 && h.n_back == 0u && h.errors == 0 && h.dmr);
+#endif
+	// A read that fails: counted, no row written, nothing to write back
+	rows_run(&cfg_rows, false, false, false, false, &h);
+	memcpy(base_tx, page_tx, sizeof(base_tx));
+	memcpy(base_end, page_end, sizeof(base_end));
+	fake_reset();
+	rows_on = true;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_rows, HZ_A));
+	fail_r = 0x34;
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	fail_r = -1;
+	CHECK(h.errors == 1 && h.n_back == 0u && memcmp(regs[4], base_tx, sizeof(base_tx)) == 0);
+	hrc6000_if_fm_tx_end(&h);
+	CHECK(memcmp(regs[4], base_end, sizeof(base_end)) == 0 && h.errors == 1);
+	// Too many: none read or written, counted
+	fake_reset();
+	rows_on = rows_too_many = true;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_rows, HZ_A));
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	CHECK(h.errors == 1 && h.n_back == 0u && memcmp(regs[4], base_tx, sizeof(base_tx)) == 0);
+	rows_too_many = false;
+	// A row's write that fails (the third, 4:0x34: the rows are the set-up's last writes, before its two reads back):
+	// counted, and every row still written back at the end
+	fake_reset();
+	rows_on = true;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_rows, HZ_A));
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	const uint32_t x_end = n_xfer;
+	fake_reset();
+	rows_on = true;
+	fail_at = (int)(x_end - 2u - ROWS_N + 2u);
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_rows, HZ_A));
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7));
+	fail_at = -1;
+	CHECK(h.errors == 1 && h.n_back == ROWS_N && regs[4][0x34] == base_tx[0x34] && regs[4][0x3E] == 0x06);
+	hrc6000_if_fm_tx_end(&h);
+	CHECK(memcmp(regs[4], base_end, sizeof(base_end)) == 0 && h.errors == 1);
+	rows_on = false;
+}
+
 // Everything the host does after a good init, once
 static void walk(hrc6000_if_t *h)
 {
@@ -884,6 +1079,14 @@ static void test_log(void)
 	n_coding = n_r04 = 0;
 	CHECK(script(&cfg_opts) == LOG_HOLD);
 	CHECK(n_coding > 0 && n_r04 > 0);
+	// The rows' callback answering none: the same log; with rows, another
+	n_rows_asked = 0;
+	CHECK(script(&cfg_rows) == LOG_HOLD && n_rows_asked > 0);
+	rows_on = true;
+	n_rows_asked = 0;
+	uint32_t with_rows = script(&cfg_rows);
+	CHECK(with_rows != LOG_HOLD && n_rows_asked > 0);
+	rows_on = false;
 	// On a board without the receive hold the two options are never asked
 	n_coding = n_r04 = 0;
 	CHECK(script(&cfg_plain_opts) == LOG_PLAIN && n_coding == 0 && n_r04 == 0);
@@ -997,6 +1200,7 @@ int main(void)
 	test_log();
 	test_coding();
 	test_rx_tx_offset();
+	test_fm_tx_rows();
 	CHECK(ctx_seen > 0 && ctx_bad == 0);	// every callback got the board's context
 	printf("hrc6000IfHostTest%s: %d checks, %d failures\n", CONFIG_DMR ? "" : " (no DMR)", checks, failures);
 	return failures != 0;

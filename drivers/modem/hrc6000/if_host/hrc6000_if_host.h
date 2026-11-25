@@ -23,6 +23,10 @@
 // hrc6000_if_cfg_t.ref_coding's answers
 enum { HRC6000_IF_REF_MID = 0, HRC6000_IF_REF_SIGNED = 1 };
 
+// One register write of a board's own (hrc6000_if_cfg_t.fm_tx_rows), and how many one transmission may have
+typedef struct { uint8_t page, reg, val; } hrc6000_if_row_t;
+#define HRC6000_IF_TX_ROWS_MAX	8u
+
 typedef struct {
 	uint8_t dmr_mic_gain;		// hrc6000_power_on_init / hrc6000_dmr_enter
 	int8_t rx_gain_db;		// hrc6000_set_rx_gain
@@ -47,6 +51,13 @@ typedef struct {
 	// burst then carries: nothing else writes 4:0x04 before it). NULL: ref_offset's value. FM transmit is not
 	// affected: its set-up writes 4:0x04 from ref_offset
 	int8_t (*rx_tx_offset)(void *ctx, uint32_t hz, bool dmr);
+	// Rows the board writes after the FM transmit set-up on hz (the codec inputs included), before it keys: its own
+	// values for registers the driver's set-up chose (a calibration that was set under other ones). *n of them, at
+	// most HRC6000_IF_TX_ROWS_MAX (more: none written, counted as an error); NULL or 0: none. Each register is read
+	// back after the set-up, before the first row is written, and the transmission's end (or a DMR entry that ends it)
+	// writes those values back first, so receive after it is the same as without the rows: the FM receive rows do not
+	// rewrite every register a transmit set-up writes. A read that fails: no row is written, counted
+	const hrc6000_if_row_t *(*fm_tx_rows)(void *ctx, uint32_t hz, bool wide, uint8_t *n);
 	void (*dmr_enter)(void);	// the platform glue's stm32_hrc_dmr_enter / _leave / _rx_restart, or NULL without DMR
 	void (*dmr_leave)(void);
 	void (*dmr_rx_restart)(void);
@@ -54,16 +65,18 @@ typedef struct {
 	void *ctx;
 } hrc6000_if_cfg_t;
 // A callback left NULL: lo_high, the driver's I/Q order stands; mod_pair, no pair is known; ref_offset, 0;
-// ref_coding and rx_tx_offset, the writes above with nothing changed.
+// ref_coding, rx_tx_offset and fm_tx_rows, the writes above with nothing changed.
 // errors counts the driver calls that reported a bus failure. One during hrc6000_if_init leaves up false, and so does
 // a 4:0x10 that does not read back as the init wrote it (a chip that is not there, on a bus that reports no failure).
 // r10 and r25 are 4:0x10 and 4:0x25 as read back after the last set-up (init, a mode change, FM transmit and its end).
 // ref_coding and adc_ctl: ref_coding's answer taken at the last full receive set-up, which every write of the level
 // and of 4:0x25 until the next one uses (hrc6000_if_rx_hold's included): never the level of one coding under the
 // other's control word within a receive state. A set-up that starts from the other word has one such write
-// (docs/spec/modem-hrc6000.md 8.2)
+// (docs/spec/modem-hrc6000.md 8.2). tx_back: the values fm_tx_rows' registers held after the transmit set-up, n_back
+// of them, until they are written back
 typedef struct { hrc_t *dev; const hrc6000_if_cfg_t *cfg; bool up, dmr, fm_tx; uint32_t tuned_hz; uint32_t errors;
-		 uint8_t r10, r25; uint8_t ref_coding, adc_ctl; } hrc6000_if_t;
+		 uint8_t r10, r25; uint8_t ref_coding, adc_ctl; uint8_t n_back;
+		 hrc6000_if_row_t tx_back[HRC6000_IF_TX_ROWS_MAX]; } hrc6000_if_t;
 
 // After the board took PWD low, waited 10 ms and called hrc6000_attach: power-on init, FM receive set-up, receive
 // gain, tones off, the I/Q order for hz, the receive hold. False: the chip did not answer (up stays false)
