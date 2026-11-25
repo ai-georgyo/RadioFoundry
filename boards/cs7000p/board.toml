@@ -34,7 +34,7 @@ clock = { rtc = "none", note = "no 32.768 kHz crystal and no backup supply (VBAT
 
 [status]
 level = "bring-up"
-summary = "Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and decoded. Keeping the maker's calibration, its own copy of it, the restore from the owner's backup and receive on it are written but not yet tried on a radio. Transmit on that calibration is written but has never been tried, and stays refused until the owner arms it over the debug link. No DMR voice: there is no codec route for this radio yet."
+summary = "Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and decoded. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link. No DMR voice: there is no codec route for this radio yet."
 release = "testing"
 
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
