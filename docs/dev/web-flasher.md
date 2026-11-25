@@ -585,11 +585,45 @@ No write touches a board's protected regions ([board-registry.md](board-registry
 | `F4Stub` (`f4stub.js`) | `erase`, `program` and `writeImage` refuse. `spiWrite` leaves out every sector a data entry touches, whole (an entry inside a sector too) |
 | `makePlan` (`plan.js`), `Dfu.run` | Keep and merge plans refuse; a restore plan keeps the sector (`keep`, "protected"). `Dfu.run` checks the plan again before the first request |
 | `Iap`, `BfLoader` | Refused when the area the loader erases holds one: the vendor loaders erase a fixed span, which can't be carved |
-| Codeplug restore (`codeplugSectors`), the stock channel step (`migrationSectors`) | A sector is compared with the radio's outside the protected data and, when it differs there, written with `cpsWriteParts`: every piece outside the ranges, none of their bytes. A sector that differs only inside a range is not written, nor is one a range covers whole. Each sector's bytes are the radio's in the ranges, so the check after the write compares what the radio holds. The restore logs the ranges whose backup bytes differ from the radio's (`keptDiffering`), and its result shows a notice (`flash.restore.kept_differs`) that links the troubleshooting section: they are not written back by this step. A board's factory range comes back only through the factory copy's restore ([settings-store.md](../spec/settings-store.md) 4.2), which the page doesn't run yet: the user docs give the tool, `tools/rfoundry_debug.py storage factory --backup FILE --restore` |
+| Codeplug restore (`codeplugSectors`), the stock channel step (`migrationSectors`) | A sector is compared with the radio's outside the protected data and, when it differs there, written with `cpsWriteParts`: every piece outside the ranges, none of their bytes. A sector that differs only inside a range is not written, nor is one a range covers whole. Each sector's bytes are the radio's in the ranges, so the check after the write compares what the radio holds. The restore logs the ranges whose backup bytes differ from the radio's (`keptDiffering`): they are not written back by this step. When there are any, the factory step follows ([below](#the-factory-calibration-step)) |
 | Codeplug Editor (`codeplug/transport.js`) | `writeRanges(radio)` leaves out `keepOut(radio)`: the settings block and the radio's protected data (`radios.json` `flash.protect`, less `codeplug.base`), in order. The CPS sends none of their bytes; a fast-protocol block holding one is read from the radio first. An ID database that would reach a sector holding protected data is refused as too big ([codeplug-editor.md](codeplug-editor.md#transports)) |
 
 The error is a `ProtectedError` (`code` "protected") naming the region and the reason from `board.toml`. Nothing is
 erased before the check.
+
+### The factory calibration step
+
+A board's factory range comes back only through the radio's own restore of its factory copy
+([settings-store.md](../spec/settings-store.md) 4.2, STORAGE ops 3-5 in [debuglink.md](../spec/debuglink.md) 3.13),
+never through a codeplug write. After a codeplug restore whose `keptDiffering` is not empty, `factoryStep` (`app.js`)
+runs `factoryCheck` (`restore.js`) on the same link (Check Again opens the port afresh when the radio went away),
+then shows what it found. Only the `codeplug` target reaches it: a backup taken under another firmware has none, and
+its table comes back through the tool. Nothing is written until the user
+clicks the one button, and only an `offer` has it:
+
+| `factoryCheck` kind | When | The page shows |
+|---|---|---|
+| `unavailable` | FACTORY_INFO answers unknown command or bad argument (a firmware before the ops), or the radio refuses the READ of the range | Install the current RadioFoundry first, and the terminal command (`flash.restore.kept_differs`) |
+| `busy` | FACTORY_INFO still busy after five tries 0.5 s apart (the copy not loaded at this start), or two READs of the window differed | Check Again |
+| `none`, `disagree`, `short` | The board keeps no factory copy (FACTORY_INFO unavailable: a board or a build without `CONFIG_FACTORY_COPY`, where an update would change nothing; or present 0); the radio's range is not one of the board's `[[flash.protect]]` data entries (the page and the firmware disagree: nothing is sent); the backup's `spi-flash.bin` ends before the range | The terminal command, as before the step |
+| `same` | The window, read twice, holds the backup's bytes | The three CRC-32s, and that they agree |
+| `empty` | The backup's range is all 0xFF or all 0x00 | The three CRC-32s: the backup has no table either |
+| `other_radio` | The identity compare: another protected data range of the board (nothing of RadioFoundry's writes it) differs between the radio and the backup | The three CRC-32s, the ranges that differ, and the tool's `--no-identity` for an owner who is sure. No button: the way past the compare is the tool, on purpose not a click |
+| `unchecked` | No other range to compare, or one the radio doesn't open to READ or the backup doesn't hold | As `other_radio` |
+| `offer` | The window differs from the backup, and every other range is the radio's | The three CRC-32s and the button, "Write the Backup's Factory Calibration" |
+
+The CRC-32s are the radio's window as the page read it (twice, through READ), the record's from FACTORY_INFO (the
+radio reports no other digest of it) and the backup's range: the numbers `rfoundry_debug.py storage factory` prints.
+The button runs `factoryWrite`: FACTORY_LOAD in 56-byte chunks, FACTORY_RESTORE with the CRC-32 of the loaded bytes
+and of the window `factoryCheck` read (never the one FACTORY_INFO reports), FACTORY_INFO polled every 0.2 s until the
+job's result is no longer pending (10 s at most), then the window read twice and compared with the backup. Success is
+result `ok` with the backup's bytes read back. A refusal of op 5 (reasons 1-10) and the job's own check again under
+the storage lock (the same reasons) wrote nothing; `verify`, `flash`, `record`, a timeout or other bytes read back are
+failures. Each is shown by its reason (`factoryWhyKey`: the reasons that mean the bytes moved meanwhile, `stage`,
+`crc`, `unstable` and `window_crc`, share one text), with Check Again, which runs `factoryCheck` afresh. The radio
+checks everything again itself (the window's CRC-32 ties the request to the window the page compared), so the page's
+checks only decide what it offers. Without the button, the tool route is `tools/rfoundry_debug.py storage factory
+--backup FILE --restore` ([04-programming.md](../user/04-programming.md#the-makers-calibration-inside-the-codeplugs-memory)).
 
 ## HR_C7000 radios (the boot stub)
 

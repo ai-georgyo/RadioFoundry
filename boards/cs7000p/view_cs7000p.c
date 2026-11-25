@@ -203,7 +203,9 @@ static void line_cal(char *buf, uint8_t len)
 {
 	cs7000p_radio_state_t r;
 	cs7000p_radio_state(&r);
-	dl_fmt(buf, len, "cal=%s", r.cal_tx ? "model" : "none");	// none: every transmission is refused
+	// maker: the table in use holds FM transmit values, served only behind the owner's arm (tx_arm in board2), and it
+	// wins over the model where it holds them. none: every transmission but the bench drive's is refused
+	dl_fmt(buf, len, "cal=%s", r.cal_maker ? "maker" : (r.cal_tx ? "model" : "none"));
 }
 
 static void line_tx_refused(char *buf, uint8_t len)
@@ -315,7 +317,8 @@ static void line_adc_restarts(char *buf, uint8_t len)
 }
 
 // The maker's factory table in use, the factory copy's record, what receive takes from the table and what it holds
-// that nothing applies yet (radio_cs7000p.c): the second section's, all of one reply from one copy, the first line's
+// that nothing applies yet, the owner's transmit arm and what a key-up on the table would take (radio_cs7000p.c): the
+// second section's, all of one reply from one copy, the first line's
 static void line_cal_table(char *buf, uint8_t len)
 {
 	cs7000p_cal_view_line(0, buf, len);
@@ -346,6 +349,11 @@ static void line_tx_arm(char *buf, uint8_t len)
 	cs7000p_cal_view_line(5, buf, len);
 }
 
+static void line_tx_maker(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(6, buf, len);
+}
+
 // The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
 // `board2` section's (board.view_split), keys still board.<key>
 static void (*const lines[])(char *buf, uint8_t len) = {
@@ -361,6 +369,7 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	line_cal_table, line_cal_rec,
 	line_ref, line_rx_cal,
 	line_sq_maker, line_tx_arm,
+	line_tx_maker,
 };
 #define LINES	(sizeof(lines) / sizeof(lines[0]))
 // board2 is exactly the table's lines, in cs7000p_cal_view_line's order: its first takes the copy for the others

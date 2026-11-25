@@ -1135,12 +1135,12 @@ run-debuglinkRx2: debuglinkRx2Test
 	./debuglinkRx2Test
 .PHONY: run-debuglinkRx2
 
-# DL_CMD_CHIP_REG, RF chip and SoC registers on the debug link (core/debuglink/debuglink_chipreg.c): the board's hooks
-# and the transmit check are faked
-CHIPREG := debuglinkChipRegTest.c $(CORE)/debuglink/debuglink_chipreg.c
+# DL_CMD_CHIP_REG, RF chip and SoC registers on the debug link (core/debuglink/debuglink_chipreg.c): the board's hooks,
+# the transmit check and the owner's arm are faked
+CHIPREG := debuglinkChipRegTest.c $(CORE)/debuglink/debuglink_chipreg.c $(CORE)/debuglink/dl_txarm.c
 TESTS   += debuglinkChipRegTest
 debuglinkChipRegTest: $(CHIPREG) $(ROOT)/hal/board.h $(ROOT)/hal/hal_system.h $(CORE)/debuglink/debuglink.h \
-		$(CORE)/debuglink/debuglink_proto.h
+		$(CORE)/debuglink/debuglink_proto.h $(CORE)/debuglink/dl_txarm.h $(ROOT)/hal/hal_radio.h
 	$(CC) $(CFLAGS) -Iwatchdog_stub -I$(ROOT)/hal -Wshadow -o $@ $(CHIPREG)
 
 run: run-debuglinkChipReg

@@ -5,7 +5,8 @@ link's `board` view section and its second, `board2` (docs/spec/hardware-cs7000p
 the clock that started, the chip's revision and ROM bootloader, the knob and the supply hold, the output expander and
 the shared DAC, the LCD board check and the panel's ID, the data flash and its reserved sector, the calibration state,
 the synthesizer, the modem and its I2S direction probe, the maker's factory table and the tree's copy of it. Nothing
-here writes the data flash: the table's check reads it through STORAGE READ. The port was written from the
+here writes the data flash: the table's check reads it through STORAGE READ; nothing arms the owner's transmit arm,
+whose generic tests are tests/hil/test_tx_arm.py. The port was written from the
 schematic, so most of these are the first evidence that a line or a polarity is right. The display, the build features and the storage region's generic checks are
 tests/hil/test_health.py's (from board.toml [hil]). A board's own test: skipped other_board on any other radio
 (tests/hil/hil_plugin.py). Their feature markers are optional: they record bring-up, they gate nothing."""
@@ -135,11 +136,14 @@ def test_transmitter_off_and_interlock(radio):
 
 @pytest.mark.feature("fm", optional=True)
 def test_calibration_state(radio):
-    """Until the tables are filled from bench measurements the radio refuses every transmission."""
+    """Until the tables are filled from bench measurements the radio refuses every transmission; with the maker's
+    table in use (cal=maker) until the owner arms transmission (hardware-cs7000p.md 13.2)."""
     b = board_view(radio)
-    assert b["cal"] in ("none", "model"), b["cal"]
+    assert b["cal"] in ("none", "model", "maker"), b["cal"]
     if b["cal"] == "none":
         print("cal=none: transmit is refused (docs/testing/power-calibration.md fills the tables)")
+    elif b["cal"] == "maker":
+        print(f"cal=maker: the maker's table; refused until the owner arms transmission (tx_arm={b.get('tx_arm')})")
 
 
 @pytest.mark.feature("factory_copy")
@@ -200,6 +204,75 @@ def test_factory_info_matches_view(radio):
     want = f"0x{info['record_crc']:08x}" if rec in ("ok", "bad") else "-"
     assert r["crc"] == want, (info, b["cal_rec"])
     assert FACTORY_RESULTS[info["result"]][0] == r["restore"], (info, b["cal_rec"])
+
+
+@pytest.mark.feature("tx_arm", optional=True)
+def test_tx_arm_key(radio):
+    """board2's tx_arm says what RADIO op 44 says (hardware-cs7000p.md 13.2, 15): the stage, the id it was armed with
+    (0 when off), list=1 exactly while the core view's test TX limit is a list; the flags of what refuses the arm
+    (chips, soc, bench_keyup) only as 1, and no bench drive (bench_drive) while armed: the two exclude each other; the
+    info's range is the maker's table and its CRC the table in use's (cal_table's for the window, cal_rec's for the
+    record), and the top stage is dmr in a DMR build, fm without. Read only: nothing is armed"""
+    b = board_view(radio)
+    if "tx_arm" not in b:
+        skip("not_built", "firmware without board2's tx_arm key (older than the owner's transmit arm)")
+    info = radio.link.tx_arm_info()
+    assert info is not None, "board2 has tx_arm but RADIO op 44 answers no arm"
+    stage, a = fields(b["tx_arm"])
+    _, t = fields(b["cal_table"])
+    rec, r = fields(b["cal_rec"])
+    print(f"tx_arm {b['tx_arm']}; op 44 stage {info['stage']} max {info['max']} crc 0x{info['crc']:08x}")
+    assert stage == ("off", "fm-low", "fm", "dmr")[info["stage"]], (b["tx_arm"], info)
+    assert stage != "off" or a["id"] == "0x00000000", b["tx_arm"]
+    assert a["list"] == ("1" if radio.view(["core"]).get("txlim") == "list" else "0"), b["tx_arm"]
+    assert all(a.get(k, "1") == "1" for k in ("chips", "soc", "bench_keyup")), b["tx_arm"]
+    assert stage == "off" or "bench_drive" not in a, f"a bench drive while armed: {b['tx_arm']}"
+    assert (info["addr"], info["len"]) == (TABLE_ADDR, TABLE_SIZE), info
+    assert info["max"] == (3 if "DMR" in radio.features() else 2), info
+    assert info["cal_ok"] == (t["src"] != "none"), (info, b["cal_table"])
+    if t["src"] == "window":
+        assert f"0x{info['crc']:08x}" == t["crc"], (info, b["cal_table"])
+    elif t["src"] == "record":
+        assert rec == "ok" and f"0x{info['crc']:08x}" == r["crc"], (info, b["cal_rec"])
+    if stage != "off":
+        assert a["id"] == f"0x{info['crc']:08x}", (b["tx_arm"], info)
+
+
+@pytest.mark.feature("tx_arm", optional=True)
+def test_tx_maker_key(radio):
+    """board2's tx_maker (hardware-cs7000p.md 15): what a key-up on the table in use would take, read without arming
+    and without keying. Its form: ok or none, at=tx or rx, the transmit frequency, the mode and level, each value a
+    number or "-", no= and why= exactly when none. With no valid table in use (cal_table src=none) nothing is served;
+    an FM key-up served means a table that could transmit once armed (board.cal=maker); where both levels' drives are
+    given the low level's is below the high level's, and both are DAC codes over 0. Read only: nothing is armed or
+    keyed. The values are this unit's: printed for the owner, never recorded"""
+    b = board_view(radio)
+    if "tx_maker" not in b:
+        skip("not_built", "firmware without board2's tx_maker key (older than the view of what the table would key)")
+    if b["tx_maker"] == "busy":
+        skip("state", "board2 was busy (a restore's take): ask again")
+    verdict, x = fields(b["tx_maker"])
+    _, t = fields(b["cal_table"])
+    print(f"tx_maker {b['tx_maker']}")
+    assert verdict in ("ok", "none"), b["tx_maker"]
+    assert x["at"] in ("tx", "rx") and x["mode"] in ("fm", "dmr"), b["tx_maker"]
+    assert x["hz"].isdigit() and x["lvl"].isdigit(), b["tx_maker"]
+    assert ("no" in x) == (verdict == "none") and ("why" in x) == (verdict == "none"), b["tx_maker"]
+    assert verdict == "ok" or x["no"] in ("band", "table", "drive", "pair", "trim_a", "trim_b", "burst", "tone"), \
+        b["tx_maker"]
+    assert ("d_b" in x) == (x["mode"] == "dmr") and ("tone_pm" not in x or x["mode"] == "fm"), b["tx_maker"]
+    for k in ("lo", "hi", "d_a", "d_b", "tone_pm"):
+        assert k not in x or x[k] == "-" or x[k].lstrip("-").isdigit(), b["tx_maker"]
+    assert x["pair"] == "-" or len(x["pair"].split(",")) == 2, b["tx_maker"]
+    if t["src"] == "none":
+        assert verdict == "none" and x["no"] in ("band", "table"), (b["tx_maker"], b["cal_table"])
+    if verdict == "ok":
+        assert x[("lo", "hi")[int(x["lvl"])]] != "-" and x["pair"] != "-" and x["d_a"] != "-", b["tx_maker"]
+        if x["mode"] == "fm":
+            assert b["cal"] == "maker", (b["tx_maker"], b["cal"])
+    if x["lo"] != "-" and x["hi"] != "-":
+        lo, hi = int(x["lo"]), int(x["hi"])
+        assert 0 < lo < hi <= 4095, f"the table's drives here: low {lo}, high {hi}: stop before arming and look"
 
 
 @pytest.mark.feature("ui_navigation", optional=True)

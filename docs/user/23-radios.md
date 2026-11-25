@@ -16,7 +16,7 @@ and what has been checked on it.
 | [TYT MD-380](#tyt-md-380) | TYT MD-390, Retevis RT3 | FM with CTCSS both ways, DMR voice and SMS in simplex and through a repeater or hotspot on either slot, and codeplug and ID database programming work on a UHF radio. Open: DCS, the tone deviation and the untested VHF image. |
 | [TYT MD-UV380](#tyt-md-uv380) | TYT MD-UV390, Retevis RT3S, TYT MD-UV390 Plus 10 W | Built on the UV380 family code, with the MD-UV380's keys, display, power tables and GPS. Run on radios by community testers. |
 | [TYT MD-9600](#tyt-md-9600) | Retevis RT90 | One image serves every board revision. On a V1-V3 radio, FM and DMR on both bands, DMR voice and data, text messages, roaming, scan, dual watch, APRS, the hotspot, each split duplex half and the USB network services work on air, with every power level checked on a wattmeter on both bands. V4A/V5 boards are detected; on older boards the radio asks for the revision once. Open: V4 and V4A/V5 boards have not run on a radio, and SFR loses inbound voice frames. |
-| [Connect Systems CS7000 M17 PLUS](#connect-systems-cs7000-m17-plus) |  | Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and played with the codec, merged from the maker's firmware file V9.00.96 at install. Transmit is refused until the power amplifier is calibrated, so DMR voice transmit is untested. |
+| [Connect Systems CS7000 M17 PLUS](#connect-systems-cs7000-m17-plus) |  | Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and played with the codec, merged from the maker's firmware file V9.00.96 at install. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link; DMR voice transmit, at the arm's top stage, is untested. |
 | [Retevis RT10](#retevis-rt10) |  | Boots from the boot ROM with the host link, stub entry, the watchdog and the crash log. FM receive with CTCSS/DCS decode, FM transmit, DMR transmit and receive with the radio's own codec, P25 (conventional, and trunked transmit) and NXDN at 4800 bit/s on stored channels, and APRS transmit work on the radio. |
 <!-- end generated -->
 
@@ -790,20 +790,31 @@ A 128 x 64 monochrome screen.
 ## Connect Systems CS7000 M17 PLUS
 
 A UHF handheld with a keypad, a channel selector, a volume knob with the power switch, GPS and a 160 x 128 color
-screen. **In development, for testers: one radio runs it so far, receive only.** On that radio FM receive works with
-clear audio, and DMR calls are received and played with the voice codec. Know these four things first:
+screen. **In development, for testers: one radio runs it so far, and it has only received.** On that radio FM receive
+works with clear audio, and DMR calls are received and played with the voice codec. Know these four things first:
 
-- **It does not transmit yet.** RadioFoundry reads the maker's calibration but doesn't transmit on it yet, and it
-  guesses none, so it refuses every transmission, FM and DMR. Receive uses it: with the calibration in place (on a
-  radio that lost it, after the restore from your backup, [below](#installing-on-the-cs7000-m17-plus)) the receiver
-  takes its tuning from it, and the signal strength reads on the maker's scale, so the figures differ from before.
+- **It doesn't transmit unless you arm it, and transmitting has never been tried.** RadioFoundry can transmit on the
+  maker's calibration, but no radio has done so yet. It refuses every transmission, FM and DMR, until you arm it from
+  a computer (`tools/rfoundry_debug.py radio tx-arm`, with your backup and the frequencies you allow), and every start
+  begins unarmed. The arm goes in stages: FM at 1W, FM at both levels, then DMR. Arm it only as a tester following
+  the [bring-up checklist](../testing/cs7000p-bringup.md) (its transmit stage), with an antenna or a dummy load
+  connected. Receive uses the calibration at once: with it in place (on a radio that lost it, after the restore from
+  your backup, [below](#installing-on-the-cs7000-m17-plus)) the receiver takes its tuning from it, and the signal
+  strength reads on the maker's scale, so the figures differ from before. On the first radio, after the restore, FM
+  sounded as good as before, DMR calls were decoded and played, and a strong signal read a few dB lower.
 - **DMR voice needs the radio's voice codec**, which the installer takes from Connect Systems' firmware file
   V9.00.96 on your computer. With it, received DMR calls play from the speaker (checked on one radio). Without the
   file the radio runs without DMR voice: DMR calls show on the screen without audio. DMR data and FM don't need a
-  codec. Talking on DMR waits for the calibration, like every transmission.
+  codec. Talking on DMR needs the arm's last stage (DMR), like every DMR transmission, and has never been tried: on a
+  radio the codec has only played calls, never encoded the microphone.
 - **The first installation erases the original firmware and its bootloader for good.** RadioFoundry cannot put them
   back: going back is the maker's own recovery procedure.
-- **RadioFoundry stores nothing on the radio's memory chip until you hand the chip over**, after a full backup.
+- **RadioFoundry stores nothing on the radio's memory chip until you hand the chip over**, after a full backup. It
+  then keeps the maker's calibration through every write, keeps its own copy of it, and writes it back from your
+  backup only when you ask. On the first radio the restore from the backup worked, and the calibration stayed
+  through a codeplug write from the Codeplug Editor; other programming tools have not been tried. The maker's device
+  information at the start of the chip is not kept: going back to the original firmware takes the steps in **Going
+  back** below, in that order.
 
 ### Installing on the CS7000 M17 PLUS
 
@@ -819,7 +830,7 @@ first, then use these values.
 | Bootloader key | Hold **SK1**, the side key above PTT, while you turn the radio on with the volume knob. The screen lights up gray and stays blank. Release the key |
 | First installation | The installer removes the processor's read protection, which **erases the original firmware and its bootloader**, and waits until the erase is over (at least 60 s, until the radio has left USB). Leave the radio on and connected until then. Then it asks you to switch the radio off and hold SK1 again, and writes RadioFoundry. Should the bootloader come back by itself after the erase, rfoundry says so and installs at once. If the radio does not go off with the knob, take the battery off for a few seconds ([why](#cs7000-m17-plus-power-switch)). Removing the read protection erases the voice codec too, so give the installer the stock firmware file at this installation. Without it the radio is installed without DMR voice |
 | Backup | The original firmware can't be backed up: it can't be read. The web installer offers a backup of the memory chip (32 MB: the original channels, settings and factory data) right after the installation; nothing is written to the chip before that backup. Take it and keep the file: it is the only copy. rfoundry takes no backup: take it as the Memory chip row says |
-| Memory chip | Where the original firmware keeps most of its data on it is not known, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer. Two known pieces are kept: the factory calibration and the maker's records. Every write of RadioFoundry, a codeplug write from any programming tool included, leaves them as they are; the tool's bytes for them are dropped and the write succeeds. A codeplug write made with an earlier build of RadioFoundry may have replaced the factory calibration: compare it with your backup and write the backup's back with `tools/rfoundry_debug.py storage factory --backup BACKUP.zip` ([how](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)). On the first radio that ran RadioFoundry it was lost this way. Builds before the factory copy keep nothing: never write a codeplug with one (installing one again to compare, say). If you did, run the compare above once this build runs again. A codeplug file saved from another CS7000 M17 PLUS and written with such a build puts that radio's calibration into yours, and no restore replaces a valid calibration yet: the compare then prints a `diagnosis` line; don't transmit, keep the backup and report it. RadioFoundry also keeps its own checked copy of the calibration on the chip, written once at a start after the hand-over |
+| Memory chip | Where the original firmware keeps most of its data on it is not known, so RadioFoundry writes nothing there until the chip is handed over ([how](02-installing.md#a-memory-chip-that-radiofoundry-must-be-given-first)). The web installer does this after its backup, and only when that backup holds the whole chip. Until then settings are lost at power-off and the radio stores no codeplug. The Codeplug Editor's **Write to Radio** doesn't hand the chip over: it asks for that backup (**Back Up**, **Everything**) and opens the installer. Two known pieces are kept: the factory calibration and the maker's records. On one radio the calibration stayed through a write from the Codeplug Editor; other tools have not been tried. Every write of RadioFoundry, a codeplug write from any programming tool included, leaves them as they are; the tool's bytes for them are dropped and the write succeeds. A codeplug write made with an earlier build of RadioFoundry may have replaced the factory calibration: compare it with your backup and write the backup's back with `tools/rfoundry_debug.py storage factory --backup BACKUP.zip` ([how](20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)). On the first radio that ran RadioFoundry it was lost this way. Builds before the factory copy keep nothing: never write a codeplug with one (installing one again to compare, say). If you did, run the compare above once this build runs again. A codeplug file saved from another CS7000 M17 PLUS and written with such a build puts that radio's calibration into yours, and no restore replaces a valid calibration yet: the compare then prints a `diagnosis` line; don't arm transmission, keep the backup and report it. RadioFoundry also keeps its own checked copy of the calibration on the chip, written once at a start after the hand-over |
 | Original channels | Not brought over: the installer has no channel step for this radio, because the original firmware's codeplug format is not known. Program the radio in the [Codeplug Editor](04-programming.md#the-codeplug-editor) |
 | Tools | The web installer or rfoundry. Another DFU tool may leave the end of the firmware unwritten |
 | Bootloader USB device (Zadig) | The device with USB ID `0483` `DF11`, [driver steps](02-installing.md#windows-the-bootloader-driver) |
@@ -841,7 +852,7 @@ From a terminal, with an image file (the web installer's build, or its manual ki
 | SK1 (side, above PTT) | **Monitor**. Held while the radio is switched on, it starts the bootloader instead of RadioFoundry |
 | SK2 (side, below PTT) | **A/B**: press to switch A / B in dual watch, hold for dual watch on or off |
 | SK3 (side, lowest) | **Power level**: press for the next power level |
-| Top key (orange) | Hold: emergency. It transmits, so not before the radio is calibrated |
+| Top key (orange) | Hold: emergency. It transmits, so the radio refuses it until transmission is armed |
 | **PTT** | **PTT**. The accessory connector's PTT line is read as PTT too |
 | Channel selector | Selects the channel: clockwise goes up. Its 16 positions were read on one radio; if yours steps the wrong way or skips, report it |
 
@@ -853,12 +864,12 @@ give SK1, SK2, SK3, F1, F2 and the top key other jobs.
 
 ### CS7000 M17 PLUS bands and power levels
 
-Receive from 400 to 527 MHz. Transmit, once the radio is calibrated, from 400 to 405.9875 MHz and from 406.1125 to
-512 MHz. Neither 406.0-406.1 MHz, the distress beacon band, nor the 12.5 kHz on each side of it transmits: receive
+Receive from 400 to 527 MHz. Transmit, once armed, from 400 to 405.9875 MHz and from 406.1125 to 512 MHz, and only
+on the frequencies you name when you arm it. Neither 406.0-406.1 MHz, the distress beacon band, nor the 12.5 kHz on each side of it transmits: receive
 only.
 
 Two power levels, named **1W** and **4W** after the radio's certification. A channel without a power in the codeplug
-uses 1W. Neither level has been measured, and until both are, the radio does not transmit.
+uses 1W. Neither level has been measured. The first stage of the arm allows 1W only.
 
 ### CS7000 M17 PLUS battery
 
@@ -893,9 +904,10 @@ still work. Report it.
 
 ### What the CS7000 M17 PLUS lacks
 
-- Transmitting, until the radio is calibrated. That takes the hotspot with it.
+- Transmitting without the arm: until you arm it after each start, nothing transmits, the hotspot included.
+  Transmitting has not been tried on a radio.
 - DMR voice without the codec: received calls are shown, not played. With the codec they are played; talking on DMR
-  is untested.
+  needs the arm's last stage (DMR) and is untested.
 - M17. RadioFoundry has no M17 mode.
 - Bluetooth, the man-down sensor and the vibrator: not used.
 - A volume bar: the knob sets the volume in the audio path.

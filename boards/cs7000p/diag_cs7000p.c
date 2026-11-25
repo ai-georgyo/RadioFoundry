@@ -117,7 +117,7 @@ static void line_cal(sbuf_t *b)
 {
 	cs7000p_radio_state_t r;
 	cs7000p_radio_state(&r);
-	sb_str(b, r.cal_tx ? "cal model" : "cal none");
+	sb_str(b, r.cal_maker ? "cal maker" : (r.cal_tx ? "cal model" : "cal none"));
 	put_kv(b, " txref ", r.tx_refused);	// transmissions refused, and the last reason
 	put_kv(b, "/", r.tx_refused_why);
 	put_kv(b, " dref ", r.dac_refused);	// DAC writes the interlock turned down

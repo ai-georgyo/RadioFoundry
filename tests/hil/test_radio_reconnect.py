@@ -169,3 +169,18 @@ def test_released_finds_this_radio_after_a_rename(bench, monkeypatch):
         bench.uids["C"] = (1, 0, 0)
         monkeypatch.setattr(rfoundry_hil, "find_ports", lambda: ["A", "C"])
     assert r.port == "C" and r.link.port == "C"
+
+
+def test_reopened_link_keeps_the_may_transmit_mark(bench, monkeypatch):
+    """rfoundry_hil.tx_arm_skip reads the mark Radio.tx_gate put on the link: a link reopened mid-test keeps it, so a
+    key-up after a restart or a release is checked against the transmit arm as the test's first was"""
+    r = Radio("A")
+    r.link._tx_may = True
+    r.reconnect(timeout=1)
+    assert r.link._tx_may is True
+    with r.released():
+        pass
+    assert r.link._tx_may is True
+    r.link._tx_may = False
+    r.reconnect(timeout=1)
+    assert r.link._tx_may is False

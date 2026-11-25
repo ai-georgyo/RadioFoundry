@@ -37,6 +37,9 @@ FM with CTCSS/DCS, DMR voice with the radio's own codec, DMR data and text, the 
 the PPP network services and each split duplex half work on air. Open: VHF transmit and VOX."""
 release = "stable"
 
+[features]
+tx_arm = { state = "n/a", reason = "no transmit arm (hal_radio_t.tx_arm): this radio transmits on its calibration without one" }
+
 # The same Baofeng serial updater as the other HR_C7000 boards, with its own ID string; the same flash map, the same codec slot and
 # the same erase of the whole application area
 [flash]

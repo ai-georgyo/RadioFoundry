@@ -32,7 +32,7 @@ import { verify, segments, forDevBuild } from "./manifest.js";
 import { Dfu, DfuError, NormalModeError, WebUsbTransport, checkKey, usbSupported } from "./dfu.js";
 import { Link, LinkError, CableError, SerialStream, RFOUNDRY_USB, RFOUNDRY_NET, CABLES, probe, whyNoAnswer, noAnswerKey, serialSupported, serialApi, browserErrorKey, noDeviceChosen, knownRadioPort } from "./link.js";
 import { readRadio, makeBundle, openBundle, bundleFolder, notBundle, bundleName, describeFirmware, CODEPLUG_SPAN } from "./backup.js";
-import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug, codeplugLayout } from "./restore.js";
+import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug, codeplugLayout, factoryCheck, factoryWrite, factoryWhyKey } from "./restore.js";
 import { Selection } from "./select.js";
 import { describe as describeProtected } from "./protect.js";
 import { codecPresent, decideCodec, DecisionError } from "./decide.js";
@@ -3036,8 +3036,9 @@ function afterRestore() {
 			status.append(notice(refused.length ? t("flash.restore.codeplug_refused", { n: refused.length, total: sectors.length })
 				: t("flash.restore.codeplug_done", { n: sectors.length }), refused.length ? "" : "ok"));
 			// never carved around silently: the backup's factory data that differs stays the radio's, and the one way to
-			// write it back is the debug link's factory restore (settings-store.md 4.2), from a terminal
-			if (kept.length) status.append(keptNotice());
+			// write it back is the debug link's factory restore (settings-store.md 4.2): the step offers it, else the
+			// terminal command
+			if (kept.length) status.append(factoryStep(link, spi.data));
 			S.forward(button(t("flash.nav.finish"), () => reset(), { primary: true }));
 		} catch (e) {
 			status.append(connectError(e), serialHelp());
@@ -3076,12 +3077,78 @@ function startHelp() {
 	app.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+// After a codeplug restore that kept the radio's protected data where the backup's differs: the board's factory range
+// compared (restore.js factoryCheck: the radio's, its own copy's and the backup's CRC-32) and, when the backup is this
+// radio's by the identity compare, one button that writes it back through the radio's restore (ops 4 and 5). Without
+// the radio's command, or for a range it doesn't keep, the terminal command (keptNotice)
+function factoryStep(link, spi) {
+	const box = h("div");
+	const hex8 = (n) => `0x${(n >>> 0).toString(16).padStart(8, "0")}`;
+	const win = { ok: "ok", blank: "blank", zero: "zero", refused: "refused" };
+	const rec = { ok: "ok", bad: "bad", blank: "none", newer: "other", other: "other" };
+	// the CRC-32 of each, as rfoundry_debug.py storage factory prints them, so the owner can compare the two tools
+	const crcs = (c) => {
+		const w = t(`flash.restore.factory_state_${win[c.info.window] || "unread"}`), r = t(`flash.restore.factory_state_${rec[c.info.record] || "unread"}`);
+		return h("dl", { class: "kv-list" },
+			h("dt", {}, t("flash.restore.factory_radio")), h("dd", {}, `${hex8(c.crc.radio)} (${w})`),
+			h("dt", {}, t("flash.restore.factory_record")), h("dd", {}, c.crc.record === null ? r : `${hex8(c.crc.record)} (${r})`),
+			h("dt", {}, t("flash.restore.factory_backup")), h("dd", {}, hex8(c.crc.backup)));
+	};
+	const again = () => button(t("flash.restore.factory_again"), () => step());
+	const why = (r) => t(...factoryWhyKey(r));
+	const run = async () => {
+		box.replaceChildren(spinner());
+		// Check Again after the radio was switched off or restarted: its port afresh (connectSerial keeps a live one)
+		link = await connectSerial();
+		const c = await factoryCheck(link, spi, S.board?.protect);
+		diag.note("restore: factory calibration", { kind: c.kind, ...(c.crc ? { radio: hex8(c.crc.radio), record: c.crc.record === null ? "-" : hex8(c.crc.record), backup: hex8(c.crc.backup) } : {}),
+			...(c.info ? { window: c.info.window, record: c.info.record, source: c.info.source } : {}),
+			...(c.others?.length ? { others: c.others.map((o) => `0x${o.entry.start.toString(16)} ${o.same ? "same" : o.radio === null || o.file === null ? "not compared" : "differs"}`).join("; ") } : {}) });
+		const ranges = (c.others || []).filter((o) => !o.same).map((o) => `0x${o.entry.start.toString(16).padStart(6, "0")}-0x${(o.entry.end - 1).toString(16).padStart(6, "0")}`).join(", ");
+		const parts = {
+			unavailable: () => [notice(t("flash.restore.factory_old_fw"), "info"), keptNotice()],
+			busy: () => [notice(t("flash.restore.factory_busy")), again()],
+			same: () => [crcs(c), notice(t("flash.restore.factory_same"), "ok")],
+			empty: () => [crcs(c), notice(t("flash.restore.factory_empty"))],
+			other_radio: () => [crcs(c), notice(t("flash.restore.factory_other_radio", { ranges }), "warn"), h("p", {}, troubleLink())],
+			unchecked: () => [crcs(c), notice(t("flash.restore.factory_unchecked")), h("p", {}, troubleLink())],
+		}[c.kind];
+		if (parts) return box.replaceChildren(panel(t("flash.restore.factory_title"), ...parts()));
+		// none (the board keeps no copy), disagree (the page and the firmware name other ranges), short (the backup
+		// ends before the range): nothing to offer, as before the step
+		if (c.kind !== "offer") return box.replaceChildren(keptNotice());
+		const out = h("div");
+		const go = button(t("flash.restore.factory_go"), async () => {
+			go.disabled = true;
+			out.replaceChildren(notice(t("flash.restore.factory_writing")));
+			let r;
+			try {
+				r = await factoryWrite(link, c);
+			} catch (e) {
+				return out.replaceChildren(connectError(e), again());
+			}
+			diag.note("restore: factory calibration written", { result: r.result, refused: r.refused, same: r.same, why: r.why, off: r.off });
+			if (r.result === "ok" && r.same) return out.replaceChildren(notice(t("flash.restore.factory_done"), "ok"));
+			// refused: nothing written; "record": the window is back, its copy follows at the next start
+			out.replaceChildren(notice(t(r.refused ? "flash.restore.factory_refused" : "flash.restore.factory_failed", { why: why(r) }),
+				r.refused || r.result === "record" ? "" : "bad"), again());
+		}, { primary: true });
+		box.replaceChildren(panel(t("flash.restore.factory_title"), h("p", {}, t("flash.restore.factory_lead")), crcs(c), go, out));
+	};
+	// a radio that stopped answering: the error, and the compare again (nothing was written)
+	const step = () => run().catch((e) => box.replaceChildren(connectError(e), again()));
+	step();
+	return box;
+}
+
 // A restore that kept the radio's protected data where the backup's differs: says so, and how to write it back
 function keptNotice() {
-	return notice(h("span", {}, t("flash.restore.kept_differs"), " ",
-		h("a", { href: `${HOME}docs/user/20-troubleshooting.html#the-factory-calibration-differs-from-the-backup`, target: "_blank", rel: "noopener" },
-			t("flash.restore.kept_differs_link"))), "action");
+	return notice(h("span", {}, t("flash.restore.kept_differs"), " ", troubleLink()), "action");
 }
+
+// The troubleshooting section on the factory calibration: every refusal, and the terminal command
+const troubleLink = () => h("a", { href: `${HOME}docs/user/20-troubleshooting.html#the-factory-calibration-differs-from-the-backup`, target: "_blank", rel: "noopener" },
+	t("flash.restore.kept_differs_link"));
 
 // Under every failure: troubleshooting, and the bug report
 function helpLink() {

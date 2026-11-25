@@ -9,8 +9,10 @@
 // for the modulation pairs, a counter for the reference). The maker's own factory table (data flash
 // 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md, read by makercal_cs7000p.h) serves receive only so far: the
 // front-end tune, the receive reference level and the RSSI scale (the cs7000p_cal_*_m getters below), each from its
-// own field group, with today's value whenever that group or that lookup gives none. No transmit value comes from it:
-// whether it would serve a transmission is asked (cs7000p_cal_maker_tx), for the owner's arm, and nothing more.
+// own field group, with today's value whenever that group or that lookup gives none. Its FM transmit values (the
+// drive, the pair, trim A: cs7000p_cal_maker_fm; a tone channel's sub-audio level: cs7000p_cal_maker_tone) and DMR's
+// (the drive, the DMR pair, trim B: cs7000p_cal_maker_dmr) serve a transmission only behind the owner's arm, which
+// the RF chain asks (rfops_cs7000p.h).
 //
 // A row is nine points, 400 to 520 MHz in steps of 15 MHz, read with linear interpolation between two points and
 // held flat past the ends. A row with one point unset is unset as a whole: half a row is never used.
@@ -19,6 +21,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "hal_radio.h"
 #include "makercal_cs7000p.h"
 
 #define CS7000P_POWER_LEVELS	2u		// board.c's power names: 1 W, 4 W
@@ -113,13 +116,72 @@ int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, ui
 // squelch never reads it (it is the noise reading's), so FM receive cannot change through it
 int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv, uint8_t *src);
 
-// --- Transmit, the maker's table (hardware-cs7000p.md 13.2): asked, not served ---
+// --- Transmit, the maker's table (hardware-cs7000p.md 13.2): served behind the owner's arm ---
 // The table in use (m: NULL or not valid is none) holds every value a transmission in this mode at this power level
 // would need at hz: FM the level's drive, the FM pair and trim A; DMR also the DMR pair, trim B and the level's burst
 // fields (checked though not applied: a damaged timing field is a damaged table). Each from its own field group,
 // with the reader's transmit rules at hz (the band, the VCO switch, no clamped, wrapped, 0 or 255 result). Asks
-// nothing of the arm: this is what an armed key-up would find. No getter serves these values yet
+// nothing of the arm: this is what an armed key-up would find. A sub-audio tone is not among them: a tone channel
+// also needs its level (cs7000p_cal_maker_tone), and is refused without one, never sent at a guessed depth
 bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr);
+// The same verdict from the same lookups, and when it is false the first one that refused, in this order, with the
+// reader's reason for it (cs7000p_mk_lookup_t): what the view shows (board2.tx_maker, cs7000p_rf_tx_view). The band
+// is the radio's own (cs7000p_tx_band), asked by the admission before the table; tone, a tone channel's level
+// (cs7000p_cal_maker_tone_why): neither is one of this function's
+enum {
+	CS7000P_TXL_OK = 0,
+	CS7000P_TXL_BAND,	// outside the transmit band (cs7000p_tx_band)
+	CS7000P_TXL_TABLE,	// no valid table in use
+	CS7000P_TXL_DRIVE,	// the level's drive (its power row, the floor)
+	CS7000P_TXL_PAIR,	// the mode's modulation pair
+	CS7000P_TXL_TRIM_A,	// trim A's group
+	CS7000P_TXL_TRIM_B,	// trim B's group (DMR)
+	CS7000P_TXL_BURST,	// the level's burst fields (DMR)
+	CS7000P_TXL_TONE,	// the tone's level
+};
+// Reasons of a tone lookup that are not the reader's: a CTCSS tone outside 67.0 to 254.1 Hz, no tone named
+#define CS7000P_TXL_WHY_RANGE	0xF0u
+#define CS7000P_TXL_WHY_NO_TONE	0xF1u
+bool cs7000p_cal_maker_tx_why(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr, uint8_t *lk,
+			      uint8_t *why);
+// The view's names: of a CS7000P_TXL_* lookup, and of a reason (the reader's or a tone's own)
+const char *cs7000p_cal_txl_name(uint8_t lk);
+const char *cs7000p_cal_txl_why_name(uint8_t why);
+// An FM transmission's values from the table in use, f_tx = hz, power level level (0 the low row 0x074, 1 the high row
+// 0x06C): the drive (16 c, 12-bit), the FM pair (mod2 to 4:0x45, mod1 to 4:0x46) and trim A as 4:0x04's offset
+// (d_A, the maker's own coding there). False, v as it was: cs7000p_cal_maker_tx(m, hz, level, false) is false. The
+// arm is not asked here: the caller's (cs7000p_rf_maker_fm, rfops_cs7000p.h) is the only one that serves these
+typedef struct {
+	uint16_t drive;
+	uint8_t mod2, mod1;
+	int8_t trim;
+} cs7000p_fm_tx_t;
+bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v);
+// A DMR transmission's values from the table in use, f_tx = hz, power level level (the rows as FM's): the drive (16
+// c, 12-bit; P, not the maker's P + step of its burst rise: the factory set P, calibration-cs7000p.md 5.4), the DMR
+// pair (0x0B4 to 4:0x45, 0x0BC to 4:0x46) and trim B as 4:0x04's offset (d_B, d mod 256 there, spec 5.2). The
+// level's burst fields are checked, not given: the port's key-up times the bursts. False, v as it was:
+// cs7000p_cal_maker_tx(m, hz, level, true) is false. The arm is not asked here (cs7000p_rf_maker_dmr)
+typedef struct {
+	uint16_t drive;
+	uint8_t mod2, mod1;
+	int8_t trim;
+} cs7000p_dmr_tx_t;
+bool cs7000p_cal_maker_dmr(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v);
+// A tone channel's sub-audio level L from the table in use at f_tx = hz (calibration-cs7000p.md 5.5): CTCSS the line
+// between the 67.0 Hz and the 254.1 Hz rows over the tone, DCS (either polarity) its row; doubled on a 25 kHz channel,
+// to at most 254. The CTCSS and DCS groups and the reader's transmit rules decide, and a CTCSS tone outside 67.0 to
+// 254.1 Hz is refused: the table holds no level past the two tones it was set at. False, *level as it was: no valid
+// table, no tone, or no level. The arm is not asked here (cs7000p_rf_tone_depth, rfops_cs7000p.h)
+bool cs7000p_cal_maker_tone(const cs7000p_maker_t *m, uint32_t hz, const subtone_t *tone, bool wide, uint8_t *level);
+// ... the same, and on false the reason in why (the reader's, CS7000P_MK_LK_TABLE, CS7000P_TXL_WHY_RANGE or _NO_TONE)
+bool cs7000p_cal_maker_tone_why(const cs7000p_maker_t *m, uint32_t hz, const subtone_t *tone, bool wide, uint8_t *level,
+				uint8_t *why);
+// The table in use holds an FM transmission's values somewhere in the transmit ranges, at some level (every 100 kHz
+// from 400 to 512 MHz): what the view shows as cal=maker, a radio that transmits there once the owner arms it
+bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m);
+// ... a DMR transmission's, the same way (cal=maker on a build with DMR, where the top stage serves it)
+bool cs7000p_cal_maker_any_dmr(const cs7000p_maker_t *m);
 
 // The IF chip's RSSI output in millivolts as dBm at its input, from the data sheet's two typical points (0.3 V at
 // -100 dBm, 2.0 V at -30 dBm), less CS7000P_FE_GAIN_DB. A relative reading until it has been measured

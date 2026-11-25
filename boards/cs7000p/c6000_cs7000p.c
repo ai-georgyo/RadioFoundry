@@ -3,7 +3,8 @@
 // CS7000 M17 PLUS HR_C6000: its pins, its values and its callbacks (docs/spec/hardware-cs7000p.md 6). The chip, its
 // ports and its slot engine are the shared code: the driver and the order of its set-ups on a board that feeds it a
 // 450 kHz IF (drivers/modem/hrc6000, drivers/modem/hrc6000/if_host), the two ports and the three interrupt lines
-// (platform/stm32/hrc), the burst runner (platform/stm32/dmr_keyup). Nothing here has run on a radio.
+// (platform/stm32/hrc), the burst runner (platform/stm32/dmr_keyup). What has run on a radio is the bring-up page's
+// First radio (docs/testing/cs7000p-bringup.md), and nothing of transmit has.
 //
 // What is this board's own:
 //
@@ -36,7 +37,7 @@
 
 #define C6000_PWD_WAIT_MS	12	// at least 10 ms after the sleep line goes low before the first access
 #define DMR_MIC_GAIN		7	// the other HR_C6000 radios' value (unverified here)
-#define FM_MIC_GAIN		7	// the same
+#define FM_MIC_GAIN		7	// the same; on the maker's values its own, a row (cs7000p_rf_fm_tx_rows)
 #define RX_GAIN_DB		2	// 4:0x37, as the tree's other IF-fed HR_C6000 (unverified here)
 #define SAFE_GAIN		0x80u	// the DMR modulation pair while the calibration has none
 #define VOICE_SPI_PINS		(PIN_MASK(PIN_DMR_VCLK) | PIN_MASK(PIN_DMR_VMISO) | PIN_MASK(PIN_DMR_VMOSI))
@@ -70,11 +71,14 @@ static bool mod_pair(void *ctx, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *m
 }
 
 // True only inside the FM transmit set-up, the one place the IF host asks ref_offset for 4:0x04 rather than for the
-// held level of a receive entry
-static bool fm_tx_setup;
+// held level of a receive entry; and inside the DMR one (hrc6000_if_tx_freq), where rx_tx_offset is asked for the
+// transmission's 4:0x04
+static bool fm_tx_setup, dmr_tx_setup;
 
 // The values are the chain's choice, host-tested there (rfops_cs7000p.h): the held level or the FM transmit set-up's
-// 4:0x04, the coding chip_reg 3:5 asks for, 4:0x04 in receive
+// 4:0x04 (trim A on the maker's values, behind the owner's arm), the coding chip_reg 3:5 asks for, 4:0x04 at a
+// receive entry and at the DMR key-up (trim B on the maker's values, behind the arm), the maker's FM transmit
+// registers
 static int8_t ref_offset(void *ctx, uint32_t hz)
 {
 	(void)ctx;
@@ -92,8 +96,13 @@ static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 {
 	(void)ctx;
 	(void)hz;
-	(void)dmr;
-	return cs7000p_rf_rx_r04(&cs7000p_rf);
+	return cs7000p_rf_r04(&cs7000p_rf, dmr, dmr_tx_setup);
+}
+
+static const hrc6000_if_row_t *fm_tx_rows(void *ctx, uint32_t hz, bool wide, uint8_t *n)
+{
+	(void)ctx;
+	return cs7000p_rf_fm_tx_rows(&cs7000p_rf, hz, wide, n);
 }
 
 static const hrc6000_if_cfg_t host_cfg = {
@@ -108,6 +117,7 @@ static const hrc6000_if_cfg_t host_cfg = {
 	.ref_offset = ref_offset,
 	.ref_coding = ref_coding,
 	.rx_tx_offset = rx_tx_offset,
+	.fm_tx_rows = fm_tx_rows,
 #if CONFIG_DMR
 	.dmr_enter = stm32_hrc_dmr_enter,
 	.dmr_leave = stm32_hrc_dmr_leave,
@@ -192,6 +202,18 @@ bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
 	cs7000p_radio_speaker();
 	return ok;
 }
+
+#if CONFIG_DMR
+bool cs7000p_c6000_dmr_tx(uint32_t hz, bool *pair)
+{
+	uint32_t errors = host.errors;
+	dmr_tx_setup = true;
+	*pair = hrc6000_if_tx_freq(&host, hz);
+	dmr_tx_setup = false;
+	// A write that failed: not a modulator to key a burst with
+	return host.up && host.dmr && host.errors == errors;
+}
+#endif
 
 void cs7000p_c6000_fm_tx_end(void)
 {

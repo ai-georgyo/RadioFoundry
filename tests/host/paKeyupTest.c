@@ -348,10 +348,10 @@ int main(void)
 	CHECK(!pa_keyup_valid(NULL, 1580));
 
 	// The board's copy: nothing before init, the board's constants after, a set checked whole, NULL restores
-	CHECK(pa_keyup_cfg() == NULL && !pa_keyup_set(&dflt));
+	CHECK(pa_keyup_cfg() == NULL && !pa_keyup_set(&dflt) && !pa_keyup_custom());
 	CHECK(pa_keyup_plan(700, 1448, 760).boost == 0);
 	pa_keyup_init(&dflt, 1580, 4095);
-	CHECK(pa_keyup_cfg() != NULL && pa_keyup_cfg()->knee_us == 120);
+	CHECK(pa_keyup_cfg() != NULL && pa_keyup_cfg()->knee_us == 120 && !pa_keyup_custom());
 	k = pa_keyup_plan(700, 1448, 760);
 	CHECK(k.boost == 764 && k.boost_us == 1500 && k.drive_us == 300);
 	// A band's constants replace the board's, but not ones the debug link set, until it gives them back
@@ -364,10 +364,10 @@ int main(void)
 	CHECK(pa_keyup_cfg()->knee_us == 500);
 	pa_keyup_cfg_t dbg = band2;
 	dbg.knee_us = 700;
-	CHECK(pa_keyup_set(&dbg));
+	CHECK(!pa_keyup_custom() && pa_keyup_set(&dbg) && pa_keyup_custom());	// a band's are the board's
 	pa_keyup_select(&dflt);
-	CHECK(pa_keyup_cfg()->knee_us == 700);
-	CHECK(pa_keyup_set(NULL) && pa_keyup_cfg()->knee_us == 120);
+	CHECK(pa_keyup_cfg()->knee_us == 700 && pa_keyup_custom());
+	CHECK(pa_keyup_set(NULL) && pa_keyup_cfg()->knee_us == 120 && !pa_keyup_custom());
 	pa_keyup_select(&band2);
 	CHECK(pa_keyup_cfg()->knee_us == 500);
 	pa_keyup_select(&dflt);
@@ -375,7 +375,7 @@ int main(void)
 	CHECK(pa_keyup_last(&lt, &lr).drive_us == 300 && lt == 1448 && lr == 760);
 	c = dflt;
 	c.window_us = 2000;
-	CHECK(!pa_keyup_set(&c) && pa_keyup_cfg()->window_us == 1500);
+	CHECK(!pa_keyup_set(&c) && pa_keyup_cfg()->window_us == 1500 && !pa_keyup_custom());	// refused: still the board's
 	c.window_us = 1000;
 	CHECK(pa_keyup_set(&c) && pa_keyup_plan(890, 1448, 760).pa_us == 695 && pa_keyup_last(NULL, NULL).pa_us == 695);
 	CHECK(pa_keyup_set(NULL) && pa_keyup_cfg()->window_us == 1500);

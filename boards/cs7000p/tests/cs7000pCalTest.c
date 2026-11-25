@@ -5,8 +5,10 @@
 // point missing is no row. The RSSI and noise mappings never step back. The receive getters with the maker's table
 // (invented here): a refused one, or none, gives every value as without it; a valid one each value from its own field
 // group, the tune row's lookup and trim A's receive bound falling back alone. Whether the table would serve a
-// transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; the
-// transmit getters stay the model's.
+// transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; an FM
+// transmission's values (the drive, the pair, trim A) and a DMR one's (the drive, the DMR pair, trim B) exactly
+// there; a tone channel's sub-audio level, CTCSS over the tone and DCS, each from its own group; the model's transmit
+// getters unchanged.
 #include <stdio.h>
 #include <string.h>
 #include "rfcal_cs7000p.h"
@@ -395,7 +397,7 @@ static void test_maker_rx(void)
 	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 485u * MHZ, &src) == 16u * 124u && src == CS7000P_SRC_MAKER);
 }
 
-// --- Transmit, the maker's table: asked, not served ---
+// --- Transmit, the maker's table: its FM values, served only by the RF chain behind the arm ---
 
 static void test_maker_tx(void)
 {
@@ -471,7 +473,82 @@ static void test_maker_tx(void)
 	CHECK(!cs7000p_cal_maker_tx(&mm, 431u * MHZ, 0, false) && !cs7000p_cal_maker_tx(&mm, 429900000u, 1, true));
 	CHECK(cs7000p_cal_maker_tx(&mm, 429u * MHZ, 0, false) && cs7000p_cal_maker_tx(&mm, 433u * MHZ, 1, true));
 
-	// None of it reaches the transmit getters: they read the model alone, unset as shipped, wherever the table
+	// The FM values themselves, exactly where the table holds an FM transmission's: the reader's drive for the level
+	// at f_tx (16 c), the FM pair, trim A as d; v untouched where it holds none
+	for (uint32_t hz = 399u * MHZ; hz <= 513u * MHZ; hz += 250000u) {
+		for (uint8_t level = 0; level <= CS7000P_POWER_LEVELS; level++) {
+			cs7000p_fm_tx_t v = { 7, 7, 7, 7 };
+			uint16_t drive = 0;
+			const bool has = cs7000p_cal_maker_tx(&m, hz, level, false);
+			CHECK(cs7000p_cal_maker_fm(&m, hz, level, &v) == has);
+			if (has) {
+				CHECK(cs7000p_maker_drive(&m, hz, level, &drive, NULL) && v.drive == drive && drive % 16u == 0u);
+				CHECK(v.mod2 == t[0x0C4] && v.mod1 == t[0x0CC] && v.trim == (int8_t)(t[0x0DC] - 128));
+			} else {
+				CHECK(v.drive == 7 && v.mod2 == 7 && v.mod1 == 7 && v.trim == 7);
+			}
+		}
+	}
+	cs7000p_fm_tx_t v = { 7, 7, 7, 7 };
+	CHECK(cs7000p_cal_maker_fm(&m, 446u * MHZ, 0, &v) && v.drive == 16u * 109u && v.trim == -5);
+	CHECK(cs7000p_cal_maker_fm(&m, 446u * MHZ, 1, &v) && v.drive == 16u * 210u);
+	CHECK(!cs7000p_cal_maker_fm(NULL, 446u * MHZ, 0, &v) && !cs7000p_cal_maker_fm(&mm, 431u * MHZ, 0, &v));
+	mm = m;
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_DMR_PAIR);	// DMR's alone missing: FM still has them
+	CHECK(cs7000p_cal_maker_fm(&mm, 446u * MHZ, 1, &v) && !cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, true));
+
+	// Somewhere in the transmit ranges (the view's cal=maker): FM's groups all, DMR's not needed
+	CHECK(cs7000p_cal_maker_any_fm(&m) && cs7000p_cal_maker_any_fm(&mm) && !cs7000p_cal_maker_any_fm(NULL));
+	static const uint16_t fm_groups[] = { CS7000P_MK_F_POWER, CS7000P_MK_F_FM_PAIR, CS7000P_MK_F_TRIM_A };
+	for (unsigned i = 0; i < sizeof(fm_groups) / sizeof(fm_groups[0]); i++) {
+		mm = m;
+		mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~fm_groups[i]);
+		CHECK(!cs7000p_cal_maker_any_fm(&mm));
+	}
+	mm = m;
+	mm.valid = false;
+	CHECK(!cs7000p_cal_maker_any_fm(&mm));
+
+	// The DMR values, exactly where the table holds a DMR transmission's: the same drive for the level (P, never the
+	// maker's P + step), the reader's DMR pair at f_tx (0x0B4, 0x0BC: not FM's) and trim B as d (not trim A); v
+	// untouched where it holds none
+	for (uint32_t hz = 399u * MHZ; hz <= 513u * MHZ; hz += 250000u) {
+		for (uint8_t level = 0; level <= CS7000P_POWER_LEVELS; level++) {
+			cs7000p_dmr_tx_t w = { 7, 7, 7, 7 };
+			uint16_t drive = 0;
+			uint8_t p2 = 0, p1 = 0;
+			const bool has = cs7000p_cal_maker_tx(&m, hz, level, true);
+			CHECK(cs7000p_cal_maker_dmr(&m, hz, level, &w) == has);
+			if (has) {
+				CHECK(cs7000p_maker_drive(&m, hz, level, &drive, NULL) && w.drive == drive);
+				CHECK(cs7000p_maker_pair(&m, hz, true, &p2, &p1, NULL) && w.mod2 == p2 && w.mod1 == p1);
+				CHECK(w.trim == (int8_t)(t[0x174] - 128));
+			} else {
+				CHECK(w.drive == 7 && w.mod2 == 7 && w.mod1 == 7 && w.trim == 7);
+			}
+		}
+	}
+	invented(t, rx_pts);
+	cs7000p_dmr_tx_t w = { 7, 7, 7, 7 };
+	CHECK(cs7000p_cal_maker_dmr(&m, 446u * MHZ, 1, &w) && w.drive == 16u * 210u && w.trim == -3);
+	CHECK(w.mod2 == t[0x0B4] && w.mod1 == t[0x0BC] && w.trim != (int8_t)(t[0x0DC] - 128));
+	CHECK(!cs7000p_cal_maker_dmr(NULL, 446u * MHZ, 0, &w));
+	// DMR's groups each alone missing: no DMR value and no DMR anywhere (cal=maker then from FM alone); FM's pair alone
+	// missing: DMR still has them
+	static const uint16_t dmr_groups[] = { CS7000P_MK_F_POWER, CS7000P_MK_F_DMR_PAIR, CS7000P_MK_F_TRIM_A,
+					       CS7000P_MK_F_TRIM_B, CS7000P_MK_F_BURST_LO | CS7000P_MK_F_BURST_HI };
+	CHECK(cs7000p_cal_maker_any_dmr(&m) && !cs7000p_cal_maker_any_dmr(NULL));
+	for (unsigned i = 0; i < sizeof(dmr_groups) / sizeof(dmr_groups[0]); i++) {
+		mm = m;
+		mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~dmr_groups[i]);
+		CHECK(!cs7000p_cal_maker_dmr(&mm, 446u * MHZ, 0, &w) && !cs7000p_cal_maker_any_dmr(&mm));
+	}
+	mm = m;
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_FM_PAIR);
+	CHECK(cs7000p_cal_maker_dmr(&mm, 446u * MHZ, 0, &w) && cs7000p_cal_maker_any_dmr(&mm) &&
+	      !cs7000p_cal_maker_any_fm(&mm));
+
+	// None of it reaches the model's getters: they read the model alone, unset as shipped, wherever the table
 	// would serve
 	uint16_t d = 7;
 	uint8_t m2 = 7, m1 = 7;
@@ -486,6 +563,80 @@ static void test_maker_tx(void)
 	CHECK(d == 7 && m2 == 7 && m1 == 7 && !cs7000p_cal_any_tx(&cs7000p_cal_model));
 }
 
+// A tone channel's sub-audio level from the table (calibration-cs7000p.md 5.5): CTCSS the line between the 67.0 Hz and
+// 254.1 Hz rows over the tone, each at f_tx; DCS its row; doubled on a 25 kHz channel to at most 254. Each from its
+// own group, with the reader's transmit rules; a CTCSS tone past the two the table was set at is refused
+static void test_maker_tone(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	static const uint8_t l67[8] = { 30, 32, 34, 36, 38, 40, 42, 44 };
+	cs7000p_maker_t m, mm;
+	invented(t, rx_pts);
+	memcpy(t + 0x084, l67, 8);	// 67.0 Hz rising with the frequency, 254.1 Hz flat at 52, DCS flat at 200
+	CHECK(parsed(t, &m) && m.fields == CS7000P_MK_F_ALL);
+
+	const subtone_t c670 = { TONE_CTCSS, 670 }, c885 = { TONE_CTCSS, 885 }, c2541 = { TONE_CTCSS, 2541 };
+	const subtone_t dcs = { TONE_DCS, 023 }, dcs_inv = { TONE_DCS_INV, 0754 };
+	uint8_t l = 0;
+	// At the 445.0 MHz point (the fourth): the 67.0 Hz row's 36, the 254.1 Hz row's 52, and between them over the tone
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &c670, false, &l) && l == 36u);
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &c2541, false, &l) && l == 52u);
+	// 88.5 Hz: t = 144 + (4 x 16 x 215) / 1871 = 151, so 38 (151 / 4 = 37.75 rounded half up)
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &c885, false, &l) && l == 38u);
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &c885, true, &l) && l == 76u);
+	// DCS either polarity: its row, doubled to the cap of 254 on 25 kHz
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &dcs, false, &l) && l == 200u);
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &dcs, true, &l) && l == 254u);
+	CHECK(cs7000p_cal_maker_tone(&m, 445u * MHZ, &dcs_inv, false, &l) && l == 200u);
+	// Everywhere the reader's own lookups give one, the same level; nowhere else
+	for (uint32_t hz = 399u * MHZ; hz <= 513u * MHZ; hz += 250000u) {
+		for (uint16_t tone = 670; tone <= 2541; tone += 37) {
+			const subtone_t c = { TONE_CTCSS, tone };
+			for (int wide = 0; wide < 2; wide++) {
+				uint8_t want = 7, got = 7;
+				const bool has = cs7000p_maker_ctcss(&m, hz, tone, wide != 0, &want, NULL);
+				CHECK(cs7000p_cal_maker_tone(&m, hz, &c, wide != 0, &got) == has && got == want);
+			}
+		}
+		uint8_t want = 7, got = 7;
+		const bool has = cs7000p_maker_dcs(&m, hz, false, &want, NULL);
+		CHECK(cs7000p_cal_maker_tone(&m, hz, &dcs, false, &got) == has && got == want);
+		CHECK(has == cs7000p_cal_maker_tx(&m, hz, 0, false));	// the band and the VCO rules alike
+	}
+	// No level: a CTCSS tone past the table's two, no tone, none at all, outside the band, no valid table; *level
+	// left as it was
+	static const uint16_t past[] = { 0, 669, 2542, 0xFFFF };
+	l = 9;
+	for (unsigned i = 0; i < sizeof(past) / sizeof(past[0]); i++) {
+		const subtone_t c = { TONE_CTCSS, past[i] };
+		CHECK(!cs7000p_cal_maker_tone(&m, 445u * MHZ, &c, false, &l) && l == 9u);
+	}
+	const subtone_t none = { TONE_NONE, 885 }, other = { 9, 885 };
+	CHECK(!cs7000p_cal_maker_tone(&m, 445u * MHZ, &none, false, &l) && l == 9u);
+	CHECK(!cs7000p_cal_maker_tone(&m, 445u * MHZ, &other, false, &l) && l == 9u);
+	CHECK(!cs7000p_cal_maker_tone(&m, 445u * MHZ, NULL, false, &l) && l == 9u);
+	CHECK(!cs7000p_cal_maker_tone(&m, 406u * MHZ, &dcs, false, &l) && !cs7000p_cal_maker_tone(&m, 520u * MHZ, &c885,
+												    false, &l));
+	CHECK(!cs7000p_cal_maker_tone(NULL, 445u * MHZ, &dcs, false, &l) && l == 9u);
+	mm = m;
+	mm.valid = false;
+	CHECK(!cs7000p_cal_maker_tone(&mm, 445u * MHZ, &dcs, false, &l) && l == 9u);
+	// Each group alone: CTCSS's refusal leaves DCS, and DCS's CTCSS
+	mm = m;
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_CTCSS);
+	CHECK(!cs7000p_cal_maker_tone(&mm, 445u * MHZ, &c885, false, &l) && l == 9u);
+	CHECK(cs7000p_cal_maker_tone(&mm, 445u * MHZ, &dcs, false, &l) && l == 200u);
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_DCS);
+	CHECK(!cs7000p_cal_maker_tone(&mm, 445u * MHZ, &dcs_inv, false, &l) && l == 200u);
+	CHECK(cs7000p_cal_maker_tone(&mm, 445u * MHZ, &c885, false, &l) && l == 38u);
+	// A level of 0 is a use rule: the parse clears that group, the table stays valid and FM keeps its values
+	invented(t, rx_pts);
+	t[0x094 + 5] = 0;
+	CHECK(parsed(t, &mm) && !(mm.fields & CS7000P_MK_F_DCS) && cs7000p_cal_maker_tx(&mm, 445u * MHZ, 0, false));
+	CHECK(!cs7000p_cal_maker_tone(&mm, 445u * MHZ, &dcs, false, &l));
+	CHECK(cs7000p_cal_maker_tone(&mm, 445u * MHZ, &c885, false, &l) && l == 41u);	// the flat rows: 40 to 52
+}
+
 int main(void)
 {
 	test_shipped();
@@ -494,6 +645,7 @@ int main(void)
 	test_status();
 	test_maker_rx();
 	test_maker_tx();
+	test_maker_tone();
 	printf("# cs7000pCalTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

@@ -35,7 +35,7 @@ clock = { rtc = "none", note = "no 32.768 kHz crystal and no backup supply (VBAT
 
 [status]
 level = "bring-up"
-summary = "Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and played with the codec, merged from the maker's firmware file V9.00.96 at install. Transmit is refused until the power amplifier is calibrated, so DMR voice transmit is untested."
+summary = "Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and played with the codec, merged from the maker's firmware file V9.00.96 at install. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link; DMR voice transmit, at the arm's top stage, is untested."
 release = "testing"
 
 # dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
@@ -107,8 +107,9 @@ accent = "#e07a1f"
 lens = [40, 32]
 
 # tests/hil: what the health checks expect (test_health.py). calibration: the generic check looks for a calibration the
-# radio uses; this one reads the maker's factory table and its copy and uses it in receive only; its test checks
-# them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table and cal_rec in board2)
+# radio uses; this one reads the maker's factory table and its copy, uses it in receive, and in transmit only behind
+# the owner's arm; its tests check them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table, cal_rec and tx_arm
+# in board2; tests/hil/test_tx_arm.py)
 [hil]
 display = "160x128x4"
 calibration = false

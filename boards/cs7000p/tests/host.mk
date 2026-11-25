@@ -139,6 +139,13 @@ cs7000pSubPwmTest: $(CS7000P_T)/cs7000pSubPwmTest.c $(CS7000P_H)
 	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_T)/cs7000pSubPwmTest.c
 run-boards:: cs7000pSubPwmTest
 	./cs7000pSubPwmTest
+# The depth's old name was a percent: a build that still passes it must fail on its #error, not mean 30 per mille
+run-boards::
+	@out=$$($(CC) $(CFLAGS) $(CS7000P_INC) -DCS7000P_CTCSS_DEPTH=30 -fsyntax-only \
+		$(CS7000P_T)/cs7000pSubPwmTest.c 2>&1) && { echo "FAIL: CS7000P_CTCSS_DEPTH still builds"; exit 1; }; \
+	echo "$$out" | grep -q 'CS7000P_CTCSS_DEPTH is now CS7000P_CTCSS_DEPTH_PM' || \
+		{ echo "FAIL: CS7000P_CTCSS_DEPTH refused, but not by its #error:"; echo "$$out"; exit 1; }; \
+	echo "# cs7000pSubPwmOldName PASSED (CS7000P_CTCSS_DEPTH refused by its #error)"
 
 # The hal_radio_t (radio_cs7000p.c) over the real chain and its buses, with a fake expander, modem, burst runner and
 # power state: the microphone for every transmission and off at every end, the power's off state (the interrupt
@@ -150,10 +157,11 @@ CS7000P_RADIO := $(CS7000P_T)/cs7000pRadioTest.c $(CS7000P)/radio_cs7000p.c $(CS
 	$(CS7000P)/rfcal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c \
 	$(CS7000P_RF_DRV) $(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.c $(CORE)/radio/tx_limit.c $(CORE)/radio/pa_keyup.c \
 	$(CS7000P)/makercal_cs7000p.c $(CS7000P)/store_cs7000p.c $(CORE)/storage/storage.c \
-	$(CORE)/storage/factory_copy.c $(CORE)/support/sha256.c $(CORE)/debuglink/dl_fmt.c sim/sim_flash.c
+	$(CORE)/storage/factory_copy.c $(CORE)/support/sha256.c $(CORE)/debuglink/dl_fmt.c $(CORE)/debuglink/dl_txarm.c \
+	sim/sim_flash.c
 CS7000P_RADIO_H := $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/rf/chainseq/chainseq.h \
 	$(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.h $(ROOT)/platform/stm32/dmr_keyup/dmr_keyup.h \
-	$(wildcard $(CORE)/storage/*.h) sim/sim_flash.h $(ROOT)/hal/hal_flash.h
+	$(wildcard $(CORE)/storage/*.h) sim/sim_flash.h $(ROOT)/hal/hal_flash.h $(CORE)/debuglink/dl_txarm.h
 CS7000P_RADIO_F := $(CS7000P_INC) -I$(ROOT)/platform/stm32 -I. -Wshadow -DCS7000P_STUB_MASK_HOOK \
 	-DSTORAGE_CLAIM_FIRST=1 -DSTORAGE_FACTORY_KEEP=1
 TESTS   += cs7000pRadioTest cs7000pRadioNoCopyTest cs7000pRadioRxOffTest

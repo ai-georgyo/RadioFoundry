@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Internal interfaces between the CS7000 M17 PLUS board files (docs/spec/hardware-cs7000p.md). Nothing here has run
-// on a radio.
+// Internal interfaces between the CS7000 M17 PLUS board files (docs/spec/hardware-cs7000p.md). What has run on a
+// radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // Bench knobs (CS7000P_DEFS in board.mk): each is an #ifndef default in the file that uses it, never here, and a row
 // of docs/testing/cs7000p-bringup.md.
@@ -82,7 +82,7 @@ extern const hal_radio_t cs7000p_radio;
 extern const hal_audio_t cs7000p_audio;
 #endif
 bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bool write);
-typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx; uint8_t pll_r, hrc_r10, hrc_r25; uint32_t vco_hz,
+typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx, cal_maker; uint8_t pll_r, hrc_r10, hrc_r25; uint32_t vco_hz,
 		 unlocks, tx_refused, dac_refused; uint8_t tx_refused_why; uint16_t rx_tune, pc8_duty; int8_t ref_offset; }
 	cs7000p_radio_state_t;
 void cs7000p_radio_state(cs7000p_radio_state_t *s);	// plain data, no bus traffic
@@ -98,13 +98,14 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len);
 // ... and the receive side's: the reference level and its source, the tune's and the RSSI scale's sources
 void cs7000p_ref_line(char *buf, uint8_t len);
 void cs7000p_rx_cal_line(char *buf, uint8_t len);
-// ... and the maker's squelch thresholds at the receive frequency, shown only; the owner's transmit arm. Each from a
-// copy of its own
+// ... and the maker's squelch thresholds at the receive frequency, shown only; the owner's transmit arm; what a key-up
+// on the table would take, unarmed and unkeyed. Each from a copy of its own
 void cs7000p_sq_maker_line(char *buf, uint8_t len);
 void cs7000p_tx_arm_line(char *buf, uint8_t len);
-// The same six as board2's lines k = 0 to 5, in that order, all from one copy of a state that isn't changing: k = 0
+void cs7000p_tx_maker_line(char *buf, uint8_t len);
+// The same seven as board2's lines k = 0 to 6, in that order, all from one copy of a state that isn't changing: k = 0
 // takes it (the reply's first board2 line), the others format it. "<key>=busy" when no copy could be taken
-#define CS7000P_CAL_VIEW_LINES	6u
+#define CS7000P_CAL_VIEW_LINES	7u
 void cs7000p_cal_view_line(uint8_t k, char *buf, uint8_t len);
 
 #endif

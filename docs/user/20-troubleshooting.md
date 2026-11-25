@@ -102,6 +102,9 @@ tools/rfoundry_debug.py storage factory --backup BACKUP.zip              # compa
 tools/rfoundry_debug.py storage factory --backup BACKUP.zip --restore    # write the backup's calibration back
 ```
 
+The web installer's **Restore** makes the same compare after it writes the channels back, and offers a button when
+the backup is this radio's. Its messages say what the rows below say.
+
 The restore needs RadioFoundry's settings area (hand it over first, [above](#settings-are-not-kept)) and nothing
 transmitting. The tool exits 0 when the radio holds the backup's calibration afterwards, 2 when it refused or the
 write failed. When the radio holds the backup's calibration already, it says "nothing to restore", sends nothing
@@ -117,7 +120,7 @@ and exits 0. Nothing is written when it refuses:
 | `record_differs` | The radio's own copy holds another valid calibration: the same check and the same `diagnosis` |
 | `invalid` | The backup's bytes fail the radio's checks: a damaged file, or another kind of radio |
 | `foreign` | The settings area isn't RadioFoundry's yet |
-| `busy` | The radio was transmitting or programming. Try again |
+| `busy` | The radio was transmitting or programming, or its transmission is armed. If you armed it, disarm it first (`tools/rfoundry_debug.py radio tx-arm off`, or switch the radio off and on), then try again |
 | `record_other` | The place of the radio's own copy holds data that isn't RadioFoundry's, which the radio never writes over. Keep the backup and report it |
 | `window_crc`, `crc`, `stage`, `unstable` | The bytes changed or were read differently during the command. Run it again |
 | `verify`, `flash` | The write failed. Run the command again, and keep the backup |

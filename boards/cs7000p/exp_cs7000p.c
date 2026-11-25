@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS: the one writer of the output expander and of the shared DAC, and what the board does around a
-// reset (exp_cs7000p.h has the bits and the rule; docs/spec/hardware-cs7000p.md 4). Nothing here has run on a radio.
+// reset (exp_cs7000p.h has the bits and the rule; docs/spec/hardware-cs7000p.md 4). What has run on a radio is the
+// bring-up page's First radio (docs/testing/cs7000p-bringup.md), and nothing of transmit has.
 //
 // The expander's 24 outputs carry every rail, the PA loop, the chip selects and the supply hold. They are random
 // from power-up and keep their state through an MCU reset, so they get their word three times over: in the reset

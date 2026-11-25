@@ -503,6 +503,9 @@ def test_tx_drive_op(radio):
         with pytest.raises(DebugLinkError):
             radio.link.tx_drive(0)          # a radio without the view key has no override either
         skip("other_board", "no PA drive override for this radio (hal_radio_t.tx_drive)")
+    arm = radio.link.tx_arm_info()
+    if arm is not None and arm["stage"]:
+        skip("state", f"the owner's transmit arm is on (stage {arm['stage']}): the board takes no bench drive then")
     drives = [int(x) for x in core["tx_drive"].split("/")]
     assert len(drives) == int(core["power_count"]), core
     on = [d for d in drives if d]

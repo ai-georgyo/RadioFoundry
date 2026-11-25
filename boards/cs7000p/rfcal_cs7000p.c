@@ -7,8 +7,9 @@
 #define U	CS7000P_CAL_UNSET
 #define UNSET_ROW	{ U, U, U, U, U, U, U, U, U }
 
-// Nothing here is measured, so nothing is set, and the radio refuses every transmission. A measured radio's values
-// replace the rows one by one; the verdict follows the rows, there is no switch to flip.
+// Nothing here is measured, so nothing is set, and the radio refuses every transmission on these rows (the maker's
+// table serves one only behind the owner's arm). A measured radio's values replace the rows one by one; the verdict
+// follows the rows, there is no switch to flip.
 // The floor is the shared DAC's interlock threshold (exp_cs7000p.c): the build's CS7000P_APC_FLOOR when it gives
 // one, so that the two can't differ, and 0 otherwise
 const cs7000p_cal_t cs7000p_cal_model = {
@@ -165,19 +166,148 @@ int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv
 	return cs7000p_rssi_dbm(mv);
 }
 
-// --- Transmit, the maker's table: asked, not served ---
+// --- Transmit, the maker's table ---
+
+// Every lookup an FM transmission takes, into v; then DMR's own on top. lk, why: the first lookup that refused
+// (CS7000P_TXL_*) and the reader's reason for it, the view's (cs7000p_cal_maker_tx_why); the verdict is the same
+static bool maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr, cs7000p_fm_tx_t *v, uint8_t *lk,
+		     uint8_t *why)
+{
+	int16_t d;
+	cs7000p_mk_burst_t b;
+	*lk = CS7000P_TXL_OK;
+	*why = CS7000P_MK_LK_OK;
+	if (m == NULL || !m->valid) {
+		*lk = CS7000P_TXL_TABLE;
+		*why = CS7000P_MK_LK_TABLE;
+	} else if (!cs7000p_maker_drive(m, hz, level, &v->drive, why)) {
+		*lk = CS7000P_TXL_DRIVE;
+	} else if (!cs7000p_maker_pair(m, hz, dmr, &v->mod2, &v->mod1, why)) {
+		*lk = CS7000P_TXL_PAIR;
+	} else if (!cs7000p_maker_trim(m, false, &d)) {
+		*lk = CS7000P_TXL_TRIM_A;	// a valid table whose TRIM_A group was refused
+		*why = CS7000P_MK_LK_GROUP;
+	} else {
+		v->trim = (int8_t)d;	// within CS7000P_MAKER_TRIM_MAX of 0: the group passed
+		if (dmr && !cs7000p_maker_trim(m, true, &d)) {
+			*lk = CS7000P_TXL_TRIM_B;
+			*why = CS7000P_MK_LK_GROUP;
+		} else if (dmr && !cs7000p_maker_burst(m, hz, level, &b, why)) {
+			*lk = CS7000P_TXL_BURST;
+		}
+	}
+	return *lk == CS7000P_TXL_OK;
+}
 
 bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr)
 {
-	uint16_t drive;
-	uint8_t mod2, mod1;
-	int16_t d;
-	cs7000p_mk_burst_t b;
-	if (m == NULL || !m->valid || !cs7000p_maker_drive(m, hz, level, &drive, NULL) ||
-	    !cs7000p_maker_pair(m, hz, dmr, &mod2, &mod1, NULL) || !cs7000p_maker_trim(m, false, &d)) {
+	cs7000p_fm_tx_t v;
+	uint8_t lk, why;
+	return maker_tx(m, hz, level, dmr, &v, &lk, &why);
+}
+
+bool cs7000p_cal_maker_tx_why(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr, uint8_t *lk,
+			      uint8_t *why)
+{
+	cs7000p_fm_tx_t v;
+	return maker_tx(m, hz, level, dmr, &v, lk, why);
+}
+
+bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v)
+{
+	cs7000p_fm_tx_t got;
+	uint8_t lk, why;
+	// The drive's level is the caller's: a level past the table's two rows is refused by the reader (LK_ROW)
+	if (!maker_tx(m, hz, level, false, &got, &lk, &why)) {
 		return false;
 	}
-	return !dmr || (cs7000p_maker_trim(m, true, &d) && cs7000p_maker_burst(m, hz, level, &b, NULL));
+	*v = got;
+	return true;
+}
+
+bool cs7000p_cal_maker_dmr(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v)
+{
+	cs7000p_fm_tx_t got;
+	int16_t d;
+	uint8_t lk, why;
+	// maker_tx with dmr looks the DMR pair up and has checked trim B and the burst fields; trim B as d here
+	if (!maker_tx(m, hz, level, true, &got, &lk, &why) || !cs7000p_maker_trim(m, true, &d)) {
+		return false;
+	}
+	*v = (cs7000p_dmr_tx_t){ .drive = got.drive, .mod2 = got.mod2, .mod1 = got.mod1, .trim = (int8_t)d };
+	return true;
+}
+
+bool cs7000p_cal_maker_tone_why(const cs7000p_maker_t *m, uint32_t hz, const subtone_t *tone, bool wide, uint8_t *level,
+				uint8_t *why)
+{
+	if (m == NULL || !m->valid) {
+		*why = CS7000P_MK_LK_TABLE;
+		return false;
+	}
+	*why = CS7000P_TXL_WHY_NO_TONE;
+	if (tone == NULL) {
+		return false;
+	}
+	switch (tone->type) {
+	case TONE_CTCSS:
+		// The maker's line runs on past its two tones; no level was ever set there
+		if (tone->value < CS7000P_MAKER_CTCSS_X0 || tone->value > CS7000P_MAKER_CTCSS_X1) {
+			*why = CS7000P_TXL_WHY_RANGE;
+			return false;
+		}
+		return cs7000p_maker_ctcss(m, hz, tone->value, wide, level, why);
+	case TONE_DCS:
+	case TONE_DCS_INV:
+		return cs7000p_maker_dcs(m, hz, wide, level, why);
+	default:
+		return false;
+	}
+}
+
+bool cs7000p_cal_maker_tone(const cs7000p_maker_t *m, uint32_t hz, const subtone_t *tone, bool wide, uint8_t *level)
+{
+	uint8_t why;
+	return cs7000p_cal_maker_tone_why(m, hz, tone, wide, level, &why);
+}
+
+const char *cs7000p_cal_txl_name(uint8_t lk)
+{
+	static const char *const names[] = { "ok", "band", "table", "drive", "pair", "trim_a", "trim_b", "burst", "tone" };
+	return lk < sizeof(names) / sizeof(names[0]) ? names[lk] : "?";
+}
+
+const char *cs7000p_cal_txl_why_name(uint8_t why)
+{
+	if (why == CS7000P_TXL_WHY_RANGE || why == CS7000P_TXL_WHY_NO_TONE) {
+		return why == CS7000P_TXL_WHY_RANGE ? "range" : "no_tone";
+	}
+	return cs7000p_maker_lookup_name(why);
+}
+
+static bool maker_any(const cs7000p_maker_t *m, bool dmr)
+{
+	if (m == NULL || !m->valid) {
+		return false;
+	}
+	for (uint32_t hz = 400000000u; hz <= 512000000u; hz += 100000u) {
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			if (cs7000p_cal_maker_tx(m, hz, level, dmr)) {	// the reader refuses outside the ranges
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m)
+{
+	return maker_any(m, false);
+}
+
+bool cs7000p_cal_maker_any_dmr(const cs7000p_maker_t *m)
+{
+	return maker_any(m, true);
 }
 
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between

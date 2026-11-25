@@ -68,6 +68,9 @@ FM and DMR voice both ways, the hotspot, the DMR VFO, the PPP network services, 
 storage work on the radio. The older FD6818 batches run the same image, untested on a radio. Open: the Retevis RT73."""
 release = "stable"
 
+[features]
+tx_arm = { state = "n/a", reason = "no transmit arm (hal_radio_t.tx_arm): this radio transmits on its calibration without one" }
+
 # The vendor IAP loader (0x03000000..0x0300BFFF) is never written. RadioFoundry's first stage fills the sector at 0x0300C000
 # (board.mk BOOT_*), the application follows it, the codec slot is the other HR_C7000 boards' (boards/db25d/memory.ld). The web flasher (IAP
 # loader, or the stub from RadioFoundry) and stub/stubtool.py flash it
