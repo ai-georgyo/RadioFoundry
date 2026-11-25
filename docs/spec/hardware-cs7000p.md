@@ -1494,16 +1494,16 @@ past the last point), its pair, trim A and rows, the whole key-up's writes under
 stage on the table's drive with its DMR pair at f_tx (a split channel: never the receive frequency's), trim B and
 the top level's drive for the burst plan, two bursts under the chain's rules; 4:0x04 trim B in DMR on the top stage
 only, today's in FM; a wide switch segment and an extension across the switch refused, in FM and DMR alike, and
-outside the transmit ranges in both; tone channels at their level's depth (pinned, narrow and wide, for the
-admitted frequency only and while armed), a tone without a level refused; the table over a model with set rows; a
-drive at or under the floor, in both modes; the arm lowered before the key-up or the bursts.
+outside the transmit ranges in both; tone channels at their level's depth (pinned, narrow and wide, at f_tx on split
+channels, for the admitted frequency only and while armed), a tone without a level refused; the table over a model
+with set rows; a drive at or under the floor, in both modes; the arm lowered before the key-up or the bursts.
 `cs7000pRadioTest` the handshake against each source, every refusal, armed FM key-ups from the window and from the
-record, tone channels with the depth the generator gets, armed DMR key-ups on a split channel (the pair the modem
-gets at f_tx, trim B at the key-up and in DMR receive on the top stage only, back to today's at a lower stage, a DMR
-transmission ended by a lower stage, no pair and a failed write refused, the arm lowered inside the burst plan
-refused with nothing written), the restore and the arm excluding each other, and the bench key-up's writes at every
-stage; `cs7000pCalTest` the tone's level from the table, `cs7000pSubPwmTest` the duty and the level's depth;
-`hrc6000IfHostTest` the rows and their write-back, and `hrc6000_if_tx_freq`.
+record, tone channels with the depth the generator gets (and the arm cleared during one), armed DMR key-ups on a
+split channel (the pair the modem gets at f_tx, trim B at the key-up and in DMR receive on the top stage only, back
+to today's at a lower stage, a DMR transmission ended by a lower stage, no pair and a failed write refused, the arm
+lowered inside the burst plan refused with nothing written), the restore and the arm excluding each other, and the
+bench key-up's writes at every stage; `cs7000pCalTest` the tone's level from the table, `cs7000pSubPwmTest` the duty
+and the level's depth; `hrc6000IfHostTest` the rows and their write-back, and `hrc6000_if_tx_freq`.
 
 The only way the firmware keys an uncalibrated radio is the debug link's drive override (`tx_drive`, 1 to 4095).
 (A raw SoC `CHIP_REG` write to DAC1 or GPIOE can key the PA outside every check here, 4.3: the bench must not make
