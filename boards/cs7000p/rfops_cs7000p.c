@@ -492,6 +492,50 @@ bool cs7000p_rf_maker_dmr(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs
 	return cs7000p_arm_covers(arm, level, true) && cs7000p_cal_maker_dmr(rf->maker, hz, level, v);
 }
 
+void cs7000p_rf_tx_view(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, bool dmr, bool wide, const subtone_t *tone,
+			cs7000p_tx_view_t *v)
+{
+	const cs7000p_maker_t *m = rf->maker;
+	int16_t d;
+	uint8_t l, why;
+	*v = (cs7000p_tx_view_t){ .no = CS7000P_TXL_OK, .why = CS7000P_MK_LK_OK };
+	// The values, each from the lookup cs7000p_cal_maker_fm and _dmr take it from
+	for (l = 0; l < CS7000P_POWER_LEVELS; l++) {
+		if (cs7000p_maker_drive(m, hz, l, &v->drive[l], NULL)) {
+			v->have |= (uint8_t)(CS7000P_TXV_LO << l);
+		}
+	}
+	if (cs7000p_maker_pair(m, hz, dmr, &v->mod2, &v->mod1, NULL)) {
+		v->have |= CS7000P_TXV_PAIR;
+	}
+	if (cs7000p_maker_trim(m, false, &d)) {
+		v->d_a = (int8_t)d;	// within CS7000P_MAKER_TRIM_MAX of 0: the group passed
+		v->have |= CS7000P_TXV_TRIM_A;
+	}
+	if (dmr && cs7000p_maker_trim(m, true, &d)) {
+		v->d_b = (int8_t)d;
+		v->have |= CS7000P_TXV_TRIM_B;
+	}
+	// The verdict in cs7000p_rf_tx_admit's order: the band, then the table's values for the mode and level
+	if (!cs7000p_tx_band(hz)) {
+		v->no = CS7000P_TXL_BAND;
+		v->why = CS7000P_MK_LK_BAND;
+	} else {
+		(void)cs7000p_cal_maker_tx_why(m, hz, level, dmr, &v->no, &v->why);
+	}
+	// A tone channel's level (FM: a DMR key-up sends none), at the width the key-up's depth takes
+	// (cs7000p_rf_tone_depth); the admission's own check gives the same verdict at either width
+	if (!dmr && tone != NULL && tone->type != TONE_NONE) {
+		if (cs7000p_cal_maker_tone_why(m, hz, tone, wide, &l, &why)) {
+			v->tone_pm = cs7000p_subpwm_depth_pm(l);
+			v->have |= CS7000P_TXV_TONE;
+		} else if (v->no == CS7000P_TXL_OK) {
+			v->no = CS7000P_TXL_TONE;
+			v->why = why;
+		}
+	}
+}
+
 uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level)
 {
 	uint16_t d;

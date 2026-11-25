@@ -329,6 +329,31 @@ bool cs7000p_rf_maker_fm(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7
 // ... and DMR's (cs7000p_cal_maker_dmr), only while the arm covers DMR (CS7000P_ARM_ALL)
 bool cs7000p_rf_maker_dmr(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v);
 
+// What a key-up on the maker's table would take at f_tx = hz, at the power level level, in the mode, on the width, with
+// the tone (NULL or TONE_NONE: none; FM only), as the admission and the key-up's getters find it (board2.tx_maker,
+// hardware-cs7000p.md 15): without the arm and without keying. no: the first lookup that refuses in the admission's
+// order (cs7000p_tx_band, cs7000p_cal_maker_tx_why, then a tone channel's level), with the reason; CS7000P_TXL_OK:
+// the table serves it, and an armed key-up whose stage covers it takes these values. Each value from its own lookup,
+// shown wherever that lookup gives one (have): the drive at both levels (16 c, 12-bit), the mode's pair (mod2 to
+// 4:0x45, mod1 to 4:0x46), trim A and in DMR trim B as d, the tone's depth in per mille at the width
+// (cs7000p_subpwm_depth_pm). Reads the table in use and nothing else; writes nothing. Any task, with the table steady
+#define CS7000P_TXV_LO		0x01u	// drive[0]
+#define CS7000P_TXV_HI		0x02u	// drive[1]
+#define CS7000P_TXV_PAIR	0x04u
+#define CS7000P_TXV_TRIM_A	0x08u
+#define CS7000P_TXV_TRIM_B	0x10u
+#define CS7000P_TXV_TONE	0x20u
+typedef struct {
+	uint8_t no, why;		// CS7000P_TXL_*, and its reason (cs7000p_cal_txl_why_name)
+	uint8_t have;			// CS7000P_TXV_*
+	uint8_t mod2, mod1;
+	int8_t d_a, d_b;
+	uint16_t drive[CS7000P_POWER_LEVELS];
+	uint16_t tone_pm;
+} cs7000p_tx_view_t;
+void cs7000p_rf_tx_view(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, bool dmr, bool wide, const subtone_t *tone,
+			cs7000p_tx_view_t *v);
+
 // The reference offset of the held level at a receive entry (the bias, 0x200 + it under the measured hold; the
 // signed level under the maker's coding): the bench's (chip_reg 3:4) while it is set, else cs7000p_cal_rx_ref_m (trim
 // A, bounded, else today's). Noted for the view. 4:0x04 in receive and in the FM transmit set-up stays ref_offset,
