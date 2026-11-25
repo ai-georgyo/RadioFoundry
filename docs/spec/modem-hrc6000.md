@@ -117,7 +117,7 @@ Names are the manual's. Only the bits we rely on are listed.
 | 0x42 | TransSlot (7), RecvSlot (6), UsedSlot (5) | read at the timeslot interrupt: what the slot now starting is |
 | 0x43 / 0x44 | RSSI H / L | not used (the AT1846S RSSI is used instead) |
 | 0x45 / 0x46 | Mod2 / Mod1 amplitude | from calibration: the DMR pair in DMR, the FM pair in FM |
-| 0x47 / 0x48 | reference oscillator offset / two-point bias | 0x21 / 0x00 at init (unexplained); 0x48 = 0 in FM |
+| 0x47 / 0x48 | reference oscillator offset / two-point bias | 0x21 / 0x00 at init (unexplained); 0x48 = 0 in FM transmit (ten bits with the IF host's receive hold, 8.2) |
 | 0x49 / 0x4A | modulation limits | 0xFF / 0xFF in FM |
 | 0x50 | LocalDataType (7-4), LocalVoD (3, 1 = voice), data-header-2 (2), LCSS (1-0) | the burst to send in the next slot: data burst = DT << 4; voice burst = 0x08 \| (n << 4) with n = 0..5 for A..F |
 | 0x51 (R) | DLLRecvDataType (7-4), DLLRecvPI (3), DLLRecvCRC (2, 1 = error), SyncClass (1-0: 0 none / EMB only, 1 voice, 2 data, 3 RC) | read on every "received data" interrupt. For voice, bit 7 is set and bits 6-4 are 1..6 for A..F, so the 4-bit field reads 0x9..0xE: **use the low 3 bits** |
@@ -782,7 +782,9 @@ place of the driver's offset call: that call puts the offset alone in the bias f
 the reference by several kHz at every receive entry. While the chip transmits the same DAC idles at mid-scale
 plus 0x04, so receive and transmit sit on one frequency. The word is written whole, not read and modified; it reads
 back. An FM transmission keeps the driver's 0x0E, which the same measurement shows on with
-analog transmit enabled (0x60 = 0x80); a DMR transmission keeps the hold (nothing in the DMR entry or the slot engine
+analog transmit enabled (0x60 = 0x80). Its set-up writes the bias as ten bits two's complement (0x48 = bits 9-8 of
+the offset), the signed coding's level for the offset under 0x0E, not the driver's FM transmit form (0x48 = 0): with
+the DAC as the reference's control, that form puts a negative offset 256 steps up. A DMR transmission keeps the hold (nothing in the DMR entry or the slot engine
 writes 0x25), and what the DAC does in a DMR TX slot under either word is not measured. Without the option 0x25 is
 never written by the host.
 
