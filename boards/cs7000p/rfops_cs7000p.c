@@ -285,6 +285,9 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 				// or the bench's reference offset on top of it is an offset nobody checked with the table
 				why = CS7000P_TX_ARM_REF;
 			}
+			if (why == CS7000P_TX_OK && q->bench_chips) {
+				why = CS7000P_TX_ARM_CHIPS;	// a bench register in either chip, not the driver's
+			}
 			if (why == CS7000P_TX_OK) {
 				if (q->dmr ? !cs7000p_rf_maker_dmr(rf, q->hz, q->power, &w)
 					   : (!cs7000p_rf_maker_fm(rf, q->hz, q->power, &v) ||

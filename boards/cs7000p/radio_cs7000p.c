@@ -84,6 +84,10 @@ static radio_bw_t rx_bw;
 static uint8_t rssi_src;	// where the last status poll's dBm came from (CS7000P_SRC_*), for the view
 // A receive set-up asked for from outside the radio task (the bench's LO side or reference offset): status() runs it
 static volatile bool retune_req;
+// The bench wrote the modem or the synthesizer (chip_reg chips 0 and 1) since the start: a register no set-up writes
+// again (the synthesizer's modulation and gain words, most of the modem's) keeps the bench's value until a restart.
+// The owner's arm is refused while it is set (an armed key-up runs on the table's values and the driver's)
+static volatile bool bench_chips;
 
 // --- The maker's factory table (calibration-cs7000p.md; hardware-cs7000p.md 13.1) ---
 
@@ -669,6 +673,7 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 		.off = cs7000p_power_off_state(),	// asked here, so FM's key-up and the burst plan both refuse
 		.ref_other = cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD,
 		.pc8_bench = cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE,
+		.bench_chips = bench_chips,
 	};
 #if CONFIG_DEBUGLINK
 	// A test TX limit as a list that names this frequency: the bench harness set it (tools/power_cal.py). The core
@@ -920,6 +925,7 @@ static void init(void)
 	// parses into it on this task, and the receive set-up that follows takes the new values
 	cs7000p_rf.maker = &maker;
 	cal_gen_step();
+	bench_chips = false;	// both chips set up anew below (the modem's reset is the MCU's)
 	radio_up = true;
 	cal_tx = cs7000p_cal_any_tx(&cs7000p_cal_model);
 	// The synthesizer rail and its settle time. The reference oscillator's control voltage is only defined with
@@ -1092,8 +1098,8 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 
 // Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. The states that refuse it: the
 // chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2), a stored reference trim or
-// the bench's reference offset (3:4) set or still held (trim A is the table's whole correction of the reference),
-// the power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a
+// the bench's reference offset (3:4) set or still held (trim A is the table's whole correction of the reference), a
+// bench write to the modem or the synthesizer since the start, the power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a
 // power-off (its off state, then a safe request that clears the arm) can't land between them. Lowered or off:
 // always taken, keeping the id it was armed with; a transmission the new stage no longer covers ends at once, by the
 // safe request (which clears the arm; the new stage is set after it). A change of stage asks for a receive set-up at
@@ -1110,7 +1116,7 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
 		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending() ||
 		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0 ||
-		    cs7000p_rf_ref_bench(&cs7000p_rf)) {
+		    cs7000p_rf_ref_bench(&cs7000p_rf) || bench_chips) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1235,6 +1241,7 @@ typedef struct {
 	uint8_t arm;
 	uint32_t arm_id;
 	bool list;
+	bool chips;			// bench_chips: the arm refused until a restart
 	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
 } cal_view_t;
 
@@ -1272,6 +1279,7 @@ static void view_fill(cal_view_t *v)
 	tx_limit_info_t limit;
 	tx_limit_get(&limit, NULL, 0);
 	v->list = limit.on && !limit.block && limit.n != 0u;
+	v->chips = bench_chips;
 	v->busy = false;
 }
 
@@ -1397,10 +1405,12 @@ static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
 }
 
 // The owner's transmit arm (13.2): the stage, the id it was armed with (the CRC-32 of the table in use then), and
-// whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15)
+// whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15); chips=1
+// only after a bench write to the modem or the synthesizer since the start (the arm refused until a restart)
 static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
 {
-	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u);
+	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u%s", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u,
+	       v->chips ? " chips=1" : "");
 }
 
 static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {
@@ -1647,7 +1657,9 @@ bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bo
 			return cs7000p_c6000_reg(page, reg, val, false);
 		}
 		const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
-		const bool ok = bench_write_ok(chip) && cs7000p_c6000_reg(page, reg, val, true);
+		const bool may = bench_write_ok(chip);
+		bench_chips = bench_chips || may;	// tried: a failed transaction may still have landed
+		const bool ok = may && cs7000p_c6000_reg(page, reg, val, true);
 		portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
 		return ok;
 	}
@@ -1658,7 +1670,9 @@ bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bo
 			return false;
 		}
 		const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
-		const bool ok = bench_write_ok(chip) && pll_write(NULL, sky72310_word(reg, (uint16_t)*val));
+		const bool may = bench_write_ok(chip);
+		bench_chips = bench_chips || may;
+		const bool ok = may && pll_write(NULL, sky72310_word(reg, (uint16_t)*val));
 		portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
 		return ok;
 	}

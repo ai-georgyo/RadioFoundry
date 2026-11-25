@@ -91,6 +91,8 @@ typedef enum {
 					// correction the table was not set with: PC8's idle duty the bench's (chip_reg
 					// 3:2, cs7000p_tx_req_t.pc8_bench), a stored reference trim (trim_ppb) or the
 					// bench's reference offset (chip_reg 3:4, cs7000p_rf_ref_bench)
+	CS7000P_TX_ARM_CHIPS = 17,	// ... the arm covers it and a list names it, but the bench wrote the modem or the
+					// synthesizer since the start (chip_reg chips 0 and 1, cs7000p_tx_req_t.bench_chips)
 } cs7000p_tx_why_t;
 
 // The owner's transmit arm (hardware-cs7000p.md 13.2, hal_radio_t.tx_arm): the maker's transmit values may serve a
@@ -163,6 +165,9 @@ typedef struct {
 	// PC8's idle duty is the bench's (chip_reg 3:2), not 50 %: its mean level is part of the reference's control
 	// voltage (about 2 kHz end to end)
 	bool pc8_bench;
+	// The bench wrote the modem or the synthesizer since the start (chip_reg chips 0 and 1): a register their set-ups
+	// do not write again keeps the bench's value
+	bool bench_chips;
 } cs7000p_tx_req_t;
 
 typedef struct {
