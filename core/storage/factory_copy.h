@@ -112,6 +112,10 @@ enum {
 	FACTORY_COPY_RS_PENDING = 0xFE,	// a job posted, not ended
 	FACTORY_COPY_RS_NONE = 0xFF,	// no restore at this start
 };
+// The states in which ops 4 and 5 answer BUSY: the load not run yet at this start, a restore job pending or running,
+// or its outcome not yet taken by the board (factory_copy_taken). A board refuses what must not happen against a
+// range about to change in them (the owner's transmit arm, hal_radio_t.tx_arm). Any task
+bool factory_copy_restore_busy(void);
 // The last restore's result now (FACTORY_COPY_RS_*), and its name ("ok", "window_differs", "pending", "none", ...)
 uint8_t factory_copy_result(void);
 const char *factory_copy_result_name(uint8_t result);

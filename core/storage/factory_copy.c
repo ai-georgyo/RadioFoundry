@@ -554,6 +554,11 @@ static bool restore_busy(void)
 	return !factory_copy_loaded() || job_on || storage_factory_job_busy() || untaken;
 }
 
+bool factory_copy_restore_busy(void)
+{
+	return restore_busy();
+}
+
 // Ops 4 and 5: UNAVAILABLE without a range for c, BUSY in the states above, UNAVAILABLE again for a configuration the
 // load didn't accept (a checker or table missing, a record sector some other writer reaches: settings-store.md 4.2).
 // DL_ST_OK to go on

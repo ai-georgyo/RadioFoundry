@@ -287,6 +287,7 @@ static void test_busy_before_load(void)
 	sim_flash_create(FLASH_SIZE, &map);
 	CHECK(factory_copy_load_op(&cfg, req, 3, out, &len) == DL_ST_BUSY && len == 0);
 	CHECK(factory_copy_restore_op(&cfg, req, 10, out, &len) == DL_ST_BUSY && len == 0);
+	CHECK(factory_copy_restore_busy());	// the board's question too (its transmit arm waits with the ops)
 	CHECK(factory_copy_result() == FACTORY_COPY_RS_NONE);
 }
 
@@ -1012,7 +1013,9 @@ static void test_restore_ops(void)
 	cfg.range = 0;
 	// Loaded, but the board's radio init hasn't taken the state yet: BUSY
 	CHECK(load_op(0, b, 8) == DL_ST_BUSY && restore_op(N, 0, 0) == DL_ST_BUSY && op_len == 0);
+	CHECK(factory_copy_restore_busy());
 	factory_copy_taken();
+	CHECK(!factory_copy_restore_busy());
 
 	// Op 4's length: an offset and 1-56 bytes
 	CHECK(factory_copy_load_op(&cfg, junk, 0, op_out, &op_len) == DL_ST_BAD_ARG);
@@ -1168,6 +1171,7 @@ static void test_restore_job(void)
 	// Nothing written before the job; ops 4 and 5 wait for it (the loaded bytes are the job's)
 	CHECK(sim_flash_data[WIN] == 0xFF && sector_blank(REC));
 	CHECK(load_op(0, other, 8) == DL_ST_BUSY && restore_op(N, crc(other), win_crc()) == DL_ST_BUSY);
+	CHECK(factory_copy_restore_busy());	// the job pending
 	storage_get_stats(&st0);
 	storage_job_poll();
 	storage_get_stats(&st1);
@@ -1183,11 +1187,11 @@ static void test_restore_job(void)
 	CHECK(factory_copy_info(&cfg, o, &len) && o[7] == FACTORY_COPY_SRC_WINDOW && o[21] == 0 && get32(o + 12) == crc(b));
 	CHECK(log_lines > 0 && strstr(log_last, "restored") != NULL);
 	// Waiting until the board took it; one changed() per job
-	CHECK(load_op(0, other, 8) == DL_ST_BUSY);
+	CHECK(load_op(0, other, 8) == DL_ST_BUSY && factory_copy_restore_busy());
 	storage_job_poll();
 	CHECK(changes == c0 + 1u);
 	factory_copy_taken();
-	CHECK(load_op(0, other, 8) == DL_ST_OK);
+	CHECK(load_op(0, other, 8) == DL_ST_OK && !factory_copy_restore_busy());
 
 	// The next start: the window in use, its record ok, nothing written, no restore at this start
 	s = boot();
