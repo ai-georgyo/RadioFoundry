@@ -247,6 +247,9 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	cs7000p_tx_why_t why = CS7000P_TX_OK;
 	uint16_t drive = 0;
 	bool ovr = false, on_arm = false;
+	// A transmission on the arm not yet followed by a receive set-up (the arm lowered under a DMR transmission, and
+	// its next arm before the receiver came back): as long as the arm, the bench drive's opposite
+	const bool was_arm = rf->admit && rf->admit_arm;
 
 	if (q->off) {
 		// First: a radio that switched itself off keys nothing, whatever the pack reads since and whatever is
@@ -267,13 +270,23 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 		why = CS7000P_TX_BAND;
 	} else {
 		uint16_t armed = rf->ovr_drive;
-		cs7000p_tx_why_t ovr_why = armed != 0u ? override_ok(rf, q) : CS7000P_TX_UNCAL;
+		cs7000p_tx_why_t ovr_why = CS7000P_TX_UNCAL;
+		if (armed != 0u && (rf->arm != CS7000P_ARM_OFF || was_arm)) {
+			// The bench drive and the owner's arm exclude each other (13.2): neither is set while the other is
+			// (cs7000p_rf_drive, the radio's tx_arm), so this is the rule's second line. The drive is neither used
+			// nor dropped: the view shows it until the bench clears it
+			ovr_why = CS7000P_TX_ARM_BENCH;
+		} else if (armed != 0u) {
+			ovr_why = override_ok(rf, q);
+		}
 		if (ovr_why == CS7000P_TX_OK && rf->ovr_drive != armed) {
 			// Armed anew (another task) between the two reads: the time just checked may be the new drive's
 			// and the drive the old one. Neither is used; the next key-up takes the new pair
 			ovr_why = CS7000P_TX_UNCAL;
 		}
-		if (ovr_why == CS7000P_TX_OK) {
+		if (ovr_why == CS7000P_TX_ARM_BENCH) {
+			why = ovr_why;
+		} else if (ovr_why == CS7000P_TX_OK) {
 			drive = armed;
 			ovr = true;
 		} else if (ovr_why == CS7000P_TX_UNCAL && cs7000p_cal_maker_tx(rf->maker, q->hz, q->power, q->dmr)) {
@@ -295,6 +308,9 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 			}
 			if (why == CS7000P_TX_OK && q->bench_chips) {
 				why = CS7000P_TX_ARM_CHIPS;	// a bench register in either chip, not the driver's
+			}
+			if (why == CS7000P_TX_OK && q->dmr && q->bench_keyup) {
+				why = CS7000P_TX_ARM_BENCH;	// the bursts' key-up would be the bench's, a boost over the drive
 			}
 			if (why == CS7000P_TX_OK) {
 				if (q->dmr ? !cs7000p_rf_maker_dmr(rf, q->hz, q->power, &w)
@@ -455,7 +471,7 @@ bool cs7000p_rf_restore_take(cs7000p_rf_t *rf)
 
 bool cs7000p_rf_drive(cs7000p_rf_t *rf, uint16_t drive, uint32_t now_ms)
 {
-	if (drive > CS7000P_DAC_MAX) {
+	if (drive > CS7000P_DAC_MAX || (drive != 0u && cs7000p_rf_arm_holds(rf))) {
 		return false;
 	}
 	rf->ovr_drive = 0;	// never a new time with the old drive
@@ -497,7 +513,11 @@ uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf)
 
 bool cs7000p_rf_drive_now_ok(const cs7000p_rf_t *rf, uint16_t drive)
 {
-	return !(rf->admit && rf->admit_arm) || drive <= rf->admit_drive;
+	if (!cs7000p_rf_arm_holds(rf)) {
+		return true;
+	}
+	// Only on the transmission the arm admitted, and never above its drive: an armed radio has no other carrier
+	return rf->admit && rf->admit_arm && drive <= rf->admit_drive;
 }
 
 int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf)

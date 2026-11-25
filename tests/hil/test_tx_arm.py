@@ -6,11 +6,13 @@ has one. No test here keys the radio:
 - The info: a stage no higher than the board's highest, the calibration's range, its CRC-32 0 when none is in use,
   and, on a radio with a factory copy of that range (STORAGE op 3), the copy's table in use and its CRC.
 - Refusals that change nothing: an id that is not the calibration's CRC-32 (reason 2, or 1 with none in use), a
-  stage over the highest (3), a request of another length (bad argument); off is always taken.
+  stage over the highest (3), a request of another length (bad argument); off is always taken. A bench PA drive set
+  (RADIO op 36, which keys nothing by itself) refuses the arm as a state (4): the two exclude each other.
 - With --allow-reboot: the stage is off after a restart.
 - With --allow-rf (marker radio_tx) and this radio's own backup (--data-flash-backup): the test TX limit set to block
   first, so nothing can key, then stage 1 with the CRC-32 of the backup's bytes (never the one the info gave), read
-  back, a factory restore refused as busy while armed, then off and the limit back to the run's.
+  back, a factory restore refused as busy while armed, a bench PA drive refused while armed, then off and the limit
+  back to the run's.
 
 A radio without the arm skips other_board. rfoundry_hil.tx_arm_guard sends a raising op 44 with the calibration's
 CRC only with --allow-rf and the limit at block, so no test arms by itself. What an armed radio transmits is the TX
@@ -96,6 +98,18 @@ def test_tx_arm_refusals(radio, arm):
         with pytest.raises(DebugLinkError) as e:
             radio.link.request(RADIO, bytes([OP_TX_ARM, 1]))
         assert e.value.status == ST_BAD_ARG, e.value
+        # A bench PA drive set (it keys nothing by itself): the arm refused as a state, before the id is looked at
+        try:
+            radio.link.tx_drive(1)
+        except DebugLinkError as e:
+            if e.status != ST_UNAVAILABLE:
+                raise
+        else:
+            try:
+                assert refused(radio, struct.pack("<BI", 1, wrong)) == 4, "an arm with a bench drive set"
+            finally:
+                radio.link.tx_drive(0)
+            assert refused(radio, struct.pack("<BI", 1, wrong)) == (2 if info["cal_ok"] else 1), "the drive cleared"
         now = radio.link.tx_arm_info()
         assert now["stage"] == 0 and now["crc"] == info["crc"], f"after the refusals: {now}"
     finally:
@@ -160,6 +174,10 @@ def test_tx_arm_under_block(radio, arm, pytestconfig):
                 radio.link.factory_restore(fi["size"], 0, wrong)
             assert e.value.status == ST_REFUSED and e.value.data[:1] == bytes([REASON["busy"]]), \
                 f"a factory restore while armed: {e.value} {e.value.data.hex()}"
+        # The bench PA drive while armed: refused (it would key nothing under the block either), none left set
+        if "tx_drive" in radio.core():
+            with pytest.raises(DebugLinkError):
+                radio.link.tx_drive(1)
     finally:
         try:
             radio.link.tx_arm(0)

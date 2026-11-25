@@ -657,6 +657,17 @@ void cs7000p_radio_dmr_tx_end(void)
 	tx_end(true);
 }
 
+// The DMR key-up's constants are the debug link's (RADIO op 37, or a key run's), not the board's: on the table's
+// values the bursts' key-up would be the bench's (a boost over the drive), and the owner's arm is refused meanwhile
+static bool keyup_bench(void)
+{
+#if CONFIG_DMR
+	return pa_keyup_custom();
+#else
+	return false;
+#endif
+}
+
 // What the transmit check needs to know now
 static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 {
@@ -674,6 +685,7 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 		.ref_other = cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD,
 		.pc8_bench = cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE,
 		.bench_chips = bench_chips,
+		.bench_keyup = dmr && keyup_bench(),
 	};
 #if CONFIG_DEBUGLINK
 	// A test TX limit as a list that names this frequency: the bench harness set it (tools/power_cal.py). The core
@@ -782,7 +794,8 @@ static uint16_t tx_drive_level(uint32_t hz, uint8_t level)
 	return cs7000p_rf_drive_level(&cs7000p_rf, hz, level);
 }
 
-// Arms only. Whether the next transmission may use it is the transmit check's to say (rfops_cs7000p.c)
+// Arms only. Whether the next transmission may use it is the transmit check's to say (rfops_cs7000p.c). Refused
+// while the owner's arm holds the PA (cs7000p_rf_arm_holds): the bench drive and the arm exclude each other
 static bool tx_drive(uint16_t drive)
 {
 	return cs7000p_rf_drive(&cs7000p_rf, drive, hal_millis());
@@ -876,6 +889,12 @@ static bool keyup_plan(void *ctx, uint32_t hz, uint8_t power, pa_keyup_t *ku)
 	cs7000p_rf_burst_drives(&cs7000p_rf, &drive, &top, &floor);
 	*ku = pa_keyup_plan(drive, top, floor);
 	if (ku->drive == 0u) {
+		return false;
+	}
+	if (cs7000p_rf.admit_arm && pa_keyup_custom()) {
+		// The debug link's constants since the admission asked (op 37 is not refused while armed): the plan may hold
+		// the bench's boost, over the table's drive. Nothing written yet
+		cs7000p_rf_refuse(&cs7000p_rf, CS7000P_TX_ARM_BENCH);
 		return false;
 	}
 	// The pair and 4:0x04 for f_tx before the first burst: the receive entries wrote f_rx's pair (a split channel's
@@ -1099,11 +1118,13 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 // Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. The states that refuse it: the
 // chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2), a stored reference trim or
 // the bench's reference offset (3:4) set or still held (trim A is the table's whole correction of the reference), a
-// bench write to the modem or the synthesizer since the start, the power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a
-// power-off (its off state, then a safe request that clears the arm) can't land between them. Lowered or off:
-// always taken, keeping the id it was armed with; a transmission the new stage no longer covers ends at once, by the
-// safe request (which clears the arm; the new stage is set after it). A change of stage asks for a receive set-up at
-// the next status poll (the values written at receive entries follow the arm); the same stage again asks for none
+// bench write to the modem or the synthesizer since the start, a bench drive armed or in use or the debug link's DMR
+// key-up constants (the bench's PA and the arm exclude each other), the power's off state, a restore pending. Each is
+// asked under the interrupt mask with the change itself, so a power-off (its off state, then a safe request that
+// clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
+// transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
+// is set after it). A change of stage asks for a receive set-up at the next status poll (the values written at
+// receive entries follow the arm); the same stage again asks for none
 static uint8_t tx_arm(uint8_t stage, uint32_t id)
 {
 	if (stage > ARM_MAX) {
@@ -1116,7 +1137,8 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
 		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending() ||
 		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0 ||
-		    cs7000p_rf_ref_bench(&cs7000p_rf) || bench_chips) {
+		    cs7000p_rf_ref_bench(&cs7000p_rf) || bench_chips || cs7000p_rf_bench_drive(&cs7000p_rf) ||
+		    keyup_bench()) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1242,6 +1264,8 @@ typedef struct {
 	uint32_t arm_id;
 	bool list;
 	bool chips;			// bench_chips: the arm refused until a restart
+	uint16_t bench_drive;		// a bench drive armed, or the drive of a transmission on one (0: none)
+	bool bench_keyup;		// the DMR key-up's constants the debug link's
 	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
 } cal_view_t;
 
@@ -1280,6 +1304,9 @@ static void view_fill(cal_view_t *v)
 	tx_limit_get(&limit, NULL, 0);
 	v->list = limit.on && !limit.block && limit.n != 0u;
 	v->chips = bench_chips;
+	v->bench_drive = cs7000p_rf.ovr_drive != 0u ? cs7000p_rf.ovr_drive
+			 : cs7000p_rf_bench_drive(&cs7000p_rf) ? cs7000p_rf.admit_drive : 0u;
+	v->bench_keyup = keyup_bench();
 	v->busy = false;
 }
 
@@ -1406,11 +1433,17 @@ static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
 
 // The owner's transmit arm (13.2): the stage, the id it was armed with (the CRC-32 of the table in use then), and
 // whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15); chips=1
-// only after a bench write to the modem or the synthesizer since the start (the arm refused until a restart)
+// only after a bench write to the modem or the synthesizer since the start (the arm refused until a restart). Then,
+// only while one holds, the bench's PA state that refuses the arm: bench_drive= the bench drive armed or in use,
+// bench_keyup=1 the debug link's DMR key-up constants
 static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
 {
-	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u%s", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u,
-	       v->chips ? " chips=1" : "");
+	char drive[20] = "";
+	if (v->bench_drive != 0u) {
+		dl_fmt(drive, sizeof(drive), " bench_drive=%u", (unsigned)v->bench_drive);
+	}
+	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u%s%s%s", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u,
+	       v->chips ? " chips=1" : "", drive, v->bench_keyup ? " bench_keyup=1" : "");
 }
 
 static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {

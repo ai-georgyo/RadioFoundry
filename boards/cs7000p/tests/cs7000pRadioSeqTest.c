@@ -1702,12 +1702,15 @@ static void test_arm_admit(void)
 	rf.ref_override = true;
 	rf.ref_offset = 12;
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
-	// A bench carrier: its own rules, the trim, PC8, the bench's 3:4 (the offset in its FM set-up) and its chip
-	// writes as they are
+	// A bench carrier, unarmed (the arm and the bench drive exclude each other): its own rules, the trim, PC8, the
+	// bench's 3:4 (the offset in its FM set-up) and its chip writes as they are
+	CHECK(!cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0);
 	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm);
 	CHECK(cs7000p_rf_ref_for(&rf, true) == 12 && cs7000p_rf_r04(&rf, false, true) == 12);
 	cs7000p_rf_tx_off(&rf, false);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM_LOW, 0x5EEDu);
 	rf.trim_ppb = 0;
 	q.pc8_bench = false;
 	q.bench_chips = false;
@@ -1819,38 +1822,134 @@ static void test_arm_admit(void)
 }
 
 // The bench drive with a valid table: admitted unarmed under its own four conditions, with its own reasons (the arm's
-// never replace them), at every stage the same; its key-up's writes are today's but for the receive tuning values
-// (the modem's held level, which carries trim A, is cs7000pRadioTest's)
+// never replace them); its key-up's writes are today's but for the receive tuning values (the modem's held level,
+// which carries trim A, is cs7000pRadioTest's). The bench drive and the owner's arm exclude each other: while the arm
+// holds the PA (a stage, or a transmission on it not yet followed by a receive set-up) no drive is taken, the drive now
+// stays on the arm's transmission, and a bench drive that met the arm all the same is refused (18), neither used nor
+// dropped; the arm off again, the bench route is as before
 static void test_arm_bench(void)
 {
 	static uint8_t t[CS7000P_MAKER_SIZE];
 	invented(t);
 	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &armed_table));
 	run_maker = &armed_table;
-	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+	CHECK(CS7000P_TX_ARM_BENCH == 18);	// the hardware page's: append only
+	run_arm = CS7000P_ARM_OFF;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	CHECK(!cs7000p_rf_arm_holds(&rf) && !cs7000p_rf_bench_drive(&rf));
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	cs7000p_tx_req_t q = req(F_OWNER, 1, false);
+	CHECK(cs7000p_rf_bench_drive(&rf) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LIST);
+	q.dmr = true;
+	q.limit_list = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_DMR);
+	q.debuglink = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LINK);
+	q = req(F_OWNER, 1, false);
+	q.limit_list = true;
+	q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_EXPIRED);
+	CHECK(ev_n == 0 && !rf.admit && !cs7000p_rf_bench_drive(&rf));
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	q.now_ms = T_SETTLED;
+	q.bench_keyup = true;	// the key-up constants are the bench's affair on a bench carrier
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm && rf.admit_drive == 600);
+	uint8_t m2 = 9, m1 = 9;
+	CHECK(cs7000p_rf_mod_pair(&rf, F_OWNER, false, &m2, &m1) && m2 == 0 && m1 == 0);	// no pair: a carrier
+	// Its drive cleared while it is up: still a bench drive in use (the arm stays refused until its end)
+	CHECK(cs7000p_rf_drive(&rf, 0, T_SETTLED) && cs7000p_rf_bench_drive(&rf));
+	CHECK(cs7000p_rf_drive_now_ok(&rf, CS7000P_DAC_MAX));	// unarmed: the bench's own
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(!cs7000p_rf_bench_drive(&rf));
+
+	for (uint8_t stage = CS7000P_ARM_FM_LOW; stage <= CS7000P_ARM_ALL; stage++) {
+		// Armed: no drive taken (0 is), nothing to sweep, nothing keyed
 		run_arm = stage;
 		bring_up(&cs7000p_cal_model, F_OWNER);
-		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
-		cs7000p_tx_req_t q = req(F_OWNER, 1, false);
-		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LIST);
-		q.dmr = true;
-		q.limit_list = true;
-		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_DMR);
-		q.debuglink = false;
-		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LINK);
+		CHECK(cs7000p_rf_arm_holds(&rf));
+		CHECK(!cs7000p_rf_drive(&rf, 600, T_SETTLED) && !cs7000p_rf_drive(&rf, 1, T_SETTLED) && rf.ovr_drive == 0u);
+		CHECK(!cs7000p_rf_drive(&rf, CS7000P_DAC_MAX + 1u, T_SETTLED));
+		CHECK(cs7000p_rf_drive(&rf, 0, T_SETTLED) && !cs7000p_rf_bench_drive(&rf));
+		CHECK(!cs7000p_rf_drive_now_ok(&rf, 0) && !cs7000p_rf_drive_now_ok(&rf, 1));	// nothing admitted on it
+		// A bench drive that met the arm all the same (the radio refuses the arm while one is set): refused, every
+		// level and mode, neither used nor dropped, nothing written
+		rf.ovr_ms = T_SETTLED;
+		rf.ovr_drive = 600;
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			for (int dmr = 0; dmr < 2; dmr++) {
+				q = req(F_OWNER, level, dmr != 0);
+				q.limit_list = true;
+				q.bench_dmr = true;
+				const uint32_t refused = rf.tx_refused;
+				CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_BENCH && rf.tx_refused == refused + 1u);
+				CHECK(rf.tx_refused_why == CS7000P_TX_ARM_BENCH && rf.ovr_drive == 600u && !rf.admit);
+				nothing_live_at(F_OWNER, level, dmr != 0, level_drive(&armed_table, stage, F_OWNER, level));
+			}
+		}
+		// Expired, or past its other conditions: still 18 (the arm decides first)
+		q = req(F_OWNER, 0, false);
+		q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_BENCH && rf.ovr_drive == 600u);
+		CHECK(ev_n == 0);
+		// The way back: the arm off, and the drive the bench's again
+		cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0);
+		CHECK(!cs7000p_rf_arm_holds(&rf));
 		q = req(F_OWNER, 1, false);
 		q.limit_list = true;
-		q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
-		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_EXPIRED);
-		CHECK(ev_n == 0 && !rf.admit);
-		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
-		q.now_ms = T_SETTLED;
 		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm && rf.admit_drive == 600);
-		uint8_t m2 = 9, m1 = 9;
-		CHECK(cs7000p_rf_mod_pair(&rf, F_OWNER, false, &m2, &m1) && m2 == 0 && m1 == 0);	// no pair: a carrier
+		cs7000p_rf_tx_off(&rf, false);
+		CHECK(rf.ovr_drive == 0u && !cs7000p_rf_bench_drive(&rf));
+	}
+	// A transmission on the arm, the arm off under it: until a receive set-up it holds the PA, and a bench drive there
+	// is refused, its admission too
+	run_arm = CS7000P_ARM_FM;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	q = req(F_OWNER, 0, false);
+	q.limit_list = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
+	const uint16_t on_arm = rf.admit_drive;
+	CHECK(cs7000p_rf_drive_now_ok(&rf, on_arm) && !cs7000p_rf_drive_now_ok(&rf, (uint16_t)(on_arm + 1u)));
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0);
+	CHECK(cs7000p_rf_arm_holds(&rf) && !cs7000p_rf_drive(&rf, 600, T_SETTLED) && rf.ovr_drive == 0u);
+	CHECK(!cs7000p_rf_drive_now_ok(&rf, (uint16_t)(on_arm + 1u)));
+	rf.ovr_ms = T_SETTLED;
+	rf.ovr_drive = 600;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_BENCH && rf.ovr_drive == 600u && !rf.admit);
+	CHECK(!cs7000p_rf_arm_holds(&rf));	// the refusal ended the admission: the bench's again
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr);
+	cs7000p_rf_tx_off(&rf, false);
+	CHECK(cs7000p_rf_rx(&rf, F_OWNER, true));
+	// The same, ended by a receive set-up
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x5EEDu);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0);
+	CHECK(cs7000p_rf_rx(&rf, F_OWNER, true) && !cs7000p_rf_arm_holds(&rf));
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	CHECK(cs7000p_rf_drive(&rf, 0, T_SETTLED));
+#if CONFIG_DMR
+	// The debug link's key-up constants: an armed DMR key-up refused (18) after the arm's other reasons; FM and an
+	// unarmed one not
+	run_arm = CS7000P_ARM_ALL;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+		q = req(F_OWNER, level, true);
+		q.limit_list = true;
+		q.bench_keyup = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_BENCH && !rf.admit);
+		nothing_live_at(F_OWNER, level, true, level_drive(&armed_table, CS7000P_ARM_ALL, F_OWNER, level));
+		q.bench_chips = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_CHIPS);
+		q.bench_chips = false;
+		q.limit_list = false;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_NO_LIST);
+		q = req(F_OWNER, level, false);
+		q.limit_list = true;
+		q.bench_keyup = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
 		cs7000p_rf_tx_off(&rf, false);
 	}
-	// The owner's run, write for write, at every stage: today's log with the table's receive tune in place
+#endif
+	// The owner's run, write for write, unarmed: today's log with the table's receive tune in place
 	uint16_t tune = 0;
 	CHECK(cs7000p_maker_rx_tune(&armed_table, F_OWNER, &tune, NULL) && tune != CS7000P_RX_TUNE_NOMINAL);
 	owner_ev_t want[sizeof(owner_fm) / sizeof(owner_fm[0])];
@@ -1861,14 +1960,11 @@ static void test_arm_bench(void)
 			want[i].a = tune;
 		}
 	}
-	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
-		run_arm = stage;
-		owner_run(0);
-		owner_match(want, n, __LINE__);
-		CHECK(inv_fail == 0 && trips == 0 && rf.arm == stage);
-	}
-	run_maker = NULL;
 	run_arm = CS7000P_ARM_OFF;
+	owner_run(0);
+	owner_match(want, n, __LINE__);
+	CHECK(inv_fail == 0 && trips == 0 && rf.arm == CS7000P_ARM_OFF);
+	run_maker = NULL;
 }
 
 // The invented table's TX points with others in their place (every other row as it is: still valid)
@@ -2072,6 +2168,9 @@ static void test_arm_tone(void)
 				}
 			}
 		}
+		// The bench drive's tone, the arm off (they exclude each other): the build's depth on either bandwidth
+		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED) == (stage == CS7000P_ARM_OFF));
+		cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0);
 		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
 		cs7000p_tx_req_t q = req(hz, 0, false);
 		q.limit_list = true;

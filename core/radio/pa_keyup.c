@@ -167,6 +167,11 @@ bool pa_keyup_set(const pa_keyup_cfg_t *c)
 	return true;
 }
 
+bool pa_keyup_custom(void)
+{
+	return on && custom;
+}
+
 void pa_keyup_select(const pa_keyup_cfg_t *defaults)
 {
 	if (!on || !pa_keyup_valid(defaults, ahead_limit)) {
