@@ -993,10 +993,11 @@ static void status(radio_status_t *st)
 		}
 	}
 	bool receiving = cs7000p_rf.seq.state == CHAINSEQ_ST_RX;
-	// The table's two RSSI points when they passed, else the data sheet's line. The S-meter and the DMR scan's
-	// strength test read it; the FM squelch reads the noise
-	st->rssi_dbm = cs7000p_cal_rssi_m(cs7000p_rf.maker, cs7000p_adc_raw(CS7000P_ADC_RSSI),
-					  cs7000p_adc_mv(CS7000P_ADC_RSSI), &rssi_src);
+	// The table's two RSSI points when they passed, else (or with chip_reg 3:8) the data sheet's line. The S-meter,
+	// the DMR scan's strength test, roaming's leave threshold and the hotspot's report read it; the FM squelch reads
+	// the noise
+	st->rssi_dbm = cs7000p_rf_rssi(&cs7000p_rf, cs7000p_adc_raw(CS7000P_ADC_RSSI), cs7000p_adc_mv(CS7000P_ADC_RSSI),
+				       &rssi_src);
 	if (take) {
 		cal_gen_step();
 	}
@@ -1335,13 +1336,15 @@ static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
 	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 5u ? whys[w] : "?", ask);
 }
 
-// The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
-// receive (chip_reg 3:6), the IF chip's words (chip_reg 3:7)
+// The receive side's other sources: the tune's (the first word), the RSSI scale's (the last status poll's: maker, the
+// data sheet's line, or that line by chip_reg 3:8), the VCO line now and its rule in receive (chip_reg 3:6), the IF
+// chip's words (chip_reg 3:7)
 static void fmt_rx_cal(const cal_view_t *v, char *buf, uint8_t len)
 {
-	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s ifw=%s", src_name(v->tune_src),
-	       v->rssi_src == CS7000P_SRC_MAKER ? "maker" : "sheet", v->vco_low ? "low" : "high",
-	       v->vco_dir ? "dir" : "freq", v->if_maker ? "maker" : "port");
+	const uint8_t r = v->rssi_src;
+	const char *rssi = r == CS7000P_SRC_MAKER ? "maker" : (r == CS7000P_SRC_BENCH ? "bench" : "sheet");
+	dl_fmt(buf, len, "rx_cal=%s rssi=%s vco=%s vco_rule=%s ifw=%s", src_name(v->tune_src), rssi,
+	       v->vco_low ? "low" : "high", v->vco_dir ? "dir" : "freq", v->if_maker ? "maker" : "port");
 }
 
 // The maker's squelch thresholds at the receive frequency, shown and never applied (the squelch is the port's,
@@ -1436,7 +1439,7 @@ void cs7000p_tx_arm_line(char *buf, uint8_t len)
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
 enum {
 	BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE,
-	BOARD_IF_WORDS
+	BOARD_IF_WORDS, BOARD_RSSI_LINE
 };
 #define REF_RELEASE	0x100u	// chip_reg 3:4: no bench offset (written: released; read: none set)
 
@@ -1557,6 +1560,18 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 			retune_req = true;
 		}
 		*val = cs7000p_rf.if_maker ? 1u : 0u;
+		return true;
+	case BOARD_RSSI_LINE:
+		// 0: the table's RSSI points (when they passed), 1: the data sheet's line, for an A/B of what the dBm scale
+		// does to the DMR scan, roaming and the S-meter. Taken at the next status poll; receive and transmit are
+		// not changed by it
+		if (write) {
+			if (*val > 1u) {
+				return false;
+			}
+			cs7000p_rf.rssi_sheet = *val != 0u;
+		}
+		*val = cs7000p_rf.rssi_sheet ? 1u : 0u;
 		return true;
 	default:
 		return false;

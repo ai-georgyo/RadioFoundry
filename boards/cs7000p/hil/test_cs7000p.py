@@ -332,9 +332,9 @@ def test_receive_calibration_sources(radio):
     print(f"ref {b['ref']}; rx_cal {b['rx_cal']}; cal_table src={t['src']}")
     assert coding in ("hold", "maker", "maker7d"), b["ref"]
     assert r["src"] in ("maker", "default", "bench") and tune in ("maker", "default", "bench"), b
-    assert c["rssi"] in ("maker", "sheet") and c["vco"] in ("low", "high"), b["rx_cal"]
+    assert c["rssi"] in ("maker", "sheet", "bench") and c["vco"] in ("low", "high"), b["rx_cal"]
     if t["src"] == "none":
-        assert r["src"] != "maker" and tune != "maker" and c["rssi"] == "sheet", b
+        assert r["src"] != "maker" and tune != "maker" and c["rssi"] != "maker", b
     if r["src"] == "maker":
         assert r["why"] == "none" and abs(int(r["d_a"])) <= REF_RX_BOUND, b["ref"]
     if r["why"] == "rx_bound":

@@ -164,10 +164,12 @@ typedef struct {
 	// Bench state: the first LO's side, the tuning value in place of the table's (0: the table's), the modem's
 	// reference offset, the VCO line in receive by direction (chip_reg 3:6) instead of by frequency, the reference
 	// DAC's coding in receive (CS7000P_REF_HOLD and the others, chip_reg 3:5), the maker's IF chip words in receive
-	// instead of the port's (chip_reg 3:7, the radio's if_setup callback: rfplan_cs7000p.h)
+	// instead of the port's (chip_reg 3:7, the radio's if_setup callback: rfplan_cs7000p.h), the data sheet's RSSI
+	// line in place of the table's points (chip_reg 3:8)
 	bool lo_high;
 	bool vco_rx_dir;
 	bool if_maker;
+	bool rssi_sheet;
 	uint16_t tune_override;
 	int8_t ref_offset;
 	bool ref_override;		// ref_offset is the bench's (chip_reg 3:4), for the receive level too
@@ -280,6 +282,10 @@ static inline int8_t cs7000p_rf_rx_r04(const cs7000p_rf_t *rf)
 {
 	return rf->ref_offset;
 }
+
+// The RSSI in dBm at a status poll: the data sheet's line while the bench asks for it (chip_reg 3:8; src
+// CS7000P_SRC_BENCH), else cs7000p_cal_rssi_m on the table in use. src may be NULL
+int16_t cs7000p_rf_rssi(const cs7000p_rf_t *rf, uint32_t raw12, uint32_t mv, uint8_t *src);
 
 // The modem's callbacks (hrc6000_if_cfg_t). The pair: the table's; without one, 0 / 0 (an unmodulated carrier) for
 // an FM transmission admitted on the bench drive, and false otherwise

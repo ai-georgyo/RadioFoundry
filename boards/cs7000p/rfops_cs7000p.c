@@ -427,6 +427,17 @@ int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf)
 	return rf->rx_ref;
 }
 
+int16_t cs7000p_rf_rssi(const cs7000p_rf_t *rf, uint32_t raw12, uint32_t mv, uint8_t *src)
+{
+	if (rf->rssi_sheet) {
+		if (src != NULL) {
+			*src = CS7000P_SRC_BENCH;
+		}
+		return cs7000p_rssi_dbm(mv);
+	}
+	return cs7000p_cal_rssi_m(rf->maker, raw12, mv, src);
+}
+
 int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup)
 {
 	return tx_setup ? rf->ref_offset : cs7000p_rf_rx_ref(rf);
