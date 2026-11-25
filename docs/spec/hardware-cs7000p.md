@@ -1391,7 +1391,9 @@ bit and flag every case where the maker's 32-bit product or sum would wrap. On t
 A table that is not valid, or none, leaves every receive write and the dBm exactly as without it, and a valid table
 changes only the tune and the level's bias (4:0x04 and every line as before): `cs7000pRadioTest` checks both write
 for write, `cs7000pRadioSeqTest` the chain's (a bench key-up's own writes are today's, and nothing is admitted on
-the table), `cs7000pCalTest` the getters on invented tables. On the radio, 3:0 and 3:4 are the owner's A/B: `reg 3 4 0`
+the table), `cs7000pCalTest` the getters on invented tables. The modem's callbacks are one call each into the chain
+(`cs7000p_rf_ref_for`, `cs7000p_rf_rx_r04`, `cs7000p_ref_signed` in `rfops_cs7000p.h`), which the tests call the
+same way: the FM transmit set-up's 4:0x04 and bias stay today's value on a valid table. On the radio, 3:0 and 3:4 are the owner's A/B: `reg 3 4 0`
 is today's level (`CS7000P_REF_OFFSET` 0, the default), `reg 3 4 0x100` the table's again; `reg 3 0 2048` today's
 tune, `reg 3 0 0` the table's (both at the next status poll). Squelch stays the port's (the noise reading); the
 maker's thresholds are read, checked (a damaged squelch row makes the table not valid) and shown at the receive

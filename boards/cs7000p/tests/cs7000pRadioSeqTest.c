@@ -1654,6 +1654,47 @@ static void test_arm_ends(void)
 	CHECK(inv_fail == 0 && trips == 0);
 }
 
+// The modem's callbacks as the board's glue answers them (c6000_cs7000p.c, one call each): with a valid table (trim A
+// -5) a receive entry's level is trim A and 4:0x04 today's, and the FM transmit set-up takes today's value for 4:0x04
+// and its bias, never trim A; the bench's 3:4 is both. The coding's form for the IF host, and back
+static void test_ref_choice(void)
+{
+	uint8_t t[CS7000P_MAKER_SIZE];
+	invented(t);
+	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &armed_table) && armed_table.valid);
+	run_maker = &armed_table;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	CHECK(cs7000p_rf_ref_for(&rf, false) == -5 && rf.ref_src == CS7000P_SRC_MAKER);
+	CHECK(cs7000p_rf_ref_for(&rf, true) == CS7000P_REF_OFFSET && CS7000P_REF_OFFSET != -5);
+	CHECK(cs7000p_rf_rx_r04(&rf) == CS7000P_REF_OFFSET);
+	CHECK(rf.rx_ref == -5);	// the transmit set-up's question notes nothing for the view
+	rf.ref_override = true;
+	rf.ref_offset = 12;
+	CHECK(cs7000p_rf_ref_for(&rf, false) == 12 && cs7000p_rf_ref_for(&rf, true) == 12 && cs7000p_rf_rx_r04(&rf) == 12);
+	run_maker = NULL;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	CHECK(cs7000p_rf_ref_for(&rf, false) == CS7000P_REF_OFFSET && cs7000p_rf_ref_for(&rf, true) == CS7000P_REF_OFFSET);
+	CHECK(rf.ref_why == CS7000P_RXREF_WHY_TABLE);
+
+	static const struct {
+		uint8_t coding;
+		bool sgn;
+		uint8_t adc;
+	} form[] = {
+		{ CS7000P_REF_HOLD, false, 0 },
+		{ CS7000P_REF_MAKER, true, 0 },
+		{ CS7000P_REF_MAKER_ADC, true, 0x7D },
+	};
+	for (unsigned i = 0; i < sizeof(form) / sizeof(form[0]); i++) {
+		uint8_t adc = 0x55;
+		CHECK(cs7000p_ref_signed(form[i].coding, &adc) == form[i].sgn && adc == form[i].adc);
+		CHECK(cs7000p_ref_coding_of(form[i].sgn, form[i].adc) == form[i].coding);
+	}
+	uint8_t adc = 0x55;
+	CHECK(!cs7000p_ref_signed(3, &adc) && adc == 0u);	// not a coding: the hold
+	CHECK(cs7000p_ref_coding_of(false, 0x7D) == CS7000P_REF_HOLD);
+}
+
 int main(void)
 {
 	test_start();
@@ -1676,6 +1717,7 @@ int main(void)
 	test_arm_admit();
 	test_arm_bench();
 	test_arm_ends();
+	test_ref_choice();
 	printf("# cs7000pRadioSeqTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

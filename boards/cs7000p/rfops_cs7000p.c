@@ -425,6 +425,11 @@ int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf)
 	return rf->rx_ref;
 }
 
+int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup)
+{
+	return tx_setup ? rf->ref_offset : cs7000p_rf_rx_ref(rf);
+}
+
 bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *mod1)
 {
 	if (cs7000p_cal_mod_pair(rf->cal, hz, dmr, mod2, mod1)) {

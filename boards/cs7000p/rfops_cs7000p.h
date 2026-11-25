@@ -116,6 +116,23 @@ static inline cs7000p_tx_why_t cs7000p_arm_why(uint8_t arm, uint8_t level, bool 
 // the level 512 plus the offset), the maker's state (0x0E, the level the signed offset), the same with the maker's
 // 4:0x26. RAM only. Anything but the hold refuses every transmission (CS7000P_TX_REF_CODING)
 enum { CS7000P_REF_HOLD = 0, CS7000P_REF_MAKER = 1, CS7000P_REF_MAKER_ADC = 2 };
+#define CS7000P_MAKER_ADC_CTL	0x7Du	// 4:0x26 as the maker's program leaves it (calibration-cs7000p.md 5.13)
+
+// A coding in the IF host's form (hrc6000_if_cfg_t.ref_coding): true the signed level under 0x0E, false the measured
+// hold; adc_ctl the 4:0x26 of every receive entry, 0 the driver's. An unknown coding is the hold
+static inline bool cs7000p_ref_signed(uint8_t coding, uint8_t *adc_ctl)
+{
+	*adc_ctl = coding == CS7000P_REF_MAKER_ADC ? CS7000P_MAKER_ADC_CTL : 0u;
+	return coding == CS7000P_REF_MAKER || coding == CS7000P_REF_MAKER_ADC;
+}
+// ... and back: the coding (CS7000P_REF_*) the IF host took at its last full receive set-up, from its form
+static inline uint8_t cs7000p_ref_coding_of(bool sgn, uint8_t adc_ctl)
+{
+	if (!sgn) {
+		return CS7000P_REF_HOLD;
+	}
+	return adc_ctl == CS7000P_MAKER_ADC_CTL ? CS7000P_REF_MAKER_ADC : CS7000P_REF_MAKER;
+}
 
 // A transmission the core asks for, with what the board knows at that moment
 typedef struct {
@@ -249,6 +266,16 @@ uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf);
 // A, bounded, else today's). Noted for the view. 4:0x04 in receive and in the FM transmit set-up stays ref_offset,
 // today's value. Radio task: the IF host asks it at its receive entries
 int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf);
+// The IF host's ref_offset callback (c6000_cs7000p.c, one call): a receive entry's held level (cs7000p_rf_rx_ref),
+// or, inside the FM transmit set-up (tx_setup), its 4:0x04 and transmit bias: ref_offset, today's value, never trim
+// A, so that the table changes no FM transmission (hardware-cs7000p.md 13.1)
+int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup);
+// 4:0x04 at a receive entry (the IF host's rx_tx_offset): ref_offset, never trim A. What 4:0x04 does under the hold
+// is not measured, and a DMR burst carries the value
+static inline int8_t cs7000p_rf_rx_r04(const cs7000p_rf_t *rf)
+{
+	return rf->ref_offset;
+}
 
 // The modem's callbacks (hrc6000_if_cfg_t). The pair: the table's; without one, 0 / 0 (an unmodulated carrier) for
 // an FM transmission admitted on the bench drive, and false otherwise
