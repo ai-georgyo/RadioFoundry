@@ -248,7 +248,7 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	uint16_t drive = 0;
 	bool ovr = false, on_arm = false;
 	// A transmission on the arm not yet followed by a receive set-up (the arm lowered under a DMR transmission, and
-	// its next arm before the receiver came back): as long as the arm, the bench drive's opposite
+	// its next arm before the receiver came back) holds the PA as the arm does (cs7000p_rf_arm_holds)
 	const bool was_arm = rf->admit && rf->admit_arm;
 
 	if (q->off) {
