@@ -114,12 +114,20 @@ static bool op_tx_plan(void *ctx, uint32_t hz, uint8_t power, uint32_t *vco_hz, 
 {
 	cs7000p_rf_t *rf = ctx;
 	cs7000p_pll_plan_t p;
+	// Once: the core's ref_trim stores it from any task, at any time
+	const int16_t trim = rf->trim_ppb;
 	(void)power;
-	if (!rf->admit || hz != rf->admit_hz || !cs7000p_pll_plan(hz, true, false, rf->trim_ppb, &p)) {
+	if (!rf->admit || hz != rf->admit_hz || !cs7000p_pll_plan(hz, true, false, trim, &p)) {
 		return false;
 	}
 	if (rf->admit_arm && !cs7000p_arm_covers(rf->arm, rf->admit_power, rf->admit_dmr)) {
 		return false;	// on the maker's values, and the arm lowered since the admission: nothing keys
+	}
+	if (rf->admit_arm && trim != 0) {
+		// On the maker's values, and a reference trim stored since the admission, which refuses one with a trim
+		// (16): the plan would carry it on top of trim A. Between FM's admission and its tune, or before any tune of a
+		// DMR transmission on its arm (the first, and each after the receiver came back between transmissions)
+		return false;
 	}
 	*vco_hz = p.vco_hz;
 	*drive = rf->admit_drive;
