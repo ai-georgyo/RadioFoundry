@@ -196,7 +196,7 @@ FACTORY_RESULTS = {
     0: ("ok", "the window holds the file's bytes and the record was written"),
     1: ("foreign", "the storage region isn't RadioFoundry's yet: claim it first (storage claim)"),
     2: ("busy", "the radio is transmitting or armed, a storage job runs, or a CPS session holds the storage buffer: "
-                "try again"),
+                "if armed, disarm first (radio tx-arm off, or a restart), then try again"),
     3: ("stage", "the radio holds another number of loaded bytes than the range's size"),
     4: ("crc", "the radio received other bytes than the tool sent: try again"),
     5: ("invalid", "the file's bytes fail the radio's checks of the table: not a table of this kind, or damaged"),
