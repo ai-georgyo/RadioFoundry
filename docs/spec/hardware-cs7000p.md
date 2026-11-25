@@ -1590,7 +1590,8 @@ waits for its end; one that waited 250 ms gives `<key>=busy` for each of the six
 one receive set-up). The other keys, in `board`, are read one by one.
 
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
-through STORAGE READ (and an ok record's bytes with `cal_rec`'s). It never transmits or writes.
+through STORAGE READ (and an ok record's bytes with `cal_rec`'s), and `tx_arm` with RADIO op 44's info (the stage,
+the table's range and CRC, the top stage). It never transmits, writes or arms; `tests/hil/test_tx_arm.py` is the arm's.
 
 ---
 
