@@ -1077,7 +1077,7 @@
  "flash.restore.factory_refused": "电台拒绝写入出厂校准：{why} 未写入任何内容。",
  "flash.restore.factory_failed": "出厂校准的写入未完成：{why} 请保留备份，然后再次检查。",
  "flash.restore.factory_why_foreign": "它的设置区域还不属于 RadioFoundry。",
- "flash.restore.factory_why_busy": "它正在发射或忙于其他任务。请重试。",
+ "flash.restore.factory_why_busy": "它正在发射、发射已被解锁（armed），或正忙于其他任务。如果你解锁了发射，请先解除（tools/rfoundry_debug.py radio tx-arm off，或将电台关机再开机），然后重试。",
  "flash.restore.factory_why_changed": "命令执行期间字节发生了变化或读取结果不同。请再次检查。",
  "flash.restore.factory_why_invalid": "备份中的校准未通过电台的检查：文件已损坏，或属于另一种电台。",
  "flash.restore.factory_why_window_differs": "电台中有另一份有效的校准，它从不替换有效的校准。请检查你用的是哪份备份，在弄清楚之前不要发射。",

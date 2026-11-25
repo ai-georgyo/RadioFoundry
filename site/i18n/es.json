@@ -1077,7 +1077,7 @@
  "flash.restore.factory_refused": "La radio se negó a escribir la calibración de fábrica: {why} No se escribió nada.",
  "flash.restore.factory_failed": "La escritura de la calibración de fábrica no terminó: {why} Conserva la copia de seguridad y vuelve a comprobar.",
  "flash.restore.factory_why_foreign": "su área de ajustes aún no es de RadioFoundry.",
- "flash.restore.factory_why_busy": "estaba transmitiendo u ocupada con otra tarea. Vuelve a intentarlo.",
+ "flash.restore.factory_why_busy": "estaba transmitiendo, tenía la transmisión armada o estaba ocupada con otra tarea. Si la armaste, desármala primero (tools/rfoundry_debug.py radio tx-arm off, o apaga y enciende la radio) y vuelve a intentarlo.",
  "flash.restore.factory_why_changed": "los bytes cambiaron o se leyeron de otra forma durante el comando. Vuelve a comprobar.",
  "flash.restore.factory_why_invalid": "la calibración de la copia no supera las comprobaciones de la radio: un archivo dañado, u otro tipo de radio.",
  "flash.restore.factory_why_window_differs": "la radio tiene otra calibración válida y nunca la sustituye. Comprueba qué copia de seguridad usaste, y no transmitas hasta aclararlo.",
