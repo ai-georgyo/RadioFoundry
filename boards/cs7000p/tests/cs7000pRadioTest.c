@@ -2,31 +2,31 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // The CS7000 M17 PLUS hal_radio_t (radio_cs7000p.c) over the real RF chain (rfops_cs7000p.c, chainseq, the
 // synthesizer's and the IF receiver's drivers on their bit-banged buses), with a fake expander, DAC, modem, burst
-// runner and power state. What must hold on the radio: the microphone's amplifier and switch are on for a
-// transmission, FM or DMR, and off at its end and on every way it fails or is refused; in the power's off state (a
-// power-off the knob overrode) the receiver is not set up again, the speaker amplifier stays off (also behind a
-// speaker call the power-off cut into) and nothing transmits, FM or DMR, and all of it comes back once that state
-// ends.
+// runner and power state. What must hold on the radio: the microphone's amplifier and switch are on for a transmission,
+// FM or DMR, and off at its end and on every way it fails or is refused; in the power's off state (a power-off the knob
+// overrode) the receiver is not set up again, the speaker amplifier stays off (also behind a speaker call the power-off
+// cut into) and nothing transmits, FM or DMR, and all of it comes back once that state ends.
 //
 // The maker's factory table, on core/storage and the factory copy as the board builds them (the board's map, kept
 // bytes, claimed first) over the simulated NOR flash: the table in use taken at init, the source and the view's keys
-// for a blank, zero, unstable and damaged window, with and without a valid record, a conflict, a use rule's failure;
-// a restore's request taken only at the status poll, never under a transmission, and receive on the restored table
-// from the set-up after it (a receiver asleep: the wake, then the poll after it). Receive on the table: a refused
-// table (and none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only
-// the tune and the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back
-// alone; the bench's 3:0 and 3:4 over all of it. The bench's 3:7: the IF chip's words (read off its pins) the port's
-// or the maker's for the mode, and no part of a key-up; the maker's squelch thresholds at f_rx shown. The owner's
-// transmit arm (hal_radio_t.tx_arm): its handshake against the CRC of the table in use (the window's, the record's,
-// a restored one's), every refusal (a stage over the top, another id, no table, the bench's coding, the off state, a
-// restore pending or its request untaken), the restore refused while armed, a lower stage always taken, the arm gone
-// at a safe request and a start; unarmed and armed without a list no key-up the table would serve goes ahead, armed
-// with one FM keys on the table's drive, pair, trim A and registers (from the window, the record, a restored table),
-// a tone channel with its tone at the depth of the table's level for it (a tone without one refused), and DMR at the
-// top stage on its drive, its DMR pair at f_tx (a split channel) and trim B; 4:0x04 in DMR receive trim B on the top
-// stage only; the bench's drive now stays at or under the admitted drive; the bench drive's key-up writes as without
-// a table, at every stage, but for the bias it inherits. Built
-// again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
+// for a blank, zero, unstable and damaged window, with and without a valid record, a conflict, a use rule's failure; a
+// restore's request taken only at the status poll, never under a transmission, and receive on the restored table from
+// the set-up after it (a receiver asleep: the wake, then the poll after it). Receive on the table: a refused table (and
+// none) writes exactly what a radio without one writes and reads the same dBm; a valid one changes only the tune and
+// the held level's bias (4:0x04 kept), trim A over its receive bound and a use rule's group falling back alone; the
+// bench's 3:0 and 3:4 over all of it; 3:6's VCO rule in receive, shown. The bench's 3:7: the IF chip's words (read off
+// its pins) the port's or the maker's for the mode, and no part of a key-up; the maker's squelch thresholds at f_rx
+// shown. The owner's transmit arm (hal_radio_t.tx_arm): its handshake against the CRC of the table in use (the
+// window's, the record's, a restored one's), every refusal (a stage over the top, another id, no table, the bench's
+// coding, a bench PC8 idle or a stored reference trim, the off state, a restore pending or its request untaken), the
+// bench's writes to the modem and the synthesizer refused while armed, the restore refused while armed, a lower stage
+// always taken, the arm gone at a safe request and a start; unarmed and armed without a list no key-up the table would
+// serve goes ahead, armed with one FM keys on the table's drive, pair, trim A and registers (from the window, the
+// record, a restored table), a tone channel with its tone at the depth of the table's level for it (a tone without one
+// refused), and DMR at the top stage on its drive, its DMR pair at f_tx (a split channel) and trim B; 4:0x04 in DMR
+// receive trim B on the top stage only; the bench's drive now stays at or under the admitted drive; the bench drive's
+// key-up writes as without a table, at every stage, but for the bias it inherits. Built again without
+// CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -1577,6 +1577,44 @@ static void test_rssi_line(void)
 #endif
 
 #if CONFIG_DEBUGLINK
+// chip_reg 3:6, the receive VCO rule (0 by frequency, 1 by direction): RAM only, a receive set-up at the next status
+// poll, shown as board2.rx_cal vco_rule=
+static void test_vco_rule(void)
+{
+	radio_status_t st;
+	char line[128];
+	uint32_t v = 9;
+	invented(table_a, 0x5A);
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_chip_reg(3, 0, 6, &v, false) && v == 0u);
+	v = 2;
+	CHECK(!cs7000p_chip_reg(3, 0, 6, &v, true) && !cs7000p_rf.vco_rx_dir);
+	v = 1;
+	int retunes = modem.retunes;
+	CHECK(cs7000p_chip_reg(3, 0, 6, &v, true) && v == 1u && cs7000p_rf.vco_rx_dir);
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes + 1);
+	v = 9;
+	CHECK(cs7000p_chip_reg(3, 0, 6, &v, false) && v == 1u);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(strncmp(line, "rx_cal=maker rssi=maker vco=", 28) == 0 && strstr(line, " vco_rule=dir ifw=port") != NULL);
+	v = 0;
+	retunes = modem.retunes;
+	CHECK(cs7000p_chip_reg(3, 0, 6, &v, true) && v == 0u && !cs7000p_rf.vco_rx_dir);
+	cs7000p_radio.status(&st);
+	CHECK(modem.retunes == retunes + 1);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq ifw=port"));
+	// Never stored: a new start selects by frequency
+	v = 1;
+	CHECK(cs7000p_chip_reg(3, 0, 6, &v, true));
+	start();
+	CHECK(!cs7000p_rf.vco_rx_dir);
+}
+#endif
+
+#if CONFIG_DEBUGLINK
 // chip_reg 3:5, the reference DAC's coding for a receive test: RAM only, taken at the next status poll by a receive
 // set-up, and while it is not the hold every transmission is refused, the bench drive's too
 static void test_ref_coding(void)
@@ -2535,6 +2573,7 @@ int main(void)
 	test_ref_coding();
 	test_table_rx_bench();
 	test_rssi_line();
+	test_vco_rule();
 	test_if_words();
 	test_sq_maker();
 	test_tx_arm();
