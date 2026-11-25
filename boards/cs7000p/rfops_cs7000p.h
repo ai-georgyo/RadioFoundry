@@ -80,7 +80,8 @@ typedef enum {
 	CS7000P_TX_BUS = 11,		// a line or DAC write was refused (the interlock, a safe request) or failed
 	CS7000P_TX_OFF = 12,		// the power's off state: the supply was let go and the knob still powers the radio
 	CS7000P_TX_UNARMED = 13,	// the maker's table holds this transmission's values; the arm doesn't cover it
-	CS7000P_TX_REF_CODING = 14,	// the reference DAC is in the maker's coding for a receive test (chip_reg 3:5)
+	CS7000P_TX_REF_CODING = 14,	// the reference DAC is in the maker's coding for a receive test (chip_reg 3:5),
+					// asked for or still held by the modem (cs7000p_tx_req_t.ref_other)
 	CS7000P_TX_ARM_NO_LIST = 15,	// ... the arm covers it, but no test TX limit list names this frequency
 } cs7000p_tx_why_t;
 
@@ -146,6 +147,9 @@ typedef struct {
 	bool limit_list;		// a test TX limit is set as a list of frequencies, and hz is on it
 	bool bench_dmr;			// the build allows the bench drive in DMR (CS7000P_BENCH_DMR_TX)
 	bool off;			// the power's off state (cs7000p_power_off_state)
+	// The modem still holds another coding than the measured hold: it takes the one chip_reg 3:5 asks for only at
+	// its next full receive set-up (the status poll's), and a burst keeps the one it holds
+	bool ref_other;
 } cs7000p_tx_req_t;
 
 typedef struct {
@@ -298,6 +302,7 @@ void cs7000p_c6000_rx_hold(void);
 bool cs7000p_c6000_fm_rx(void);				// the chip is in FM receive: its line out plays its own FM audio
 void cs7000p_c6000_fm_audio(bool on);			// that audio's feed-through to the line out (4:0x36)
 void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25);
+uint8_t cs7000p_c6000_ref_coding(void);			// the coding (CS7000P_REF_*) the modem took last; any task
 bool cs7000p_c6000_reg(uint8_t page, uint8_t reg, uint32_t *val, bool write);	// chip_reg, chip 0
 
 #endif

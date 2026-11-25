@@ -295,7 +295,18 @@ static struct {
 	bool dmr, fm_tx, audio;
 	int retunes, fm_tx_ends;
 	bool refuse_fm_tx;
+	uint8_t coding;		// the reference coding taken at the last full receive set-up (CS7000P_REF_*)
 } modem;
+
+// The IF host's coding as the glue answers it (ref_coding: cs7000p_ref_signed), in the board's numbering again
+static uint8_t coding_asked(void)
+{
+	uint8_t adc = 0;
+	const bool sgn = cs7000p_ref_signed(cs7000p_rf.ref_coding, &adc);
+	return cs7000p_ref_coding_of(sgn, adc);
+}
+
+uint8_t cs7000p_c6000_ref_coding(void) { return modem.coding; }
 
 // The held reference as the real IF host asks for it at a receive entry, through the calls c6000_cs7000p.c's
 // ref_offset and rx_tx_offset make: the level's offset, then 4:0x04
@@ -312,10 +323,20 @@ bool cs7000p_c6000_init(void)
 	if (null_maker) {
 		cs7000p_rf.maker = NULL;
 	}
+	modem.coding = coding_asked();	// the init is a full set-up
 	ref_entry();
 	return true;
 }
-void cs7000p_c6000_mode(bool dmr, uint32_t hz) { hw(6, dmr, hz); modem.dmr = dmr; ref_entry(); }
+// A mode change is a full set-up (the real host's does nothing when the mode is the same)
+void cs7000p_c6000_mode(bool dmr, uint32_t hz)
+{
+	hw(6, dmr, hz);
+	if (dmr != modem.dmr) {
+		modem.coding = coding_asked();
+	}
+	modem.dmr = dmr;
+	ref_entry();
+}
 // What runs on the debug link's task while the radio task waits inside a receive set-up (NULL: nothing)
 static void (*mid_setup)(void);
 
@@ -323,6 +344,9 @@ void cs7000p_c6000_retune(uint32_t hz)
 {
 	hw(7, hz, 0);
 	modem.retunes++;
+	if (!modem.fm_tx) {
+		modem.coding = coding_asked();	// a changed answer runs the whole set-up, which takes it
+	}
 	ref_entry();
 	if (mid_setup != NULL) {
 		mid_setup();
@@ -354,6 +378,7 @@ void cs7000p_c6000_fm_tx_end(void)
 {
 	modem.fm_tx = false;
 	modem.fm_tx_ends++;
+	modem.coding = coding_asked();	// the end of an FM transmission is a full set-up
 	ref_entry();
 }
 
@@ -1398,6 +1423,52 @@ static void test_ref_coding(void)
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
 	cs7000p_radio.tx_off();
 	CHECK(!modem.fm_tx);
+
+	// The way back is taken by the modem only at its next full set-up (the status poll's): a key-up before it is
+	// refused, FM and DMR (a burst would keep the maker's 0x0E and 0x7D), the arm too, and board.ref shows the modem's
+	// coding with what is asked
+	char line[128];
+	v = CS7000P_REF_MAKER_ADC;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(modem.coding == CS7000P_REF_MAKER_ADC);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(strncmp(line, "ref=maker7d ", 12) == 0 && strstr(line, " ask=") == NULL);
+	v = CS7000P_REF_HOLD;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true) && cs7000p_rf.ref_coding == CS7000P_REF_HOLD);
+	CHECK(modem.coding == CS7000P_REF_MAKER_ADC);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(strncmp(line, "ref=maker7d ", 12) == 0 && strlen(line) > 9u && strcmp(line + strlen(line) - 9, " ask=hold") == 0);
+	writes = mic_writes;
+	cs7000p_rf.tx_refused_why = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && !cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_REF_CODING && !modem.fm_tx && mic_writes == writes);
+	CHECK((shadow & EXP_TX_BITS) == 0u && cs7000p_rf.ovr_drive == 600);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, 0) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	cs7000p_radio.status(&st);
+	CHECK(modem.coding == CS7000P_REF_HOLD);
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(strncmp(line, "ref=hold ", 9) == 0 && strstr(line, " ask=") == NULL);
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	cs7000p_radio.tx_off();
+#if CONFIG_DMR
+	// DMR: the same, the burst plan refused before the runner arms
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	v = CS7000P_REF_MAKER;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(modem.coding == CS7000P_REF_MAKER && modem.dmr);
+	v = CS7000P_REF_HOLD;
+	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));
+	runner.answer = runner.plan = true;
+	cs7000p_rf.tx_refused_why = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && !cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, NULL) && !runner.armed);
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_REF_CODING);
+	runner.answer = runner.plan = false;
+	cs7000p_radio.status(&st);
+	CHECK(modem.coding == CS7000P_REF_HOLD);
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+#endif
 	// Never stored: a new start is the hold
 	v = CS7000P_REF_MAKER;
 	CHECK(cs7000p_chip_reg(3, 0, 5, &v, true));

@@ -354,8 +354,9 @@ def test_receive_calibration_sources(radio):
             assert q["why"] in ("table", "group", "band", "switch", "math"), b["sq_maker"]
     # chip_reg 3:4 reads 0x100 while no bench offset is set, and the level is the bench's while one is
     assert (radio.link.chip_reg(BOARD_CHIP, REF_OFFSET) == REF_RELEASE) == (r["src"] != "bench"), b["ref"]
-    if coding != "hold" or fields(b["hrc"])[0] != "1":
-        skip("state", "the modem is not up, or chip_reg 3:5 holds the maker's coding: no held level to compare")
+    if coding != "hold" or "ask" in r or fields(b["hrc"])[0] != "1":
+        skip("state", "the modem is not up, or chip_reg 3:5 holds or asks for the maker's coding: "
+             "no held level to compare")
     lo = radio.link.chip_reg(HRC_CHIP, 0x47, page=HRC_PAGE)
     hi = radio.link.chip_reg(HRC_CHIP, 0x48, page=HRC_PAGE)
     r04 = radio.link.chip_reg(HRC_CHIP, 0x04, page=HRC_PAGE)

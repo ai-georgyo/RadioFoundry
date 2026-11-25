@@ -241,9 +241,11 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	}
 	rf->safed = false;
 	rf->admit = false;
-	if (rf->ref_coding != CS7000P_REF_HOLD) {
+	if (rf->ref_coding != CS7000P_REF_HOLD || q->ref_other) {
 		// A receive test of the maker's coding: transmit was never looked at under it, and it is no bench state to
-		// key a carrier in. Before the bench drive, which is neither used nor dropped
+		// key a carrier in. Asked for, or still the modem's after the bench went back to the hold and before the
+		// status poll's set-up took that: a burst sequence would keep the modem's (its hold write is the coding
+		// last taken). Before the bench drive, which is neither used nor dropped
 		why = CS7000P_TX_REF_CODING;
 	} else if (!cs7000p_tx_band(q->hz)) {
 		why = CS7000P_TX_BAND;

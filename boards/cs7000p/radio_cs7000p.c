@@ -663,6 +663,7 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 		.debuglink = CONFIG_DEBUGLINK != 0,
 		.bench_dmr = CS7000P_BENCH_DMR_TX != 0,
 		.off = cs7000p_power_off_state(),	// asked here, so FM's key-up and the burst plan both refuse
+		.ref_other = cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD,
 	};
 #if CONFIG_DEBUGLINK
 	// A test TX limit as a list that names this frequency: the bench harness set it (tools/power_cal.py). The core
@@ -1073,7 +1074,8 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 	const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
 	const uint8_t was = cs7000p_rf.arm;
 	if (stage != CS7000P_ARM_OFF && stage >= was) {
-		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending()) {
+		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
+		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending()) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1181,8 +1183,9 @@ typedef struct {
 	factory_copy_state_t st;	// the copy's state the table in use came with
 	uint16_t fields;
 	uint8_t battery, restore;	// the table's battery byte (0: none valid); the last restore's result
-	// The receive reference: the coding, the level's offset and source, why it is not trim A, 4:0x04; the trims
-	uint8_t coding, ref_src, ref_why;
+	// The receive reference: the modem's coding and the one 3:5 asks for, the level's offset and source, why it is
+	// not trim A, 4:0x04; the trims
+	uint8_t coding, ask, ref_src, ref_why;
 	int8_t rx_ref, r04;
 	bool a_ok, b_ok;
 	int16_t d_a, d_b;
@@ -1211,7 +1214,8 @@ static void view_fill(cal_view_t *v)
 #else
 	v->restore = 0xFFu;
 #endif
-	v->coding = cs7000p_rf.ref_coding;
+	v->coding = cs7000p_c6000_ref_coding();
+	v->ask = cs7000p_rf.ref_coding;
 	v->ref_src = cs7000p_rf.ref_src;
 	v->ref_why = cs7000p_rf.ref_why;
 	v->rx_ref = cs7000p_rf.rx_ref;
@@ -1306,20 +1310,29 @@ static void fmt_cal_rec(const cal_view_t *v, char *buf, uint8_t len)
 	dl_fmt(buf, len, "cal_rec=%s crc=%s wrote=%u restore=%s", cal_rec_name(v->st.rec), crc, v->st.wrote, restore);
 }
 
-// The receive reference (hardware-cs7000p.md 6.5, 15): the coding chip_reg 3:5 asks for, the level the last receive
-// entry wrote in it (the bias), 4:0x04 in receive, the two trims of the table in use, the level's source and, when it
-// is not trim A, why
-static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
+static const char *coding_name(uint8_t k)
 {
 	static const char *const codings[] = { "hold", "maker", "maker7d" };
+	return k < 3u ? codings[k] : "?";
+}
+
+// The receive reference (hardware-cs7000p.md 6.5, 15): the coding the modem holds (taken at its last full receive
+// set-up), the level the last receive entry wrote in it (the bias), 4:0x04 in receive, the two trims of the table in
+// use, the level's source and, when it is not trim A, why; and the coding chip_reg 3:5 asks for while the modem has
+// not taken it yet (until the next status poll)
+static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
+{
 	static const char *const whys[] = { "none", "table", "group", "rx_bound" };
 	const uint8_t k = v->coding, w = v->ref_why;
 	const unsigned bias = k == CS7000P_REF_HOLD ? (unsigned)(0x200 + v->rx_ref) : ((unsigned)(uint16_t)v->rx_ref & 0x3FFu);
-	char a[8], b[8];
+	char a[8], b[8], ask[16] = "";
 	trim_text(a, sizeof(a), v->a_ok, v->d_a);
 	trim_text(b, sizeof(b), v->b_ok, v->d_b);
-	dl_fmt(buf, len, "ref=%s bias=0x%03x r04=0x%02x d_a=%s d_b=%s src=%s why=%s", k < 3u ? codings[k] : "?", bias,
-	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 4u ? whys[w] : "?");
+	if (v->ask != k) {
+		dl_fmt(ask, sizeof(ask), " ask=%s", coding_name(v->ask));
+	}
+	dl_fmt(buf, len, "ref=%s bias=0x%03x r04=0x%02x d_a=%s d_b=%s src=%s why=%s%s", coding_name(k), bias,
+	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 4u ? whys[w] : "?", ask);
 }
 
 // The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
