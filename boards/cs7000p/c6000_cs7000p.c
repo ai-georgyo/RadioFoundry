@@ -224,6 +224,13 @@ void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25)
 	*r25 = host.r25;
 }
 
+// What every write of the level and of 4:0x25 uses until the next full receive set-up (hrc6000_if_t.ref_coding): the
+// hold before the init too. Two bytes the radio task writes at a set-up's start, read here by any task
+uint8_t cs7000p_c6000_ref_coding(void)
+{
+	return cs7000p_ref_coding_of(host.ref_coding == HRC6000_IF_REF_SIGNED, host.adc_ctl);
+}
+
 // The debug link's CHIP_REG, chip 0: pages 1 and 4 (2 and 3 are the data and vocoder FIFOs, which a read would
 // drain). Straight on the bus, each access one transaction; the driver's next set-up overwrites a write, and every
 // receive entry writes 4:0x25, 0x47, 0x48 and 0x04 again (and 0x26 with chip_reg 3:5 = 2)

@@ -446,8 +446,9 @@ frequency. Write each reading into the bring-up record. All commands are `tools/
    `noise_raw` high) means it does not. Then `reg 3 4 0x05` and `reg 3 4 0xFB` (+5 and -5 steps; about 18-21 Hz
    each, so the audio does not change, but a counter or an SDR on the carrier's beat shows it) and back to `reg 3 4
    0`. Then `reg 3 5 2`: `reg 0 0x26 --page 4` reads 0x7D; note whether anything changes. Last `reg 3 5 0`:
-   `r25=0x0c`, `reg 0 0x26 --page 4` reads 0xFD, and `reg 3 4 0x100` (or the value noted). A key-up meanwhile is
-   refused with `board.tx_refused` `why=14`. Record: on channel or not under 3:5 = 1, the step size if measured,
+   `r25=0x0c`, `reg 0 0x26 --page 4` reads 0xFD, and `reg 3 4 0x100` (or the value noted). Each 3:5 write reaches the
+   modem at the next status poll: until then `board.ref` ends in `ask=` with the coding asked for. A key-up meanwhile,
+   and until the way back is taken, is refused with `board.tx_refused` `why=14`. Record: on channel or not under 3:5 = 1, the step size if measured,
    whether 3:5 = 2 changed anything. Off channel: the hold stays the default, nothing else to do.
    `test_reference_coding_knob` checks the register values without a signal.
 5. **The maker's IF words and squelch thresholds.** With `board.sq_maker` `ok`: the signal stepped down from about

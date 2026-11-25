@@ -645,6 +645,15 @@ static void test_ref_coding(void)
 			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF);
 		}
 	}
+	// The hold asked for and the modem still holding the maker's: a calibrated transmission refused all the same
+	for (int dmr = 0; dmr < 2; dmr++) {
+		bring_up(&cal_ok, 446u * MHZ);
+		cs7000p_tx_req_t q = req(446u * MHZ, 1, dmr != 0);
+		q.ref_other = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING && !rf.admit && ev_n == 0);
+		q.ref_other = false;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit);
+	}
 	bring_up(&cs7000p_cal_model, 446u * MHZ);
 	rf.ref_coding = CS7000P_REF_MAKER;
 	cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
@@ -654,6 +663,10 @@ static void test_ref_coding(void)
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING && rf.ovr_drive == 600);
 	q.now_ms = T_SETTLED;
 	rf.ref_coding = CS7000P_REF_HOLD;
+	// The hold asked for, the modem still in the maker's coding (before the status poll takes the way back): the same
+	q.ref_other = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING && !rf.admit && rf.ovr_drive == 600);
+	q.ref_other = false;
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && rf.admit_drive == 600);
 	CHECK(ev_n == 0 && inv_fail == 0 && trips == 0);
 	// A new chain is the hold
