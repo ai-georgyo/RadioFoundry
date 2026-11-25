@@ -3,7 +3,8 @@
 // CS7000 M17 PLUS sub-audio: CTCSS / DCS decode in software from QT_DQT_IN (PA2, a rank of the board's ADC scan) and
 // encode as PWM on CTC/DCS_OUT (PC8, TIM3 CH3) into the reference oscillator's control voltage
 // (docs/spec/hardware-cs7000p.md 7.6). The DSP is drivers/rf/subaudio; this file is the glue to the scan and the
-// timer. Nothing here has run on a radio.
+// timer. What has run on a radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md), and nothing of
+// transmit has.
 //
 // Receive: the scan hands over the rank's samples in batches of 8, 2,400 a second, from its DMA interrupt. The
 // sub-audio filter ahead of the pin runs from the audio rail, which every receive set-up turns on.

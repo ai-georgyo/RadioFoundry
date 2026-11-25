@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // Connect Systems CS7000 M17 PLUS: board descriptor, clock, start-up order, key map
-// (docs/spec/hardware-cs7000p.md). Written from the maker's schematic: nothing here has run on a radio
-// (docs/testing/cs7000p-bringup.md).
+// (docs/spec/hardware-cs7000p.md). Written from the maker's schematic; what has run on a radio is the bring-up
+// page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // What happens before board_early_init() is in exp_cs7000p.c: the reset hook that takes every pin back and sets the
 // output expander, and board_rf_safe().

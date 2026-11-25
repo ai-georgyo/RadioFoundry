@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS PCM audio: the hal_audio_t on the HR_C6000's I2S port (platform/stm32/hrc/i2s_pcm.c, the MCU a
-// slave on SPI3) for beeps and DMR audio (docs/spec/hardware-cs7000p.md 6.3, 8). Nothing here has run on a radio.
+// slave on SPI3) for beeps and DMR audio (docs/spec/hardware-cs7000p.md 6.3, 8). What has run on a radio is the
+// bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // The whole file is DMR code, as the stream is: a build without DMR has no PCM path, plays FM through the modem's
 // line out and makes no beeps.

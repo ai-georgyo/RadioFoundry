@@ -3,7 +3,8 @@
 // CS7000 M17 PLUS frequency plan (docs/spec/hardware-cs7000p.md 7): the bands, the first IF and the side of the
 // first LO, the synthesizer's divider and VCO frequency for a channel, and the IF receiver's register values. Pure:
 // no pins and no RTOS, so tests/cs7000pRfTest.c runs it unchanged. From the maker's schematic and the chips' data
-// sheets; nothing here has run on a radio.
+// sheets; what has run on a radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md), and nothing
+// of transmit has.
 //
 // One synthesizer (SKY72310) on a 16.8 MHz reference with two VCOs, one below and one above about 430 MHz. Receive:
 // the first LO is an IF away from the signal, the 49.95 MHz IF goes to the AK2365A, whose second LO is three times

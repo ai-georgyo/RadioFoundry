@@ -2,7 +2,8 @@
 # Copyright (c) 2026 The RadioFoundry Authors
 # Connect Systems CS7000 M17 PLUS: STM32H743VI + HR_C6000 + SKY72310 synthesizer + AK2365A IF receiver, one band
 # (400-527 MHz), the rails and switches on a 24-output 74HC595 chain, a 32 MB SPI NOR (docs/spec/hardware-cs7000p.md).
-# Written from the maker's schematic: nothing here has run on a radio (docs/testing/cs7000p-bringup.md)
+# Written from the maker's schematic; what has run on a radio is the bring-up page's First radio
+# (docs/testing/cs7000p-bringup.md)
 PLATFORM   := stm32h7
 MCU        := stm32h743
 # The 25 MHz crystal, X603 (hardware-cs7000p.md 2)

@@ -3,7 +3,8 @@
 // CS7000 M17 PLUS HR_C6000: its pins, its values and its callbacks (docs/spec/hardware-cs7000p.md 6). The chip, its
 // ports and its slot engine are the shared code: the driver and the order of its set-ups on a board that feeds it a
 // 450 kHz IF (drivers/modem/hrc6000, drivers/modem/hrc6000/if_host), the two ports and the three interrupt lines
-// (platform/stm32/hrc), the burst runner (platform/stm32/dmr_keyup). Nothing here has run on a radio.
+// (platform/stm32/hrc), the burst runner (platform/stm32/dmr_keyup). What has run on a radio is the bring-up page's
+// First radio (docs/testing/cs7000p-bringup.md), and nothing of transmit has.
 //
 // What is this board's own:
 //

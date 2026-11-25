@@ -5,7 +5,8 @@
 // (docs/spec/hardware-cs7000p.md 9.2, 9.3). display_cs7000p.c is the one user.
 //
 // The LCD board is not in the maker's schematic. The OEM's 2018 LCD board is the working assumption, and the check
-// below is what the firmware can see of it without driving a line. Nothing here has run on a radio.
+// below is what the firmware can see of it without driving a line. What has run on a radio is the bring-up page's
+// First radio (docs/testing/cs7000p-bringup.md).
 #ifndef CS7000P_PANEL_H
 #define CS7000P_PANEL_H
 

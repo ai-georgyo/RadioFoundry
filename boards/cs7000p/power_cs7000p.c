@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS power: the ADC scan, the knob and the supply hold, battery, volume position, LEDs, microphone level
-// (docs/spec/hardware-cs7000p.md 5; the scales and rules are in battery_cs7000p.h). Nothing here has run on a radio.
+// (docs/spec/hardware-cs7000p.md 5; the scales and rules are in battery_cs7000p.h). What has run on a radio is the
+// bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // The supply. The volume knob's switch powers the radio; POW_C, an expander bit, keeps it powered after the knob is
 // off so the radio can save its state. That bit outlives an MCU reset and the ROM bootloader never writes it, so no

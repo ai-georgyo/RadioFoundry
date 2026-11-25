@@ -3,7 +3,8 @@
 // CS7000 M17 PLUS RF chain: this board's lines, plans and transmit rules under drivers/rf/chainseq
 // (docs/spec/hardware-cs7000p.md 7, 13). No platform header and no RTOS call: the expander, the shared DAC, the
 // synthesizer, the IF chip, the lock line and the delay come in as callbacks, so tests/cs7000pRadioSeqTest.c runs
-// every sequence on fakes with the board's own interlock (exp_cs7000p.h). Nothing here has run on a radio.
+// every sequence on fakes with the board's own interlock (exp_cs7000p.h). What has run on a radio is the bring-up
+// page's First radio (docs/testing/cs7000p-bringup.md), and nothing of transmit has.
 //
 // What is decided here, in one place:
 //
