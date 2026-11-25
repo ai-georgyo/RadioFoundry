@@ -1609,21 +1609,47 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 	}
 }
 
+// May the bench write the modem or the synthesizer now? Never while transmission is armed (the owner's arm not off, or
+// a transmission admitted on it not yet followed by a receive set-up): an armed key-up runs on the table's values
+// under the sequencer's rules, and a write would change them on air (the carrier's words, the deviation, the
+// reference) or linger into the next key-up (4:0x25 until a receive entry). The synthesizer's not while any
+// transmission is up either, the bench's included: the PA is off before the VCO moves (7.5). Asked under the mask
+// the write runs in, as board_rx_tune, so the radio task can't key up in between
+static bool bench_write_ok(uint8_t chip)
+{
+	if (cs7000p_rf.arm != CS7000P_ARM_OFF || cs7000p_rf.admit_arm) {
+		return false;
+	}
+	return chip != CHIP_PLL ||
+	       ((cs7000p_exp_get() & EXP_TX_BITS) == 0u && !tx_on && !dmr_armed && !cs7000p_rf.admit);
+}
+
 bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bool write)
 {
 	if (!radio_up) {
 		return false;
 	}
 	switch (chip) {
-	case CHIP_MODEM:
-		return cs7000p_c6000_reg(page, reg, val, write);
-	case CHIP_PLL:
+	case CHIP_MODEM: {
+		if (!write) {
+			return cs7000p_c6000_reg(page, reg, val, false);
+		}
+		const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
+		const bool ok = bench_write_ok(chip) && cs7000p_c6000_reg(page, reg, val, true);
+		portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
+		return ok;
+	}
+	case CHIP_PLL: {
 		// Write only (Mux_out is not wired): the value written is what comes back. The driver's next tune
 		// overwrites the divider registers
 		if (!write || page != 0 || reg > SKY72310_REG_DELTA_SIGMA || *val > 0xFFFu) {
 			return false;
 		}
-		return pll_write(NULL, sky72310_word(reg, (uint16_t)*val));
+		const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
+		const bool ok = bench_write_ok(chip) && pll_write(NULL, sky72310_word(reg, (uint16_t)*val));
+		portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
+		return ok;
+	}
 	case CHIP_IF: {
 		// Page 0 reads with the data line pulled down while the chip does not drive it, page 1 pulled up: a value
 		// that is the same both ways came from the chip. Only the registers the data sheet names
