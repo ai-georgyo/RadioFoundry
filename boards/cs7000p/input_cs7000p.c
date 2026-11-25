@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS keys: the front key matrix, the three side keys, the top key, PTT, the accessory connector's PTT
-// and the channel selector (docs/spec/hardware-cs7000p.md 9.4). Nothing here has run on a radio.
+// and the channel selector (docs/spec/hardware-cs7000p.md 9.4). What has run on a radio is the bring-up page's First
+// radio (docs/testing/cs7000p-bringup.md).
 //
 // The matrix is on the LCD board, on the display's data lines PD0-PD7 plus PB7 (platform/stm32/gpio_keypad: a line
 // is driven low or released, never high; drivers/input/keymatrix decodes). It is scanned under the LCD bus lock and

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Internal interfaces between the CS7000 M17 PLUS board files (docs/spec/hardware-cs7000p.md). Nothing here has run
-// on a radio.
+// Internal interfaces between the CS7000 M17 PLUS board files (docs/spec/hardware-cs7000p.md). What has run on a
+// radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // Bench knobs (CS7000P_DEFS in board.mk): each is an #ifndef default in the file that uses it, never here, and a row
 // of docs/testing/cs7000p-bringup.md.

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS display: a 160x128 color panel on an 8-bit 8080 bus bit-banged on GPIO
 // (platform/stm32/lcd8080_gpio: data on PD0-PD7, which are also the key matrix), driven by drivers/display/st7735;
-// the backlight is TIM8 CH4 PWM on PC9 (docs/spec/hardware-cs7000p.md 9), set up dark in board_early_init. Nothing
-// here has run on a radio.
+// the backlight is TIM8 CH4 PWM on PC9 (docs/spec/hardware-cs7000p.md 9), set up dark in board_early_init. What
+// has run on a radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 //
 // The LCD board is not in the maker's schematic. The OEM's 2018 LCD board is the working assumption, so init()
 // starts with a check: the connector's five control lines are read as inputs with pull-ups, and only the pattern of

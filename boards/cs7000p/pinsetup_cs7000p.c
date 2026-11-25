@@ -2,7 +2,8 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS: every pin's idle state, set once from board_early_init() (docs/spec/hardware-cs7000p.md 3).
 // Host-clean: only platform.h's pin functions, so tests/cs7000pPinsTest.c runs the table against the list of lines
-// that must never be driven. Nothing here has run on a radio.
+// that must never be driven. What has run on a radio is the bring-up page's First radio
+// (docs/testing/cs7000p-bringup.md).
 //
 // Every pin arrives in analog mode (board_reset_safe, exp_cs7000p.c). A pin that a driver takes over later (an
 // alternate function, an interrupt line) gets the state here that is safe until then. Not in the table, and never
