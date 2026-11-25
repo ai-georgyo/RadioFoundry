@@ -1318,6 +1318,52 @@ static void test_table_rx(void)
 #endif
 }
 
+// Built with CS7000P_RX_MAKER=0 (cs7000pRadioRxOffTest): receive never takes the table. A valid one in use, from the
+// window or the record, writes and reads exactly what a radio without one writes and reads, write for write and dBm
+// for dBm; the table is still read and shown, and the view says why receive does not use it
+#if !CS7000P_RX_MAKER
+static void test_table_rx_off(void)
+{
+	unsigned n_dac, n_ref;
+	int16_t dbm, dbm0;
+	invented(table_a, 0x5A);
+	null_maker = true;
+	chip(NULL, NULL);
+	boot(true, 0);
+	const uint32_t h0 = rx_run(&dbm0);
+	null_maker = false;
+	keep_log();
+	CHECK(dbm0 == cs7000p_rssi_dbm(500u) && cs7000p_rf.rx_tune == CS7000P_RX_TUNE_NOMINAL);
+
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=ok src=window") == tline);
+	const uint32_t h = rx_run(&dbm);
+	CHECK(h == h0 && dbm == dbm0 && log_differs_only(false, false, &n_dac, &n_ref));
+	CHECK(cs7000p_rf.tune_src == CS7000P_SRC_DEFAULT && cs7000p_rf.rx_tune == CS7000P_RX_TUNE_NOMINAL);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_DEFAULT && cs7000p_rf.ref_why == CS7000P_RXREF_WHY_BUILD);
+	CHECK(cs7000p_rf.rx_ref == CS7000P_REF_OFFSET);
+#if CONFIG_DEBUGLINK
+	char line[128];
+	cs7000p_ref_line(line, sizeof(line));
+	CHECK(line_is(line, "ref=hold bias=0x200 r04=0x00 d_a=-5 d_b=-3 src=default why=build"));
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=default rssi=sheet vco=low vco_rule=freq ifw=port"));
+	// The bench's knobs still work over it
+	uint32_t v = 1500;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true) && dac_now == 1500 && cs7000p_rf.tune_src == CS7000P_SRC_BENCH);
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 0, &v, true));
+#endif
+#if CONFIG_FACTORY_COPY
+	chip(NULL, table_a);
+	boot(true, 0);
+	CHECK(strstr(tline, "cal_table=blank src=record") == tline);
+	CHECK(rx_run(&dbm) == h0 && dbm == dbm0 && log_differs_only(false, false, &n_dac, &n_ref));
+#endif
+}
+#endif
+
 #if CONFIG_DEBUGLINK
 // The bench's knobs win over the table: 3:0 the tune, 3:4 the held level and 4:0x04 together, and 0x100 gives both
 // back. The owner's A/B on the radio: 3:4 = 0 is today's level, 0x100 the table's
@@ -1983,6 +2029,13 @@ static void test_arm_bench_keyup(void)
 
 int main(void)
 {
+#if !CS7000P_RX_MAKER
+	// The build that takes nothing for receive from the table: that alone (the rest expects the table's values)
+	test_table_rx_off();
+	sim_flash_free();
+	printf("# cs7000pRadioRxOffTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
+	return failures ? 1 : 0;
+#endif
 #if CONFIG_DEBUGLINK
 	test_tx_arm_before_init();	// first: the chain is not up yet
 #endif

@@ -166,6 +166,7 @@ one rebuild can carry several.
 | `CS7000P_LO_HIGH` | 0 | The first LO's side at start-up: 0 below the signal, 1 above. Sets the receive I/Q order with it. The run-time switch is `chip_reg` 3:3 |
 | `CS7000P_REF_OFFSET` | 0 | The HR_C6000 reference offset written at every receive entry |
 | `CS7000P_RX_TUNE_NOMINAL` | 2048 | The front-end tuning DAC code used while the table has none |
+| `CS7000P_RX_MAKER` | 1 | 1: receive takes the tune, the reference level and the RSSI scale from a valid maker's table. 0: today's values whatever the table holds (`board.ref ... why=build`, `rx_cal=default rssi=sheet`); the table is still read, shown and copied. The lasting way back from stage 9.1, where the knobs are RAM only |
 | `CS7000P_FE_GAIN_DB` | 0 | The front end's gain, for the RSSI figure in dBm |
 | `CS7000P_E0_MIC` | 0x02 | The 4:0xE0 codec input bit forced after the DMR entry and the FM transmit set-up |
 | `CS7000P_APC_FLOOR` | 0 | The largest DAC code that gives no RF output: the interlock's threshold (`exp_cs7000p.h`), and the calibration table's floor when the build gives it (`rfcal_cs7000p.c`): the two cannot differ |
@@ -433,7 +434,8 @@ frequency. Write each reading into the bring-up record. All commands are `tools/
    `board.noise_raw`, `board.rx_tune`) and `view --section board2` (`board.ref`, `board.rx_cal`), and the audio by
    ear: clearer, the same or noisier. Expect the table's no worse. If worse: keep today's value for the session with
    the same command (it is RAM only, so set it again after each start) and note the frequency, the readings and
-   `board.ref`. A build without the `board.ref` key receives on today's values whatever the table holds.
+   `board.ref`. For good: build with `CS7000P_DEFS="-DCS7000P_RX_MAKER=0"` (Bench knobs) and install it. It
+   receives on today's values whatever the table holds, the table kept and shown (`board.ref ... why=build`).
 3. **DMR, the same.** On a DMR channel with a station or the bench repeater: `reset` before each half, then a few
    calls, `view --section dmr_stats` (`call.rx_calls`, `call.rx_lost_frames`) and `view --section dmr_call` (the
    source and talk group shown) with today's values (`reg 3 0 2048`, `reg 3 4 0`), then with the table's (`reg 3 0

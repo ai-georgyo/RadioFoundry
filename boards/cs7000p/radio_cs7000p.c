@@ -1322,7 +1322,7 @@ static const char *coding_name(uint8_t k)
 // not taken it yet (until the next status poll)
 static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
 {
-	static const char *const whys[] = { "none", "table", "group", "rx_bound" };
+	static const char *const whys[] = { "none", "table", "group", "rx_bound", "build" };
 	const uint8_t k = v->coding, w = v->ref_why;
 	const unsigned bias = k == CS7000P_REF_HOLD ? (unsigned)(0x200 + v->rx_ref) : ((unsigned)(uint16_t)v->rx_ref & 0x3FFu);
 	char a[8], b[8], ask[16] = "";
@@ -1332,7 +1332,7 @@ static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
 		dl_fmt(ask, sizeof(ask), " ask=%s", coding_name(v->ask));
 	}
 	dl_fmt(buf, len, "ref=%s bias=0x%03x r04=0x%02x d_a=%s d_b=%s src=%s why=%s%s", coding_name(k), bias,
-	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 4u ? whys[w] : "?", ask);
+	       (unsigned)(uint8_t)v->r04, a, b, src_name(v->ref_src), w < 5u ? whys[w] : "?", ask);
 }
 
 // The receive side's other sources: the tune's (the first word), the RSSI scale's, the VCO line now and its rule in
