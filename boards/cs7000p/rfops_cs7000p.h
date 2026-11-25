@@ -89,7 +89,8 @@ typedef enum {
 	CS7000P_TX_ARM_NO_LIST = 15,	// ... the arm covers it, but no test TX limit list names this frequency
 	CS7000P_TX_ARM_REF = 16,	// ... the arm covers it and a list names it, but the reference carries a
 					// correction the table was not set with: PC8's idle duty the bench's (chip_reg
-					// 3:2, cs7000p_tx_req_t.pc8_bench) or a stored reference trim (trim_ppb)
+					// 3:2, cs7000p_tx_req_t.pc8_bench), a stored reference trim (trim_ppb) or the
+					// bench's reference offset (chip_reg 3:4, cs7000p_rf_ref_bench)
 } cs7000p_tx_why_t;
 
 // The owner's transmit arm (hardware-cs7000p.md 13.2, hal_radio_t.tx_arm): the maker's transmit values may serve a
@@ -302,10 +303,19 @@ bool cs7000p_rf_maker_dmr(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs
 // A, bounded, else today's). Noted for the view. 4:0x04 in receive and in the FM transmit set-up stays ref_offset,
 // today's value. Radio task: the IF host asks it at its receive entries
 int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf);
+// The bench's reference offset (chip_reg 3:4) is set, or the modem still holds the level a receive entry gave from it
+// (a release reaches the modem only at the next receive set-up, the status poll's, and a DMR burst keeps the level it
+// holds). Either refuses the owner's arm and every key-up the arm covers (CS7000P_TX_ARM_REF): trim A is the table's
+// whole correction of the reference. Any task: two bytes, the radio task's and the debug link's
+static inline bool cs7000p_rf_ref_bench(const cs7000p_rf_t *rf)
+{
+	return rf->ref_override || rf->ref_src == CS7000P_SRC_BENCH;
+}
 // The IF host's ref_offset callback (c6000_cs7000p.c, one call): a receive entry's held level (cs7000p_rf_rx_ref),
 // or, inside the FM transmit set-up (tx_setup), its 4:0x04 and transmit bias: trim A for a transmission admitted on
 // the maker's values while the arm covers it, the bench's 3:4 over it while that is set; else ref_offset, today's
-// value (hardware-cs7000p.md 13.2)
+// value (hardware-cs7000p.md 13.2). On the radio no transmission on the table meets the bench's 3:4 here or in
+// cs7000p_rf_r04: it is refused while armed, and such an admission with it (CS7000P_TX_ARM_REF)
 int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup);
 // 4:0x04 for the IF host's rx_tx_offset, noted for the view (r04). At an FM receive entry, and whenever the bench's
 // 3:4 is set: ref_offset, today's, never trim A (what 4:0x04 does under the hold is not measured). In DMR it is the

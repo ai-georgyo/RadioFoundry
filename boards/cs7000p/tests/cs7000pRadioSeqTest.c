@@ -1651,18 +1651,23 @@ static void test_arm_admit(void)
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
 	nothing_live_at(446u * MHZ, 1, false, 0);
 
-	// Another correction of the reference than trim A: a bench PC8 idle or a stored trim refuses what the arm covers
-	// and a list names (16), FM and DMR, after the arm's own reasons; the model's values and a bench carrier keep
-	// theirs
+	// Another correction of the reference than trim A: a bench PC8 idle, a stored trim, the bench's reference offset
+	// (3:4) or the level it left in the modem refuses what the arm covers and a list names (16), FM and DMR, after
+	// the arm's own reasons; the model's values and a bench carrier keep theirs
 	CHECK(CS7000P_TX_ARM_REF == 16);	// the hardware page's: append only
 	cs7000p_rf_arm_set(&rf, CS7000P_ARM_ALL, 0x5EEDu);
-	for (int k = 0; k < 2; k++) {
+	const uint8_t src0 = rf.ref_src;
+	for (int k = 0; k < 4; k++) {
 		for (int dmr = 0; dmr < 2; dmr++) {
 			q = req(446u * MHZ, 1, dmr != 0);
 			q.limit_list = true;
 			q.bench_dmr = true;
 			q.pc8_bench = k == 0;
 			rf.trim_ppb = k == 1 ? -450 : 0;
+			rf.ref_override = k == 2;
+			rf.ref_offset = k == 2 ? 12 : CS7000P_REF_OFFSET;
+			rf.ref_src = k == 3 ? CS7000P_SRC_BENCH : src0;
+			CHECK(cs7000p_rf_ref_bench(&rf) == (k >= 2));
 			const uint32_t refused = rf.tx_refused;
 			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_REF && rf.tx_refused == refused + 1u);
 			CHECK(rf.tx_refused_why == CS7000P_TX_ARM_REF);
@@ -1675,13 +1680,19 @@ static void test_arm_admit(void)
 	q = req(446u * MHZ, 1, false);
 	q.limit_list = true;
 	q.pc8_bench = true;
+	rf.ref_override = true;
+	rf.ref_offset = 12;
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
-	// A bench carrier: its own rules, the trim and PC8 as they are
+	// A bench carrier: its own rules, the trim, PC8 and the bench's 3:4 as they are (the offset in its FM set-up)
 	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm);
+	CHECK(cs7000p_rf_ref_for(&rf, true) == 12 && cs7000p_rf_r04(&rf, false, true) == 12);
 	cs7000p_rf_tx_off(&rf, false);
 	rf.trim_ppb = 0;
 	q.pc8_bench = false;
+	rf.ref_override = false;
+	rf.ref_offset = CS7000P_REF_OFFSET;
+	rf.ref_src = src0;
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
 	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x5EEDu);
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
@@ -2350,7 +2361,8 @@ static void test_arm_dmr(void)
 		CHECK(!cs7000p_rf_mod_pair(&rf, f_rx, true, &m2, &m1) && m2 == 9 && m1 == 9);
 		CHECK(cs7000p_rf_r04(&rf, true, true) == -3 && cs7000p_rf_r04(&rf, false, false) == today);
 		admitted_dmr(&armed_table, f_tx, 1);
-		// The bench's 3:4 over trim B, in receive and at the key-up
+		// The getter: the bench's 3:4 over trim B, in receive and at the key-up (the radio never gets here: 3:4 is
+		// refused while armed, and an admission with it, 16)
 		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
 		rf.ref_override = true;
 		rf.ref_offset = 12;

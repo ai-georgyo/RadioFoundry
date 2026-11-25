@@ -2086,6 +2086,75 @@ static void test_tx_arm_ref(void)
 	CHECK(cs7000p_chip_reg(3, 0, 2, &v, true));
 }
 
+// The bench's reference offset (3:4) refuses the arm (a state) while set, and after its release until the receive
+// set-up that gives the modem trim A again (the next status poll); an offset is refused while armed and while a
+// transmission admitted on the arm has not been followed by a receive set-up, the release taken and changing
+// nothing; a bench offset there by any other way refuses the key-ups the arm covers (16). Unarmed, the bench drive's
+// key-up takes the offset as before
+static void test_tx_arm_ref_offset(void)
+{
+	radio_status_t st;
+	const uint32_t a = crc(table_a);
+	uint32_t v = 12;
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && cs7000p_rf.ref_override);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_BENCH && last_ref() == 12);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	// Unarmed, the bench drive's key-up: the offset in the FM transmit set-up, as before
+	hw_n = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm && last_of(HW_TXREF) == 12);
+	cs7000p_radio.tx_off();
+	keyup_refused(0, false, CS7000P_TX_UNARMED);
+	// Released: the modem still holds the bench's level until the status poll's receive set-up
+	v = 0x100;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && !cs7000p_rf.ref_override);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_MAKER && last_ref() == TABLE_TRIM_A);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	// Armed: no offset, in any form; a read answers; the release is taken and changes nothing
+	static const uint32_t offsets[] = { 0, 12, 0x7F, 0x80, 0xF0, 0xFF, 0xFFFFFFF0u };
+	for (unsigned k = 0; k < sizeof(offsets) / sizeof(offsets[0]); k++) {
+		v = offsets[k];
+		CHECK(!cs7000p_chip_reg(3, 0, 4, &v, true) && !cs7000p_rf.ref_override);
+	}
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, false) && v == 0x100u);
+	const int8_t today = cs7000p_rf.ref_offset;
+	v = 0x100;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true) && v == 0x100u);
+	CHECK(!cs7000p_rf.ref_override && cs7000p_rf.ref_offset == today);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_MAKER && last_ref() == TABLE_TRIM_A);
+	keyup_on_table(0, false);
+	// A bench offset there by another way, or the level it left in the modem: every key-up the arm covers refused
+	cs7000p_rf.ref_override = true;
+	cs7000p_rf.ref_offset = 12;
+	keyup_refused(0, false, CS7000P_TX_ARM_REF);
+	cs7000p_rf.ref_override = false;
+	cs7000p_rf.ref_offset = today;
+	cs7000p_rf.ref_src = CS7000P_SRC_BENCH;
+	keyup_refused(0, false, CS7000P_TX_ARM_REF);
+	cs7000p_rf.ref_src = CS7000P_SRC_MAKER;
+	keyup_on_table(0, false);
+	// A transmission on the table up, the arm lowered to off under it: no offset until the receive set-up after it
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, NULL) && cs7000p_rf.admit_arm);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	v = 12;
+	CHECK(cs7000p_rf.admit_arm && !cs7000p_chip_reg(3, 0, 4, &v, true) && !cs7000p_rf.ref_override);
+	cs7000p_radio.tx_off();
+	cs7000p_radio.status(&st);
+	CHECK(!cs7000p_rf.admit_arm && cs7000p_chip_reg(3, 0, 4, &v, true) && cs7000p_rf.ref_override);
+	v = 0x100;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.ref_src == CS7000P_SRC_MAKER);
+}
+
 // The bench's writes to the modem and the synthesizer (chip_reg chips 0 and 1): refused while transmission is armed
 // and while a transmission admitted on the arm is up, nothing reaching either chip; the synthesizer's also under a
 // bench carrier. Reads always answer
@@ -2409,17 +2478,36 @@ static void test_tx_arm_dmr(void)
 	cs7000p_radio.tx_off();
 	cs7000p_radio.status(&st);
 	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_RX && mic_off() && cs7000p_rf.r04 == CS7000P_REF_OFFSET);
-	// The bench's 3:4 over trim B: in DMR receive and at the key-up
+	// The bench's 3:4 never over trim B: refused while armed, 4:0x04 trim B still; a bench offset there by any other
+	// way refuses the key-up (16) with nothing written to the modem
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
 	uint32_t v = 0xF0;
+	CHECK(!cs7000p_chip_reg(3, 0, 4, &v, true) && !cs7000p_rf.ref_override);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.r04 == TABLE_TRIM_B);
+	cs7000p_rf.ref_override = true;
+	cs7000p_rf.ref_offset = (int8_t)0xF0;
+	const int txs0 = modem.dmr_txs, writes0 = mic_writes;
+	cs7000p_rf.tx_refused_why = 0;
+	CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && cs7000p_rf.tx_refused_why == CS7000P_TX_ARM_REF);
+	CHECK(!runner.armed && modem.dmr_txs == txs0 && mic_writes == writes0 && !cs7000p_rf.admit);
+	cs7000p_rf.ref_override = false;
+	cs7000p_rf.ref_offset = CS7000P_REF_OFFSET;
+	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && last_b(HW_DMRTX) == (uint8_t)TABLE_TRIM_B);
+	CHECK(last_of(HW_DMRTX) == table_dmr_pair(F_SPLIT));
+	cs7000p_radio.tx_off();
+	// Unarmed, the bench's 3:4 in DMR receive as before
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	v = 0xF0;
 	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
 	cs7000p_radio.status(&st);
 	CHECK(cs7000p_rf.r04 == (int8_t)0xF0);
-	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && last_b(HW_DMRTX) == 0xF0);
-	CHECK(last_of(HW_DMRTX) == table_dmr_pair(F_SPLIT));
-	cs7000p_radio.tx_off();
 	v = 0x100;
 	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.r04 == CS7000P_REF_OFFSET);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
 	cs7000p_radio.status(&st);
 	CHECK(cs7000p_rf.r04 == TABLE_TRIM_B);
 	// The modem refusing the key-up's writes: refused (9), nothing armed, no microphone
@@ -2578,6 +2666,7 @@ int main(void)
 	test_sq_maker();
 	test_tx_arm();
 	test_tx_arm_ref();
+	test_tx_arm_ref_offset();
 	test_bench_writes();
 #if CONFIG_DMR
 	test_tx_arm_dmr();
