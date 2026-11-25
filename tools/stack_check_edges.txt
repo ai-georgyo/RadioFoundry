@@ -31,6 +31,13 @@ file platform/hrc7000/vocoder.c @hrc_codec
 extern flash_stub 0
 call enter_stub @flash_stub
 
+# A board's view formatters, called through a const array of function pointers whose initializer the sources' model
+# doesn't follow (the call would count no target)
+call view_line boards/cs7000p/radio_cs7000p.c:fmt_cal_table boards/cs7000p/radio_cs7000p.c:fmt_cal_rec
+call view_line boards/cs7000p/radio_cs7000p.c:fmt_ref boards/cs7000p/radio_cs7000p.c:fmt_rx_cal
+call view_line boards/cs7000p/radio_cs7000p.c:fmt_sq_maker boards/cs7000p/radio_cs7000p.c:fmt_tx_arm
+call view_line boards/cs7000p/radio_cs7000p.c:fmt_tx_maker
+
 # The C library, where its worst path needs arguments RadioFoundry never passes. Each cuts that function out of the disassembly
 # walk: check the reason still holds when adding a call.
 # vPortYield (C-SKY port, assembly): saves the 17-word frame the port overhead already counts
