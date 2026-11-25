@@ -13,7 +13,8 @@ The question numbers are those of the hardware page's section 16.
 The stages are in order, and nothing that cannot be undone comes before the checks that gate it: the codeplug saved
 and the build (0), the loader identified with a USB capture (1), the maker's recovery proven on this unit (2; it
 erases and reloads the maker's programs itself), and only then the one-way Read Unprotect install (3). Nothing
-transmits before stage 11, and never without the dummy load.
+transmits before stage 11. Its bench route (11.2) never runs without a dummy load; its route on the maker's table
+(11.1) transmits into whatever is on the antenna connector, and running it without a load is the owner's decision.
 
 The feature checklist, with every feature's required HIL tests and the last recorded result, is
 `tools/bringup.py list --radio cs7000p`. `tools/bringup.py run --radio cs7000p` records a run
@@ -26,7 +27,7 @@ view keys below on a radio and never transmits.
 |---|---|
 | Build, host tests, stack check | pass |
 | On a radio | one unit: starts; display, keys, the channel selector, beeps, USB, the debug link and settings storage work; FM receive with clear audio; DMR calls are received and decoded, without audio ([First radio](#first-radio)). Every transmission: not checked |
-| Transmit | refused until the PA and the modulation are calibrated (stage 11) |
+| Transmit | written, never run on a radio. On the maker's table (restored in stage 6): refused until the owner arms it over the debug link, in stages (stage 11.1). On the model tables: refused until the PA and the modulation are measured (stage 11.2) |
 | DMR voice | off: no codec route is known for this radio |
 | VOX | not written (`BOARD_NOT_WRITTEN`): the level detector has no supply while receiving |
 | Records | `docs/testing/results/cs7000p/seed.json`, with no feature row |
@@ -63,8 +64,9 @@ This radio went straight to the install: stages 0 to 2 were not run on it as wri
 | The data flash's 0x001000-0x0011FF, read on 2026-11-23 against the whole-chip backup taken before the claim | all 0xFF on the radio; the backup holds the maker's factory table there ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 2). A codeplug write made with an earlier build, which wrote whole sectors of the EEPROM image, replaced it. The radio is uncalibrated as before (nothing used the table), but the maker's firmware would transmit on the blank bytes | why the table's bytes are kept now and why the restore exists ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.3; stage 6's `storage factory` rows) |
 
 Not checked on it yet: the reference against a counter (only against another radio), sensitivity in FM and DMR, the
-DMR error rate at a normal signal level, DMR data and text, CTCSS and DCS, the battery against a meter, and
-everything of stage 11.
+DMR error rate at a normal signal level, DMR data and text, CTCSS and DCS, the battery against a meter, stage 6's
+compare and restore of the table under a build that keeps it, receive on the maker's table (9.1), and everything of
+stage 11.
 
 **One unexplained restart.** Once, while a script waited with the radio switched to the VFO, the radio left USB and
 came back with `reset.cause=power`, `reset.flags=0x00fe0000` (power-on and brown-out, no software or watchdog
@@ -346,7 +348,9 @@ instead of answering. Install again; a whole image leaves no such word in the ra
 | `board.store=blank`, `board.flash` `refused=0`; `board.cal_table`'s `crc=` against the backup's 0x1000-0x11FF (`cal_table=blank src=none` on the first radio, whose table was lost) | the board sector at 0x01B000 ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.2) is blank, as it was on the unit seen: the factory copy writes it only from a window that passes the table's reader (10.3). The driver refused no write of the maker's bytes | `foreign`: someone else's bytes there (note it; compare the backup's 0x01B000-0x01BFFF); the sector is not usable for the table's copy. `ours` with `board.cal_rec=ok` and `cal_table=ok src=window`: the copy, written at the first claimed start from a valid window; check that its CRC is the backup's. `ours` otherwise: stop. `refused` above 0: a writer missed the kept-bytes rule: stop, keep the log |
 | `rfoundry_debug.py storage factory --backup BACKUP.zip` (the first backup, the whole chip). Read only | the window's, the record's and the backup's CRC-32 (and the window's and the backup's sha256), `window / file` and `record / file`, and the maker's records at 0x01E000-0x01FFFF `same` as the backup's; exit 0 when all are the same, 1 otherwise. On the first radio: `window blank`, `window / file   differs`, `record   blank`, the records `same` | the compare and the identity evidence the restore needs ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.3) | The records `differ`: not this radio's backup, or something wrote the maker's sectors (stop, keep the log). "is not a [[flash.protect]] entry": the tool's registry and the firmware disagree, rebuild both from one tree |
 | **Only on a radio whose window lost its table**, the owner's call: `rfoundry_debug.py storage factory --backup BACKUP.zip --restore`, nothing transmitting, the region ours | `restore accepted`, then `result          ok`, `window now ... same as the file`, `record now      ok` with the backup's CRC-32 and `in use: window`; exit 0. Then the compare again (exit 0), `board.cal_table=ok src=window` with the backup's `crc=`, `board.cal_rec=ok` with the same `crc=` and `restore=ok`; after a restart the same with `restore=none` | the one restore path: ops 4 and 5, the kept rewrite of sector 1 with the backup's 512 bytes, the read back, the record at 0x01B000 (settings-store.md 4.2) | A refusal prints its reason and writes nothing ([troubleshooting](../user/20-troubleshooting.md#the-factory-calibration-differs-from-the-backup)): `invalid` with the reader's reason number (`CS7000P_MK_WHY_*` in `makercal_cs7000p.h`) means the backup's bytes fail the reader, so keep them for the record and stop; `window_differs` is a valid table already there. `verify` or `flash`: keep the log, compare again before anything else |
+| Or the web installer's route (untested): **Restore** of the same backup, **Channels and settings only**, then its factory calibration step | the step shows the radio's, the record's and the backup's CRC-32 and, when the backup is this radio's (the maker's records the same), one button, "Write the Backup's Factory Calibration"; after it the same `cal_table` and `cal_rec` as the tool's row above | no button (`other_radio`, `unchecked`): the tool's row above. A busy answer right after the channels' write: **Check Again** ([web-flasher.md](../dev/web-flasher.md#the-factory-calibration-step)) |
 | After a codeplug write through the CPS (part 1 included) or a DTMF or APRS edit: `rfoundry_debug.py storage factory --backup BACKUP.zip` gives the window's CRC-32 and sha256 as before the write (or the CPS read of the codeplug regions, `tools/cps_client.py --regions codeplug read FILE`, and the sha256 of its 0x1000-0x11FF). Once, a whole-chip read (the web installer's **Back Up**, **Everything**): its 0x01E000-0x01FFFF equal to the first backup's | the table's bytes and the maker's records kept ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.3) | The sha256 changed: stop, keep the log and the view's `storage.factory`. On the first radio, until the restore above, the window is blank (an earlier build replaced it), so its sha256 is that of 512 bytes of 0xFF, before and after |
+| Only before going back to the maker's firmware: (1) the table, the compare above until it exits 0, `--restore` first where it differs; (2) sector 0, the maker's device information beside RadioFoundry's callsign and DMR ID: `tools/cps_client.py --regions codeplug write spi-flash.bin` (unzipped from the backup); (3) only then the maker's recovery | the compare exits 0 before step 2; the CPS write ends without error | Not in this order: the maker's firmware checks nothing in the table and transmits on what it holds (blank: codes of 255). Steps 1 and 2 need RadioFoundry running. No tool writes the rest of the chip back ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 10.3) |
 | `python3 -m pytest tests/hil/test_factory_copy.py boards/cs7000p/hil/test_cs7000p.py -k factory -v -rs` (add `--data-flash-backup BACKUP.zip` while the window is blank) | FACTORY_INFO equal to `cal_table` and `cal_rec`, the refusals by reason, the window's CRC the same after; no test writes the flash | the copy's ops on the radio, read only |
 
 On this radio the claim opens the whole map to writes, so every client claims only after a whole-chip backup:
@@ -480,19 +484,61 @@ DMR voice does not play: there is no codec. Data, text and the hotspot's receive
 ## 11. Transmit, only with the owner
 
 Everything before this stage ran without RF. **Nothing transmits unless the test run passes `--allow-rf`**
-([tests/hil/README.md](../../tests/hil/README.md)), and never without the dummy load.
+([tests/hil/README.md](../../tests/hil/README.md)), and arming is no exception: `radio tx-arm` needs it too.
+**Every step below is the first time on any radio**: nothing of the transmit path has run on one.
 
 The radio refuses every transmission while its tables are unset: `board.cal=none`, and `board.tx_refused` counts.
 With the maker's table in use (`board.cal=maker`) it still refuses every key-up until the owner arms transmission
-over the debug link (RADIO op 44, [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2): then FM without a tone
-keys on the table's drive, pair and trim A, on the frequencies a test TX limit lists; on the top stage (`dmr`) DMR
-too, on the table's drive, its DMR pair at f_tx and trim B in 4:0x04, through the burst runner no radio has run
-(question 25). Nothing else. DMR is the last step of all: the time base and the interrupt's place of the maker's
-burst fields are open, and what the reference DAC does in a DMR slot under the port's 0x0C hold is not measured
-(question 1); on the top stage 4:0x04 in DMR receive is trim B too, so DMR receive before and after arming it is
-worth a comparison (BER or decoded calls against the same signal).
-The one way the firmware keys it is the bench drive override, honored only under a test TX limit that lists the
-frequency, in FM, for one transmission, within 60 s of arming
+over the debug link (RADIO op 44, [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2), on the frequencies a
+test TX limit lists. Two routes:
+
+| Route | Needs | Values |
+|---|---|---|
+| 11.1, on the maker's table behind the arm | stage 6's table in use (`cal_table=ok`), stage 9.1 done, an antenna or a dummy load on the connector, a second receiver | the factory's: the drive, the pairs, trim A and B, the sub-audio levels (hardware page 13.2) |
+| 11.2, the bench route | a dummy load, a current-limited supply, a power meter or the SDR bench | measured here, written into `rfcal_cs7000p.c` |
+
+### 11.1 On the maker's table, behind the arm
+
+The commands are `tools/rfoundry_debug.py`. BACKUP is the whole-chip backup of stage 6 (the zip, or its
+`spi-flash.bin`). Choose one simplex FM frequency your license allows, not a repeater input, with a second receiver
+tuned to it; every key-up names it with `--mhz` and is refused anywhere else (`why=15`; `txlim.refused` in the core
+view). Without a dummy load the carrier goes to the antenna: the antenna is on before any key-up (the PA has no
+reverse-power protection), and the station identifies as its license asks. What can be judged without a power meter,
+a counter or a deviation meter is in the last table.
+
+| Step | Look for | If not |
+|---|---|---|
+| **Preconditions.** `view --section board2`; `storage factory --backup BACKUP`; `view --section board` | `cal_table=ok src=window` (or `src=record` with `cal_rec=ok`) with the backup's `crc=`; the compare exits 0 (`window / file   same`); `ref=hold ... src=maker why=none` (9.1 step 1), `board.cal=maker`; 9.1's receive checks recorded, and its step 4 (the reference coding) with `reg 3 5 0` again: `board.hrc ... r25=0x0c`, no `ask=` in `ref` | `cal_table` not `ok`: stage 6. `ref ... src=default why=rx_bound`: trim A is over the receive bound, receive kept today's level, and FM transmit takes trim A anyway: note it and stop until the owner decides. `r25=0x0e` or `ask=`: `reg 3 5 0` and the next status poll; until then the arm is refused (`state`) and every key-up is `why=14` |
+| `radio tx-arm` | `transmit arm    off`, `highest stage   dmr` (`fm` in a build without DMR), `calibration     0x001000-0x0011FF, 512 bytes: in use, CRC-32 0x...` equal to the backup's | `none in use that the arm covers`: the table is not in use, back to stage 6. `no transmit arm`: an older firmware |
+| **Stage 1.** `radio tx-arm fm-low --backup BACKUP --mhz MHZ --allow-rf` | the compare's lines with `in use / file   same`, `test TX limit   MHZ MHz`, `ARMED           fm-low`; `view --section board2`: `tx_arm=fm-low id=0x...` (the backup's CRC) `list=1`; `log`: `radio: transmit arm fm-low id=0x...`; the core view's `txlim=list`, `tx_drive=N/0` (the low level's drive only) | `refused: the calibration in use is not ...`: the backup is not this table's; nothing was armed. `state`: a bench knob (`reg 3 5`), the power's off state or a restore pending. `id`: never retry with another file |
+| On an FM channel or the VFO (`radio vfo on`, `radio freq MHZ`) at 12.5 kHz, no CTCSS or DCS, `radio power lowest` (the core view's `power=0 power_name=1W`), the TX timeout short (**Settings** > **TX timeout**) | `view --section core`: `tx_hz` the listed frequency, `mode=fm`, `txlim=list` | Another `tx_hz`: the key-up is refused `why=15`. Fix the channel first |
+| **The first key-up**: `ptt --seconds 1`, the second receiver listening, the operator at the radio's knob | `PTT held 1 s, released`; the second receiver hears a carrier for about a second; afterwards `board.tx_refused` unchanged, `board.exp` with neither transmit bit, `board.dac` back on the tuning value, `board.pll=locked`, `state=rx` | No carrier and `tx_refused` up: its `why=` (hardware page 13.2) says which rule held it. A carrier that does not end with the release: turn the knob off (the hold is released and the supply cut, hardware page 5.4), else take the battery off; report it with the log |
+| Then 2 s with speech: the physical **PTT**, speaking at a normal distance | on the second receiver: on channel (no need to retune it; its fine tuning or an SDR shows any offset), clean speech, no hum or whistle; on the neighboring channels (12.5 and 25 kHz either side) nothing, or no more than from another radio's carrier at the same distance. `ptt` releases; the TX timeout ends a held key-up | Off channel or distorted: lower the arm (`radio tx-arm off`) and record what was heard. Splatter on the neighbors: the same |
+| **Stopping**, each once: release PTT; let the TX timeout end a key-up; `radio tx-arm off` while the physical PTT is held (the transmission ends at once); the knob off | each ends the carrier; after `tx-arm off` a key-up is refused `why=13`; after the next start `tx_arm=off` | A carrier that outlives any of them: knob off, battery off, report it |
+| **Stage 2.** `radio tx-arm fm --backup BACKUP --mhz MHZ --allow-rf`, then `radio power +1` (`power=1 power_name=4W`, `tx_drive=N/M`) and the same key-ups | `ARMED           fm`; on the second receiver a stronger signal than at 1W (a step of the S-meter or more), the same clean speech, the neighbors as before; the supply current (if the supply shows it) higher | No difference from 1W, or a weaker one: record it and go back to 1W. Distortion only at 4W: record it, stay at stage 1 |
+| Tone channels, at stage 1 or 2: a CTCSS tone on the channel (on the radio, or `radio tone tx ctcss 1000`: 100.0 Hz, in 0.1 Hz), then a DCS code; the second receiver with the same tone set | the second receiver opens on it with the tone, and not with another tone set. A tone outside 67.0-254.1 Hz is refused (`why=2`) | It doesn't open: the depth rule (question 4) or the DCS polarity (`CS7000P_DCS_INVERT`); record it, keep tones off |
+| A 25 kHz channel (`radio bw 25`), at stage 1 | speech as loud as at 12.5 kHz on a wide receiver, not quieter | quieter: question 38 |
+| **Stage 3, last.** DMR receive first, the same signal, with stage 2 and then after `radio tx-arm dmr --backup BACKUP --mhz MHZ --allow-rf`: `view --section dmr_stats` | the same calls decoded either way (on the top stage 4:0x04 in DMR receive is trim B: question 39) | Worse with `dmr`: `radio tx-arm fm` and record it |
+| A DMR key-up on a DMR channel at 1W, color code and talk group of the second radio, `ptt --seconds 1` | the second DMR radio shows the call (this radio's ID, the talk group); no audio from it: this build has no codec. `board.tx_refused` unchanged | No call shown: record `tx_refused`, `board.pll`, `board.dac`; `radio tx-arm fm`. Nothing of the burst path has run on a radio (question 25), and the burst timing is the port's (question 37) |
+
+After each stage, before the next: `radio tx-arm off`, `radio tx-limit off`, a restart, and the record written. A
+start always begins at `off`.
+
+What the owner's ear and a second receiver can and cannot judge:
+
+| Can | Cannot |
+|---|---|
+| Whether a carrier comes and goes with the key-up; whether it is near the channel (a narrow receiver with no audio, or distorted audio, means far off) | the frequency error in Hz, the reference trims' effect (questions 1, 31) |
+| Clean speech, hum, a whistle, clipping on loud speech | the deviation in kHz, narrow or wide (question 38) |
+| A tone that opens a receiver set to it | the tone's deviation, so too much of it (question 4) |
+| A signal heard on a neighboring channel | splatter under the other receiver's own selectivity, harmonics, spurious emissions (question 6) |
+| 4W stronger than 1W on an S-meter | the power in watts, the PA current's margin (question 5) |
+| A DMR call decoded by another radio | the burst's shape and place in the slot (questions 25, 37) |
+
+### 11.2 The bench route
+
+The one way the firmware keys a radio without a table is the bench drive override, honored only under a test TX
+limit that lists the frequency, in FM, for one transmission, within 60 s of arming
 ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2). A `reg soc` write to DAC1 or GPIOE is outside all of
 that and is never made (Bench knobs, above).
 
@@ -513,7 +559,7 @@ What the shared sequencer (`drivers/rf/chainseq`) assumes about this chain, each
 
 | Assumption | Check | If not |
 |---|---|---|
-| Closing the APC loop on a 0 V reference gives no RF output | a spectrum analyzer on the dummy load while the loop line comes on with the DAC off: seen on the first key-up (stage 11's first row) | `CS7000P_APC_FLOOR` |
+| Closing the APC loop on a 0 V reference gives no RF output | a spectrum analyzer on the dummy load while the loop line comes on with the DAC off, at the first bench key-up (11.2's first row) | `CS7000P_APC_FLOOR` |
 | The receive rail needs its settle time before the AK2365A's set-up on every receive set-up, a retune included | sensitivity right after a retune with the wait shortened | the board's `rail_settle_us`: `CS7000P_RX_RAIL_US` in `rfops_cs7000p.h` (a fixed define, edited there; `CS7000P_RAIL_SETTLE_US` is the start-up wait only) |
 | After a DMR transmission the receiver comes back without an AK2365A set-up, although its LO was off during the bursts | sensitivity right after a DMR transmission against the same after a channel change | the board's `tx_end`: a full receive set-up |
 | The lock line reads unlocked by the first read after new synthesizer words (three stale "locked" reads 100 us apart would pass a carrier that is still moving) | a scope on the lock line against the bus's last clock, at a receive to transmit change and at a retune | `CHAINSEQ_LOCK_READS`, `CHAINSEQ_LOCK_POLL_US`, or a fixed wait in the board's `synth` op |
@@ -585,8 +631,8 @@ checked above, and what to change.
 | 1 | Reference offset 0 (the hold value 4:0x25 = 0x0C is measured in FM receive); the DAC in a DMR TX slot | 9, 11 | `CS7000P_REF_OFFSET`, `rfcal_cs7000p.c`, the reference trim |
 | 2 | First LO below the signal; I/Q order to match | 9 | `reg 3 3`, `CS7000P_LO_HIGH` |
 | 3 | Phase detector gain 31, lock within 5 ms, three agreeing samples of the lock pin, lock over the whole band | 9 | `rfplan_cs7000p.c` |
-| 4 | PC8 idles at 50 % duty, 93.75 kHz | 9 | `reg 3 2` |
-| 5 | No PA value at all: tables unset, transmit refused | 11 | `rfcal_cs7000p.c` |
+| 4 | PC8 idles at 50 % duty, 93.75 kHz; on the maker's table a tone's depth is (4000 L + 525) / 1050 per mille | 9, 11.1 | `reg 3 2`; the rule in `subpwm_cs7000p.h` |
+| 5 | No PA value of the tree's own: the model tables unset. On the maker's table its drive codes, behind the arm, give the rated power under the port's ramp | 11 | `rfcal_cs7000p.c`; the arm stays at its stage |
 | 6 | The PA stays off while the expander is undefined, through R141 | 4 | none in firmware |
 | 7 | The microphone is the codec input of bit 1 (0x02) | 11 | `CS7000P_E0_MIC` |
 | 8 | Nothing: the I2S direction is probed. Clock polarity low; the chip is the master | 8 | `ckpol` in `audio_cs7000p.c` |
@@ -618,3 +664,9 @@ checked above, and what to change.
 | 34 | The chain's and the buses' timing as computed; the chain's bit order as drawn | 4, 8 | `EXP_DELAY_PASSES`, the half periods in `radio_cs7000p.c`, `exp_cs7000p.h` |
 | 35 | The reference has settled 30 ms after the synthesizer rail | 9 | `CS7000P_REF_SETTLE_MS`, `CS7000P_RAIL_SETTLE_US` |
 | 36 | Two backup-domain pads as outputs do no harm at 250 kHz behind 1 k | 9 | none |
+| 37 | The port's DMR key-up constants time bursts on the maker's table too; its burst fields are checked, not applied | 11.1 | `radio_cs7000p.c`; `tools/bench/pa_cal.py` once a bench exists |
+| 38 | Wide FM deviates enough under 4:0x35 = 0x20 | 11.1 | `maker_fm_rows` in `rfops_cs7000p.c` |
+| 39 | Trim B in 4:0x04 harms no DMR receive on the arm's top stage | 11.1 | the receive branch of `cs7000p_rf_r04` |
+| 40 | No radio holds another radio's valid table | 6 | none written: report it |
+| 41 | Nobody goes back to the maker's firmware without the order of stage 6 | 6 | none: the order (hardware page 10.3) |
+| 42 | The arm stays required until every stage has passed | 11.1 | `CS7000P_TX_ARM_REQUIRED` |
