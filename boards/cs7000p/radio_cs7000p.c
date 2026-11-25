@@ -668,6 +668,7 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 		.bench_dmr = CS7000P_BENCH_DMR_TX != 0,
 		.off = cs7000p_power_off_state(),	// asked here, so FM's key-up and the burst plan both refuse
 		.ref_other = cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD,
+		.pc8_bench = cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE,
 	};
 #if CONFIG_DEBUGLINK
 	// A test TX limit as a list that names this frequency: the bench harness set it (tools/power_cal.py). The core
@@ -1089,7 +1090,9 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 	};
 }
 
-// Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. Every state that refuses it is
+// Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. The states that refuse it: the
+// chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2) or a stored reference trim
+// (trim A is the table's whole correction of the reference), the power's off state, a restore pending. Each is
 // asked under the interrupt mask with the change itself, so a power-off (its off state, then a safe request that
 // clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
 // transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
@@ -1105,7 +1108,8 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 	const uint8_t was = cs7000p_rf.arm;
 	if (stage != CS7000P_ARM_OFF && stage >= was) {
 		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
-		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending()) {
+		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending() ||
+		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1521,7 +1525,10 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 		*val = cs7000p_exp_get();
 		return true;
 	case BOARD_PC8:
-		if (write && (*val > 0xFFFFu || !cs7000p_subtone_pc8_set((uint16_t)*val))) {
+		// Not while transmission is armed: PC8's mean level is part of the reference's control voltage, which an
+		// armed key-up takes from the table alone (raising the arm asks for 50 %)
+		if (write && (*val > 0xFFFFu || cs7000p_rf.arm != CS7000P_ARM_OFF || cs7000p_rf.admit_arm ||
+			      !cs7000p_subtone_pc8_set((uint16_t)*val))) {
 			return false;
 		}
 		*val = cs7000p_subtone_pc8();
