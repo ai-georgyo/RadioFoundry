@@ -3,8 +3,8 @@
 // CS7000 M17 PLUS radio: the hal_radio_t over the RF chain (rfops_cs7000p.c on drivers/rf/chainseq), the modem
 // (c6000_cs7000p.c) and the sub-audio code (subtone_cs7000p.c); the two bit-banged buses; the DMR burst runner's
 // wiring (platform/stm32/dmr_keyup); the speaker routing; the bench's chip_reg (docs/spec/hardware-cs7000p.md 7, 8,
-// 13, 14). Written from the maker's schematic and the chips' data sheets: nothing here has run on a radio
-// (docs/testing/cs7000p-bringup.md).
+// 13, 14). Written from the maker's schematic and the chips' data sheets; what has run on a radio is the bring-up
+// page's First radio (docs/testing/cs7000p-bringup.md), and nothing of transmit has.
 //
 // The radio has no calibration of the tree's own, so without the maker's table it refuses every transmission
 // (rfcal_cs7000p.h, rfops_cs7000p.h): the one way to key it is the bench's drive override under a test TX limit. The
