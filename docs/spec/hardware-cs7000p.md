@@ -1409,7 +1409,8 @@ decided. They were set under the maker's IF words, which `chip_reg` 3:7 gives fo
 
 `cs7000p_cal_tx_ok()` is true only when the PA row for the level, the modulation pair for the mode and the
 reference offset are all set. With the tables as shipped it is false everywhere: `tx()` returns false in FM and DMR,
-the hotspot cannot key, and `board.cal=none` says why. `board.tx_refused` counts the refusals and gives the last
+the hotspot cannot key, and `board.cal=none` says why (`maker` with the maker's table in use: still refused until
+the owner arms transmission, below). `board.tx_refused` counts the refusals and gives the last
 reason as `why=`:
 
 | `why` | Reason |
@@ -1534,7 +1535,7 @@ diagnostics page shows the bring-up readings.
 | `phone_det`, `bt_strap` | PA13, PA14 (`0` / `1`, through `GPIOA->IDR`) |
 | `flash` | JEDEC ID, size, `addr4`, and `refused=`, the erases and programs the driver refused in a sector holding the maker's bytes outside the storage layer's grant (10.3; 0 unless a writer misses the rule): `EF4019 size=0x2000000 addr4=1 refused=0` |
 | `store` | the board sector at 0x01B000 (10.2): `blank` / `ours` (the magic `RFFC`) / `foreign` / `unread` (no chip, or the read failed; asked again at the next request). Read once, at the first request; the record's own state is `cal_rec`'s |
-| `cal` | `none` / `model` |
+| `cal` | `none` / `model` / `maker`: the table in use holds FM transmit values somewhere in the transmit ranges, served only behind the owner's arm (`tx_arm`, 13.2) |
 | `tx_refused` | the count and `why=`, the last reason (13.2) |
 | `dac` | the shared DAC's code now (0 = off) and `refused=`, the refused DAC writes and refused expander writes together |
 | `lo_side` | `low` / `high` |

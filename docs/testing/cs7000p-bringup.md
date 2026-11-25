@@ -483,9 +483,9 @@ Everything before this stage ran without RF. **Nothing transmits unless the test
 ([tests/hil/README.md](../../tests/hil/README.md)), and never without the dummy load.
 
 The radio refuses every transmission while its tables are unset: `board.cal=none`, and `board.tx_refused` counts.
-With the maker's table in use it still refuses every key-up until the owner arms transmission over the debug link
-(RADIO op 44, [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2): then FM without a tone keys on the table's
-drive, pair and trim A, on the frequencies a test TX limit lists, and nothing else.
+With the maker's table in use (`board.cal=maker`) it still refuses every key-up until the owner arms transmission
+over the debug link (RADIO op 44, [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2): then FM without a tone
+keys on the table's drive, pair and trim A, on the frequencies a test TX limit lists, and nothing else.
 The one way the firmware keys it is the bench drive override, honored only under a test TX limit that lists the
 frequency, in FM, for one transmission, within 60 s of arming
 ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2). A `reg soc` write to DAC1 or GPIOE is outside all of

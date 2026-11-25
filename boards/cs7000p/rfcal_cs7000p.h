@@ -132,6 +132,9 @@ typedef struct {
 	int8_t trim;
 } cs7000p_fm_tx_t;
 bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v);
+// The table in use holds an FM transmission's values somewhere in the transmit ranges, at some level (every 100 kHz
+// from 400 to 512 MHz): what the view shows as cal=maker, a radio that transmits there once the owner arms it
+bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m);
 
 // The IF chip's RSSI output in millivolts as dBm at its input, from the data sheet's two typical points (0.3 V at
 // -100 dBm, 2.0 V at -30 dBm), less CS7000P_FE_GAIN_DB. A relative reading until it has been measured

@@ -495,6 +495,18 @@ static void test_maker_tx(void)
 	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_DMR_PAIR);	// DMR's alone missing: FM still has them
 	CHECK(cs7000p_cal_maker_fm(&mm, 446u * MHZ, 1, &v) && !cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, true));
 
+	// Somewhere in the transmit ranges (the view's cal=maker): FM's groups all, DMR's not needed
+	CHECK(cs7000p_cal_maker_any_fm(&m) && cs7000p_cal_maker_any_fm(&mm) && !cs7000p_cal_maker_any_fm(NULL));
+	static const uint16_t fm_groups[] = { CS7000P_MK_F_POWER, CS7000P_MK_F_FM_PAIR, CS7000P_MK_F_TRIM_A };
+	for (unsigned i = 0; i < sizeof(fm_groups) / sizeof(fm_groups[0]); i++) {
+		mm = m;
+		mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~fm_groups[i]);
+		CHECK(!cs7000p_cal_maker_any_fm(&mm));
+	}
+	mm = m;
+	mm.valid = false;
+	CHECK(!cs7000p_cal_maker_any_fm(&mm));
+
 	// None of it reaches the model's getters: they read the model alone, unset as shipped, wherever the table
 	// would serve
 	uint16_t d = 7;

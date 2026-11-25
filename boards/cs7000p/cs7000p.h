@@ -82,7 +82,7 @@ extern const hal_radio_t cs7000p_radio;
 extern const hal_audio_t cs7000p_audio;
 #endif
 bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bool write);
-typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx; uint8_t pll_r, hrc_r10, hrc_r25; uint32_t vco_hz,
+typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx, cal_maker; uint8_t pll_r, hrc_r10, hrc_r25; uint32_t vco_hz,
 		 unlocks, tx_refused, dac_refused; uint8_t tx_refused_why; uint16_t rx_tune, pc8_duty; int8_t ref_offset; }
 	cs7000p_radio_state_t;
 void cs7000p_radio_state(cs7000p_radio_state_t *s);	// plain data, no bus traffic

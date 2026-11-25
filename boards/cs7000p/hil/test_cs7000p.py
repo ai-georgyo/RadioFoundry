@@ -135,11 +135,14 @@ def test_transmitter_off_and_interlock(radio):
 
 @pytest.mark.feature("fm", optional=True)
 def test_calibration_state(radio):
-    """Until the tables are filled from bench measurements the radio refuses every transmission."""
+    """Until the tables are filled from bench measurements the radio refuses every transmission; with the maker's
+    table in use (cal=maker) until the owner arms transmission."""
     b = board_view(radio)
-    assert b["cal"] in ("none", "model"), b["cal"]
+    assert b["cal"] in ("none", "model", "maker"), b["cal"]
     if b["cal"] == "none":
         print("cal=none: transmit is refused (docs/testing/power-calibration.md fills the tables)")
+    elif b["cal"] == "maker":
+        print(f"cal=maker: the maker's table; refused until the owner arms transmission (tx_arm={b.get('tx_arm')})")
 
 
 @pytest.mark.feature("factory_copy")
