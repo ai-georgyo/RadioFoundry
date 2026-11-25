@@ -197,6 +197,21 @@ bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, 
 	return true;
 }
 
+bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m)
+{
+	if (m == NULL || !m->valid) {
+		return false;
+	}
+	for (uint32_t hz = 400000000u; hz <= 512000000u; hz += 100000u) {
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			if (cs7000p_cal_maker_tx(m, hz, level, false)) {	// the reader refuses outside the ranges
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between
 #define RSSI_LO_MV	300
 #define RSSI_LO_DBM	(-100)

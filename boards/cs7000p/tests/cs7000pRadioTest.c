@@ -765,6 +765,14 @@ static uint16_t fields_of(const uint8_t *b)
 	return m.fields;
 }
 
+// The view's cal=maker: the table in use holds FM transmit values somewhere (cs7000p_radio_state)
+static bool cal_maker_now(void)
+{
+	cs7000p_radio_state_t r;
+	cs7000p_radio_state(&r);
+	return r.cal_maker && !r.cal_tx;	// the model is unset as shipped
+}
+
 static void test_table_sources(void)
 {
 	uint8_t blank[N], zero[N], damaged[N], use[N];
@@ -784,6 +792,7 @@ static void test_table_sources(void)
 	boot(true, 0);
 	CHECK(line_is(tline, "cal_table=blank src=none crc=0x%08x why=blank off=0x000 fields=0x0000 bat=0x00", crc(blank)));
 	CHECK(strstr(log_last, "cal: maker table blank (blank)") == log_last);
+	CHECK(!cal_maker_now());
 	// A zero window
 	chip(zero, NULL);
 	boot(true, 0);
@@ -793,7 +802,7 @@ static void test_table_sources(void)
 	boot(true, 0);
 	CHECK(line_is(tline, "cal_table=refused src=none crc=0x%08x why=code off=0x046 fields=0x0000 bat=0x00",
 		      crc(damaged)));
-	CHECK(strstr(log_last, "cal: maker table refused (code) at 0x046: none used") == log_last);
+	CHECK(strstr(log_last, "cal: maker table refused (code) at 0x046: none used") == log_last && !cal_maker_now());
 	// An unstable one: two reads that differ
 	chip(table_a, NULL);
 	boot(true, WIN + 0x40u);
@@ -810,7 +819,7 @@ static void test_table_sources(void)
 		      crc(blank), all));
 	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_a)));
 	CHECK(strstr(log_last, "cal: maker table ok src=record crc=") == log_last && strstr(log_last, "win=blank") != NULL);
-	CHECK(memcmp(&sim_flash_data[WIN], blank, N) == 0);
+	CHECK(memcmp(&sim_flash_data[WIN], blank, N) == 0 && cal_maker_now());
 	chip(zero, table_a);
 	boot(true, 0);
 	CHECK(line_is(tline, "cal_table=zero src=record crc=0x%08x why=zero off=0x000 fields=0x%04x bat=0xa0", crc(zero),
@@ -838,7 +847,7 @@ static void test_table_sources(void)
 	boot(true, 0);
 	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
 		      all));
-	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_a)));
+	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_a)) && cal_maker_now());
 
 	// Window and record both valid and different (another radio's table in one of them): neither is used
 	chip(table_a, table_b);
@@ -847,7 +856,7 @@ static void test_table_sources(void)
 		      crc(table_a)));
 	CHECK(line_is(rline, "cal_rec=ok crc=0x%08x wrote=0 restore=none", crc(table_b)));
 	CHECK(line_is(log_last, "cal: window and record differ: none used"));
-	CHECK(memcmp(&sim_flash_data[WIN], table_a, N) == 0);
+	CHECK(memcmp(&sim_flash_data[WIN], table_a, N) == 0 && !cal_maker_now());
 
 	// Receive points out of order in the window, a valid record: the record, the window's reason beside it
 	uint8_t order[N];
@@ -892,6 +901,7 @@ static void test_table_sources(void)
 	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0", crc(table_a),
 		      all));
 	CHECK(line_is(log_last, "cal: maker table ok src=window crc=0x%08x rec=off fields=0x%04x", crc(table_a), all));
+	CHECK(cal_maker_now());
 	chip(use, NULL);
 	boot(true, 0);
 	CHECK(line_is(tline, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0x00", crc(use),

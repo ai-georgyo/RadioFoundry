@@ -73,6 +73,7 @@ cs7000p_rf_t cs7000p_rf;
 // From here on cs7000p_radio_rf_safe() has a chain to make safe. Before, there is nothing it could turn off
 static volatile bool radio_up;
 static bool cal_tx;		// the calibration could transmit somewhere (the view's cal=)
+static bool cal_maker;		// ... the maker's table in use could, once armed (cal=maker): set at its take
 static bool dmr_mode;
 static bool tx_on;		// an FM transmission is up
 static volatile bool tx_steady;	// ... and neither keying up nor down: the bench may move its drive
@@ -249,6 +250,7 @@ static void cal_take(void)
 	const uint32_t crc = s.source == FACTORY_COPY_SRC_WINDOW ? s.win_crc :
 			     (s.source == FACTORY_COPY_SRC_RECORD ? s.rec_crc : 0u);
 	(void)cs7000p_maker_parse(any ? cal_raw : NULL, crc, CS7000P_APC_FLOOR, &maker);
+	cal_maker = cs7000p_cal_maker_any_fm(&maker);
 	cal_st = s;
 #if CONFIG_FACTORY_COPY
 	factory_copy_taken();	// cal_raw is read: a restore may write it again from here on
@@ -1160,6 +1162,7 @@ void cs7000p_radio_state(cs7000p_radio_state_t *s)
 		.ak_ok = cs7000p_rf.ak_ok,
 		.hrc_ok = up,
 		.cal_tx = cal_tx,
+		.cal_maker = cal_maker,
 		.pll_r = cs7000p_rf.pll_r,
 		.hrc_r10 = r10,
 		.hrc_r25 = r25,

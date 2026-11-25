@@ -203,7 +203,9 @@ static void line_cal(char *buf, uint8_t len)
 {
 	cs7000p_radio_state_t r;
 	cs7000p_radio_state(&r);
-	dl_fmt(buf, len, "cal=%s", r.cal_tx ? "model" : "none");	// none: every transmission is refused
+	// maker: the table in use holds FM transmit values, served only behind the owner's arm (tx_arm in board2), and it
+	// wins over the model where it holds them. none: every transmission but the bench drive's is refused
+	dl_fmt(buf, len, "cal=%s", r.cal_maker ? "maker" : (r.cal_tx ? "model" : "none"));
 }
 
 static void line_tx_refused(char *buf, uint8_t len)
