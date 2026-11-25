@@ -86,6 +86,9 @@ typedef enum {
 	CS7000P_TX_REF_CODING = 14,	// the reference DAC is in the maker's coding for a receive test (chip_reg 3:5),
 					// asked for or still held by the modem (cs7000p_tx_req_t.ref_other)
 	CS7000P_TX_ARM_NO_LIST = 15,	// ... the arm covers it, but no test TX limit list names this frequency
+	CS7000P_TX_ARM_REF = 16,	// ... the arm covers it and a list names it, but the reference carries a
+					// correction the table was not set with: PC8's idle duty the bench's (chip_reg
+					// 3:2, cs7000p_tx_req_t.pc8_bench) or a stored reference trim (trim_ppb)
 } cs7000p_tx_why_t;
 
 // The owner's transmit arm (hardware-cs7000p.md 13.2, hal_radio_t.tx_arm): the maker's transmit values may serve a
@@ -155,6 +158,9 @@ typedef struct {
 	// The modem still holds another coding than the measured hold: it takes the one chip_reg 3:5 asks for only at
 	// its next full receive set-up (the status poll's), and a burst keeps the one it holds
 	bool ref_other;
+	// PC8's idle duty is the bench's (chip_reg 3:2), not 50 %: its mean level is part of the reference's control
+	// voltage (about 2 kHz end to end)
+	bool pc8_bench;
 } cs7000p_tx_req_t;
 
 typedef struct {

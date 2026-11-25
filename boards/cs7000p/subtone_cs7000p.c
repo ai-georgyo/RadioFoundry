@@ -39,6 +39,11 @@ uint16_t cs7000p_subtone_pc8(void)
 	return pc8_duty;
 }
 
+uint16_t cs7000p_subtone_pc8_idle(void)
+{
+	return pc8_idle;
+}
+
 // The bench's idle duty (board chip_reg 3:2). 0 and the whole period are let through here, and only here: a line
 // held low or high is driven, not floating, and what that does to the carrier is what the bench wants to see
 bool cs7000p_subtone_pc8_set(uint16_t duty)

@@ -86,6 +86,8 @@ static inline uint16_t cs7000p_subpwm_depth_pm(uint8_t level)
 // high to see what it does to the carrier). False: out of range, or a tone is being sent
 uint16_t cs7000p_subtone_pc8(void);
 bool cs7000p_subtone_pc8_set(uint16_t duty);
+// The idle duty a tone's end goes back to: CS7000P_SUBPWM_IDLE unless the bench set another
+uint16_t cs7000p_subtone_pc8_idle(void);
 #if CONFIG_SUBTONE
 void cs7000p_subtone_init(void);
 // The detector for a channel's selection (restarts it), paused while the receiver is off, and its verdict (true

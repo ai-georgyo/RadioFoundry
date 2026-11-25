@@ -848,7 +848,7 @@ transmission on that calibration until the owner arms it (`hal_radio_t.tx_arm_in
 |---|---|
 | Stages | 0 off, 1 FM at the lowest power level, 2 FM at every level, 3 every mode (`HAL_TX_ARM_*`); each covers the ones below it. The board names its highest (`max` in the info) |
 | Handshake | a stage over 0 needs the CRC-32 (IEEE, as Python's `zlib.crc32`) of the calibration in use, which the info names by its flash range. The host computes it from its own backup of that range and never takes it from the radio's reply: the id says the host compared the radio's bytes with its backup |
-| Refusals | 1 no calibration in use, 2 another CRC, 3 a stage over the highest, 4 a state forbids it now (the radio not started yet, a bench state, the power's off state, the calibration about to change, as during a restore of it) |
+| Refusals | 1 no calibration in use, 2 another CRC, 3 a stage over the highest, 4 a state forbids it now (the radio not started yet, a bench state, a stored reference trim, the power's off state, the calibration about to change, as during a restore of it) |
 | Always taken | off, and a stage below the one armed (the id it was armed with kept). A transmission the new stage no longer covers ends at once, by the board's safe request (`board_rf_safe`) |
 | RAM only | off at every start and at every safe request; never stored |
 | Live | a transmission on that calibration also needs the test TX limit (3.1) as a list naming its frequency, so the frequencies the owner named hold on the radio, not only in the tool; a block, no limit or a cleared one refuses again |

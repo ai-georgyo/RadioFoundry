@@ -280,6 +280,11 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 			cs7000p_dmr_tx_t w;
 			uint8_t tone_level;
 			why = cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
+			if (why == CS7000P_TX_OK && (q->pc8_bench || rf->trim_ppb != 0)) {
+				// Trim A is the table's whole correction of the reference: a bench PC8 idle or a stored
+				// trim on top of it is an offset nobody checked with the table
+				why = CS7000P_TX_ARM_REF;
+			}
 			if (why == CS7000P_TX_OK) {
 				if (q->dmr ? !cs7000p_rf_maker_dmr(rf, q->hz, q->power, &w)
 					   : (!cs7000p_rf_maker_fm(rf, q->hz, q->power, &v) ||

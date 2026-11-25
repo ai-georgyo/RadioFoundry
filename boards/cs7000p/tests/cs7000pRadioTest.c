@@ -458,8 +458,18 @@ void cs7000p_subtone_tx_start(const subtone_t *t, uint16_t depth_pm)
 static int tone_stops;
 void cs7000p_subtone_tx_stop(void) { tone_stops++; }
 bool cs7000p_subtone_tx_tail(bool on) { (void)on; return false; }
-uint16_t cs7000p_subtone_pc8(void) { return 0; }
-bool cs7000p_subtone_pc8_set(uint16_t duty) { (void)duty; return false; }
+// The bench's idle duty (chip_reg 3:2), as subtone_cs7000p.c keeps it with no tone sent
+static uint16_t pc8_idle = CS7000P_SUBPWM_IDLE;
+uint16_t cs7000p_subtone_pc8(void) { return pc8_idle; }
+uint16_t cs7000p_subtone_pc8_idle(void) { return pc8_idle; }
+bool cs7000p_subtone_pc8_set(uint16_t duty)
+{
+	if (duty > CS7000P_SUBPWM_PERIOD) {
+		return false;
+	}
+	pc8_idle = duty;
+	return true;
+}
 
 // --- The burst runner (platform/stm32/dmr_keyup) and the modem's DMR glue ---
 
@@ -2007,6 +2017,37 @@ static void test_tx_arm_before_init(void)
 	CHECK(i.stage == HAL_TX_ARM_OFF && i.max == ARM_TOP && !i.cal_ok && i.crc == 0u);
 }
 
+// Another correction of the reference than trim A: a bench PC8 idle (3:2) or a stored reference trim refuses the arm
+// (a state); 3:2 is refused while armed; a trim stored while armed refuses the key-ups it covers (16) until it is 0
+static void test_tx_arm_ref(void)
+{
+	const uint32_t a = crc(table_a);
+	uint32_t v = 0;
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(cs7000p_chip_reg(3, 0, 2, &v, true) && pc8_idle == 0u);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	keyup_refused(0, false, CS7000P_TX_UNARMED);
+	v = CS7000P_SUBPWM_IDLE;
+	CHECK(cs7000p_chip_reg(3, 0, 2, &v, true));
+	CHECK(cs7000p_radio.ref_trim(-450));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(cs7000p_radio.ref_trim(0));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	v = 0;
+	CHECK(!cs7000p_chip_reg(3, 0, 2, &v, true) && pc8_idle == CS7000P_SUBPWM_IDLE);
+	keyup_on_table(0, false);
+	CHECK(cs7000p_radio.ref_trim(-450));	// Settings > Freq trim while armed
+	keyup_refused(0, false, CS7000P_TX_ARM_REF);
+	CHECK(cs7000p_radio.ref_trim(0));
+	keyup_on_table(0, false);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 2, &v, true) && pc8_idle == 0u);	// unarmed: the bench's again
+	v = CS7000P_SUBPWM_IDLE;
+	CHECK(cs7000p_chip_reg(3, 0, 2, &v, true));
+}
+
 // The bench's writes to the modem and the synthesizer (chip_reg chips 0 and 1): refused while transmission is armed
 // and while a transmission admitted on the arm is up, nothing reaching either chip; the synthesizer's also under a
 // bench carrier. Reads always answer
@@ -2497,6 +2538,7 @@ int main(void)
 	test_if_words();
 	test_sq_maker();
 	test_tx_arm();
+	test_tx_arm_ref();
 	test_bench_writes();
 #if CONFIG_DMR
 	test_tx_arm_dmr();

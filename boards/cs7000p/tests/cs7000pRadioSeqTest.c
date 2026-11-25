@@ -1651,6 +1651,42 @@ static void test_arm_admit(void)
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
 	nothing_live_at(446u * MHZ, 1, false, 0);
 
+	// Another correction of the reference than trim A: a bench PC8 idle or a stored trim refuses what the arm covers
+	// and a list names (16), FM and DMR, after the arm's own reasons; the model's values and a bench carrier keep
+	// theirs
+	CHECK(CS7000P_TX_ARM_REF == 16);	// the hardware page's: append only
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_ALL, 0x5EEDu);
+	for (int k = 0; k < 2; k++) {
+		for (int dmr = 0; dmr < 2; dmr++) {
+			q = req(446u * MHZ, 1, dmr != 0);
+			q.limit_list = true;
+			q.bench_dmr = true;
+			q.pc8_bench = k == 0;
+			rf.trim_ppb = k == 1 ? -450 : 0;
+			const uint32_t refused = rf.tx_refused;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_REF && rf.tx_refused == refused + 1u);
+			CHECK(rf.tx_refused_why == CS7000P_TX_ARM_REF);
+			nothing_live_at(446u * MHZ, 1, dmr != 0, level_drive(&armed_table, CS7000P_ARM_ALL, 446u * MHZ, 1));
+			q.limit_list = false;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_NO_LIST);
+		}
+	}
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM_LOW, 0x5EEDu);
+	q = req(446u * MHZ, 1, false);
+	q.limit_list = true;
+	q.pc8_bench = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
+	// A bench carrier: its own rules, the trim and PC8 as they are
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm);
+	cs7000p_rf_tx_off(&rf, false);
+	rf.trim_ppb = 0;
+	q.pc8_bench = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x5EEDu);
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
+	cs7000p_rf_tx_off(&rf, false);
+
 	// A table without what a mode needs answers 2 for that mode, armed or not, as a table without values; the other
 	// mode keeps the arm's reasons. Each group alone, as a refusal would clear it
 	static const struct { uint16_t group; bool fm, dmr0, dmr1; } need[] = {
