@@ -104,10 +104,12 @@ cs7000pRfTest: $(CS7000P_RF) $(CS7000P_H) $(CS7000P_RF_H)
 run-boards:: cs7000pRfTest
 	./cs7000pRfTest
 
-# The calibration tables as shipped (unset: no transmission) and on a synthetic table (rfcal_cs7000p.c)
-CS7000P_CAL := $(CS7000P_T)/cs7000pCalTest.c $(CS7000P)/rfcal_cs7000p.c
+# The calibration tables as shipped (unset: no transmission) and on a synthetic table (rfcal_cs7000p.c); the receive
+# getters on invented maker's tables, over the reader
+CS7000P_CAL := $(CS7000P_T)/cs7000pCalTest.c $(CS7000P)/rfcal_cs7000p.c \
+	$(CS7000P)/makercal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c $(CS7000P_RF_DRV)
 TESTS   += cs7000pCalTest
-cs7000pCalTest: $(CS7000P_CAL) $(CS7000P_H)
+cs7000pCalTest: $(CS7000P_CAL) $(CS7000P_H) $(CS7000P_RF_H)
 	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_CAL)
 run-boards:: cs7000pCalTest
 	./cs7000pCalTest
@@ -115,7 +117,8 @@ run-boards:: cs7000pCalTest
 # The RF chain's sequences on this board's lines (rfops_cs7000p.c under drivers/rf/chainseq) with a fake expander
 # and DAC
 CS7000P_SEQ := $(CS7000P_T)/cs7000pRadioSeqTest.c $(CS7000P)/rfops_cs7000p.c $(CS7000P)/rfcal_cs7000p.c \
-	$(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c $(CS7000P_RF_DRV)
+	$(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c $(CS7000P_RF_DRV) \
+	$(CS7000P)/makercal_cs7000p.c
 TESTS   += cs7000pRadioSeqTest
 cs7000pRadioSeqTest: $(CS7000P_SEQ) $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/rf/chainseq/chainseq.h \
                      $(CORE)/radio/apc_ramp.h $(CORE)/radio/pa_keyup.h
@@ -141,7 +144,8 @@ run-boards:: cs7000pSubPwmTest
 # power state: the microphone for every transmission and off at every end, the power's off state (the interrupt
 # mask the test's own: a power-off can come just before it). With the maker's factory table on core/storage and the
 # factory copy as the board builds them (its map, kept bytes, claimed first) over the simulated NOR flash; again
-# without the copy (CONFIG_FACTORY_COPY=0: the window alone)
+# without the copy (CONFIG_FACTORY_COPY=0: the window alone); and with CS7000P_RX_MAKER=0, where receive takes nothing
+# from a valid table (cs7000pRadioRxOffTest)
 CS7000P_RADIO := $(CS7000P_T)/cs7000pRadioTest.c $(CS7000P)/radio_cs7000p.c $(CS7000P)/rfops_cs7000p.c \
 	$(CS7000P)/rfcal_cs7000p.c $(CS7000P)/rfplan_cs7000p.c $(ROOT)/drivers/rf/chainseq/chainseq.c \
 	$(CS7000P_RF_DRV) $(ROOT)/drivers/bus/wire3_gpio/wire3_gpio.c $(CORE)/radio/tx_limit.c $(CORE)/radio/pa_keyup.c \
@@ -152,14 +156,17 @@ CS7000P_RADIO_H := $(CS7000P_H) $(CS7000P_RF_H) $(ROOT)/drivers/rf/chainseq/chai
 	$(wildcard $(CORE)/storage/*.h) sim/sim_flash.h $(ROOT)/hal/hal_flash.h
 CS7000P_RADIO_F := $(CS7000P_INC) -I$(ROOT)/platform/stm32 -I. -Wshadow -DCS7000P_STUB_MASK_HOOK \
 	-DSTORAGE_CLAIM_FIRST=1 -DSTORAGE_FACTORY_KEEP=1
-TESTS   += cs7000pRadioTest cs7000pRadioNoCopyTest
+TESTS   += cs7000pRadioTest cs7000pRadioNoCopyTest cs7000pRadioRxOffTest
 cs7000pRadioTest: $(CS7000P_RADIO) $(CS7000P_RADIO_H)
 	$(CC) $(CFLAGS) $(CS7000P_RADIO_F) -o $@ $(CS7000P_RADIO)
 cs7000pRadioNoCopyTest: $(CS7000P_RADIO) $(CS7000P_RADIO_H)
 	$(CC) $(CFLAGS) $(CS7000P_RADIO_F) -DCONFIG_FACTORY_COPY=0 -o $@ $(CS7000P_RADIO)
-run-boards:: cs7000pRadioTest cs7000pRadioNoCopyTest
+cs7000pRadioRxOffTest: $(CS7000P_RADIO) $(CS7000P_RADIO_H)
+	$(CC) $(CFLAGS) $(CS7000P_RADIO_F) -DCS7000P_RX_MAKER=0 -o $@ $(CS7000P_RADIO)
+run-boards:: cs7000pRadioTest cs7000pRadioNoCopyTest cs7000pRadioRxOffTest
 	./cs7000pRadioTest
 	./cs7000pRadioNoCopyTest
+	./cs7000pRadioRxOffTest
 
 # The reader of the maker's factory calibration table (makercal_cs7000p.c) on invented tables: the maker's
 # arithmetic, the integrity and use rules, the VCO switch windows, the settings, the trims and the RSSI line

@@ -13,6 +13,7 @@
 #include "debuglink/debuglink_air.h"
 #include "debuglink/dl_chip.h"
 #include "debuglink/dl_shot.h"
+#include "debuglink/dl_txarm.h"
 #include "debuglink/dlog.h"
 #include "hostlink/build_info.h"
 #include "hostlink/hostlink.h"
@@ -69,6 +70,7 @@ enum {
 	// 30: the speaker volume (DL_OP_VOLUME, debuglink_view_radio.c)
 	// 31, 32: DMR fields, Copy to VFO (DL_OP_DMR_FIELDS, DL_OP_VFO_COPY, debuglink_view_radio.c)
 	// 33, 34: the DMR voice test signal, a DTMF key down or up (DL_OP_VOICE_TEST, DL_OP_DTMF, debuglink_view_radio.c)
+	// 35-43: the radio features' too; 44: the owner's transmit arm (DL_OP_TX_ARM, dl_txarm.c)
 };
 
 static dl_parser_t parser;
@@ -475,6 +477,10 @@ static size_t cmd_radio(const uint8_t *req, uint16_t len, uint8_t *out)
 	};
 	uint32_t now = hal_millis();
 
+	if (len >= 1 && req[0] == DL_OP_TX_ARM) {
+		// Queues no request (the board's hook asks its own receive set-up), so the info can be read at any time
+		return dl_tx_arm_op(board.radio, req + 1, (uint16_t)(len - 1u), out);
+	}
 	if (len >= 1 && debuglink_is_feature_op(req[0])) {
 		// The radio features' operations (debuglink_view_radio.c), under the same rate limit
 		if (radio_op_done && (now - last_radio_op_ms) < RADIO_OP_GAP_MS) {

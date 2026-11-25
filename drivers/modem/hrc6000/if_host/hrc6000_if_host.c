@@ -24,6 +24,12 @@
 #define DAC_CTL_HOLD	((uint8_t)(DAC_CTL_SETUP & ~0x02u))
 #define REF_DAC_MID	512
 
+// The other coding a board may ask for (HRC6000_IF_REF_SIGNED, docs/spec/modem-hrc6000.md 8.2): the set-up's own
+// 0x0E kept while receiving, the bias read as ten bits signed around mid-scale. Inferred, not measured: under 0x0E
+// the DAC was seen off with the bias at 0x200, which is -512 signed, 0 V. The voltage of the hold's 0x200 + d is then
+// d: the same low byte, bit 9 the other way
+#define REF_BITS	0x3FFu
+
 // hrc6000_fm_tx_t.uhf: the deviation table's band
 #define UHF_FROM_HZ	300000000u
 
@@ -38,6 +44,30 @@ static bool count(hrc6000_if_t *h, bool ok)
 	return ok;
 }
 
+// ref_coding's answer now: the measured hold and the driver's 4:0x26 without the callback or without the hold, and
+// for an answer the interface does not know (its 4:0x26 too: an answer out of range changes nothing)
+static void coding_ask(const hrc6000_if_t *h, uint8_t *coding, uint8_t *adc_ctl)
+{
+	const hrc6000_if_cfg_t *c = h->cfg;
+	*coding = HRC6000_IF_REF_MID;
+	*adc_ctl = 0;
+	if (!c->ref_dac_hold || c->ref_coding == NULL) {
+		return;
+	}
+	uint8_t adc = 0;
+	uint8_t k = c->ref_coding(c->ctx, &adc);
+	if (k == HRC6000_IF_REF_MID || k == HRC6000_IF_REF_SIGNED) {
+		*coding = k;
+		*adc_ctl = adc;
+	}
+}
+
+// At the start of a full receive set-up: the coding every level and control word write uses until the next one
+static void coding_take(hrc6000_if_t *h)
+{
+	coding_ask(h, &h->ref_coding, &h->adc_ctl);
+}
+
 static void ref_offset(hrc6000_if_t *h, uint32_t hz)
 {
 	const hrc6000_if_cfg_t *c = h->cfg;
@@ -46,14 +76,31 @@ static void ref_offset(hrc6000_if_t *h, uint32_t hz)
 		count(h, hrc6000_set_ref_offset(h->dev, off, false));
 		return;
 	}
-	// The held DAC's level, written here and not through the driver's call: that one puts the offset alone in the
-	// bias first, which is the DAC near 0 V and a kick of several kHz to the reference at every receive entry (a
-	// retune, each wake of the receiver's battery saving) until the level follows. The low byte and the high bits
-	// change in two writes; the high bits last, so the level passes through values at most one byte's range away
-	uint16_t level = (uint16_t)(REF_DAC_MID + off);
-	count(h, hrc_write(h->dev, 4, 0x04, (uint8_t)off));
-	count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
-	count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
+	int8_t r04 = c->rx_tx_offset != NULL ? c->rx_tx_offset(c->ctx, hz, h->dmr) : off;
+	count(h, hrc_write(h->dev, 4, 0x04, (uint8_t)r04));
+	if (h->ref_coding == HRC6000_IF_REF_SIGNED) {
+		// The signed level and its control word back to back: the low byte (the same in both codings), 0x0E,
+		// then the high bits. When the coding changes, the one write in between (0x25 before 0x48) is
+		// unavoidable: bit 9 differs for the same voltage. Leaving this coding, the hold's 0x48 lands under 0x0E
+		// in the same way, and the hold's 0x0C follows it (rx_setup)
+		uint16_t level = (uint16_t)((uint16_t)off & REF_BITS);
+		count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
+		count(h, hrc_write(h->dev, 4, 0x25, DAC_CTL_SETUP));
+		count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
+	} else {
+		// The held DAC's level, written here and not through the driver's call: that one puts the offset alone in
+		// the bias first, which is the DAC near 0 V and a kick of several kHz to the reference at every receive
+		// entry (a retune, each wake of the receiver's battery saving) until the level follows. The low byte and
+		// the high bits change in two writes; the high bits last, so the level passes through values at most one
+		// byte's range away
+		uint16_t level = (uint16_t)(REF_DAC_MID + off);
+		count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
+		count(h, hrc_write(h->dev, 4, 0x48, (uint8_t)(level >> 8)));
+	}
+	if (h->adc_ctl != 0u) {
+		// After the rows that write the driver's value (the FM receive rows, the DMR entry), at every entry
+		count(h, hrc_write(h->dev, 4, 0x26, h->adc_ctl));
+	}
 }
 
 // The receive I/Q order for hz. write: also on the chip, if the order changes (4:0x01 holds the same value in every
@@ -72,10 +119,11 @@ static void iq_follow(hrc6000_if_t *h, uint32_t hz, bool write)
 	count(h, hrc6000_rx_iq_swap(h->dev, swap, write));
 }
 
+// The control word of the coding the last full set-up took
 static void hold(hrc6000_if_t *h)
 {
 	if (h->cfg->ref_dac_hold) {
-		count(h, hrc_write(h->dev, 4, 0x25, DAC_CTL_HOLD));
+		count(h, hrc_write(h->dev, 4, 0x25, h->ref_coding == HRC6000_IF_REF_SIGNED ? DAC_CTL_SETUP : DAC_CTL_HOLD));
 	}
 }
 
@@ -112,9 +160,50 @@ static void fm_rx_setup(hrc6000_if_t *h)
 	}
 }
 
+// The chip's part of the DMR entry on hz
+static void dmr_setup(hrc6000_if_t *h, uint32_t hz)
+{
+#if CONFIG_DMR
+	const hrc6000_if_cfg_t *c = h->cfg;
+	uint8_t mod2 = c->safe_gain, mod1 = c->safe_gain;
+	if (c->mod_pair == NULL || !c->mod_pair(c->ctx, hz, true, &mod2, &mod1)) {
+		mod2 = mod1 = c->safe_gain;
+	}
+	h->fm_tx = false;	// the entry ends an FM transmit set-up (4:0x60)
+	if (c->fm_audio_chip) {
+		count(h, hrc6000_fm_audio(h->dev, false));	// the line out is the codec's from here
+	}
+	iq_follow(h, hz, false);	// the entry writes 4:0x01
+	count(h, hrc6000_dmr_enter(h->dev, mod2, mod1, c->dmr_mic_gain));
+	codec_inputs(h);
+#else
+	(void)h;
+	(void)hz;
+#endif
+}
+
+// The whole receive set-up on hz of the mode h->dmr names, the reference's coding asked first: the mode's rows, then
+// the level and the control word in that coding
+static void rx_setup(hrc6000_if_t *h, uint32_t hz)
+{
+	coding_take(h);
+	if (h->dmr) {
+		dmr_setup(h, hz);
+	} else {
+		fm_rx_setup(h);
+		iq_follow(h, hz, true);
+	}
+	// hz is the receive frequency from here, also for the end of an FM transmission
+	ref_offset(h, hz);
+	h->tuned_hz = hz;
+	hold(h);
+	read_back(h);
+}
+
 bool hrc6000_if_init(hrc6000_if_t *h, hrc_t *dev, const hrc6000_if_cfg_t *cfg, uint32_t hz)
 {
 	*h = (hrc6000_if_t){ .dev = dev, .cfg = cfg, .tuned_hz = hz };
+	coding_take(h);
 	count(h, hrc6000_power_on_init(dev, cfg->dmr_mic_gain));
 	fm_rx_setup(h);
 	count(h, hrc6000_set_rx_gain(dev, cfg->rx_gain_db));
@@ -146,23 +235,7 @@ void hrc6000_if_mode(hrc6000_if_t *h, bool dmr, uint32_t hz)
 	const hrc6000_if_cfg_t *c = h->cfg;
 	h->dmr = dmr;
 	if (dmr) {
-#if CONFIG_DMR
-		uint8_t mod2 = c->safe_gain, mod1 = c->safe_gain;
-		if (c->mod_pair == NULL || !c->mod_pair(c->ctx, hz, true, &mod2, &mod1)) {
-			mod2 = mod1 = c->safe_gain;
-		}
-		h->fm_tx = false;	// the entry ends an FM transmit set-up (4:0x60)
-		if (c->fm_audio_chip) {
-			count(h, hrc6000_fm_audio(h->dev, false));	// the line out is the codec's from here
-		}
-		iq_follow(h, hz, false);	// the entry writes 4:0x01
-		count(h, hrc6000_dmr_enter(h->dev, mod2, mod1, c->dmr_mic_gain));
-		codec_inputs(h);
-#endif
-		ref_offset(h, hz);
-		h->tuned_hz = hz;
-		hold(h);
-		read_back(h);
+		rx_setup(h, hz);
 		if (c->dmr_enter != NULL) {
 			c->dmr_enter();	// the engine on and the receiver restarted, on a chip that is ready
 		}
@@ -170,27 +243,35 @@ void hrc6000_if_mode(hrc6000_if_t *h, bool dmr, uint32_t hz)
 		if (c->dmr_leave != NULL) {
 			c->dmr_leave();	// the engine off while the chip is still in DMR
 		}
-		fm_rx_setup(h);
-		iq_follow(h, hz, true);
-		// As the DMR entry: hz is the receive frequency from here, also for the end of an FM transmission
-		ref_offset(h, hz);
-		h->tuned_hz = hz;
-		hold(h);
-		read_back(h);
+		rx_setup(h, hz);
 	}
 }
 
-void hrc6000_if_retune(hrc6000_if_t *h, uint32_t hz)
+bool hrc6000_if_retune(hrc6000_if_t *h, uint32_t hz)
 {
 	if (!h->up) {
-		return;
+		return false;
 	}
 	if (h->fm_tx) {
 		// The transmit set-up holds the reference offset in its transmit form: hrc6000_if_fm_tx_end applies hz
 		h->tuned_hz = hz;
-		return;
+		return false;
 	}
 	const hrc6000_if_cfg_t *c = h->cfg;
+	uint8_t coding, adc_ctl;
+	coding_ask(h, &coding, &adc_ctl);
+	if (coding != h->ref_coding || adc_ctl != h->adc_ctl) {
+		// One coding per receive state: never this state's level under the other's control word. The whole set-up
+		// also gives 4:0x26 the driver's value back. In DMR the engine goes off and on around it, as at an entry
+		if (h->dmr && c->dmr_leave != NULL) {
+			c->dmr_leave();
+		}
+		rx_setup(h, hz);
+		if (h->dmr && c->dmr_enter != NULL) {
+			c->dmr_enter();
+		}
+		return true;
+	}
 	ref_offset(h, hz);
 	iq_follow(h, hz, true);
 	if (h->dmr && hz != h->tuned_hz) {
@@ -206,6 +287,7 @@ void hrc6000_if_retune(hrc6000_if_t *h, uint32_t hz)
 	}
 	h->tuned_hz = hz;
 	hold(h);	// every receive entry passes here: one write keeps the reference where a set-up elsewhere left it
+	return false;
 }
 
 bool hrc6000_if_fm_tx(hrc6000_if_t *h, uint32_t hz, bool wide, uint8_t mic_gain)
@@ -243,16 +325,19 @@ void hrc6000_if_fm_tx_end(hrc6000_if_t *h)
 		return;
 	}
 	h->fm_tx = false;
+	coding_take(h);
 	fm_rx_setup(h);
 	count(h, hrc6000_tones_off(h->dev));
+	// The level goes in under the transmit set-up's 0x0E: the hold right after it, before the I/Q order's write,
+	// so the level and its control word disagree for no more than the one write between
 	ref_offset(h, h->tuned_hz);
-	iq_follow(h, h->tuned_hz, true);
 	hold(h);
+	iq_follow(h, h->tuned_hz, true);
 	read_back(h);
 }
 
-// The one function a burst sequence may call from interrupt level: a single register write (atomic on the bus) and
-// no state but the error count
+// The one function a burst sequence may call from interrupt level: a single register write (atomic on the bus), in
+// the coding the last set-up took (no callback here), and no state but the error count
 void hrc6000_if_rx_hold(hrc6000_if_t *h)
 {
 	if (!h->up || h->fm_tx) {

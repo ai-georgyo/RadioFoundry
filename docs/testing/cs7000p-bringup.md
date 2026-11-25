@@ -82,9 +82,9 @@ The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), ea
 | `cs7000pExpTest` (and `...Floor`) | the expander's one writer and the shared DAC's interlock, an interrupt racing the interlock's masked section, the reset word, the SK1 wait before a software reset |
 | `cs7000pPowerTest` | `power_cs7000p.c` on fakes: the hold, the power-off order, the scan stopping, a sagging pack, the off state's LEDs, a `led()` call the power-off cuts into, the off watch idle once the off state ends |
 | `cs7000pBatteryTest` | the battery model, the knob's switch-open threshold, the hold and the off watch rules |
-| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR |
-| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`) |
-| `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict |
+| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR; `chip_reg` 3:5: RAM only, a receive set-up, every key-up refused; the owner's transmit arm: its handshake against each source of the table, every refusal, the restore refused while armed and the arm while a restore is pending |
+| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`), the reference coding's (`why=14`), the transmit arm's (`why=13`, `why=15`) at every level, mode and stage with nothing admitted at any, a lower stage ending a covered transmission |
+| `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict, which field groups a key-up on the maker's table needs |
 | `cs7000pPinsTest`, `cs7000pPanelTest`, `cs7000pKeysTest`, `cs7000pSpeakerTest`, `cs7000pSubPwmTest`, `cs7000pStoreTest` | the pin set-up and its never-driven list, the LCD board check and the panel ID, the keys and the selector, the speaker lines, PC8's duty, the flash map |
 | `cs7000pCodecTest` | the codec's boot check with the board's own profile (`vocoder_cs7000p.c`) on a sector 7 that holds a synthetic codec in the real layout: the descriptor, both CRC-32s, the first word, the entry offsets; a byte changed in the code, in a blanked span, in the block or in a gap fails it. It takes sector 7 alone or a whole merged image (its last 128 KB). With `pinned` as its second argument the file is merged from the maker's file, outside the repository, and the test also asks for the two pinned CRC-32s |
 
@@ -184,6 +184,7 @@ one rebuild can carry several.
 | `CS7000P_LO_HIGH` | 0 | The first LO's side at start-up: 0 below the signal, 1 above. Sets the receive I/Q order with it. The run-time switch is `chip_reg` 3:3 |
 | `CS7000P_REF_OFFSET` | 0 | The HR_C6000 reference offset written at every receive entry |
 | `CS7000P_RX_TUNE_NOMINAL` | 2048 | The front-end tuning DAC code used while the table has none |
+| `CS7000P_RX_MAKER` | 1 | 1: receive takes the tune, the reference level and the RSSI scale from a valid maker's table. 0: today's values whatever the table holds (`board.ref ... why=build`, `rx_cal=default rssi=sheet`); the table is still read, shown and copied. The lasting way back from stage 9.1, where the knobs are RAM only |
 | `CS7000P_FE_GAIN_DB` | 0 | The front end's gain, for the RSSI figure in dBm |
 | `CS7000P_E0_MIC` | 0x02 | The 4:0xE0 codec input bit forced after the DMR entry and the FM transmit set-up |
 | `CS7000P_APC_FLOOR` | 0 | The largest DAC code that gives no RF output: the interlock's threshold (`exp_cs7000p.h`), and the calibration table's floor when the build gives it (`rfcal_cs7000p.c`): the two cannot differ |
@@ -208,7 +209,10 @@ model tables in `rfcal_cs7000p.c`; the polarity of an expander bit in `exp_cs700
 
 Run-time, over the debug link (`tools/rfoundry_debug.py reg 3 N [VALUE]`,
 [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 14): 3:0 the receive tuning DAC, 3:1 the expander shadow (read),
-3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset. Chip 0 is the HR_C6000, 1 the SKY72310 (write
+3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset (0x100 releases it), 3:5 the reference DAC's coding
+(receive only), 3:6 the receive VCO rule, 3:7 the IF chip's words (receive only), 3:8 the RSSI scale (the table's
+points or the data sheet's line). None of them is stored: a restart
+puts each back to its default. Chip 0 is the HR_C6000, 1 the SKY72310 (write
 only), 2 the AK2365A. **Never write DAC1 or GPIOE with `reg soc`**: such a write bypasses the interlock and can key
 the PA, at any stage and whatever `board.cal` says (hardware page 4.3, 14). No step on this page needs a SoC write.
 
@@ -448,6 +452,60 @@ radio's full power. Nothing transmits (`board.cal=none`).
 | A sensitivity or noise floor scan across the band, CPU running | the 96 MHz bus clock's harmonic at 480 MHz, the 48 MHz harmonics (question 17) | note the channels |
 | `board.gps_baud` outdoors | the GPS module's rate (question 23) | no answer at 9600 or 115200: the rate list in `gps_cs7000p.c` |
 
+### 9.1 Receive on the maker's table
+
+For a radio with its table in use: restored in stage 6, or never lost. Nothing here transmits, and nothing is stored:
+each `reg 3 N` knob is back at its default after a restart, so a restart undoes every step. A steady signal on one
+FM channel is enough (the generator at about -110 dBm, or a station heard weakly); steps 4 and 5 want one at a known
+frequency. Write each reading into the bring-up record. All commands are `tools/rfoundry_debug.py`.
+
+1. **The table's state, before and after the restore.** `view --section board2`, once before stage 6's restore and
+   once after it. Before, on a lost table: `board.cal_table=blank src=none`, `board.ref=hold bias=0x200 r04=0x00 d_a=-
+   d_b=- src=default why=table`, `board.rx_cal=default rssi=sheet ...`, `board.sq_maker=none why=table`. After:
+   `cal_table=ok src=window` with the backup's `crc=`, `ref=hold bias=0x...` with `bias` = 0x200 + `d_a`,
+   `src=maker why=none`, `rx_cal=maker rssi=maker`, `sq_maker=ok o1= c1= o9= c9=`. The restore needs no restart:
+   the radio takes the table at its next status poll. If not: `ref ... src=default why=rx_bound` is a trim A over 32
+   steps, not used (note `d_a`, receive keeps today's level); `why=group` a field group the reader refused (the
+   `fields=` of `cal_table`); `src=none` after `restore=ok`: stage 6's "If not" column.
+2. **FM, today's values against the table's.** On the channel with the signal, one knob at a time, each taking effect
+   at the next status poll (under a second): the tune, `reg 3 0 2048` (today's) and `reg 3 0 0` (the table's row);
+   the level, `reg 3 4 0` (today's) and `reg 3 4 0x100` (trim A). For each, `view --section board` (`board.rssi_raw`,
+   `board.noise_raw`, `board.rx_tune`) and `view --section board2` (`board.ref`, `board.rx_cal`), and the audio by
+   ear: clearer, the same or noisier. Expect the table's no worse. If worse: keep today's value for the session with
+   the same command (it is RAM only, so set it again after each start) and note the frequency, the readings and
+   `board.ref`. For good: build with `CS7000P_DEFS="-DCS7000P_RX_MAKER=0"` (Bench knobs) and install it. It
+   receives on today's values whatever the table holds, the table kept and shown (`board.ref ... why=build`).
+3. **DMR, the same.** On a DMR channel with a station or the bench repeater: `reset` before each half, then a few
+   calls, `view --section dmr_stats` (`call.rx_calls`, `call.rx_lost_frames`) and `view --section dmr_call` (the
+   source and talk group shown) with today's values (`reg 3 0 2048`, `reg 3 4 0`), then with the table's (`reg 3 0
+   0`, `reg 3 4 0x100`). Expect the same calls decoded each way. The RSSI (`call.rssi_dbm`, the S-meter) is on the
+   table's scale now (`rx_cal ... rssi=maker`), so its figures differ from before: compare the decode, not the dBm.
+   The scale itself is the third knob: `reg 3 8 1` puts the dBm back on the data sheet's line (`rssi=bench`), `reg 3
+   8 0` on the table's points, at the next status poll. The DMR scan's strength test and roaming's leave threshold
+   read the dBm: if a scan stops or skips, or roaming changes, after the restore, try the same with `reg 3 8 1`, and
+   note which. For good: `CS7000P_RX_MAKER=0` (Bench knobs), which also gives back today's tune and level.
+4. **The maker's coding of the reference DAC** ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 8 item 1),
+   FM only. Note what `reg 3 4` reads (0x0100: no bench offset). Then `reg 3 5 1` and `reg 3 4 0` (bias 0, 4:0x04
+   0): `board.hrc` reads `r25=0x0e`, `board.ref` `ref=maker bias=0x000`. Listen: on channel, the same audio as
+   before, means the inferred coding holds; about 10 kHz off (no audio on a narrow channel, distorted on a wide one,
+   `noise_raw` high) means it does not. Then `reg 3 4 0x05` and `reg 3 4 0xFB` (+5 and -5 steps; about 18-21 Hz
+   each, so the audio does not change, but a counter or an SDR on the carrier's beat shows it) and back to `reg 3 4
+   0`. Then `reg 3 5 2`: `reg 0 0x26 --page 4` reads 0x7D; note whether anything changes. Last `reg 3 5 0`:
+   `r25=0x0c`, `reg 0 0x26 --page 4` reads 0xFD, and `reg 3 4 0x100` (or the value noted). Each 3:5 write reaches the
+   modem at the next status poll: until then `board.ref` ends in `ask=` with the coding asked for. A key-up meanwhile,
+   and until the way back is taken, is refused with `board.tx_refused` `why=14`. Record: on channel or not under 3:5 = 1, the step size if measured,
+   whether 3:5 = 2 changed anything. Off channel: the hold stays the default, nothing else to do.
+   `test_reference_coding_knob` checks the register values without a signal.
+5. **The maker's IF words and squelch thresholds.** With `board.sq_maker` `ok`: the signal stepped down from about
+   -110 dBm into the noise (or a weak station and no signal), at each step `board.noise_raw` and `board.rssi_raw`
+   (`view --section board`), with `noise_raw` / 16 set against `o1` / `c1` (squelch level 1, open / close) and `o9`
+   / `c9` (level 9). Then `reg 3 7 1` (`board.rx_cal ... ifw=maker`), the same steps, the audio by ear, and `reg 3 7
+   0`. Nothing is applied: the squelch stays the port's either way. Record both columns. If the audio is worse
+   under the maker's words: `reg 3 7 0` and note it.
+
+`python3 -m pytest boards/cs7000p/hil/test_cs7000p.py -k "receive_calibration or reference_coding" -v -rs` checks
+the keys, the held level against `board.ref` and the knob's register values, without a signal and without keying.
+
 ## 10. DMR receive
 
 | Look for | Proves | If not |
@@ -591,7 +649,7 @@ Open points found while the board was written, beside the hardware page's 36 que
 | The microphone in DMR: on from the arm (`EXP_MIC_POWER`, `EXP_MIC_INT`) to its end. The codec's encoder uses it once the codec is merged (stage 10.1). Once something does, a silent DMR transmission: the microphone rail first (`MIC_5V` present while armed), then the codec input bit (`CS7000P_E0_MIC`) | `MIC_5V` on a meter while a DMR transmission is armed (stage 11) |
 | The battery while keyed: the transmit check reads `POW_DET` once, before the key-up. Only the core's monitor ends a transmission when the battery sags | stage 11 |
 | A safe request (`board_rf_safe()`) leaves the HR_C6000 in the mode it was in, the FM transmit set-up included, until the next `tx_off()` or status poll: the reference oscillator sits on the transmit set-up's control level with the PA off | a frequency counter on the reference after a forced safe request |
-| `status()` is where the receiver is restored after a safe request and where the bench changes `chip_reg` 3:3 and 3:4 are applied. If the core stops polling it in some state, they wait for the next `rx()`. In the power's off state it does not restore | by reading the code paths once the radio runs |
+| `status()` is where the receiver is restored after a safe request and where the bench changes `chip_reg` 3:3 to 3:6 are applied. If the core stops polling it in some state, they wait for the next `rx()`. In the power's off state it does not restore | by reading the code paths once the radio runs |
 | The burst runner's key-up under a bench drive uses the drive as its own top | no difference with the fixed key-up constant; matters once the constants are measured |
 | After an underrun or overrun the two I2S streams may be a few samples out of step until the next audio stop and start (RM0433 50.9.12, 50.9.13; an overrun with an early frame in one frame, 50.9.14) | `board.i2s` `und=` / `ovr=` over a few minutes of audio: 0 expected |
 | STM32H743 revision Y only: ADC and DAC conversions at the same time may cost ADC accuracy (ES0392 2.9.7), and 12 bits are not guaranteed with VDDA above 3.3 V (2.9.10) | `board.mcu_rev` |

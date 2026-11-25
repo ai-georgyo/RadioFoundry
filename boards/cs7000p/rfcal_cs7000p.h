@@ -7,7 +7,10 @@
 // No value is guessed: every table in the source is unset, so the verdict is "no" at every frequency and level, in FM
 // and in DMR. The values come from the bench (docs/testing/power-calibration.md for the PA drives, a deviation meter
 // for the modulation pairs, a counter for the reference). The maker's own factory table (data flash
-// 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md) is not read yet.
+// 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md, read by makercal_cs7000p.h) serves receive only so far: the
+// front-end tune, the receive reference level and the RSSI scale (the cs7000p_cal_*_m getters below), each from its
+// own field group, with today's value whenever that group or that lookup gives none. No transmit value comes from it:
+// whether it would serve a transmission is asked (cs7000p_cal_maker_tx), for the owner's arm, and nothing more.
 //
 // A row is nine points, 400 to 520 MHz in steps of 15 MHz, read with linear interpolation between two points and
 // held flat past the ends. A row with one point unset is unset as a whole: half a row is never used.
@@ -16,6 +19,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "makercal_cs7000p.h"
 
 #define CS7000P_POWER_LEVELS	2u		// board.c's power names: 1 W, 4 W
 #define CS7000P_CAL_POINTS	9u
@@ -35,6 +39,15 @@
 // the reference oscillator's control voltage and what level is on frequency are the first RF measurement
 #ifndef CS7000P_REF_OFFSET
 #define CS7000P_REF_OFFSET	0
+#endif
+// Receive takes the maker's table (1), or never (0): today's tune, reference level and RSSI scale whatever the table
+// holds, the lasting way back should a valid table receive worse than today's values (the bench's 3:0, 3:4 and 3:8
+// are RAM only). The table is still read, checked, shown and copied either way, and transmit is not affected
+#ifndef CS7000P_RX_MAKER
+#define CS7000P_RX_MAKER	1
+#endif
+#if CS7000P_RX_MAKER != 0 && CS7000P_RX_MAKER != 1
+#error "CS7000P_RX_MAKER is 0 or 1"
 #endif
 // The gain ahead of the IF chip, dB, taken off its RSSI reading. Unmeasured: the reading is not an absolute level
 #ifndef CS7000P_FE_GAIN_DB
@@ -73,6 +86,40 @@ static inline uint16_t cs7000p_cal_tune_clamp(uint32_t v)
 bool cs7000p_cal_tx_ok(const cs7000p_cal_t *c, uint32_t hz, uint8_t level, bool dmr);
 // Some level could transmit in some mode: what the view shows as cal=model (false: cal=none, nothing transmits)
 bool cs7000p_cal_any_tx(const cs7000p_cal_t *c);
+
+// --- Receive, the maker's table first (hardware-cs7000p.md 13.1) ---
+// m is the table in use (the window's or the copy's record): NULL, or one not valid, is none. Each value comes from
+// the maker's table only when its own field group passed and its lookup gives one, and the build has
+// CS7000P_RX_MAKER, else from the model and the build's default exactly as without the table, so a refused table
+// changes nothing. src (may be NULL): where the value came
+// from. The bench's knobs (chip_reg 3:0, 3:4, 3:8) are the caller's, and win over all of this
+enum { CS7000P_SRC_DEFAULT = 0, CS7000P_SRC_MAKER = 1, CS7000P_SRC_BENCH = 2 };
+// Why the receive reference level is not trim A (cs7000p_cal_rx_ref_m)
+enum {
+	CS7000P_RXREF_WHY_NONE = 0,	// trim A is in use
+	CS7000P_RXREF_WHY_TABLE,	// no valid table in use
+	CS7000P_RXREF_WHY_GROUP,	// the table's TRIM_A group was refused
+	CS7000P_RXREF_WHY_BOUND,	// trim A is farther than CS7000P_MAKER_RX_TRIM_MAX from 128
+	CS7000P_RXREF_WHY_BUILD,	// the build has CS7000P_RX_MAKER 0
+};
+// The front end's tuning value for hz: the tune row (0x044 at f_rx, 16 c, CS7000P_TUNE_MIN..MAX), else
+// cs7000p_cal_rx_tune(c, hz)
+uint16_t cs7000p_cal_rx_tune_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, uint32_t hz, uint8_t *src);
+// The reference offset the held level takes in receive (the bias 0x200 + it under the measured hold): trim A's d
+// within CS7000P_MAKER_RX_TRIM_MAX, else cs7000p_cal_ref_offset(c). why (may be NULL): CS7000P_RXREF_WHY_*. The bias
+// only: 4:0x04 keeps cs7000p_cal_ref_offset's value in receive, as what 4:0x04 does under the hold is not measured
+int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, uint8_t *src, uint8_t *why);
+// The RSSI in dBm: the table's two points on the 12-bit reading (raw12 >> 4), else cs7000p_rssi_dbm(mv). The FM
+// squelch never reads it (it is the noise reading's), so FM receive cannot change through it
+int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv, uint8_t *src);
+
+// --- Transmit, the maker's table (hardware-cs7000p.md 13.2): asked, not served ---
+// The table in use (m: NULL or not valid is none) holds every value a transmission in this mode at this power level
+// would need at hz: FM the level's drive, the FM pair and trim A; DMR also the DMR pair, trim B and the level's burst
+// fields (checked though not applied: a damaged timing field is a damaged table). Each from its own field group,
+// with the reader's transmit rules at hz (the band, the VCO switch, no clamped, wrapped, 0 or 255 result). Asks
+// nothing of the arm: this is what an armed key-up would find. No getter serves these values yet
+bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr);
 
 // The IF chip's RSSI output in millivolts as dBm at its input, from the data sheet's two typical points (0.3 V at
 // -100 dBm, 2.0 V at -30 dBm), less CS7000P_FE_GAIN_DB. A relative reading until it has been measured

@@ -314,15 +314,36 @@ static void line_adc_restarts(char *buf, uint8_t len)
 	dl_fmt(buf, len, "adc_restarts=%u", (unsigned)stm32_adc_scan_restarts());	// overrun recoveries: 0 is expected
 }
 
-// The maker's factory table in use and the factory copy's record (radio_cs7000p.c): the second section's
+// The maker's factory table in use, the factory copy's record, what receive takes from the table and what it holds
+// that nothing applies yet (radio_cs7000p.c): the second section's, all of one reply from one copy, the first line's
 static void line_cal_table(char *buf, uint8_t len)
 {
-	cs7000p_cal_table_line(buf, len);
+	cs7000p_cal_view_line(0, buf, len);
 }
 
 static void line_cal_rec(char *buf, uint8_t len)
 {
-	cs7000p_cal_rec_line(buf, len);
+	cs7000p_cal_view_line(1, buf, len);
+}
+
+static void line_ref(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(2, buf, len);
+}
+
+static void line_rx_cal(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(3, buf, len);
+}
+
+static void line_sq_maker(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(4, buf, len);
+}
+
+static void line_tx_arm(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(5, buf, len);
 }
 
 // The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
@@ -338,9 +359,13 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	line_gps_baud, line_adc_restarts,
 	// board2
 	line_cal_table, line_cal_rec,
+	line_ref, line_rx_cal,
+	line_sq_maker, line_tx_arm,
 };
 #define LINES	(sizeof(lines) / sizeof(lines[0]))
-_Static_assert(LINES == CS7000P_VIEW_SPLIT + 2u, "board.view_split counts the lines before board2's two");
+// board2 is exactly the table's lines, in cs7000p_cal_view_line's order: its first takes the copy for the others
+_Static_assert(LINES == CS7000P_VIEW_SPLIT + CS7000P_CAL_VIEW_LINES,
+	       "board.view_split counts the lines before board2's");
 
 bool cs7000p_view_line(uint8_t i, char *buf, uint8_t len)
 {

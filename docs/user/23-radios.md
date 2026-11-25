@@ -794,7 +794,9 @@ screen. **In development, for testers: one radio runs it so far, receive only.**
 clear audio, and DMR calls are received and played with the voice codec. Know these four things first:
 
 - **It does not transmit yet.** RadioFoundry reads the maker's calibration but doesn't transmit on it yet, and it
-  guesses none, so it refuses every transmission, FM and DMR.
+  guesses none, so it refuses every transmission, FM and DMR. Receive uses it: with the calibration in place (on a
+  radio that lost it, after the restore from your backup, [below](#installing-on-the-cs7000-m17-plus)) the receiver
+  takes its tuning from it, and the signal strength reads on the maker's scale, so the figures differ from before.
 - **DMR voice needs the radio's voice codec**, which the installer takes from Connect Systems' firmware file
   V9.00.96 on your computer. With it, received DMR calls play from the speaker (checked on one radio). Without the
   file the radio runs without DMR voice: DMR calls show on the screen without audio. DMR data and FM don't need a

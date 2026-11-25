@@ -232,6 +232,29 @@ static void test_if_words(void)
 	CHECK(cs7000p_if_word_wait_us(ak2365a_word(AK2365A_REG_CTRL4, 0x02)) == 0u);	// data that looks like the address
 	CHECK(cs7000p_if_word_wait_us(ak2365a_word(AK2365A_REG_CTRL1, 0x02)) == 0u);
 
+	// The maker's words, a receive test's (chip_reg 3:7): control 1 per mode, its AGC setting with the calibration
+	// start, control 3 to 5 the port's; the same 500 us ahead of control 2, the only wait
+	CHECK(cs7000p_if_cfg_maker_fm.ctrl1_wide == 0xF5 && cs7000p_if_cfg_maker_fm.ctrl1_narrow == 0xE9);
+	CHECK(cs7000p_if_cfg_maker_dmr.ctrl1_wide == 0xE5 && cs7000p_if_cfg_maker_dmr.ctrl1_narrow == 0xE5);
+	const ak2365a_cfg_t *const maker[2] = { &cs7000p_if_cfg_maker_fm, &cs7000p_if_cfg_maker_dmr };
+	for (unsigned k = 0; k < 2; k++) {
+		const ak2365a_cfg_t *c = maker[k];
+		CHECK(c->ctrl2 == 0x1F && (c->ctrl2 & AK2365A_CTRL2_CAL) != 0u);
+		CHECK(c->ctrl3 == cs7000p_if_cfg.ctrl3 && c->ctrl4 == cs7000p_if_cfg.ctrl4 &&
+		      c->ctrl5 == cs7000p_if_cfg.ctrl5);
+		for (unsigned width = 0; width < 2; width++) {
+			uint16_t m[AK2365A_SETUP_WORDS];
+			uint32_t total = 0;
+			CHECK(ak2365a_setup_words(c, width != 0, m) == AK2365A_SETUP_WORDS);
+			CHECK((m[0] >> 9) == AK2365A_REG_SRST && (m[1] >> 9) == AK2365A_REG_CTRL1);
+			CHECK((m[1] & 0xE3u) == 0xE1u);	// operating mode 7, the 50.4 MHz LO
+			for (unsigned i = 0; i < AK2365A_SETUP_WORDS; i++) {
+				total += cs7000p_if_word_wait_us(m[i]);
+			}
+			CHECK(total == CS7000P_IF_MODE_US && cs7000p_if_word_wait_us(m[2]) == CS7000P_IF_MODE_US);
+		}
+	}
+
 	// The bench reaches the six registers the data sheet names and no other address: 0x05 to 0x0A are reserved
 	// ("do not access"), and nothing is defined at 0 or past control 5
 	for (unsigned reg = 0; reg < 0x40u; reg++) {

@@ -113,11 +113,14 @@ enum {
 	DL_OP_VOICE_CAPTURE = 41,
 	DL_OP_P25 = 42,
 	DL_OP_NXDN = 43,
+	// The owner's transmit arm (hal_radio_t.tx_arm, dl_txarm.h): debuglink.c answers it itself, with a reply of its
+	// own, outside the radio requests' rate limit
+	DL_OP_TX_ARM = 44,
 };
 uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *args, uint16_t len);
 // After a reply: the host port's reattach a PA key run asked for (PA_KEYRUN_FLAG_REATTACH); else a no-op
 void debuglink_keyrun_service(void);
-// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too
+// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too, but for DL_OP_TX_ARM
 static inline bool debuglink_is_feature_op(uint8_t op)
 {
 	return (op >= DL_OP_SCAN && op <= DL_OP_SETTING) || op == DL_OP_ROAM || op == DL_OP_VIBRATE || op == DL_OP_VOLUME ||

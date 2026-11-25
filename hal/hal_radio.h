@@ -25,6 +25,30 @@ typedef struct {
 	uint16_t value;		// CTCSS: Hz x 10 (1000 = 100.0 Hz). DCS: the code as written, octal digits (023 -> 0x13 = 19 = 023 octal)
 } subtone_t;
 
+// hal_radio_t.tx_arm's stages: each covers the ones below it
+enum {
+	HAL_TX_ARM_OFF = 0,
+	HAL_TX_ARM_FM_LOW = 1,		// FM at the lowest power level
+	HAL_TX_ARM_FM = 2,		// FM at every power level
+	HAL_TX_ARM_ALL = 3,		// every mode at every level
+};
+// hal_radio_t.tx_arm's answer: 0, or why it refused (the debug link's RADIO op 44 reason byte). Numbers append only
+enum {
+	HAL_TX_ARM_OK = 0,
+	HAL_TX_ARM_NO_CAL = 1,		// no calibration in use that the arm could cover
+	HAL_TX_ARM_ID = 2,		// the id is not the CRC-32 of the calibration in use
+	HAL_TX_ARM_STAGE = 3,		// a stage over the board's highest
+	HAL_TX_ARM_STATE = 4,		// a state forbids it now (a bench state, the calibration about to change)
+};
+// hal_radio_t.tx_arm_info
+typedef struct {
+	uint8_t stage;			// the arm now (HAL_TX_ARM_*)
+	uint8_t max;			// the highest stage the board offers
+	uint32_t addr, len;		// the calibration the arm is checked against: the flash range it comes from
+	uint32_t crc;			// the CRC-32 (IEEE) of its bytes; 0 when none is in use
+	bool cal_ok;			// a calibration the arm could cover is in use; false: every arm is refused
+} hal_tx_arm_info_t;
+
 typedef struct {
 	int16_t rssi_dbm;
 	uint8_t noise;		// chip noise reading, larger = more noise (1 dB units where the chip allows); UINT8_MAX when it can't hear
@@ -131,6 +155,16 @@ typedef struct {
 	uint16_t (*tx_drive_top)(void);
 	bool (*tx_drive_now)(uint16_t drive);
 	bool (*tx_mark)(int8_t step);
+	// Optional, both or neither (docs/spec/radio-features.md 6.3): the owner's transmit arm, for a radio whose
+	// transmit path on a calibration it found (its maker's) has not run on air. Every transmission on that
+	// calibration is refused until the owner arms it, in stages (HAL_TX_ARM_*), until power-off: RAM only, off at
+	// every start, never stored. tx_arm_info: the arm now, the highest stage, and the calibration it is checked
+	// against. tx_arm: a stage and the CRC-32 the host computed from its own backup of that range (never one the
+	// radio gave it: the id says the host compared the radio's bytes with its backup). HAL_TX_ARM_OFF always
+	// succeeds, and so does a stage below the one armed. Returns HAL_TX_ARM_OK or the refusal's reason. A lower
+	// stage ends a transmission it no longer covers at once. The debug link's task
+	void (*tx_arm_info)(hal_tx_arm_info_t *info);
+	uint8_t (*tx_arm)(uint8_t stage, uint32_t id);
 } hal_radio_t;
 
 #endif

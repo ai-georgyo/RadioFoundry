@@ -106,6 +106,80 @@ bool cs7000p_cal_any_tx(const cs7000p_cal_t *c)
 	return false;
 }
 
+// --- Receive, the maker's table first ---
+
+static void src_is(uint8_t *src, uint8_t v)
+{
+	if (src != NULL) {
+		*src = v;
+	}
+}
+
+uint16_t cs7000p_cal_rx_tune_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, uint32_t hz, uint8_t *src)
+{
+	uint16_t dac;
+	// The reader refuses for a NULL or not valid table, a refused group and a lookup that wrapped or crosses the VCO
+	// switch past the end points: each of them today's value
+	if (CS7000P_RX_MAKER && m != NULL && cs7000p_maker_rx_tune(m, hz, &dac, NULL)) {
+		src_is(src, CS7000P_SRC_MAKER);
+		return dac;
+	}
+	src_is(src, CS7000P_SRC_DEFAULT);
+	return cs7000p_cal_rx_tune(c, hz);
+}
+
+int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, uint8_t *src, uint8_t *why)
+{
+	int16_t d;
+	uint8_t w = CS7000P_RXREF_WHY_NONE;
+	if (!CS7000P_RX_MAKER) {
+		w = CS7000P_RXREF_WHY_BUILD;
+	} else if (m == NULL || !m->valid) {
+		w = CS7000P_RXREF_WHY_TABLE;
+	} else if (!cs7000p_maker_trim(m, false, &d)) {
+		w = CS7000P_RXREF_WHY_GROUP;
+	} else if (d > CS7000P_MAKER_RX_TRIM_MAX || d < -CS7000P_MAKER_RX_TRIM_MAX) {
+		// Farther than the bring-up's passband sweep allows at mid-scale: either the coding under the hold is not
+		// 0x200 + d or the table is not this unit's. Receive keeps today's level
+		w = CS7000P_RXREF_WHY_BOUND;
+	}
+	if (why != NULL) {
+		*why = w;
+	}
+	if (w == CS7000P_RXREF_WHY_NONE) {
+		src_is(src, CS7000P_SRC_MAKER);
+		return (int8_t)d;	// within 32 of 0
+	}
+	src_is(src, CS7000P_SRC_DEFAULT);
+	return cs7000p_cal_ref_offset(c);
+}
+
+int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv, uint8_t *src)
+{
+	int16_t dbm;
+	if (CS7000P_RX_MAKER && m != NULL && cs7000p_maker_rssi_dbm(m, raw12, &dbm)) {
+		src_is(src, CS7000P_SRC_MAKER);
+		return dbm;
+	}
+	src_is(src, CS7000P_SRC_DEFAULT);
+	return cs7000p_rssi_dbm(mv);
+}
+
+// --- Transmit, the maker's table: asked, not served ---
+
+bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr)
+{
+	uint16_t drive;
+	uint8_t mod2, mod1;
+	int16_t d;
+	cs7000p_mk_burst_t b;
+	if (m == NULL || !m->valid || !cs7000p_maker_drive(m, hz, level, &drive, NULL) ||
+	    !cs7000p_maker_pair(m, hz, dmr, &mod2, &mod1, NULL) || !cs7000p_maker_trim(m, false, &d)) {
+		return false;
+	}
+	return !dmr || (cs7000p_maker_trim(m, true, &d) && cs7000p_maker_burst(m, hz, level, &b, NULL));
+}
+
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between
 #define RSSI_LO_MV	300
 #define RSSI_LO_DBM	(-100)
