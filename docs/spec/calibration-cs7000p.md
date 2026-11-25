@@ -78,15 +78,19 @@ The map is in [hardware-cs7000p.md](hardware-cs7000p.md) 10.2.
 |---|---|
 | The table lies inside RadioFoundry's open-firmware "EEPROM" image (data flash 0x000000-0x00FFFF, [open-firmware-cps.md](open-firmware-cps.md) 7.1). That image's layout puts no field at 0x1000-0x13FF, but its DTMF settings (0x1400) and APRS configurations (0x1588) share the 4 KB sector | read (the map and the CPS layout) |
 | A CPS write of EEPROM part 1 (0x0080-0x6060) sends whole sectors from the PC's image. The table survives it only if the PC sends back the bytes it read from this radio. A tool that loads an image made on another radio, or builds one fresh, replaces it | read (the CPS protocol) |
-| RadioFoundry's own writes into that sector (a DTMF or APRS edit) read, erase and program the whole sector. They keep the table's bytes, and the journal finishes a rewrite cut by a power loss at the next start ([settings-store.md](settings-store.md) 4), but each such write erases the table and programs it again | read (the port's storage layer) |
+| RadioFoundry's own writes into that sector (a DTMF or APRS edit) read, erase and program the whole sector. They keep the table's bytes, and the journal finishes a rewrite cut by a power loss at the next start ([settings-store.md](settings-store.md) 4), but each such write erases the table and programs it again | read (the port's storage layer, then; now [settings-store.md](settings-store.md) 4.1: the kept rewrite) |
 | The maker's device information at 0x000080-0x00021F (sector 0) is exposed the same way | seen; read |
-| Before the owner's claim RadioFoundry writes nothing there ([hardware-cs7000p.md](hardware-cs7000p.md) 10.3, `STORAGE_CLAIM_FIRST`). After the claim nothing in the firmware protects the table | read (the port) |
+| Before the owner's claim RadioFoundry writes nothing there ([hardware-cs7000p.md](hardware-cs7000p.md) 10.3, `STORAGE_CLAIM_FIRST`). After the claim nothing in the firmware protects the table | read (the port, then; now [settings-store.md](settings-store.md) 4.1 and 4.2) |
 | **The board sector 0x01E000 is not free.** It holds two 0x33-byte records of the maker's, at 0x01E000 and 0x01E400, and was not blank on the unit seen. The maker's program reads, writes and erases that sector. Sector 0x01F000 holds a 0x80-byte record of the maker's, also not blank on the unit seen | seen; read |
 | 0x006000-0x01DFFF was blank on the unit seen, and no constant-address flash call of the maker's program falls in it. Flash calls with computed addresses were not traced | seen; read |
 
 The rows marked "the port" describe it as it was when this page was written. Since then the port keeps the table's
 bytes and the two sectors of records through every write, and its board sector is at 0x01B000
-([hardware-cs7000p.md](hardware-cs7000p.md) 10.2 and 10.3, [settings-store.md](settings-store.md) 4.1).
+([hardware-cs7000p.md](hardware-cs7000p.md) 10.2 and 10.3, [settings-store.md](settings-store.md) 4.1). It keeps a
+checked copy of the table in that sector and restores the window from the owner's backup through one debug link
+command ([settings-store.md](settings-store.md) 4.2). The maker's device information in sector 0 is not kept. The
+port's receive uses three of the table's values, and the port transmits on the table's transmit values only once the
+owner arms it ([hardware-cs7000p.md](hardware-cs7000p.md) 13.1 and 13.2); no such transmission has been made.
 
 ## 3. Layout
 
