@@ -25,7 +25,8 @@
 // record, a restored table), a tone channel with its tone at the depth of the table's level for it (a tone without one
 // refused), and DMR at the top stage on its drive, its DMR pair at f_tx (a split channel) and trim B; 4:0x04 in DMR
 // receive trim B on the top stage only; the bench's drive now stays at or under the admitted drive; the bench drive's
-// key-up writes as without a table, at every stage, but for the bias it inherits. Built again without
+// key-up writes as without a table, at every stage, but for the bias it inherits. board2.tx_maker: what a key-up on
+// the table would take, unarmed and unkeyed, the admission's verdict and the getters' values. Built again without
 // CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
@@ -1123,7 +1124,7 @@ static void view_mid_setup(void)
 static void test_view_whole(void)
 {
 	static const char *const keys[CS7000P_CAL_VIEW_LINES] = {
-		"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm",
+		"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm", "tx_maker",
 	};
 	radio_status_t st;
 	char line[128], want[32];
@@ -2749,6 +2750,238 @@ static void test_arm_bench_keyup(void)
 	}
 }
 
+// board2.tx_maker (hardware-cs7000p.md 15): what a key-up on the table in use would take, read without arming and
+// without keying. Its two sources: at=rx after a start (the receive set-up as a simplex channel's, the lowest level,
+// no tone), at=tx once the core asked for a transmission (refused ones included) while the receive set-up it was asked
+// from stands. The values of the invented table at each level, mode, tone and split frequency, and each lookup that
+// refuses (the band, no table, the drive inside a wide VCO switch segment, the burst fields' group, the tone's level
+// and its range; the pair and the trims, which no parsed table refuses alone, on a parse with one group taken out).
+// Reading it writes nothing and moves no counter, and its verdict is the admission's (cs7000p_cal_maker_tx) at every
+// frequency and level in both modes, its values the key-up getters'
+
+static char txm[192];
+
+static const char *tx_maker_now(void)
+{
+	cs7000p_tx_maker_line(txm, sizeof(txm));
+	return txm;
+}
+
+// The parse of a table, as the radio's
+static void parse(const uint8_t *t, cs7000p_maker_t *m)
+{
+	CHECK(cs7000p_maker_parse(t, crc(t), CS7000P_APC_FLOOR, m));
+}
+
+// The view's verdict and values against the admission's getters, at every 100 kHz of the transmit ranges and past
+// them, both levels, both modes
+static void tx_view_agrees(const cs7000p_maker_t *m)
+{
+	static cs7000p_rf_t rf;
+	rf.maker = m;
+	unsigned ok = 0, refused = 0;
+	for (uint32_t hz = 399000000u; hz <= 513000000u; hz += 100000u) {
+		for (uint8_t level = 0; level < 2; level++) {
+			for (int dmr = 0; dmr < 2; dmr++) {
+				cs7000p_tx_view_t v;
+				cs7000p_fm_tx_t f = { 0 };
+				cs7000p_dmr_tx_t d = { 0 };
+				cs7000p_rf_tx_view(&rf, hz, level, dmr != 0, false, NULL, &v);
+				const bool admits = cs7000p_tx_band(hz) && cs7000p_cal_maker_tx(m, hz, level, dmr != 0);
+				CHECK((v.no == CS7000P_TXL_OK) == admits);
+				if (!admits) {
+					refused++;
+					continue;
+				}
+				ok++;
+				CHECK((v.have & (CS7000P_TXV_LO << level)) && (v.have & CS7000P_TXV_PAIR) &&
+				      (v.have & CS7000P_TXV_TRIM_A));
+				if (dmr) {
+					CHECK(cs7000p_cal_maker_dmr(m, hz, level, &d) && (v.have & CS7000P_TXV_TRIM_B));
+					CHECK(v.drive[level] == d.drive && v.mod2 == d.mod2 && v.mod1 == d.mod1 && v.d_b == d.trim);
+				} else {
+					CHECK(cs7000p_cal_maker_fm(m, hz, level, &f));
+					CHECK(v.drive[level] == f.drive && v.mod2 == f.mod2 && v.mod1 == f.mod1 && v.d_a == f.trim);
+				}
+			}
+		}
+	}
+	CHECK(ok > 0u && refused > 0u);
+}
+
+static void test_tx_maker(void)
+{
+	radio_status_t st;
+	uint8_t blank[N], wide_switch[N], burst_lo[N], ctcss_zero[N];
+	memset(blank, 0xFF, N);
+	invented(table_a, 0x5A);
+	static const subtone_t ctcss = { TONE_CTCSS, 885 }, dcs = { TONE_DCS, 023 }, low_tone = { TONE_CTCSS, 669 };
+
+	// No valid table: at=rx after the start, then the key-up asked (refused: no calibration) noted at=tx
+	chip(blank, NULL);
+	boot(true, 0);
+	CHECK(line_is(tx_maker_now(), "tx_maker=none at=rx hz=446000000 mode=fm lvl=0 lo=- hi=- pair=- d_a=- no=table why=table"));
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 1, NULL) && cs7000p_rf.tx_refused_why == CS7000P_TX_UNCAL);
+	CHECK(line_is(tx_maker_now(), "tx_maker=none at=tx hz=446000000 mode=fm lvl=1 lo=- hi=- pair=- d_a=- no=table why=table"));
+
+	// The invented table, unarmed: the receive set-up as a simplex channel's, the table's drives at both levels, the
+	// FM pair, trim A
+	chip(table_a, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	CHECK(line_is(tx_maker_now(), "tx_maker=ok at=rx hz=446000000 mode=fm lvl=0 lo=%u hi=%u pair=0x78,0x87 d_a=%d",
+		      table_drive[0], table_drive[1], TABLE_TRIM_A));
+	// Reading it writes nothing and counts nothing
+	{
+		const unsigned n = hw_n;
+		const uint32_t sh = shadow, refused = cs7000p_rf.tx_refused;
+		const uint16_t dac = dac_now;
+		for (int k = 0; k < 3; k++) {
+			(void)tx_maker_now();
+		}
+		CHECK(hw_n == n && shadow == sh && dac_now == dac && cs7000p_rf.tx_refused == refused);
+		CHECK(!cs7000p_rf.admit && cs7000p_rf.arm == CS7000P_ARM_OFF && !modem.fm_tx);
+	}
+	// An unarmed key-up at level 1, 25 kHz, CTCSS 88.5 Hz: refused (13), and noted: its level, its tone's depth there
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 1, &ctcss) && cs7000p_rf.tx_refused_why == CS7000P_TX_UNARMED);
+	CHECK(line_is(tx_maker_now(),
+		      "tx_maker=ok at=tx hz=446000000 mode=fm lvl=1 lo=%u hi=%u pair=0x78,0x87 d_a=%d tone_pm=312",
+		      table_drive[0], table_drive[1], TABLE_TRIM_A));
+	CHECK((shadow & EXP_TX_BITS) == 0u && !modem.fm_tx && !cs7000p_rf.admit);
+	// Another width is another receive set-up: the note no longer stands until the next key-up asks
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=rx hz=446000000 mode=fm lvl=0 ") == txm);
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &dcs));
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=tx hz=446000000 mode=fm lvl=0 ") == txm && strstr(txm, " tone_pm=762"));
+	// A tone the table holds no level for: refused by the tone's lookup, out of its two tones' range
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &low_tone));
+	CHECK(line_is(tx_maker_now(),
+		      "tx_maker=none at=tx hz=446000000 mode=fm lvl=0 lo=%u hi=%u pair=0x78,0x87 d_a=%d tone_pm=- no=tone why=range",
+		      table_drive[0], table_drive[1], TABLE_TRIM_A));
+	// A split channel: the transmit frequency's values
+	{
+		cs7000p_maker_t m;
+		cs7000p_fm_tx_t lo, hi;
+		parse(table_a, &m);
+		CHECK(cs7000p_cal_maker_fm(&m, 441u * MHZ, 0, &lo) && cs7000p_cal_maker_fm(&m, 441u * MHZ, 1, &hi));
+		CHECK(lo.drive != table_drive[0]);	// the invented rows tell the two frequencies apart
+		CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_12K5, 0, NULL));
+		CHECK(line_is(tx_maker_now(), "tx_maker=ok at=tx hz=441000000 mode=fm lvl=0 lo=%u hi=%u pair=0x%02x,0x%02x d_a=%d",
+			      lo.drive, hi.drive, lo.mod2, lo.mod1, lo.trim));
+	}
+	// Out of the transmit band: the band, before the table; the trims are no frequency's
+	CHECK(!cs7000p_radio.tx(406050000u, RADIO_BW_12K5, 0, NULL) && cs7000p_rf.tx_refused_why == CS7000P_TX_BAND);
+	CHECK(line_is(tx_maker_now(), "tx_maker=none at=tx hz=406050000 mode=fm lvl=0 lo=- hi=- pair=- d_a=%d no=band why=band",
+		      TABLE_TRIM_A));
+	// Another channel drops the note
+	CHECK(cs7000p_radio.rx(447500000u, RADIO_BW_12K5, NULL));
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=rx hz=447500000 mode=fm lvl=0 ") == txm);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+
+	// Armed (stage 1): the key-up takes what the line said, drive, pair and trim A
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, crc(table_a)) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=rx ") == txm);
+	keyup_on_table(0, true);
+	CHECK(line_is(tx_maker_now(), "tx_maker=ok at=tx hz=446000000 mode=fm lvl=0 lo=%u hi=%u pair=0x78,0x87 d_a=%d",
+		      table_drive[0], table_drive[1], TABLE_TRIM_A));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+
+#if CONFIG_DMR
+	// DMR: the mode is part of the receive set-up (at=rx again), the DMR pair and trim B; an unarmed DMR key-up on a
+	// split channel at level 1, refused (13), noted with its frequency's values
+	{
+		char want[160];
+		cs7000p_radio.set_mode(RADIO_MODE_DMR);
+		const int32_t p446 = table_dmr_pair(446u * MHZ), p441 = table_dmr_pair(F_SPLIT);
+		snprintf(want, sizeof(want),
+			 "tx_maker=ok at=rx hz=446000000 mode=dmr lvl=0 lo=%u hi=%u pair=0x%02x,0x%02x d_a=%d d_b=%d",
+			 table_dmr_drive(446u * MHZ, 0), table_dmr_drive(446u * MHZ, 1), (unsigned)(p446 >> 8),
+			 (unsigned)(p446 & 0xFF), TABLE_TRIM_A, TABLE_TRIM_B);
+		CHECK(line_is(tx_maker_now(), "%s", want));
+		runner.answer = runner.plan = true;
+		CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 1, NULL));
+		CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_UNARMED && !runner.armed && !cs7000p_rf.admit);
+		snprintf(want, sizeof(want),
+			 "tx_maker=ok at=tx hz=441000000 mode=dmr lvl=1 lo=%u hi=%u pair=0x%02x,0x%02x d_a=%d d_b=%d",
+			 table_dmr_drive(F_SPLIT, 0), table_dmr_drive(F_SPLIT, 1), (unsigned)(p441 >> 8),
+			 (unsigned)(p441 & 0xFF), TABLE_TRIM_A, TABLE_TRIM_B);
+		CHECK(line_is(tx_maker_now(), "%s", want));
+		runner.answer = runner.plan = false;
+		cs7000p_radio.set_mode(RADIO_MODE_FM);
+		CHECK(strstr(tx_maker_now(), "tx_maker=ok at=rx hz=446000000 mode=fm ") == txm);
+	}
+	// The low level's burst fields refused alone (a hold that differs along the row: a use rule, the table stays
+	// valid): DMR at level 0 refused by the burst lookup, level 1 and FM served
+	memcpy(burst_lo, table_a, N);
+	burst_lo[0x13E] = 0x2E;		// one hold of 302 among 301s
+	chip(burst_lo, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	CHECK(strstr(tx_maker_now(), "tx_maker=none at=rx hz=446000000 mode=dmr lvl=0 lo=") == txm &&
+	      strstr(txm, " no=burst why=group"));
+	runner.answer = runner.plan = true;
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 1, NULL));
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=tx hz=446000000 mode=dmr lvl=1 ") == txm);
+	runner.answer = runner.plan = false;
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=rx hz=446000000 mode=fm ") == txm);
+#endif
+	// A CTCSS level of 0 (a use rule: the CTCSS group alone refused): a CTCSS channel refused by the tone's lookup,
+	// a DCS one served
+	memcpy(ctcss_zero, table_a, N);
+	ctcss_zero[0x084] = 0;
+	chip(ctcss_zero, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &ctcss));
+	CHECK(strstr(tx_maker_now(), "tx_maker=none at=tx ") == txm && strstr(txm, " tone_pm=- no=tone why=group"));
+	CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &dcs));
+	CHECK(strstr(tx_maker_now(), "tx_maker=ok at=tx ") == txm && strstr(txm, " tone_pm=968"));
+	// A VCO switch segment wider than 1 MHz (429.0 to 430.5 MHz): inside it the drive's lookup refuses, the window
+	invented(wide_switch, 0x5A);
+	put32be(wide_switch, 0x004, 429000000u);
+	put32be(wide_switch, 0x008, 430500000u);
+	chip(wide_switch, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	CHECK(!cs7000p_radio.tx(429500000u, RADIO_BW_12K5, 0, NULL));
+	CHECK(line_is(tx_maker_now(),
+		      "tx_maker=none at=tx hz=429500000 mode=fm lvl=0 lo=- hi=- pair=- d_a=%d no=drive why=window", TABLE_TRIM_A));
+
+	// The lookups no parsed table refuses alone (their groups fail only rules that refuse the whole table), on a
+	// parse of the invented table with one group taken out: the pair, trim A, trim B
+	{
+		static cs7000p_rf_t rf;
+		cs7000p_maker_t m;
+		cs7000p_tx_view_t v;
+		parse(table_a, &m);
+		rf.maker = &m;
+		m.fields = CS7000P_MK_F_ALL & ~CS7000P_MK_F_FM_PAIR;
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, false, false, NULL, &v);
+		CHECK(v.no == CS7000P_TXL_PAIR && v.why == CS7000P_MK_LK_GROUP && !(v.have & CS7000P_TXV_PAIR));
+		CHECK(v.drive[0] == table_drive[0] && v.drive[1] == table_drive[1] && v.d_a == TABLE_TRIM_A);
+		m.fields = CS7000P_MK_F_ALL & ~CS7000P_MK_F_TRIM_A;
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, false, false, NULL, &v);
+		CHECK(v.no == CS7000P_TXL_TRIM_A && v.why == CS7000P_MK_LK_GROUP && !(v.have & CS7000P_TXV_TRIM_A));
+		m.fields = CS7000P_MK_F_ALL & ~CS7000P_MK_F_TRIM_B;
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, false, false, NULL, &v);
+		CHECK(v.no == CS7000P_TXL_OK);	// FM takes no trim B
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, true, false, NULL, &v);
+		CHECK(v.no == CS7000P_TXL_TRIM_B && v.why == CS7000P_MK_LK_GROUP && !(v.have & CS7000P_TXV_TRIM_B));
+		CHECK(!cs7000p_cal_maker_tx(&m, 446u * MHZ, 0, true) && cs7000p_cal_maker_tx(&m, 446u * MHZ, 0, false));
+		// The verdict and the values, everywhere: the invented table, the wide switch segment's, a group out
+		tx_view_agrees(&m);
+		parse(table_a, &m);
+		tx_view_agrees(&m);
+		parse(wide_switch, &m);
+		tx_view_agrees(&m);
+	}
+	cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL);
+}
+
 // A raw SoC register write through the debug link since the start (dl_txarm.h: the debug link refuses one while
 // armed and notes one tried otherwise): the arm refused (a state) after it, the view says soc=1; a key-up the arm
 // covers refused (17) should the two ever meet; the bench route, unarmed, as before. Last: only a restart of the
@@ -2832,6 +3065,7 @@ int main(void)
 	test_tx_arm_dmr();
 #endif
 	test_arm_bench_keyup();
+	test_tx_maker();
 #if CONFIG_FACTORY_COPY
 	test_tx_arm_restore();
 #endif

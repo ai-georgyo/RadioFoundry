@@ -702,8 +702,37 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 	return q;
 }
 
+#if CONFIG_DEBUGLINK
+// The transmission the core last asked for, admitted or refused, for board2.tx_maker: the core gives the board a
+// channel's transmit frequency, power level and tone only in tx(). It stands while the receive set-up it was asked
+// from does (the same receive frequency, width and mode): a channel change, a scan step or a beacon's retune drops it.
+// The radio task writes it; the view reads it under the interrupt mask, below that task's priority
+static struct {
+	bool set, dmr, wide;
+	uint8_t power;
+	radio_bw_t rx_bw;
+	uint32_t hz, rx_hz;
+	subtone_t tone;			// TONE_NONE: none (and always in DMR)
+} tx_asked;
+
+static void tx_note(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tone)
+{
+	tx_asked.set = rx_valid;
+	tx_asked.dmr = dmr_mode;
+	tx_asked.wide = bw == RADIO_BW_25K && !dmr_mode;	// DMR is a 12.5 kHz signal whatever the channel says
+	tx_asked.power = power;
+	tx_asked.rx_bw = rx_bw;
+	tx_asked.hz = hz;
+	tx_asked.rx_hz = cs7000p_rf.seq.rx_hz;
+	tx_asked.tone = tone != NULL && !dmr_mode ? *tone : (subtone_t){ TONE_NONE, 0 };
+}
+#endif
+
 static bool tx(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tx_tone)
 {
+#if CONFIG_DEBUGLINK
+	tx_note(hz, bw, power, tx_tone);	// for the view only: nothing below reads it
+#endif
 	if (tx_on) {
 		tx_end(false);	// keyed already (a retune): that transmission ends in order first
 	}
@@ -950,6 +979,9 @@ static void init(void)
 	cs7000p_rf.maker = &maker;
 	cal_gen_step();
 	bench_chips = false;	// both chips set up anew below (the modem's reset is the MCU's)
+#if CONFIG_DEBUGLINK
+	tx_asked.set = false;	// no key-up asked at this start yet
+#endif
 	radio_up = true;
 	cal_tx = cs7000p_cal_any_tx(&cs7000p_cal_model);
 	// The synthesizer rail and its settle time. The reference oscillator's control voltage is only defined with
@@ -1272,6 +1304,12 @@ typedef struct {
 	bool soc;			// a raw SoC register write since the start (dl_soc_written): the same
 	uint16_t bench_drive;		// a bench drive armed, or the drive of a transmission on one (0: none)
 	bool bench_keyup;		// the DMR key-up's constants the debug link's
+	// What a key-up on the table would take: the transmission the core last asked for while its receive set-up
+	// stands (tx_at), else the receive set-up as a simplex channel's at the lowest level, no tone
+	bool tx_at, tx_dmr, tx_tone;	// ... tx_tone: that request named a tone (FM)
+	uint8_t tx_level;
+	uint32_t tx_hz;
+	cs7000p_tx_view_t tx;
 	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
 } cal_view_t;
 
@@ -1314,6 +1352,18 @@ static void view_fill(cal_view_t *v)
 	v->bench_drive = cs7000p_rf.ovr_drive != 0u ? cs7000p_rf.ovr_drive
 			 : cs7000p_rf_bench_drive(&cs7000p_rf) ? cs7000p_rf.admit_drive : 0u;
 	v->bench_keyup = keyup_bench();
+	v->tx_at = tx_asked.set && rx_valid && tx_asked.rx_hz == hz && tx_asked.rx_bw == rx_bw && tx_asked.dmr == dmr_mode;
+	v->tx_dmr = dmr_mode;
+	v->tx_tone = v->tx_at && tx_asked.tone.type != TONE_NONE;
+	if (v->tx_at) {
+		v->tx_hz = tx_asked.hz;
+		v->tx_level = tx_asked.power;
+		cs7000p_rf_tx_view(&cs7000p_rf, tx_asked.hz, tx_asked.power, dmr_mode, tx_asked.wide, &tx_asked.tone, &v->tx);
+	} else {
+		v->tx_hz = rx_valid ? hz : 0u;
+		v->tx_level = 0;
+		cs7000p_rf_tx_view(&cs7000p_rf, v->tx_hz, 0, dmr_mode, rx_bw == RADIO_BW_25K && !dmr_mode, NULL, &v->tx);
+	}
 	v->busy = false;
 }
 
@@ -1453,11 +1503,59 @@ static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
 	       v->chips ? " chips=1" : "", v->soc ? " soc=1" : "", drive, v->bench_keyup ? " bench_keyup=1" : "");
 }
 
+// A drive, d or a depth the view shows, or "-" when its lookup gave none
+static void have_text(char *t, uint8_t len, bool have, int32_t n)
+{
+	if (have) {
+		dl_fmt(t, len, "%d", (int)n);
+	} else {
+		t[0] = '-';
+		t[1] = '\0';
+	}
+}
+
+// What a key-up on the table in use would take (13.2), shown before the owner arms and never a key-up itself: ok when
+// the table serves it (an armed key-up whose stage covers it then takes these values), none with no= the first lookup
+// that refuses in the admission's order and why= its reason. at=tx: the transmission the core last asked for (refused
+// ones included) while the receive set-up it was asked from stands; at=rx: no such request, the receive frequency as
+// a simplex channel's, the lowest level, no tone. hz= the transmit frequency, mode=, lvl= the power level; the drive
+// at both levels (lo=, hi=: 12-bit DAC codes), the mode's pair= (4:0x45, 4:0x46), d_a= trim A, in DMR d_b= trim B,
+// on a tone channel tone_pm= the tone's depth in per mille; "-" where that lookup gives none
+static void fmt_tx_maker(const cal_view_t *v, char *buf, uint8_t len)
+{
+	const cs7000p_tx_view_t *x = &v->tx;
+	char lo[8], hi[8], a[8], b[16] = "", tone[20] = "", pair[12], no[32] = "";
+	have_text(lo, sizeof(lo), (x->have & CS7000P_TXV_LO) != 0u, x->drive[0]);
+	have_text(hi, sizeof(hi), (x->have & CS7000P_TXV_HI) != 0u, x->drive[1]);
+	have_text(a, sizeof(a), (x->have & CS7000P_TXV_TRIM_A) != 0u, x->d_a);
+	if (v->tx_dmr) {
+		char t[8];
+		have_text(t, sizeof(t), (x->have & CS7000P_TXV_TRIM_B) != 0u, x->d_b);
+		dl_fmt(b, sizeof(b), " d_b=%s", t);
+	} else if (v->tx_tone) {
+		char t[8];
+		have_text(t, sizeof(t), (x->have & CS7000P_TXV_TONE) != 0u, x->tone_pm);
+		dl_fmt(tone, sizeof(tone), " tone_pm=%s", t);
+	}
+	if ((x->have & CS7000P_TXV_PAIR) != 0u) {
+		dl_fmt(pair, sizeof(pair), "0x%02x,0x%02x", x->mod2, x->mod1);
+	} else {
+		pair[0] = '-';
+		pair[1] = '\0';
+	}
+	if (x->no != CS7000P_TXL_OK) {
+		dl_fmt(no, sizeof(no), " no=%s why=%s", cs7000p_cal_txl_name(x->no), cs7000p_cal_txl_why_name(x->why));
+	}
+	dl_fmt(buf, len, "tx_maker=%s at=%s hz=%u mode=%s lvl=%u lo=%s hi=%s pair=%s d_a=%s%s%s%s",
+	       x->no == CS7000P_TXL_OK ? "ok" : "none", v->tx_at ? "tx" : "rx", (unsigned)v->tx_hz,
+	       v->tx_dmr ? "dmr" : "fm", v->tx_level, lo, hi, pair, a, b, tone, no);
+}
+
 static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {
-	fmt_cal_table, fmt_cal_rec, fmt_ref, fmt_rx_cal, fmt_sq_maker, fmt_tx_arm,
+	fmt_cal_table, fmt_cal_rec, fmt_ref, fmt_rx_cal, fmt_sq_maker, fmt_tx_arm, fmt_tx_maker,
 };
 static const char *const view_keys[CS7000P_CAL_VIEW_LINES] = {
-	"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm",
+	"cal_table", "cal_rec", "ref", "rx_cal", "sq_maker", "tx_arm", "tx_maker",
 };
 
 static void view_line(uint8_t k, char *buf, uint8_t len)
@@ -1516,6 +1614,12 @@ void cs7000p_tx_arm_line(char *buf, uint8_t len)
 {
 	view_take();
 	view_line(5, buf, len);
+}
+
+void cs7000p_tx_maker_line(char *buf, uint8_t len)
+{
+	view_take();
+	view_line(6, buf, len);
 }
 #endif
 
