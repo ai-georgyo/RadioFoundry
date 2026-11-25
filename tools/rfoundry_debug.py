@@ -21,6 +21,16 @@
     rfoundry_debug.py radio nxdn [rate=9600|4800] [ran=N] [rx_ran=N] [tx_ran=N] [rx_gid=N] [tg=N|unit=N]
                                  [unit_id=N] [emergency=0|1]
                                                 the NXDN settings (CONFIG_NXDN; RAM only, view section nxdn)
+    rfoundry_debug.py radio tx-arm [off]             the owner's transmit arm (radio-features.md 6.3): the stage, the
+                                                highest, the calibration it is checked against; off: every
+                                                transmission on that calibration refused again
+    rfoundry_debug.py radio tx-arm fm-low|fm|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf
+                                                IT TRANSMITS, on the antenna, until power-off: fm-low lets FM at
+                                                the lowest power level go out on the calibration the radio found
+                                                (its maker's), fm FM at every level, dmr every mode at every level;
+                                                only on the --mhz frequencies (the test TX limit), what the radio
+                                                sends by itself included, and only after the table in use matched
+                                                FILE, this radio's backup (a .zip, a raw image or the range alone)
     rfoundry_debug.py volume [N|knob]                print the speaker volume; N (0 mutes, 0..16) sets it, knob gives the knob back
     rfoundry_debug.py log [--follow]                 the firmware's dlog() ring
     rfoundry_debug.py chip                           chip ID, flash size, UID, option bytes (RDP, write protection)
@@ -276,6 +286,22 @@ OP_PA_KEYUP = 37
 OP_VFO_SFR = 38
 OP_P25 = 42
 OP_NXDN = 43
+# The owner's transmit arm (radio-features.md 6.3, debuglink.md 3.8; hal_radio_t.tx_arm): its stages by the tool's
+# names (HAL_TX_ARM_*), what each lets the radio transmit on the calibration it found (the words the help and every
+# refusal give before they ask for --allow-rf), and its refusals' reasons (append only)
+OP_TX_ARM = 44
+TX_ARM_STAGES = {"off": 0, "fm-low": 1, "fm": 2, "dmr": 3}
+TX_ARM_ALLOWS = {0: "nothing: every transmission on that calibration refused again",
+                 1: "FM at the radio's lowest power level",
+                 2: "FM at every power level",
+                 3: "every mode (FM, DMR and any other the build has) at every power level"}
+TX_ARM_REASONS = {
+    1: ("no_cal", "the radio has no calibration in use that the arm could cover"),
+    2: ("id", "the backup's CRC-32 is not that of the calibration in use"),
+    3: ("stage", "a stage over the radio's highest"),
+    4: ("state", "a state forbids it now: the radio not started yet, a bench state, the power's off state, or a "
+                 "restore of the calibration pending"),
+}
 P25_TALKAROUND = {"auto": 0, "on": 1, "off": 2}
 CHANNEL_MODES = {"fm": 0, "dmr": 1, "p25": 2, "nxdn": 3}
 # The VFO's SFR role names (sfrRole_t, docs/spec/sfr.md 4): off, user, user of an ERDM repeater, repeater, ERDM style
@@ -391,6 +417,8 @@ READ_ONLY = {"hwopt": None, "support": None, "reg": None, "ping": None, "version
 
 def changes_radio(a):
     """The parsed command restarts the radio or writes to it (settings, registers, keys, PTT, the radio's state)"""
+    if a.cmd == "radio" and getattr(a, "op", None) == "tx-arm":
+        return bool(getattr(a, "args", None))            # without a stage it only reads the info
     if a.cmd not in READ_ONLY:
         return True
     ops = READ_ONLY[a.cmd]
@@ -1547,6 +1575,29 @@ class DebugLink:
             raise ValueError(f"tx_limit: at most {TX_LIMIT_MAX} frequencies")
         self.radio(OP_TX_LIMIT, struct.pack(f"<BB{len(hz)}I", 1 if block else 0, len(hz), *hz))
 
+    def tx_arm_info(self):
+        """The owner's transmit arm (RADIO op 44 without an argument; radio-features.md 6.3, debuglink.md 3.8) as a
+        dict (decode_tx_arm_info): the stage, the highest, the calibration's range, its CRC-32 as the radio computed
+        it, cal_ok. None on a radio without the arm (UNAVAILABLE: no hooks; BAD_ARG: firmware older than the op)"""
+        try:
+            _, r = self.request(RADIO, bytes([OP_TX_ARM]))
+        except DebugLinkError as e:
+            if e.status in (ST_UNAVAILABLE, ST_BAD_ARG):
+                return None
+            raise
+        return decode_tx_arm_info(r)
+
+    def tx_arm(self, stage, backup=None):
+        """RADIO op 44 with a stage (0 off, 1 FM at the lowest level, 2 FM, 3 every mode): RAM only, until power-off.
+        backup: the bytes of this host's own backup of the range the info names; the id sent is their CRC-32. There
+        is no id argument, on purpose: the id says the host compared the radio's bytes with its backup, so it is
+        never the CRC the radio's info gave. Stage 0 takes none and sends 0. Raises DebugLinkError (status 7, data:
+        the reason, TX_ARM_REASONS) when refused"""
+        if stage and backup is None:
+            raise ValueError("tx_arm: a stage over off needs the backup's bytes")
+        ident = zlib.crc32(bytes(backup)) & 0xFFFFFFFF if stage else 0
+        self.request(RADIO, struct.pack("<BBI", OP_TX_ARM, stage, ident))
+
     def tx_drive(self, drive=0):
         """The PA drive of the next transmission (RADIO op 36; power calibration), in the board's own units, in place of
         its power level's; it lasts until that transmission ends. 0: the level's again. Set it before key-up. The core
@@ -2131,6 +2182,8 @@ def cmd_radio(link, a):
             link.tx_limit(block=args[:1] == ["block"])
         else:
             link.tx_limit(mhz=[float(f) for f in ",".join(args).split(",") if f])
+    elif op == "tx-arm":              # tx-arm [off | fm-low|fm|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf]
+        return cmd_radio_tx_arm(link, a)
     elif op == "tx-drive":            # tx-drive N|off (the next transmission's PA drive, power calibration)
         link.tx_drive(0 if args[:1] in ([], ["off"]) else num(0))
     elif op == "pa-keyrun":           # pa-keyrun KEY_MS GAP_MS DRIVE... (keys DMR itself, the board's constants)
@@ -2988,6 +3041,178 @@ def factory_restore_run(link, a, info, window, fbytes, kind, others, poll_s, wai
     print(f"{'record now':16}{now['record']}" + (f", 0x{now['record_crc']:08x}" if now["record"] in ("ok", "bad") else "") +
           f"; in use: {now['source']}")
     return 0 if now["result"] == 0 and after == fbytes else 2
+
+
+# ── radio tx-arm: the owner's transmit arm, against the owner's backup (radio-features.md 6.3) ──
+
+def decode_tx_arm_info(r):
+    """RADIO op 44's info after the status (debuglink.md 3.8) as a dict"""
+    if len(r) < 15:
+        raise DebugLinkError(f"RADIO op 44 info of {len(r)} bytes, 15 expected")
+    stage, top, addr, n, crc, ok = struct.unpack_from("<BBIIIB", r)
+    return {"stage": stage, "max": top, "addr": addr, "len": n, "crc": crc, "cal_ok": bool(ok)}
+
+
+def tx_arm_name(stage):
+    return next((k for k, v in TX_ARM_STAGES.items() if v == stage), str(stage))
+
+
+def tx_arm_reason(why):
+    """(name, what it means) of an arm's refusal"""
+    return TX_ARM_REASONS.get(why, (str(why), "a reason newer than this tool"))
+
+
+def mhz_list(text):
+    """--mhz MHZ[,MHZ...] as floats. ValueError: not frequencies in MHz, none, or more than the test TX limit holds"""
+    try:
+        out = [float(f) for f in str(text).split(",") if f.strip()]
+    except ValueError:
+        raise ValueError(f"--mhz {text}: frequencies in MHz, comma separated (446.00625,446.01875)")
+    if not out or len(out) > TX_LIMIT_MAX:
+        raise ValueError(f"--mhz: 1 to {TX_LIMIT_MAX} frequencies (the test TX limit's list holds {TX_LIMIT_MAX})")
+    if any(not 1.0 <= f <= 6000.0 for f in out):
+        raise ValueError(f"--mhz {text}: in MHz, e.g. 446.00625")
+    return out
+
+
+def tx_arm_usage(a):
+    """What is wrong with a radio tx-arm command line, or None. A stage over off says what it lets transmit before it
+    names what it needs: the owner reads what would go on the air before being asked for --allow-rf"""
+    if not a.args:
+        return None
+    if len(a.args) != 1 or a.args[0] not in TX_ARM_STAGES:
+        return "radio tx-arm [off | fm-low|fm|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf]"
+    stage = TX_ARM_STAGES[a.args[0]]
+    if stage == 0:
+        return None
+    try:
+        mhz = mhz_list(a.mhz) if a.mhz else []
+    except ValueError as e:
+        return str(e)
+    missing = [what for what, have in (("--backup FILE", a.backup), ("--mhz MHZ[,MHZ...]", mhz),
+                                       ("--allow-rf", a.allow_rf)) if not have]
+    if not missing:
+        return None
+    return (f"radio tx-arm {a.args[0]} lets the radio transmit {TX_ARM_ALLOWS[stage]} on the calibration it found "
+            f"(its maker's), on the --mhz frequencies only, until it is switched off; what it sends by itself (APRS, "
+            f"beacons, data replies) as well. It transmits on its antenna: without a dummy load that is on the air. "
+            f"It needs --backup FILE (this radio's backup: the table in use must equal it), --mhz MHZ[,MHZ...] (at "
+            f"most {TX_LIMIT_MAX}) and --allow-rf. Missing: {', '.join(missing)}")
+
+
+def tx_arm_info_lines(info):
+    """The arm's info in words"""
+    rng = f"0x{info['addr']:06X}-0x{info['addr'] + info['len'] - 1:06X}, {info['len']} bytes"
+    return [f"transmit arm    {tx_arm_name(info['stage'])}: {TX_ARM_ALLOWS.get(info['stage'], '?')}",
+            f"highest stage   {tx_arm_name(info['max'])}",
+            f"calibration     {rng}: " + (f"in use, CRC-32 0x{info['crc']:08x} as the radio computes it"
+                                          if info["cal_ok"] else "none in use that the arm covers")]
+
+
+def tx_arm_compare(link, info, fbytes):
+    """Whether the calibration in use is the backup's bytes: (same, lines). Its source as the radio's factory copy
+    names it (STORAGE op 3): the window, read twice through STORAGE READ and compared byte for byte, or the copy's
+    record, by the CRC-32 op 3 reports (its bytes are not readable). A radio without the copy, or whose copy covers
+    another range, uses the range itself. The CRC the arm's info reports takes no part: the compare is this host's"""
+    addr, n = info["addr"], info["len"]
+    try:
+        fi = link.factory_info()
+    except DebugLinkError as e:
+        if e.status not in (ST_UNAVAILABLE, ST_BAD_ARG, 1):
+            raise
+        fi = None
+    if fi is not None and (fi["addr"], fi["size"]) != (addr, n):
+        fi = None
+    source = fi["source"] if fi is not None else "window"
+    fcrc, fsha = crc_sha(fbytes)
+    lines = [f"{'':16}CRC-32      sha256"]
+    if source == "record":
+        same = fi["record"] == "ok" and fi["record_crc"] == fcrc
+        lines.append(f"{'in use: record':16}0x{fi['record_crc']:08x}  -  (the radio's own copy; the radio reports its "
+                     f"CRC-32 only)")
+    elif source == "window":
+        window = read_twice(link, addr, n, "the calibration's range")
+        same = window == fbytes
+        wcrc, wsha = crc_sha(window)
+        lines.append(f"{'in use: window':16}0x{wcrc:08x}  {wsha}  (read now, twice)")
+    else:
+        same = False
+        lines.append(f"{'in use':16}none: the radio's factory copy reports no table in use")
+    lines.append(f"{'file':16}0x{fcrc:08x}  {fsha}")
+    lines.append(f"{'in use / file':16}{'same' if same else 'differs'}")
+    return same, lines
+
+
+def cmd_radio_tx_arm(link, a):
+    """radio tx-arm [off | fm-low|fm|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf] (radio-features.md 6.3; main()
+    checked the options with tx_arm_usage). Without a stage: the info. off: disarmed, always taken. A stage: the
+    calibration in use compared with the backup's bytes (tx_arm_compare), then the test TX limit set to the --mhz
+    frequencies, then the arm with the backup's CRC-32, read back. Nothing is sent when a local check fails. Exit 0
+    done, 1 refused by the tool or the radio"""
+    info = link.tx_arm_info()
+    if info is None:
+        print("rfoundry_debug: this radio has no transmit arm (no RADIO op 44: an older firmware, or a board whose "
+              "transmissions need none)", file=sys.stderr)
+        return 1
+    for line in tx_arm_info_lines(info):
+        print(line)
+    if not a.args:
+        return 0
+    name = a.args[0]
+    stage = TX_ARM_STAGES[name]
+    if stage == 0:
+        link.tx_arm(0)
+        now = link.tx_arm_info()
+        print(f"now             {tx_arm_name(now['stage'])}: {TX_ARM_ALLOWS.get(now['stage'], '?')}")
+        print("test TX limit   left as it is (radio tx-limit off clears it)")
+        return 0 if now["stage"] == 0 else 1
+    if stage > info["max"]:
+        print(f"rfoundry_debug: refused: {name} lets {TX_ARM_ALLOWS[stage]} go out, and this radio's highest stage is "
+              f"{tx_arm_name(info['max'])}. Nothing was sent", file=sys.stderr)
+        return 1
+    if not info["cal_ok"]:
+        print("rfoundry_debug: refused: the radio has no calibration in use that the arm covers (a blank or refused "
+              "table: storage factory --backup FILE compares it with the backup). Nothing was sent", file=sys.stderr)
+        return 1
+    try:
+        _, fbytes, _, _ = factory_backup_bytes(a.backup, info["addr"], info["len"])
+        same, lines = tx_arm_compare(link, info, fbytes)
+    except DebugLinkError as e:
+        print(f"rfoundry_debug: refused: {e}. Nothing was sent", file=sys.stderr)
+        return 1
+    for line in lines:
+        print(line)
+    if not same:
+        print(f"rfoundry_debug: refused: the calibration in use is not {a.backup}'s bytes, so the backup says nothing "
+              "about what the radio would transmit on. Nothing was armed and no limit set (storage factory --backup "
+              "FILE shows the window, the record and the file)", file=sys.stderr)
+        return 1
+    mhz = mhz_list(a.mhz)
+    # The limit first: an armed radio keys on the maker's values only on a frequency a test TX limit list names
+    link.tx_limit(mhz=mhz)
+    freqs = ", ".join(f"{f:.5f}" for f in mhz)
+    print(f"test TX limit   {freqs} MHz: the radio transmits nowhere else")
+    try:
+        link.tx_arm(stage, fbytes)          # the id: the CRC-32 of the backup's bytes, never the info's
+    except DebugLinkError as e:
+        if e.status == ST_REFUSED and e.data:
+            why, what = tx_arm_reason(e.data[0])
+            print(f"rfoundry_debug: the radio refused the arm: {why}: {what}", file=sys.stderr)
+        else:
+            print(f"rfoundry_debug: the arm was not taken: {e}", file=sys.stderr)
+        print("rfoundry_debug: the test TX limit stays as set (radio tx-limit off clears it)", file=sys.stderr)
+        return 1
+    now = link.tx_arm_info()
+    if now is None or now["stage"] != stage:
+        print(f"rfoundry_debug: the radio took the arm but reads {tx_arm_name(now['stage']) if now else 'nothing'}: "
+              f"run radio tx-arm off", file=sys.stderr)
+        return 1
+    print(f"ARMED           {name}: {TX_ARM_ALLOWS[stage]}, on the calibration in use (CRC-32 0x{zlib.crc32(fbytes):08x})")
+    print(f"LIVE            every such transmission on {freqs} MHz goes out until the radio is switched off: a PTT, "
+          "and what the radio sends by itself (APRS, beacons, data replies). It goes to the antenna: without a dummy "
+          "load it is on the air")
+    print("to stop         radio tx-arm off; radio tx-limit off or block also makes the radio refuse them again")
+    return 0
 
 
 def tone_estimate(x, rate=8000):
@@ -3848,6 +4073,173 @@ def self_test():
             os.remove(os.path.join(fdir, n))
         os.rmdir(fdir)
 
+    # radio tx-arm (radio-features.md 6.3): the id is the CRC-32 of the backup's bytes, never the CRC the radio's info
+    # reports; the table in use compared first, the test TX limit set before the arm, nothing sent when a local check
+    # fails. Every table here is invented bytes, no unit's
+    A_ADDR, A_SIZE = 0x1000, 0x200
+    A_TABLE = bytes((i * 29 + 3) & 0xFF for i in range(A_SIZE))
+    A_OTHER = bytes(b ^ 0xA5 for b in A_TABLE)
+    A_LIE = 0x0BADC0DE                  # a CRC an info reply may give that is not the backup's: never sent back
+
+    class FakeArm(DebugLink):
+        """RADIO ops 44 and 35, STORAGE READ and op 3 as core/debuglink and a board with the arm answer them. window:
+        the range's bytes (blank: none valid); record: the factory copy's record, the source when the window is not
+        valid; copy False: no factory copy (op 3 UNAVAILABLE); info_crc: the CRC the info reports when it is not the
+        table's; hook False: no arm; refuse: the radio's reason for every raise; top: the highest stage"""
+
+        def __init__(self, window=A_TABLE, record=None, copy=True, info_crc=None, hook=True, refuse=0, top=3):
+            self.timeout, self.seq, self.buf, self.s = 0.05, 0, bytearray(), self
+            self.win, self.rec, self.copy, self.info_crc, self.hook = window, record, copy, info_crc, hook
+            self.refuse, self.top, self.stage, self.ops = refuse, top, 0, []
+
+        def in_use(self):
+            if self.win != b"\xff" * A_SIZE:
+                return self.win, 1
+            return (self.rec, 2) if self.rec is not None else (None, 0)
+
+        def request(self, cmd, payload=b"", **kw):
+            p = bytes(payload)
+            table, src = self.in_use()
+            if cmd == RADIO and p[0] == OP_TX_ARM:
+                if not self.hook:
+                    raise DebugLinkError("unavailable", ST_UNAVAILABLE)
+                if len(p) == 1:
+                    self.ops.append(("info",))
+                    crc = self.info_crc if self.info_crc is not None else zlib.crc32(table) if table else 0
+                    return 0, struct.pack("<BBIIIB", self.stage, self.top, A_ADDR, A_SIZE, crc, 1 if table else 0)
+                stage, ident = struct.unpack_from("<BI", p, 1)
+                self.ops.append(("arm", stage, ident))
+                why = 3 if stage > self.top else 0 if stage == 0 or stage < self.stage else self.refuse or \
+                    (1 if table is None else 2 if ident != zlib.crc32(table) else 0)
+                if why:
+                    raise DebugLinkError("refused", ST_REFUSED, bytes([why]))
+                self.stage = stage
+                return 0, bytes([0])
+            if cmd == RADIO and p[0] == OP_TX_LIMIT:
+                self.ops.append(("limit", bool(p[1] & 1), struct.unpack_from(f"<{p[2]}I", p, 3)))
+                return 0, b""
+            if cmd == STORAGE and p[0] == STORAGE_OP_READ:
+                addr, n = struct.unpack_from("<IH", p, 1)
+                assert A_ADDR <= addr and addr + n <= A_ADDR + A_SIZE
+                self.ops.append(("read",))
+                return 0, struct.pack("<I", addr) + self.win[addr - A_ADDR:addr - A_ADDR + n]
+            if cmd == STORAGE and p[0] == STORAGE_OP_FACTORY_INFO:
+                if not self.copy:
+                    raise DebugLinkError("unavailable", ST_UNAVAILABLE)
+                wst = 1 if self.win == b"\xff" * A_SIZE else 4
+                rst = 1 if self.rec is None else 2
+                return 0, b"\x01" + struct.pack("<IHBBBHIBIBHB", A_ADDR, A_SIZE, src, wst, 0, 0, zlib.crc32(self.win),
+                                                rst, zlib.crc32(self.rec) if self.rec else 0, FACTORY_NONE, 0, 0)
+            raise DebugLinkError("unexpected request", 1)
+
+        def sent(self, kind):
+            return [o for o in self.ops if o[0] == kind]
+
+    adir = tempfile.mkdtemp(prefix="rfoundry-txarm-")
+
+    def arm(link, args, backup=None, mhz="446.00625", allow_rf=True):
+        out, err = io.StringIO(), io.StringIO()
+        a = argparse.Namespace(cmd="radio", op="tx-arm", args=args, backup=backup, mhz=mhz, allow_rf=allow_rf)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cmd_radio(link, a)
+        return rc, out.getvalue(), err.getvalue()
+
+    def usage(argv):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            try:
+                main(argv)
+                rc = None
+            except SystemExit as e:
+                rc = e.code
+        return rc, err.getvalue()
+
+    try:
+        mine = os.path.join(adir, "mine.bin")
+        with open(mine, "wb") as f:
+            f.write(b"\xff" * A_ADDR + A_TABLE + b"\xff" * 0x1000)
+        crc = zlib.crc32(A_TABLE)
+
+        r = FakeArm(info_crc=A_LIE)
+        rc, out, _ = arm(r, ["fm-low"], mine)
+        check(rc == 0 and r.sent("arm") == [("arm", 1, crc)] and all(o[2] != A_LIE for o in r.sent("arm")) and
+              "ARMED" in out and "until the radio is switched off" in out,
+              "radio tx-arm: the id is the CRC-32 of the backup's bytes, not the CRC the info reported")
+        check(r.ops.index(("limit", False, (446006250,))) < r.ops.index(("arm", 1, crc)) and r.sent("read"),
+              "radio tx-arm: the window read and compared, the test TX limit set to --mhz before the arm")
+        check("id" not in __import__("inspect").signature(DebugLink.tx_arm).parameters,
+              "DebugLink.tx_arm takes the backup's bytes, never an id")
+        r = FakeArm(window=A_OTHER, info_crc=crc)
+        rc, _, err = arm(r, ["fm"], mine)
+        check(rc == 1 and not r.sent("arm") and not r.sent("limit") and "not" in err and "Nothing was armed" in err,
+              "radio tx-arm: a window other than the backup's, whatever CRC the info gives: refused, nothing sent")
+        r = FakeArm(window=b"\xff" * A_SIZE, record=A_TABLE)
+        rc, out, _ = arm(r, ["dmr"], mine, mhz="446.1,145.5")
+        check(rc == 0 and r.sent("arm") == [("arm", 3, crc)] and "in use: record" in out and
+              r.sent("limit") == [("limit", False, (446100000, 145500000))],
+              "radio tx-arm: a table in use from the copy's record compared by op 3's CRC, armed with the backup's")
+        r = FakeArm(window=b"\xff" * A_SIZE, record=A_OTHER)
+        rc, _, _ = arm(r, ["fm-low"], mine)
+        check(rc == 1 and not r.sent("arm") and not r.sent("limit"), "radio tx-arm: a record that is not the "
+              "backup's: refused, nothing sent")
+        r = FakeArm(copy=False)
+        rc, _, _ = arm(r, ["fm-low"], mine)
+        check(rc == 0 and r.sent("arm") == [("arm", 1, crc)] and r.sent("read"),
+              "radio tx-arm: a radio without the factory copy: the range itself compared")
+        alone = os.path.join(adir, "table.bin")
+        with open(alone, "wb") as f:
+            f.write(A_TABLE)
+        r = FakeArm()
+        check(arm(r, ["fm-low"], alone)[0] == 0 and r.sent("arm") == [("arm", 1, crc)],
+              "radio tx-arm: a backup of the range alone")
+
+        r = FakeArm(refuse=4)
+        rc, _, err = arm(r, ["fm-low"], mine)
+        check(rc == 1 and "state" in err and "stays as set" in err and r.stage == 0,
+              "radio tx-arm: the radio's refusal by name, and the limit said to stay")
+        r = FakeArm(top=2)
+        rc, _, err = arm(r, ["dmr"], mine)
+        check(rc == 1 and not r.sent("arm") and not r.sent("limit") and "every mode" in err,
+              "radio tx-arm: a stage over the radio's highest: refused by the tool, nothing sent")
+        r = FakeArm(window=b"\xff" * A_SIZE)
+        rc, _, err = arm(r, ["fm-low"], mine)
+        check(rc == 1 and not r.sent("arm") and not r.sent("limit") and "no calibration" in err,
+              "radio tx-arm: no calibration in use: refused by the tool, nothing sent")
+        rc, _, err = arm(FakeArm(hook=False), [], None)
+        check(rc == 1 and "no transmit arm" in err, "radio tx-arm: a radio without the arm says so")
+        r = FakeArm()
+        r.stage = 2
+        rc, out, _ = arm(r, ["off"], None, mhz=None, allow_rf=False)
+        check(rc == 0 and r.sent("arm") == [("arm", 0, 0)] and not r.sent("limit") and not r.sent("read") and
+              "now             off" in out, "radio tx-arm off: id 0, no backup, no limit change, no read")
+        r = FakeArm()
+        rc, out, _ = arm(r, [], None, mhz=None, allow_rf=False)
+        check(rc == 0 and not r.sent("arm") and not r.sent("limit") and "transmit arm    off" in out and
+              f"0x{crc:08x}" in out, "radio tx-arm without a stage: the info only")
+
+        # main(): every stage over off needs --backup, --mhz and --allow-rf, and says what it lets out first
+        for argv in (["radio", "tx-arm", "fm-low"], ["radio", "tx-arm", "fm", "--backup", mine, "--mhz", "446.1"],
+                     ["radio", "tx-arm", "dmr", "--allow-rf", "--mhz", "446.1"],
+                     ["radio", "tx-arm", "fm-low", "--backup", mine, "--allow-rf"]):
+            rc, err = usage(argv)
+            stage = TX_ARM_STAGES[argv[2]]
+            check(rc == 2 and TX_ARM_ALLOWS[stage] in err and err.index(TX_ARM_ALLOWS[stage]) < err.index("--allow-rf")
+                  and "antenna" in err, f"{' '.join(argv[:3])} without all three options: refused before connecting, "
+                  "what it lets out named first")
+        rc, err = usage(["radio", "tx-arm", "fm-low", "--backup", mine, "--allow-rf", "--mhz", ",".join(["446.1"] * 11)])
+        check(rc == 2 and "1 to 10" in err, "radio tx-arm: more frequencies than the test TX limit holds")
+        rc, err = usage(["radio", "tx-arm", "fm-low", "--backup", mine, "--allow-rf", "--mhz", "446100000"])
+        check(rc == 2 and "in MHz" in err, "radio tx-arm: a frequency in Hz refused")
+        rc, err = usage(["radio", "channel", "1", "--allow-rf"])
+        check(rc == 2 and "tx-arm's" in err, "--backup, --mhz and --allow-rf only with radio tx-arm")
+        ns = argparse.Namespace(cmd="radio", op="tx-arm", args=[])
+        check(not changes_radio(ns) and changes_radio(argparse.Namespace(cmd="radio", op="tx-arm", args=["off"])),
+              "radio tx-arm reads only without a stage")
+    finally:
+        for n in os.listdir(adir):
+            os.remove(os.path.join(adir, n))
+        os.rmdir(adir)
+
     # GET_VIEW (debuglink.md 3.7): `board2` only on a board that splits its keys; on any other radio it answers BAD_ARG
     # and the next links skip it
     class FakeView(DebugLink):
@@ -3933,8 +4325,18 @@ def main(argv=None):
                                   "monitor", "clear", "reply-cancel", "hotspot-exit", "target", "contact", "call-back",
                                   "target-clear", "privacy", "scan", "scan-vfo", "beep", "burst", "set", "usb",
                                   "usb-settings", "ppp", "vibrate", "mode", "cc", "ts", "sfr", "copy-vfo", "voice-test", "dtmf",
-                                  "tx-limit", "tx-drive", "pa-keyup", "pa-sweep", "pa-keyrun", "p25", "nxdn"])
+                                  "tx-limit", "tx-drive", "pa-keyup", "pa-sweep", "pa-keyrun", "p25", "nxdn",
+                                  "tx-arm"])
     p.add_argument("args", nargs="*")
+    p.add_argument("--backup", metavar="FILE",
+                   help="tx-arm: this radio's backup (a backup .zip, a raw image from address 0, or the range alone): "
+                        "the calibration in use must equal its bytes, and their CRC-32 is the arm's id")
+    p.add_argument("--mhz", metavar="MHZ[,MHZ...]",
+                   help=f"tx-arm: the only frequencies an armed transmission may use (the test TX limit, at most "
+                        f"{TX_LIMIT_MAX})")
+    p.add_argument("--allow-rf", action="store_true",
+                   help="tx-arm fm-low: FM at the lowest power level, fm: FM at every level, dmr: every mode at "
+                        "every level, live on the antenna until power-off; without it nothing is armed")
     p = sub.add_parser("data", help="DMR data: sms, call alert, radio check, settings, inbox")
     p.add_argument("op", choices=["sms", "alert", "check", "settings", "inbox", "read", "emergency", "em-settings",
                                   "ip-settings", "ip-send", "tx-spacing"])
@@ -4060,6 +4462,10 @@ def main(argv=None):
         ap.error("storage factory --restore needs --backup FILE")
     if a.cmd == "storage" and a.no_identity and not a.restore:
         ap.error("--no-identity goes with --restore")
+    if a.cmd == "radio" and a.op != "tx-arm" and (a.backup or a.mhz or a.allow_rf):
+        ap.error("--backup, --mhz and --allow-rf are radio tx-arm's")
+    if a.cmd == "radio" and a.op == "tx-arm" and tx_arm_usage(a):
+        ap.error(tx_arm_usage(a))
     try:
         port = a.port if a.port else pick_port(None, changes_radio(a))
         with DebugLink(port, a.timeout) as link:
