@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The debug link's portable parts: the printf subset, the CRC, the frame parser and dispatcher, the dlog ring
-// (core/debuglink, docs/spec/debuglink.md)
+// The debug link's portable parts: the printf subset, the CRC, the frame parser and dispatcher, the dlog ring, RADIO
+// op 44's parsing (core/debuglink, docs/spec/debuglink.md)
 #include <stdio.h>
 #include <string.h>
 #include "debuglink/debuglink_proto.h"
@@ -9,6 +9,7 @@
 #include "debuglink/dlog.h"
 #include "debuglink/dl_chip.h"
 #include "debuglink/dl_shot.h"
+#include "debuglink/dl_txarm.h"
 #include "cps/cps_lz4.h"
 #include "../../platform/stm32f4/mem_window.h"
 // As a board with more program flash sets it (board.mk): nothing else in the header may depend on it being unset
@@ -561,6 +562,68 @@ static void test_chip(void)
 	CHECK(memcmp(o, none, DL_CHIP_OPT_LEN) == 0, "unknown family: all 0xFF");
 }
 
+// --- RADIO op 44, the owner's transmit arm (dl_txarm.c) over a fake board ---
+
+static int arm_calls;
+static uint8_t arm_stage, arm_answer;
+static uint32_t arm_id;
+
+static void fake_arm_info(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){ .stage = 2, .max = 3, .addr = 0x00001000u, .len = 512, .crc = 0xA1B2C3D4u,
+				     .cal_ok = true };
+}
+
+static uint8_t fake_arm(uint8_t stage, uint32_t id)
+{
+	arm_calls++;
+	arm_stage = stage;
+	arm_id = id;
+	return arm_answer;
+}
+
+static void test_tx_arm(void)
+{
+	uint8_t out[DL_TX_ARM_INFO_LEN + 4];
+	const uint8_t arm[5] = { 1, 0x78, 0x56, 0x34, 0x12 };
+	hal_radio_t r;
+
+	// Without both hooks: unavailable, nothing asked
+	memset(&r, 0, sizeof(r));
+	CHECK(dl_tx_arm_op(NULL, arm, 5, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "no radio");
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "no hooks");
+	r.tx_arm = fake_arm;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 1 && out[0] == DL_ST_UNAVAILABLE && arm_calls == 0, "tx_arm alone");
+	r.tx_arm = NULL;
+	r.tx_arm_info = fake_arm_info;
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "tx_arm_info alone");
+	r.tx_arm = fake_arm;
+
+	// No argument: the info, little endian
+	static const uint8_t info[DL_TX_ARM_INFO_LEN] = { DL_ST_OK, 2, 3, 0x00, 0x10, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+							  0xD4, 0xC3, 0xB2, 0xA1, 1 };
+	memset(out, 0x55, sizeof(out));
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == DL_TX_ARM_INFO_LEN && memcmp(out, info, sizeof(info)) == 0, "info");
+	CHECK(arm_calls == 0, "the info arms nothing");
+	// stage u8 + id u32: the arm, the id as sent; OK with reason 0, or REFUSED with the board's reason
+	arm_answer = HAL_TX_ARM_OK;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == DL_TX_ARM_REPLY_LEN && out[0] == DL_ST_OK && out[1] == 0, "armed");
+	CHECK(arm_calls == 1 && arm_stage == 1 && arm_id == 0x12345678u, "stage and id passed on");
+	arm_answer = HAL_TX_ARM_ID;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 2 && out[0] == DL_ST_REFUSED && out[1] == HAL_TX_ARM_ID, "refused");
+	arm_answer = HAL_TX_ARM_STATE;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 2 && out[0] == DL_ST_REFUSED && out[1] == 4, "refused, a state");
+	// Any other length: a bad argument, the board not asked
+	arm_calls = 0;
+	for (uint16_t n = 1; n < 5; n++) {
+		CHECK(dl_tx_arm_op(&r, arm, n, out) == 1 && out[0] == DL_ST_BAD_ARG, "length %u", n);
+	}
+	CHECK(dl_tx_arm_op(&r, arm, 6, out) == 1 && out[0] == DL_ST_BAD_ARG && arm_calls == 0, "length 6");
+	// The reasons' numbers are the protocol's: append only
+	CHECK(HAL_TX_ARM_NO_CAL == 1 && HAL_TX_ARM_ID == 2 && HAL_TX_ARM_STAGE == 3 && HAL_TX_ARM_STATE == 4, "reasons");
+	CHECK(HAL_TX_ARM_FM_LOW == 1 && HAL_TX_ARM_FM == 2 && HAL_TX_ARM_ALL == 3, "stages");
+}
+
 int main(void)
 {
 	test_fmt();
@@ -570,6 +633,7 @@ int main(void)
 	test_dlog();
 	test_chip();
 	test_shot();
+	test_tx_arm();
 	printf("# debuglinkTest: %d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

@@ -241,6 +241,12 @@ static void test_air_policy(void)
 		CHECK(dl_dmrip_air_allowed(DL_CMD_RADIO, p, sizeof(p)) == want, "SETTING %u directly", id);
 	}
 	CHECK(!dl_dmrip_air_allowed(DL_CMD_RADIO, txlim, 2), "TX limit: would stop the replies");
+	// The owner's transmit arm (radio-features.md 6.3): cable only, its info, a stage and off alike
+	const uint8_t arm_info[1] = { DL_OP_TX_ARM }, arm[6] = { DL_OP_TX_ARM, 3, 1, 2, 3, 4 }, disarm[6] = { DL_OP_TX_ARM };
+	CHECK(!dl_dmrip_air_allowed(DL_CMD_RADIO, arm_info, 1), "transmit arm info: the cable only");
+	CHECK(!dl_dmrip_air_allowed(DL_CMD_RADIO, arm, 6), "transmit arm: the cable only");
+	CHECK(!dl_dmrip_air_allowed(DL_CMD_RADIO, disarm, 6), "transmit arm off: the cable only");
+	CHECK(!dl_detour_item_allowed(DL_CMD_RADIO, arm, 6), "transmit arm: never a detour's item");
 	CHECK(!dl_dmrip_air_allowed(DL_CMD_RADIO, beep, 0), "RADIO without an op");
 	CHECK(!dl_dmrip_air_allowed(DL_CMD_DMRIP, &st, 0), "DMRIP empty");
 }

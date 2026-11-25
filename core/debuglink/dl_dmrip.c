@@ -190,7 +190,9 @@ bool dl_dmrip_frame(const uint8_t *b, size_t n, uint8_t *cmd, uint8_t *seq, cons
 // move it by themselves; the tone burst, DTMF and the PA operations transmit or set the drive; privacy holds packet
 // data back and the test TX limit stops the replies; the USB and PPP operations have nothing to do with the air and
 // store settings. The voice test signal, the mic gain, the encode options and the reference trim stay until a restart,
-// which the air can't ask, and change every later transmission (the trim also moves the link's channel): cable only
+// which the air can't ask, and change every later transmission (the trim also moves the link's channel): cable only.
+// So is the owner's transmit arm (op 44, its info as well): the owner's word, given with a backup the cable compared,
+// never a request from the air or a detour's item
 static bool radio_op_direct(const uint8_t *p, uint16_t len)
 {
 	switch (p[0]) {

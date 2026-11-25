@@ -103,8 +103,8 @@ void debuglink_p25_reset(void);
 void debuglink_view_nxdn(const radio_view_t *v, dl_text_t *t);
 void debuglink_nxdn_reset(void);
 void debuglink_view_keys(dl_text_t *t);
-// RADIO operations (DL_CMD_RADIO, first payload byte; docs/spec/debuglink.md 3.6): 1-19, 25, 27, 28 in debuglink.c,
-// the rest in debuglink_view_radio.c
+// RADIO operations (DL_CMD_RADIO, first payload byte; docs/spec/debuglink.md 3.6): 1-19, 25, 27, 28 and 44 in
+// debuglink.c (44 through dl_txarm.c), the rest in debuglink_view_radio.c
 enum {
 	DL_OP_CHANNEL_STEP = 1, DL_OP_ZONE_POS, DL_OP_ZONE, DL_OP_VFO, DL_OP_VFO_SET, DL_OP_VFO_STEP, DL_OP_POWER,
 	DL_OP_SQUELCH, DL_OP_BANDWIDTH, DL_OP_TONE, DL_OP_MONITOR, DL_OP_CLEAR_TEMP, DL_OP_REPLY_CANCEL, DL_OP_HOTSPOT_EXIT,
@@ -134,11 +134,14 @@ enum {
 	DL_OP_VOICE_CAPTURE = 41,
 	DL_OP_P25 = 42,
 	DL_OP_NXDN = 43,
+	// The owner's transmit arm (hal_radio_t.tx_arm, dl_txarm.h): debuglink.c answers it itself, with a reply of its
+	// own, outside the radio requests' rate limit
+	DL_OP_TX_ARM = 44,
 };
 uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *args, uint16_t len);
 // After a reply: the host port's reattach a PA key run asked for (PA_KEYRUN_FLAG_REATTACH); else a no-op
 void debuglink_keyrun_service(void);
-// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too
+// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too, but for DL_OP_TX_ARM
 static inline bool debuglink_is_feature_op(uint8_t op)
 {
 	return (op >= DL_OP_SCAN && op <= DL_OP_SETTING) || op == DL_OP_ROAM || op == DL_OP_VIBRATE || op == DL_OP_VOLUME ||
