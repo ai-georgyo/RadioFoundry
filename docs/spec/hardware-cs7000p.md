@@ -8,8 +8,9 @@ IF chip, a discrete PA with a current loop, a 32 MB SPI NOR flash, a GPS module,
 carries every rail enable. The port is `boards/cs7000p` on `platform/stm32h7`.
 
 Status: **one radio runs the port; what was seen on it is in the bring-up page's
-[First radio](../testing/cs7000p-bringup.md#first-radio), and everything else in this file is untested. Nothing of the
-transmit path has run on a radio.** The image builds, its host tests pass and its static stack check passes. The order to check things on a radio, and the knob to change when a check
+[First radio](../testing/cs7000p-bringup.md#first-radio), and everything else in this file is untested. On it the
+maker's table was restored from the owner's backup and receive runs on it (2026-11-24). Nothing of the transmit path
+has run on a radio: no key-up of any kind has been made on one.** The image builds, its host tests pass and its static stack check passes. The order to check things on a radio, and the knob to change when a check
 fails, is [cs7000p-bringup.md](../testing/cs7000p-bringup.md).
 
 Words used here:
@@ -60,7 +61,9 @@ the maker's device information is at 0x000080-0x00021F, and its records at 0x01E
 page's 2.1 and 2.4). The rest of the maker's data (its codeplug, fonts, voice prompts) is not mapped. Every write
 of the firmware keeps the table's bytes and the records; the device information is not kept (10.3). The firmware
 reads the table at start, keeps a verified copy of it and shows both; receive uses three of its values (13.1), and
-transmit uses its values only once the owner arms it (13.2). No transmission has been made on them.
+transmit uses its values only once the owner arms it (13.2). On the first radio the table, restored from the owner's
+backup, passed the reader with every field group and receive runs on it (bring-up, First radio). No transmission
+has been made on them.
 
 The OEM model is Shenzhen Covalue's DR7810S-2. The service manual and the FCC filing describe that model and its
 STM32F405 predecessor; where they disagree with the schematic, the schematic wins.
@@ -715,7 +718,8 @@ bursts carry.
 table's trim A less 128 (that page's 5.2, the inferred equivalent under the hold), only while |d_A| is at most 32
 steps (`CS7000P_MAKER_RX_TRIM_MAX`, about 650 Hz at 433 MHz): mid-scale was on frequency on the first radio to a few
 hundred Hz, so a trim farther than that says the coding or the table is not this unit's, and the level stays 512 +
-`CS7000P_REF_OFFSET` (`board.ref` `why=rx_bound`, 15). Only the level: 4:0x04 keeps the reference offset in receive,
+`CS7000P_REF_OFFSET` (`board.ref` `why=rx_bound`, 15). On the first radio (2026-11-24) trim A was inside the bound
+and in use (`src=maker`), and FM receive sounded as clear as on mid-scale; no counter or A/B reading was made. Only the level: 4:0x04 keeps the reference offset in receive,
 and the FM transmit set-up's 4:0x04 is the same as without the table. `chip_reg` 3:4 sets both over trim A, and 0x100
 gives them back (14); never while transmission is armed (13.2). Under 3:5's maker coding the same offset is written as the signed level. A new level is
 written low byte first, so a step across a byte of it (512 to 507) passes one value a byte away for one bus write,
@@ -769,7 +773,7 @@ Rails:
 | Second LO, second IF | 50.4 MHz, 450 kHz | derived |
 | First LO side | **low**: LO = f - 49.95 MHz, 350.05 to 477.05 MHz. `CS7000P_LO_HIGH` 0 | **open**: only the VCO tanks' part values point to it. A bench switch flips it together with the I/Q order (section 14, 3:3). Open question 2 |
 | Transmit | the VCO on the carrier | read: no multiplier |
-| VCO select | `EXP_VCO_LOW` set for 400.0 MHz <= f_rx < 479.00001 MHz in receive and for 400.0 MHz <= f_tx < 430.00001 MHz in transmit, else clear (`cs7000p_vco_low`, compared in 10 Hz units). Both switch points put the VCO itself at about 429-430 MHz (the receive LO at 479 MHz is 429.05 MHz). Through the sequencer's `vco_line` op: the line moves only with the transmit rail off and the loop open. With the LO above the signal (3:3), and with `chip_reg` 3:6 = 1, receive keeps the line set (the rule this port ran before); transmit always follows f_tx | read: the maker's rule ([calibration-cs7000p.md](calibration-cs7000p.md) 5.12). Agrees with the lock at 433.5 MHz (line set, LO 383.55 MHz); 433.5 MHz receive and transmit write exactly what they wrote before (`cs7000pRadioSeqTest`). Not seen: either switch point, receive over 479 MHz, transmit under 430 MHz (bring-up) |
+| VCO select | `EXP_VCO_LOW` set for 400.0 MHz <= f_rx < 479.00001 MHz in receive and for 400.0 MHz <= f_tx < 430.00001 MHz in transmit, else clear (`cs7000p_vco_low`, compared in 10 Hz units). Both switch points put the VCO itself at about 429-430 MHz (the receive LO at 479 MHz is 429.05 MHz). Through the sequencer's `vco_line` op: the line moves only with the transmit rail off and the loop open. With the LO above the signal (3:3), and with `chip_reg` 3:6 = 1, receive keeps the line set (the rule this port ran before); transmit always follows f_tx | read: the maker's rule ([calibration-cs7000p.md](calibration-cs7000p.md) 5.12). Agrees with the lock at 433.5 MHz (line set, LO 383.55 MHz); 433.5 MHz receive and transmit write exactly what they wrote before (`cs7000pRadioSeqTest`). Seen under the rule: 433.5 MHz receive with the line set (`rx_cal ... vco=low vco_rule=freq`, bring-up First radio). Not seen: either switch point, receive over 479 MHz, any transmission (bring-up) |
 | Reference divider | 2 for the whole band (`sky72310_pick_ref_div()`): 8.4 MHz at the phase detector, N 41.7 to 61.0 (receive LO 350.05 to 477.05 MHz, transmit 400 to 512 MHz; up to 68.7 with the LO above the signal, 449.95 to 576.95 MHz), step 32.04 Hz | datasheet |
 | Phase detector gain, Mux_out | 31 and tri-stated (`SKY72310_MUX_OFF`: the pin is not wired) | open: the gain that suits this loop filter is unknown. Open question 3 |
 | Lock | PD11 high. Three samples 100 us apart must agree; timeout 5 ms | datasheet, derived |
@@ -1204,8 +1208,13 @@ The maker's firmware has used this chip. What it keeps there is known in part
 
 Where it keeps its codeplug (that page's 5.12 names one record of it), fonts and voice data is not mapped.
 
-In short (each row is explained below). None of it has run on a radio yet: only the blank window was read on one
-(bring-up, First radio):
+In short (each row is explained below). On the first radio (2026-11-24, bring-up First radio): the blank window
+read and refused, the compare against the owner's backup, the restore through ops 4 and 5 (the kept rewrite of
+sector 1 and the record), the window and the record after an update and a restart, and one codeplug write by the
+site's Codeplug Editor with the table unchanged. Not yet on a radio: every other writer of sector 1 (the CPS tool,
+TFTP, a DTMF or APRS edit, "start a new codeplug", staging), a tool's bytes for the range dropped, the journal's
+replay after a power cut, the record written by the firmware itself, a refusal of the restore, the web flasher's
+step:
 
 | What | The rule |
 |---|---|
@@ -1265,7 +1274,7 @@ Builds before the factory copy keep nothing, so a codeplug is never written with
 damaged window comes back from it or from the backup, but not a window that then holds another valid table (above).
 The first radio's window was found blank after such a write (its sha256 is that of 512 bytes of 0xFF): the reader
 refuses it, nothing is copied from it (`cal_table=blank src=none`), and the record stays blank until the restore
-below (bring-up stage 6; not run yet). The owner's
+below (bring-up stage 6, run on 2026-11-24: the window and the record now hold the backup's table). The owner's
 whole-chip backup still holds the table. The firmware's one path back is the factory copy's restore, debug link
 STORAGE ops 4 and 5 ([settings-store.md](settings-store.md) 4.2): the backup's 512 bytes loaded, checked against the
 reader (13.1) and against the window and the record (a valid table there that differs is refused), then the window
@@ -1430,7 +1439,10 @@ same way: unarmed, the FM transmit set-up's 4:0x04 and bias stay today's value o
 at every receive entry below the arm's top stage. On the radio, 3:0 and 3:4 are the owner's A/B: `reg 3 4 0`
 is today's level (`CS7000P_REF_OFFSET` 0, the default), `reg 3 4 0x100` the table's again; `reg 3 0 2048` today's
 tune, `reg 3 0 0` the table's (both at the next status poll); `reg 3 8 1` the data sheet's RSSI line, `reg 3 8 0` the
-table's points, for the DMR scan and roaming, which test the dBm. The knobs are RAM only; the build knob
+table's points, for the DMR scan and roaming, which test the dBm. On the first radio (2026-11-24) the three were in
+use (`rx_tune` the table's row, `ref ... src=maker`, `rx_cal=maker rssi=maker`), FM receive sounded as good as
+before, DMR calls were decoded, and a strong DMR signal read a few dB lower than on the data sheet's line; the A/B with readings, the
+scan and roaming on the new scale were not tried. The knobs are RAM only; the build knob
 `CS7000P_RX_MAKER=0` is the lasting way back: receive then takes none of the three values from a valid table (the
 reference's `why=build`), and writes and reads what it does without one (`cs7000pRadioRxOffTest`). Squelch stays the port's (the noise reading); the
 maker's thresholds are read, checked (a damaged squelch row makes the table not valid) and shown at the receive
@@ -1659,7 +1671,7 @@ the source comments use.
 
 | # | Question or risk | Where it bites | Resolved by |
 |---|---|---|---|
-| 1 | **Reference oscillator control.** Which HR_C6000 registers set pin 75's level in receive and in transmit, the bias's coding, the level that is on frequency. The chip's manual contradicts itself on which DAC is which | every mode: the receive and transmit frequency, and the offset between them. On the maker's table: the coding under the maker's 0x0E against the port's 0x0C hold ([calibration-cs7000p.md](calibration-cs7000p.md) 8 item 1), and what trim A and trim B in 4:0x04 do under the hold in FM and DMR transmit (that page's item 2) | The carrier on a frequency counter (bench override, dummy load) and the receive LO's leak while stepping 4:0x47 / 0x48, 0x04, 0x25 through `chip_reg` chip 0; the voltage at the oscillator's control pin if a test point is found. The coding in receive: bring-up 9.1 step 4 (`chip_reg` 3:5). On the maker's table without a counter: a second receiver's tuning step or an SDR (bring-up 11.1) |
+| 1 | **Reference oscillator control.** Which HR_C6000 registers set pin 75's level in receive and in transmit, the bias's coding, the level that is on frequency. The chip's manual contradicts itself on which DAC is which | every mode: the receive and transmit frequency, and the offset between them. On the maker's table: the coding under the maker's 0x0E against the port's 0x0C hold ([calibration-cs7000p.md](calibration-cs7000p.md) 8 item 1), and what trim A and trim B in 4:0x04 do under the hold in FM and DMR transmit (that page's item 2) | The carrier on a frequency counter (bench override, dummy load) and the receive LO's leak while stepping 4:0x47 / 0x48, 0x04, 0x25 through `chip_reg` chip 0; the voltage at the oscillator's control pin if a test point is found. The coding in receive: bring-up 9.1 step 4 (`chip_reg` 3:5), not run yet. Seen on one radio: the receive level 0x200 + d_A under the hold in use, FM as clear by ear (no counter). On the maker's table without a counter: a second receiver's tuning step or an SDR (bring-up 11.1) |
 | 2 | **First LO side**: low, seen on one radio (it locks and receives there; the high side is out of the VCO's range at 433 MHz). With it the I/Q order of 4:0x01 bit 6 is right: the same radio syncs to DMR and decodes calls | answered for the low side | A signal generator on channel; flip `chip_reg` 3:3. DMR sync needs the matching I/Q order |
 | 3 | Synthesizer: the phase detector gain for this loop filter, lock time, the lock pin's behavior in fractional mode, the lock range over 350 to 512 MHz (450 to 577 MHz with the LO above the signal; charge pump 0.5 to 3.9 V) | lock failures, slow key-up, the band edges | `board.pll` over a frequency sweep; the tuning line at test point TP1 |
 | 4 | PC8's idle level (50 % chosen; the maker's levels were set at 48.76 %) and PWM ripple on the reference; on the maker's table the sub-audio depth rule, (4000 L + 525) / 1050 per mille, inferred from the maker's PWM period (13.2) | carrier offset, hum on the carrier; a tone too weak or too strong to open a receiver | The carrier with PC8 at 0 %, 50 %, 100 % (`chip_reg` 3:2); the spectrum close in. The tone's deviation on a service monitor, or a receiver with the tone set opening on it (bring-up 11.1) |
@@ -1679,7 +1691,7 @@ the source comments use.
 | 18 | Software entry to the ROM loader from a running image: the supply is already configured; the loader's USART pins are PA2 (an op-amp output here) and PB10 (a selector contact to ground) on every loader but 0x91 (0x92: not stated), PA9 and PB14 (the chip's data output) on 0x91. Whether the HR_C6000 releases its data output while deselected. Whether the backup register keeps the request with the RTC's kernel clock off. (A plain software reset with SK1 held would reach the same loader on the same pins: every one waits for SK1's release first, 2.5) | updates without the key | On by default under the rule (`board_rom_entry_ok()`, `romentry_cs7000p.h`): loader 0x91, or PB10 high. The entry reached the loader on the first radio (loader 0x92); still to check: PB10 and PB12 as section 4.2 step 5. SK1 at power-on stays available |
 | 19 | The ROM's Leave into the image (the stack pointer rule, peripherals as the loader left them); a normal power-on with the first sector erased starts nothing (2.5) | the radio needs a power cycle after flashing; an install cut short needs the loader and the same install | Observe. The tools already say to switch the radio off and on, and write the vector table last |
 | 20 | **Read Unprotect erases the maker's bootloader and programs.** Whether anything unit-specific is in the MCU's flash is not stated (the maker's recovery reloads a bootloader, programs, a default codeplug and a language file, which suggests not). The factory calibration is not: the maker's program reads it from the data flash only ([calibration-cs7000p.md](calibration-cs7000p.md) 2.1) | a radio that cannot go back to stock, or lost calibration, before RadioFoundry is of use | All before the first RadioFoundry install: the owner saves the codeplug with the maker's CPS and notes Radio Info while the stock firmware runs (and saves the tuning data, if the maker's tuner software can export it: no document says), runs the maker's documented recovery once (it loads the maker's default codeplug), confirms the radio works on the maker's firmware, and writes the saved codeplug back |
-| 21 | The maker's data in the 32 MB flash: the calibration table, the device information and three records are located (10.3); the codeplug, fonts and voice data are not | a claim of the settings region can overwrite what the map does not keep: the device information and the data not mapped (the table and the records are kept, 10.3) | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
+| 21 | The maker's data in the 32 MB flash: the calibration table, the device information and three records are located (10.3); the codeplug, fonts and voice data are not. On one radio the backup's 0x001000-0x0011FF, restored, passed every field group of the reader | a claim of the settings region can overwrite what the map does not keep: the device information and the data not mapped (the table and the records are kept, 10.3) | A full backup first: on every unit the region is foreign until claimed (section 10.3). Compare two backups across a codeplug write by the maker's software to map it |
 | 22 | The state the maker's firmware leaves the flash chip in (`ADP`, block protection, a suspended operation); whether the write enable latch stays set after `C5h` | `ADP` set: the part starts in 4-byte mode (handled). Block protection: writes fail. A suspended operation: the part is not used until a power cycle | `board.flash`; the status registers through the debug link's flash info |
 | 23 | The GPS module's rate and sentences; the antenna shared with the radio | no position | `board.gps_baud` |
 | 24 | PHONE_DET, BAT_DET, IC611, the unlabeled expander output, Bluetooth, the accelerometer, the motor | none: not used | recorded for later work |
