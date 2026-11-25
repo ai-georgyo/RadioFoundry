@@ -392,7 +392,7 @@ Value forms: numbers in decimal (`temp`, `input.*keys` in hex with `0x`), states
 
 Radio requests, queued to the radio core exactly as the UI sends them (`core/radio/radio.h`); the radio core may
 refuse them as it would refuse the UI (e.g. a bandwidth change on a DMR channel). Read GET_VIEW to see the effect.
-At most one per 20 ms (busy otherwise; the radio core's queue holds 16).
+At most one per 20 ms (busy otherwise; the radio core's queue holds 16), but op 44, which queues nothing.
 
 | Op | Arguments | Request |
 |---|---|---|
@@ -439,6 +439,7 @@ At most one per 20 ms (busy otherwise; the radio core's queue holds 16).
 | 41 | n u8 | voice capture (`ambeVoiceCaptureArm`, `CONFIG_VOICE_CAPTURE` builds; status 4 without): the next n voice frames received (up to 32), raw as on air before the FEC, lost frames marked; 0 stops. Arming clears what was captured. The `voice_cap` section shows them. For receive tests that compare the bits with what was sent. `DebugLink.voice_capture(n)`, `voice_frames()` |
 | 42 | rx_nac u16, tx_nac u16, rx_tgid u16, talkaround u8, flags u8, tx_dst u32, unit_id u32 | the P25 settings ([p25.md](p25.md) 7.2), RAM only, for the VFO and a mode changed for now (a stored P25 channel runs on its own parameters, and takes only `unit_id` from here): NACs 0 to 0xFFF (`rx_nac` 0xF7E takes every NAC), `rx_tgid` 0 plays every call, talkaround 0 auto, 1 on, 2 off, flags bit 0: PTT calls the unit `tx_dst` (24 bits), else the talk group `tx_dst` (16 bits), `unit_id` 0 = the radio's DMR ID. The engine takes them at once, or when a transmission ends; read the `p25` view. BAD_ARG out of range, UNAVAILABLE without `CONFIG_P25`. `rfoundry_debug.py radio p25 [nac=N] [rx_nac=N] [tx_nac=N] [rx_tgid=N] [talkaround=auto\|on\|off] [tg=N\|unit=N] [unit_id=N]` changes only the fields given |
 | 43 | flags u8, rx_ran u8, tx_ran u8, rx_gid u16, unit_id u16, tx_dst u16 | the NXDN settings ([nxdn.md](nxdn.md) 6.2), RAM only, for the VFO and a channel in NXDN for now (a stored NXDN channel runs on its own): flags bit 0 9600 bit/s (else 4800), bit 1 PTT calls the unit `tx_dst` (else the group `tx_dst`), bit 2 emergency calls; `rx_ran` 0 takes every RAN, `tx_ran` 0 to 63, `rx_gid` 0 plays every call of the RAN, else only that group and calls to `unit_id`, `unit_id` 1 to 65519. The engine takes them at once, or when a transmission ends; a new rate starts it over. Read the `nxdn` view. BAD_ARG out of range, UNAVAILABLE without `CONFIG_NXDN`. `rfoundry_debug.py radio nxdn [rate=9600\|4800] [ran=N] [rx_ran=N] [tx_ran=N] [rx_gid=N] [tg=N\|unit=N] [unit_id=N] [emergency=0\|1]` changes only the fields given |
+| 44 | none; or stage u8, id u32 | the owner's transmit arm (`hal_radio_t.tx_arm_info`, `tx_arm`; [radio-features.md](radio-features.md) 6.3), RAM only, off at every start. No argument: the info, stage u8 (0 off, 1 FM at the lowest level, 2 FM at every level, 3 every mode), max u8 (the board's highest stage), the calibration's flash range addr u32 and len u32, its CRC-32 u32 (0 when none), ok u8 (1: a calibration in use the arm can cover). stage and id: arm, id the CRC-32 the host computed from its own backup of that range (a tool never sends the CRC the info gave). OK with reason 0, or REFUSED with a reason u8: 1 no calibration in use, 2 the id is not its CRC-32, 3 a stage over max, 4 a state forbids it now (the radio not started yet, a bench state, the power's off state, a restore of the calibration pending, 3.13). Stage 0, and a stage below the one armed, are always taken; a transmission the new stage no longer covers ends at once. A length other than 0 or 5 answers BAD_ARG, a radio without the hooks UNAVAILABLE. Outside the 20 ms rate limit. What a board refuses while not armed is on its hardware page (`board.tx_refused`) |
 
 Op 23 (`DL_OP_TONE_BURST`) now gives the error beep when refused on a DMR channel, in hotspot mode or without
 `tx_tone`, instead of silently doing nothing.
@@ -1163,6 +1164,9 @@ capacity and atomic commit behavior are specified in [satellite.md](satellite.md
 
 - PTT: a firmware time-out on every injected PTT (10 s maximum); the host tool refuses longer holds; the radio
   core's own TX time-out and transmit checks still apply.
+- RADIO op 44 arms transmission on a calibration the board found only with the CRC-32 of that calibration, only in
+  RAM and only until power-off; a board may also need a test TX limit list naming the frequency (radio-features.md
+  6.3). Disarming is always taken and ends a transmission the new stage no longer covers.
 - Every injected key hold is capped at 10 s, one injected key at a time, 40 ms between them.
 - Radio requests are rate limited (20 ms).
 - INFO_CHIP and READ_MEM only read. READ_MEM reads only the platform's windows (3.10): flash, ROM, OTP and option bytes
