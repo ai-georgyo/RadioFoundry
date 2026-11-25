@@ -127,7 +127,10 @@ static pa_keyup_cfg_t cfgs[2];
 static volatile uint8_t cur;
 static uint16_t ahead_limit, drive_limit;
 static bool on;
-static bool custom;	// the debug link's constants: a band's don't replace them
+// The debug link's constants: a band's don't replace them. True from before such constants are in use to after they
+// are not (pa_keyup_set): a task that preempts a set and plans a key-up never finds the debug link's constants with
+// it false (pa_keyup_custom)
+static volatile bool custom;
 static pa_keyup_t last;
 static uint16_t last_top, last_ref;
 
@@ -153,17 +156,21 @@ bool pa_keyup_set(const pa_keyup_cfg_t *c)
 	if (!on) {
 		return false;
 	}
-	if (c == NULL) {
-		c = board_cfg;
-		custom = false;
-	} else if (!pa_keyup_valid(c, ahead_limit)) {
+	const bool mine = c != NULL;
+	if (mine && !pa_keyup_valid(c, ahead_limit)) {
 		return false;
-	} else {
-		custom = true;
+	}
+	if (mine) {
+		custom = true;	// before the switch to them
 	}
 	uint8_t n = (uint8_t)(cur ^ 1u);
-	cfgs[n] = *c;
+	cfgs[n] = mine ? *c : *board_cfg;
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);	// the copy whole before the switch
 	cur = n;
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	if (!mine) {
+		custom = false;	// after the switch to the board's
+	}
 	return true;
 }
 
