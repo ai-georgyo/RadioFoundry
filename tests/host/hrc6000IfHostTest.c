@@ -668,12 +668,16 @@ static void test_coding(void)
 	CHECK(hrc6000_if_retune(&h, HZ_B));
 	CHECK(regs[4][0x26] == 0xFD && wl_count(mark, 0x26, 0x7D) == 0 && ref_signed(9));
 
-	// The signed coding back to the hold: the whole set-up, the hold's word and level
+	// The signed coding back to the hold: the whole set-up, the hold's word and level. The level's high bits land
+	// under the signed coding's 0x0E (the rows do not write 0x25): the hold's 0x0C is the very next write
 	coding_now = HRC6000_IF_REF_MID;
 	w10 = n_w[0x10];
+	mark = n_wl;
 	CHECK(hrc6000_if_retune(&h, HZ_B));
 	CHECK(n_w[0x10] > w10 && h.ref_coding == HRC6000_IF_REF_MID && ref_held(9) && regs[4][0x25] == 0x0C);
 	CHECK(h.r25 == 0x0C && regs[4][0x26] == 0xFD);
+	i48 = wl_next(mark, 0x48);
+	CHECK(i48 >= 0 && wl_next(mark, 0x25) == i48 + 1 && wl[i48 + 1].val == 0x0C);
 	CHECK(!hrc6000_if_retune(&h, HZ_B));
 	// An answer the interface does not know is the hold, with the driver's 4:0x26 whatever else it gives
 	coding_now = 7;
@@ -717,6 +721,15 @@ static void test_coding(void)
 	hrc6000_if_fm_tx_end(&h);
 	CHECK(ref_held(-5) && regs[4][0x25] == 0x0C && regs[4][0x26] == 0xFD && h.ref_coding == HRC6000_IF_REF_MID);
 	CHECK(!hrc6000_if_retune(&h, HZ_A));
+	// The end of a transmission writes the level under the transmit set-up's 0x0E: the hold's word right after the
+	// level's last write, before the I/Q order's 0x01 (the LO side changed during the transmission)
+	CHECK(hrc6000_if_fm_tx(&h, HZ_B, false, 7) && regs[4][0x25] == 0x0E);
+	CHECK(!hrc6000_if_retune(&h, HZ_HIGH_SIDE));
+	mark = n_wl;
+	hrc6000_if_fm_tx_end(&h);
+	i48 = wl_next(mark, 0x48);
+	CHECK(i48 >= 0 && wl_next((uint32_t)i48 + 1u, 0x48) < 0 && wl[i48 + 1].reg == 0x25 && wl[i48 + 1].val == 0x0C);
+	CHECK(wl_next((uint32_t)i48, 0x01) > i48 + 1 && regs[4][0x01] == 0xF0 && ref_held(0));
 	CHECK(h.errors == 0);
 
 #if CONFIG_DMR
@@ -848,13 +861,15 @@ static uint32_t script(const hrc6000_if_cfg_t *cfg)
 	return log_hash;
 }
 
-// The logs of the code before the reference coding and the receive 4:0x04 callback existed, taken from it once
+// The logs of the code before the reference coding and the receive 4:0x04 callback existed, taken from it once. The
+// hold's again since the end of an FM transmission writes the hold before the I/Q order (test_coding), the only
+// change: the plain and bare logs, which have no hold, are the same as before it
 #if CONFIG_DMR
-#define LOG_HOLD	0x7fb9109fu
+#define LOG_HOLD	0x95f8a3cfu
 #define LOG_PLAIN	0x77e3cdaau
 #define LOG_BARE	0xf59b2579u
 #else
-#define LOG_HOLD	0x81b06773u
+#define LOG_HOLD	0xaaa0c7c3u
 #define LOG_PLAIN	0x1c76dd26u
 #define LOG_BARE	0x47eaacebu
 #endif

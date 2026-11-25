@@ -81,7 +81,8 @@ static void ref_offset(hrc6000_if_t *h, uint32_t hz)
 	if (h->ref_coding == HRC6000_IF_REF_SIGNED) {
 		// The signed level and its control word back to back: the low byte (the same in both codings), 0x0E,
 		// then the high bits. When the coding changes, the one write in between (0x25 before 0x48) is
-		// unavoidable: bit 9 differs for the same voltage
+		// unavoidable: bit 9 differs for the same voltage. Leaving this coding, the hold's 0x48 lands under 0x0E
+		// in the same way, and the hold's 0x0C follows it (rx_setup)
 		uint16_t level = (uint16_t)((uint16_t)off & REF_BITS);
 		count(h, hrc_write(h->dev, 4, 0x47, (uint8_t)level));
 		count(h, hrc_write(h->dev, 4, 0x25, DAC_CTL_SETUP));
@@ -327,9 +328,11 @@ void hrc6000_if_fm_tx_end(hrc6000_if_t *h)
 	coding_take(h);
 	fm_rx_setup(h);
 	count(h, hrc6000_tones_off(h->dev));
+	// The level goes in under the transmit set-up's 0x0E: the hold right after it, before the I/Q order's write,
+	// so the level and its control word disagree for no more than the one write between
 	ref_offset(h, h->tuned_hz);
-	iq_follow(h, h->tuned_hz, true);
 	hold(h);
+	iq_follow(h, h->tuned_hz, true);
 	read_back(h);
 }
 

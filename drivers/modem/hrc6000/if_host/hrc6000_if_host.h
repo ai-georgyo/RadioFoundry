@@ -60,7 +60,8 @@ typedef struct {
 // r10 and r25 are 4:0x10 and 4:0x25 as read back after the last set-up (init, a mode change, FM transmit and its end).
 // ref_coding and adc_ctl: ref_coding's answer taken at the last full receive set-up, which every write of the level
 // and of 4:0x25 until the next one uses (hrc6000_if_rx_hold's included): never the level of one coding under the
-// other's control word
+// other's control word within a receive state. A set-up that starts from the other word has one such write
+// (docs/spec/modem-hrc6000.md 8.2)
 typedef struct { hrc_t *dev; const hrc6000_if_cfg_t *cfg; bool up, dmr, fm_tx; uint32_t tuned_hz; uint32_t errors;
 		 uint8_t r10, r25; uint8_t ref_coding, adc_ctl; } hrc6000_if_t;
 
