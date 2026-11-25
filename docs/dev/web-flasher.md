@@ -596,9 +596,9 @@ clicks the one button, and only an `offer` has it:
 
 | `factoryCheck` kind | When | The page shows |
 |---|---|---|
-| `unavailable` | FACTORY_INFO answers unknown command, bad argument or unavailable (a firmware before the ops, or built without `CONFIG_FACTORY_COPY`), or the radio refuses the READ of the range | Install the current RadioFoundry first, and the terminal command (`flash.restore.kept_differs`) |
+| `unavailable` | FACTORY_INFO answers unknown command or bad argument (a firmware before the ops), or the radio refuses the READ of the range | Install the current RadioFoundry first, and the terminal command (`flash.restore.kept_differs`) |
 | `busy` | FACTORY_INFO still busy after five tries 0.5 s apart (the copy not loaded at this start), or two READs of the window differed | Check Again |
-| `none`, `disagree`, `short` | The board keeps no factory copy; the radio's range is not one of the board's `[[flash.protect]]` data entries (the page and the firmware disagree: nothing is sent); the backup's `spi-flash.bin` ends before the range | The terminal command, as before the step |
+| `none`, `disagree`, `short` | The board keeps no factory copy (FACTORY_INFO unavailable: a board or a build without `CONFIG_FACTORY_COPY`, where an update would change nothing; or present 0); the radio's range is not one of the board's `[[flash.protect]]` data entries (the page and the firmware disagree: nothing is sent); the backup's `spi-flash.bin` ends before the range | The terminal command, as before the step |
 | `same` | The window, read twice, holds the backup's bytes | The three CRC-32s, and that they agree |
 | `empty` | The backup's range is all 0xFF or all 0x00 | The three CRC-32s: the backup has no table either |
 | `other_radio` | The identity compare: another protected data range of the board (nothing of RadioFoundry's writes it) differs between the radio and the backup | The three CRC-32s, the ranges that differ, and the tool's `--no-identity` for an owner who is sure. No button: the way past the compare is the tool, on purpose not a click |

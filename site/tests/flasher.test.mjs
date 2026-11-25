@@ -596,10 +596,16 @@ test("the factory step: an earlier firmware gets the tool command, a radio still
 	const radio = new FakeFactoryRadio();
 	const link = new Link(radio.stream());
 	const backup = factoryBackup(radio, fBytes(1, 512));
-	for (const st of [1, 2, 4]) {
+	for (const st of [1, 2]) {
 		radio.info = st;
 		assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "unavailable", `op 3 status ${st}`);
 	}
+	// A board (or a build) without the factory copy answers unavailable: no copy, the kept notice alone, never the
+	// advice to install the current firmware, which would change nothing; and nothing read or sent after op 3
+	radio.info = 4;
+	const ops = radio.ops.length;
+	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "none", "op 3 status 4");
+	assert.deepEqual(radio.ops.slice(ops), [3], "op 3 alone");
 	radio.info = null;
 	radio.readable = [F_RECORDS];		// a firmware before the factory range's read rule
 	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "unavailable");
