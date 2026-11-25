@@ -131,10 +131,11 @@ async function readTwice(link, addr, size) {
 // What the page can do about the board's factory range once the codeplug is back: the radio's factory copy (op 3), its
 // window read twice, and the backup's bytes, compared. {kind, info, window, backup, crc: {radio, record, backup}, range,
 // others}; kind, in the order decided:
-//   unavailable  the firmware has no factory copy ops (op 3 unknown, bad argument or unavailable), or refuses the read
+//   unavailable  the firmware is older than the factory copy ops (op 3 unknown or a bad argument), or refuses the read
 //                of the range: the tool command, after an update
 //   busy         the radio has not loaded its copy at this start yet (op 3 busy), or two reads of the window differed
-//   none         the board keeps no factory copy (op 3 present 0)
+//   none         the board keeps no factory copy (op 3 unavailable, a build without it, or present 0): the kept
+//                notice alone, as before the step; an update would change nothing
 //   disagree     the radio's range is not a data entry of the board's protected regions: the page and the firmware
 //                disagree, so nothing is sent
 //   short        the backup's memory chip read ends before the range
@@ -155,7 +156,8 @@ export async function factoryCheck(link, backupSpi, protect = [], { busyWaitMs =
 			info = await link.factoryInfo();
 			break;
 		} catch (e) {
-			if ([ST_UNKNOWN, ST_BAD_ARG, ST_UNAVAILABLE].includes(status(e))) return { kind: "unavailable" };
+			if ([ST_UNKNOWN, ST_BAD_ARG].includes(status(e))) return { kind: "unavailable" };
+			if (status(e) === ST_UNAVAILABLE) return { kind: "none" };
 			if (status(e) !== ST_BUSY) throw e;
 			if (i >= 4) return { kind: "busy" };
 			await sleep(busyWaitMs);
