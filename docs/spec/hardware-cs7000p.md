@@ -1575,8 +1575,9 @@ connector receives it):
 DMR voice is a DMR transmission as any other. With the codec merged (`dmr.codec=1`, 2.3) the core passes PTT on a DMR
 channel to the board's `tx()`, the call DMR data makes too, and the stage decides: refused at `off`, `fm-low` and
 `fm` (`why=13`), and at `dmr` with no test TX limit list (`why=15`; a list without f_tx is the core's refusal before
-the board, `txlim.refused`); keyed at `dmr` with a list naming f_tx. Without the codec the core refuses PTT on a DMR
-channel itself, at every stage (`tx_deny=no_codec`): the board is not asked and `board.tx_refused` stays.
+the board, `tx_deny=inhibit` and `txlim.refused`); keyed at `dmr` with a list naming f_tx. Without the codec the core
+refuses PTT on a DMR channel itself, at every stage (`tx_deny=no_codec`, after the checks every PTT gets, so a list
+without f_tx still reads `inhibit`): the board is not asked and `board.tx_refused` stays.
 `cs7000pRadioTest` pins the board's side with the core's call; `radioCoreTest` pins the core's (no codec: the board
 not asked; a board refusal: nothing on air). Untested on a radio: the codec's encoder has not run on one.
 
