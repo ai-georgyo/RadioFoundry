@@ -181,7 +181,8 @@ const board_t board = {
 	.audio = &cs7000p_audio,
 	// The radio's own codec, which the merge on the user's machine places in sector 7 (vocoder_cs7000p.c). Absent
 	// until then: the core refuses DMR voice ("No codec: voice off"), and DMR data, the hotspot and FM are what
-	// runs. Untested on a radio
+	// runs. Present, DMR voice is keyed as DMR data is, so it waits for the owner's transmit arm's top stage
+	// (radio_cs7000p.c). Decode runs on one radio; encode has not run on one
 	.vocoder = &stm32_vocoder,
 #endif
 #if CONFIG_USB

@@ -30,7 +30,7 @@ What the radio refuses until it is calibrated or checked:
 |---|---|---|
 | Any transmission on the model tables (all unset): FM, DMR data, the hotspot, Tier III registration | the calibration verdict in `tx()` and in the burst key-up (section 13) | the model tables are filled from bench measurements |
 | Any transmission on the maker's table (`board.cal=maker`) | the owner's transmit arm (13.2): off at every start, never stored | the owner arms it over the debug link until power-off, in stages (FM at the low level, FM, then DMR), with a test TX limit list naming the frequency (`radio tx-arm`, 13.2) |
-| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); received voice plays on one radio, transmit is untested |
+| DMR voice transmit, received voice audio | the core, while the vocoder reports no codec (`codec=absent`): FM only | the radio's own codec is merged into sector 7 ([codec-cs7000p.md](codec-cs7000p.md)); received voice plays on one radio. DMR voice transmit then is a DMR transmission as any other: on the maker's table only at the arm's top stage (13.2), untested |
 | Settings and codeplug writes, on every unit, blank flash or not | the foreign-region guard with `STORAGE_CLAIM_FIRST` (section 10) | the owner claims the region after a backup of the whole chip |
 | The power hold | `power_cs7000p.c` (section 5) | the knob has been read on, some tens of milliseconds after reset |
 | Display and key matrix | the LCD board check (section 9) | the connector reads as the assumed board, or the bench knob `CS7000P_LCD_FORCE` |
@@ -1577,6 +1577,14 @@ connector receives it):
 | `fm-low` | FM at 1W (a PTT on an FM channel); a tone channel only where the table gives its tone a level | FM at 4W, every DMR transmission (voice, data, APRS over DMR, the hotspot, Tier III) |
 | `fm` | FM at both levels | every DMR transmission |
 | `dmr` | FM and DMR at both levels, what the radio sends by itself included (APRS over DMR, data replies, the hotspot, Tier III registration) | nothing the table serves |
+
+DMR voice is a DMR transmission as any other. With the codec merged (`dmr.codec=1`, 2.3) the core passes PTT on a DMR
+channel to the board's `tx()`, the call DMR data makes too, and the stage decides: refused at `off`, `fm-low` and
+`fm` (`why=13`), and at `dmr` with no test TX limit list (`why=15`; a list without f_tx is the core's refusal before
+the board, `txlim.refused`); keyed at `dmr` with a list naming f_tx. Without the codec the core refuses PTT on a DMR
+channel itself, at every stage (`tx_deny=no_codec`): the board is not asked and `board.tx_refused` stays.
+`cs7000pRadioTest` pins the board's side with the core's call; `radioCoreTest` pins the core's (no codec: the board
+not asked; a board refusal: nothing on air). Untested on a radio: the codec's encoder has not run on one.
 
 **The owner's tool** ([radio-features.md](radio-features.md) 6.3), never run against a radio yet:
 

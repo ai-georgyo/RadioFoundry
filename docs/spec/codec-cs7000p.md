@@ -745,9 +745,11 @@ installer, with the maker's file V9.00.96; readings through the debug link.
 | `CCR` (0xE000ED14) before any voice | 0x00060200: `UNALIGN_TRP` and `DIV_0_TRP` clear | the start-up's clear after the ROM loader's jump into the image (no power cycle since the install) |
 | Received voice: three group calls, 1650 voice bursts, 4950 frames in about a minute | played from the speaker, good quality throughout; `voice.rx_lost`, `rx_concealed`, `rx_bad`, `rx_underruns` and `dmr.underruns` all 0; no crash record, no restart | decode from the placed address with the tables where the merge put them; alignment on the real core for decode; decode within its 20 ms; the bit order and the FEC results from the HR_C6000 on receive |
 | The audio task's stack | `tasks.free.audio` 4936 after a key beep, 2560 after those calls, of 5120 bytes | decode's depth with the exception frame and context switch: 2560 bytes used, against 2352 emulated below the host's decode |
+| Two updates with the web installer over the running firmware (2026-11-24) | the codec stayed: a received group call played with good audio after the second | the codec kept across an update by the web installer |
 
-Not seen yet: encode and everything on transmit, the silence frame, `CCR` after a power cycle, the codec kept
-across an update, a bad channel.
+Not seen yet: encode and everything on transmit, the silence frame, `CCR` after a power cycle, a bad channel. On this
+radio every transmission waits for the owner's transmit arm, DMR voice for its top stage
+([hardware-cs7000p.md](hardware-cs7000p.md) 13.2), and no key-up of any kind has been made on one.
 
 ## Only a radio can check
 
