@@ -142,6 +142,41 @@ static void codec_inputs(hrc6000_if_t *h)
 	count(h, hrc_write(h->dev, 4, 0xE0, (uint8_t)((e0 & ~c->e0_clear) | c->e0_set)));
 }
 
+// The board's FM transmit rows over the set-up just made, each register's value read first. All read before any is
+// written: a board that names a register twice gets the set-up's value back, not its own
+static void tx_rows(hrc6000_if_t *h, uint32_t hz, bool wide)
+{
+	const hrc6000_if_cfg_t *c = h->cfg;
+	uint8_t n = 0;
+	const hrc6000_if_row_t *rows = c->fm_tx_rows != NULL ? c->fm_tx_rows(c->ctx, hz, wide, &n) : NULL;
+	if (rows == NULL || n == 0u) {
+		return;
+	}
+	if (n > HRC6000_IF_TX_ROWS_MAX) {
+		h->errors++;	// the board's mistake: a set-up the board refuses, as one with a failed write
+		return;
+	}
+	for (uint8_t i = 0; i < n; i++) {
+		h->tx_back[i] = rows[i];
+		if (!count(h, hrc_read(h->dev, rows[i].page, rows[i].reg, &h->tx_back[i].val))) {
+			return;	// nothing written, nothing to write back
+		}
+	}
+	h->n_back = n;
+	for (uint8_t i = 0; i < n; i++) {
+		count(h, hrc_write(h->dev, rows[i].page, rows[i].reg, rows[i].val));
+	}
+}
+
+// The set-up's values of those registers back, last row first, at the end of the transmission they served
+static void tx_rows_back(hrc6000_if_t *h)
+{
+	for (uint8_t i = h->n_back; i-- > 0u;) {
+		count(h, hrc_write(h->dev, h->tx_back[i].page, h->tx_back[i].reg, h->tx_back[i].val));
+	}
+	h->n_back = 0;
+}
+
 // What the chip holds after a set-up, for the board's diagnostics
 static void read_back(hrc6000_if_t *h)
 {
@@ -169,7 +204,8 @@ static void dmr_setup(hrc6000_if_t *h, uint32_t hz)
 	if (c->mod_pair == NULL || !c->mod_pair(c->ctx, hz, true, &mod2, &mod1)) {
 		mod2 = mod1 = c->safe_gain;
 	}
-	h->fm_tx = false;	// the entry ends an FM transmit set-up (4:0x60)
+	tx_rows_back(h);	// the entry ends an FM transmit set-up (4:0x60), and the board's rows with it
+	h->fm_tx = false;
 	if (c->fm_audio_chip) {
 		count(h, hrc6000_fm_audio(h->dev, false));	// the line out is the codec's from here
 	}
@@ -309,12 +345,14 @@ bool hrc6000_if_fm_tx(hrc6000_if_t *h, uint32_t hz, bool wide, uint8_t mic_gain)
 		.ref_offset = c->ref_offset != NULL ? c->ref_offset(c->ctx, hz) : 0,
 		.mic_gain = mic_gain,
 	};
+	tx_rows_back(h);	// keyed again without an end: the last rows' registers as a set-up left them, first
 	h->fm_tx = true;
 	if (c->fm_audio_chip) {
 		count(h, hrc6000_fm_audio(h->dev, false));	// open only in FM receive
 	}
 	count(h, hrc6000_set_mode_fm_tx(h->dev, &tx));	// leaves 4:0x25 as the driver's transmit set-up wants it
 	codec_inputs(h);
+	tx_rows(h, hz, wide);
 	read_back(h);
 	return true;
 }
@@ -325,6 +363,7 @@ void hrc6000_if_fm_tx_end(hrc6000_if_t *h)
 		return;
 	}
 	h->fm_tx = false;
+	tx_rows_back(h);	// before the receive rows, which then have the last word on what they write
 	coding_take(h);
 	fm_rx_setup(h);
 	count(h, hrc6000_tones_off(h->dev));

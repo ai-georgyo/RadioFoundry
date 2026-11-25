@@ -790,8 +790,8 @@ Unverified on a radio.
 | `hrc6000_if_mode`, to DMR | The feed-through off (a board with the chip's FM audio), the I/Q order, the DMR entry (3.1) with the frequency's modulation pair or the board's safe gain, the codec inputs, the reference offset, the receive hold, then the engine on |
 | `hrc6000_if_mode`, to FM | The engine off, the FM receive rows, the FM audio path, 0x01 if the first LO's side changed, the reference offset, the receive hold |
 | `hrc6000_if_retune` | The reference offset; 0x01 if the first LO's side changed; in DMR on a new frequency its pair (0x45 / 0x46) and a receiver restart (5.1); the receive hold. During an FM transmission the frequency is only noted. When the reference coding's answer changed (below): the mode's whole receive set-up instead (in DMR with the engine off and on around it), and true |
-| `hrc6000_if_fm_tx` | Refused, with nothing written, when the board has no pair for the frequency, in DMR, or when the chip is not up. Else the feed-through off, the FM TX rows above, the codec inputs |
-| `hrc6000_if_fm_tx_end` | The FM receive rows, the FM audio path, 0xA1 = 0x00, the reference offset of the receive frequency, the receive hold, then its I/Q order |
+| `hrc6000_if_fm_tx` | Refused, with nothing written, when the board has no pair for the frequency, in DMR, or when the chip is not up. Else the feed-through off, the FM TX rows above, the codec inputs, then the board's own transmit rows (below) |
+| `hrc6000_if_fm_tx_end` | The board's transmit rows' registers back to the set-up's values, then the FM receive rows, the FM audio path, 0xA1 = 0x00, the reference offset of the receive frequency, the receive hold, then its I/Q order |
 | `hrc6000_if_rx_hold` | The receive hold alone: one write, for the end of a DMR burst sequence |
 
 **FM audio path** (`fm_audio_chip`). Set: the chip demodulates FM and plays it on its line out, 0x10 = 0x80 and
@@ -851,8 +851,19 @@ The rows of FM receive and of the DMR entry do not write 0x25, so a mode change 
 receive entry, which a DMR burst then carries (nothing else writes 0x04 before it). NULL: the reference offset, as
 above. The FM transmit set-up still writes 0x04 from `ref_offset`.
 
-With both callbacks NULL, or answering the hold, 0 and the reference offset, the host writes exactly what it wrote
-before they existed (`hrc6000IfHostTest` compares the whole bus log).
+**FM transmit rows** (`fm_tx_rows`): register writes of the board's own after the FM transmit set-up of a frequency
+and width (after the codec inputs, so after 0x60 = 0x80, and before the board keys the PA): a calibration that was
+set under other values of registers the driver's set-up chooses (the limiter 0x3F, the voice deviation 0x35, the
+filters, the microphone gain 0xE4) takes them back. At most `HRC6000_IF_TX_ROWS_MAX` (8). Each row's register is read
+after the set-up, all of them before the first row is written; the end of the transmission writes those values back,
+last row first, before the FM receive rows, and so does a DMR entry that ends an FM transmit set-up, and a second
+`hrc6000_if_fm_tx` without an end. Page 4 after the transmission is then the same as without the rows, register for
+register: the FM receive rows do not rewrite 0x35, 0x3E or 0x3F. A read that fails writes no row; more than the
+maximum writes none; both count as errors, which the board treats as a failed set-up. A failed row write leaves the
+others written and every row's value is still written back.
+
+With the callbacks NULL, or answering the hold, 0, the reference offset and no rows, the host writes exactly what it
+wrote before they existed (`hrc6000IfHostTest` compares the whole bus log).
 
 **Codec inputs** (`e0_set`, `e0_clear`), for a board whose microphone is not on LINEIN1. The DMR entry and the FM TX
 rows write 0xE0 = 0xC9. After either, the host reads 0xE0 and writes `(value & ~e0_clear) | e0_set`. Such a board
