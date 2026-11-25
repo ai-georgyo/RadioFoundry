@@ -93,6 +93,9 @@ typedef enum {
 					// bench's reference offset (chip_reg 3:4, cs7000p_rf_ref_bench)
 	CS7000P_TX_ARM_CHIPS = 17,	// ... the arm covers it and a list names it, but the bench wrote the modem or the
 					// synthesizer since the start (chip_reg chips 0 and 1, cs7000p_tx_req_t.bench_chips)
+	CS7000P_TX_ARM_BENCH = 18,	// the bench's PA and the owner's arm met: a bench drive armed while the arm is not
+					// off or a transmission on it is up (cs7000p_rf_arm_holds), or a DMR key-up the arm
+					// covers under the debug link's key-up constants (cs7000p_tx_req_t.bench_keyup)
 } cs7000p_tx_why_t;
 
 // The owner's transmit arm (hardware-cs7000p.md 13.2, hal_radio_t.tx_arm): the maker's transmit values may serve a
@@ -168,6 +171,9 @@ typedef struct {
 	// The bench wrote the modem or the synthesizer since the start (chip_reg chips 0 and 1): a register their set-ups
 	// do not write again keeps the bench's value
 	bool bench_chips;
+	// DMR: the PA key-up constants are the debug link's (RADIO op 37, or a key run's), not the board's: the bursts'
+	// key-up could boost over the admitted drive (radio/pa_keyup.h)
+	bool bench_keyup;
 } cs7000p_tx_req_t;
 
 typedef struct {
@@ -244,7 +250,8 @@ void cs7000p_rf_sleep(cs7000p_rf_t *rf, bool sleep);
 // over the model wherever it holds the transmission's values: then the arm decides (13, 15), and once it covers
 // the transmission and a list names hz, an FM one or a DMR one is admitted on the table's drive at hz (admit_arm), a
 // tone channel only when the table gives its tone's level there too (cs7000p_cal_maker_tone); a tone channel without
-// one is refused as without values (2)
+// one is refused as without values (2). A bench drive while the arm holds the PA (cs7000p_rf_arm_holds) is refused
+// (18), neither used nor dropped
 cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q);
 // FM, in this order around the modem's transmit set-up. tx_begin: the DAC to 0 (it held the tuning voltage and must
 // not become a power request) and the receive rail off. tx_key: the VCO line for the carrier, the synthesizer on it
@@ -285,7 +292,24 @@ void cs7000p_rf_safe(cs7000p_rf_t *rf);
 // the receiver off. Take it before the set-up, so that a request landing during it is taken next time
 bool cs7000p_rf_restore_take(cs7000p_rf_t *rf);
 
-// hal_radio_t.tx_drive: arm a drive (1..CS7000P_DAC_MAX) for the next transmission, 0: none. False: out of range
+// The owner's arm holds the PA: it is not off, or a transmission admitted on it has not been followed by a receive
+// set-up. The bench drive and the arm exclude each other (hardware-cs7000p.md 13.2): while this holds no bench drive
+// is taken (cs7000p_rf_drive), the bench's drive now stays on the arm's transmission at or under its drive
+// (cs7000p_rf_drive_now_ok), and a bench admission is refused (CS7000P_TX_ARM_BENCH); the radio refuses to raise
+// the arm while a bench drive is set or in use (cs7000p_rf_bench_drive). Any task: bytes the debug link's task and the
+// radio task write
+static inline bool cs7000p_rf_arm_holds(const cs7000p_rf_t *rf)
+{
+	return rf->arm != CS7000P_ARM_OFF || (rf->admit && rf->admit_arm);
+}
+// A bench drive is armed for the next transmission, or a transmission on one is up (its drive cleared since
+// included): the owner's arm is refused while either holds. Any task
+static inline bool cs7000p_rf_bench_drive(const cs7000p_rf_t *rf)
+{
+	return rf->ovr_drive != 0u || (rf->admit && rf->admit_ovr);
+}
+// hal_radio_t.tx_drive: arm a drive (1..CS7000P_DAC_MAX) for the next transmission, 0: none (always taken). False:
+// out of range, or a drive while the owner's arm holds the PA (cs7000p_rf_arm_holds)
 bool cs7000p_rf_drive(cs7000p_rf_t *rf, uint16_t drive, uint32_t now_ms);
 // hal_radio_t.tx_drive_level: 0 without calibration or outside the transmit ranges. Where the maker's table holds
 // the level's FM values: its drive while the arm covers the level, else 0 (the model's never: the table wins)
@@ -293,8 +317,9 @@ uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t lev
 // hal_radio_t.tx_drive_top: during an FM transmission the top level's drive at its frequency, else 0. On the maker's
 // table that is 0 below the stage that covers the top level (CS7000P_ARM_FM): the drive sweep is then refused
 uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf);
-// hal_radio_t.tx_drive_now's limit: during a transmission on the maker's values no drive above the admitted one,
-// so no write of the bench's reaches a value the arm does not cover; any drive otherwise
+// hal_radio_t.tx_drive_now's limit: while the owner's arm holds the PA (cs7000p_rf_arm_holds) only on the
+// transmission admitted on it, and no drive above the admitted one, so no write of the bench's reaches a value the
+// arm does not cover; any drive otherwise
 bool cs7000p_rf_drive_now_ok(const cs7000p_rf_t *rf, uint16_t drive);
 // The one place the maker's FM transmit values are served (cs7000p_cal_maker_fm): only while the arm covers FM at
 // level, asked anew at every call, so a lowered arm takes them away at once. The test TX limit's list is the

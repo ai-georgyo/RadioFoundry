@@ -431,12 +431,20 @@ void cs7000p_c6000_fm_tx_end(void)
 // Set: the arm drops to this stage at the next state read, as from the debug link's task between the burst plan's
 // check and its drives (0xFF: never)
 static uint8_t arm_drop_at_state = 0xFFu;
+// Set: the debug link's key-up constants (RADIO op 37) land there too, at the next state read
+static const pa_keyup_cfg_t *keyup_at_state;
+static int state_reads;	// the burst plan reads the modem's state after the admission
 
 void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25)
 {
+	state_reads++;
 	if (arm_drop_at_state != 0xFFu) {
 		cs7000p_rf_arm_set(&cs7000p_rf, arm_drop_at_state, 0);
 		arm_drop_at_state = 0xFFu;
+	}
+	if (keyup_at_state != NULL) {
+		CHECK(pa_keyup_set(keyup_at_state));
+		keyup_at_state = NULL;
 	}
 	*up = true;
 	*r10 = 0;
@@ -2306,12 +2314,26 @@ static void test_tx_arm(void)
 	CHECK(cs7000p_rf.arm_id == a);
 	cs7000p_tx_arm_line(line, sizeof(line));
 	CHECK(line_is(line, "tx_arm=fm-low id=0x%08x list=1", a));
-	// A bench carrier is not the arm's: a disarm leaves it up (no safe request), and the arm's lowering ends only a
-	// transmission on the table's values (cs7000pRadioSeqTest)
+	// The bench drive and the arm exclude each other. Armed: no drive taken (0 is), and the arm lowered leaves it so
 	const int safes = board_safes;
+	CHECK(!cs7000p_radio.tx_drive(600) && !cs7000p_radio.tx_drive(1) && cs7000p_rf.ovr_drive == 0u);
+	CHECK(cs7000p_radio.tx_drive(0) && cs7000p_rf.ovr_drive == 0u);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(board_safes == safes && cs7000p_rf.ovr_drive == 0u);
+	// Unarmed: a drive set refuses the arm (a state) and the view shows it; cleared, the arm is taken
+	CHECK(cs7000p_radio.tx_drive(600));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1 bench_drive=600"));
+	CHECK(cs7000p_radio.tx_drive(0) && cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	// A bench carrier up refuses it too, its drive cleared since included; its end gives the arm back
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL));
 	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_TX && cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);
-	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+	CHECK(cs7000p_radio.tx_drive(0) && cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1 bench_drive=600"));
 	CHECK(board_safes == safes && cs7000p_rf.seq.state == CHAINSEQ_ST_TX && modem.fm_tx);
 	cs7000p_radio.tx_off();
 	cs7000p_tx_arm_line(line, sizeof(line));
@@ -2357,10 +2379,14 @@ static void test_tx_arm(void)
 	static const subtone_t none = { TONE_NONE, 0 };
 	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &none) && cs7000p_rf.admit_arm);
 	cs7000p_radio.tx_off();
-	// The bench drive's tone: the build's depth on either bandwidth, as without the table
+	// The bench drive's tone, the arm off (armed, no drive is taken): the build's depth, as without the table
+	CHECK(!cs7000p_radio.tx_drive(600));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &tones[0]));
 	CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm && tone_pm_got == CS7000P_CTCSS_DEPTH_PM);
 	cs7000p_radio.tx_off();
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
 	// One on the table's values, FM at level 1 under stage 2. Stage 2 again keeps it; stage 1 ends it at once by the
 	// safe request, and the new stage stands after it
 	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 1, NULL) && cs7000p_rf.admit_arm);
@@ -2565,6 +2591,38 @@ static void test_tx_arm_dmr(void)
 	CHECK(cs7000p_rf.arm == HAL_TX_ARM_FM && mic_writes == writes2);
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
 	cs7000p_radio.status(&st);
+	// The debug link's key-up constants (op 37, taken while armed; equal to the board's, still the bench's): every
+	// DMR key-up on the arm refused (18) with nothing written, the view says so; FM keys as before; the board's back,
+	// DMR keys again. Set after the admission's check, the plan refuses (18) before any write
+	static const pa_keyup_cfg_t bench_cfg = PA_KEYUP_FIXED(CS7000P_KEYUP_PA_US);
+	char line[128];
+	CHECK(pa_keyup_set(&bench_cfg) && pa_keyup_custom());
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=dmr id=0x%08x list=1 bench_keyup=1", (unsigned)a));
+	for (uint8_t level = 0; level < 2; level++) {
+		const int txs3 = modem.dmr_txs, writes3 = mic_writes, reads3 = state_reads;
+		cs7000p_rf.tx_refused_why = 0;
+		CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, level, NULL));
+		CHECK(state_reads == reads3);	// the admission's refusal, before the plan
+		CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_ARM_BENCH && !runner.armed && modem.dmr_txs == txs3);
+		CHECK(mic_writes == writes3 && !cs7000p_rf.admit);
+	}
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && cs7000p_rf.admit_arm && modem.fm_tx);
+	cs7000p_radio.tx_off();
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	CHECK(pa_keyup_set(NULL) && !pa_keyup_custom());
+	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && runner.armed && cs7000p_rf.admit_arm);
+	cs7000p_radio.tx_off();
+	const int txs4 = modem.dmr_txs, writes4 = mic_writes;
+	keyup_at_state = &bench_cfg;
+	CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && !runner.armed && modem.dmr_txs == txs4);
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_ARM_BENCH && mic_writes == writes4 && !cs7000p_rf.admit);
+	// Unarmed, the constants refuse the arm (a state) until the board's are back
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	CHECK(pa_keyup_set(NULL));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
 	runner.answer = runner.plan = false;
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
 	cs7000p_radio.status(&st);
@@ -2631,15 +2689,34 @@ static void test_tx_arm_restore(void)
 }
 #endif
 
-// The bench drive's key-up with a valid table in use writes what it writes without one, from the call to the
-// carrier, at every stage of the arm: the one difference is the receive bias the modem kept from the receive entry
-// before it, which carries trim A (-5) with the table and today's 0 without
+// The bench route, unarmed, pinned: its key-up's writes from the call to the key-down hash as they did before the
+// bench drive and the arm excluded each other (taken from the code then), without a table and with a valid one. With
+// the table its writes are those of a radio without one but for the receive bias the modem kept from the receive
+// entry before it, which carries trim A (-5) with the table and today's 0 without. After each stage of the arm, its
+// way back (tx-arm off, nothing else) gives the same writes; armed, the bench drive is refused and nothing is written
+#define BENCH_PIN_NONE	0x5fedba86u
+#define BENCH_PIN_TABLE	0x118ce256u
+#define BENCH_PIN_N	680u
+static void bench_keyup_pinned(uint32_t pin)
+{
+	hw_hash = 2166136261u;
+	hw_n = 0;
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
+	CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);
+	cs7000p_radio.tx_off();
+	CHECK(hw_hash == pin && hw_n == BENCH_PIN_N);
+	if (hw_hash != pin) {
+		printf("  bench key-up 0x%08x, %u writes\n", (unsigned)hw_hash, (unsigned)hw_n);
+	}
+}
+
 static void test_arm_bench_keyup(void)
 {
 	radio_status_t st;
 	unsigned nd = 0, nr = 0;
 	chip(NULL, NULL);
 	boot(true, 0);
+	bench_keyup_pinned(BENCH_PIN_NONE);
 	CHECK(last_ref() == CS7000P_REF_OFFSET);
 	hw_n = 0;
 	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
@@ -2650,11 +2727,17 @@ static void test_arm_bench_keyup(void)
 	for (uint8_t stage = HAL_TX_ARM_OFF; stage <= ARM_TOP; stage++) {
 		chip(table_a, NULL);
 		boot(true, 0);
+		cs7000p_radio.status(&st);
 		if (stage != HAL_TX_ARM_OFF) {
 			CHECK(cs7000p_radio.tx_arm(stage, crc(table_a)) == HAL_TX_ARM_OK);
+			cs7000p_radio.status(&st);
+			hw_n = 0;
+			CHECK(!cs7000p_radio.tx_drive(600) && cs7000p_rf.ovr_drive == 0u && hw_n == 0u);
+			CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+			cs7000p_radio.status(&st);	// the change of stage's receive set-up
 		}
-		cs7000p_radio.status(&st);
 		CHECK(last_ref() == -5);	// what the key-up inherits
+		bench_keyup_pinned(BENCH_PIN_TABLE);
 		hw_n = 0;
 		CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && modem.fm_tx);
 		CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm);

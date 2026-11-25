@@ -1688,7 +1688,9 @@ class DebugLink:
     def tx_drive(self, drive=0):
         """The PA drive of the next transmission (RADIO op 36; power calibration), in the board's own units, in place of
         its power level's; it lasts until that transmission ends. 0: the level's again. Set it before key-up. The core
-        view's tx_drive lists each level's drive. Raises DebugLinkError over the board's limit or without the hook."""
+        view's tx_drive lists each level's drive. Raises DebugLinkError over the board's limit, without the hook, or
+        (a radio with the owner's transmit arm) a drive while the arm is not off: the bench drive and the arm exclude
+        each other."""
         self.radio(OP_TX_DRIVE, struct.pack("<H", int(drive)))
 
     def pa_keyup(self, dead_pm=None, knee_us=None, slope_us=None, window_us=None, settle_us=None, pa_us=None,
@@ -2414,7 +2416,15 @@ def cmd_radio(link, a):
     elif op == "tx-arm":              # tx-arm [off | fm-low|fm|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf]
         return cmd_radio_tx_arm(link, a)
     elif op == "tx-drive":            # tx-drive N|off (the next transmission's PA drive, power calibration)
-        link.tx_drive(0 if args[:1] in ([], ["off"]) else num(0))
+        drive = 0 if args[:1] in ([], ["off"]) else num(0)
+        try:
+            link.tx_drive(drive)
+        except DebugLinkError as e:
+            arm = link.tx_arm_info() if drive and e.status == ST_BAD_ARG else None
+            if arm is not None and arm["stage"] != 0:
+                raise SystemExit("tx-drive refused: the radio's transmit arm is on (the bench drive and the arm "
+                                 "exclude each other; radio tx-arm off first)")
+            raise
     elif op == "pa-keyrun":           # pa-keyrun KEY_MS GAP_MS DRIVE... (keys DMR itself, the board's constants)
         if len(args) < 3:
             raise SystemExit("pa-keyrun KEY_MS GAP_MS DRIVE...")
