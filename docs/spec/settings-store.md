@@ -454,7 +454,7 @@ factory ranges, [build-config.md](../build-config.md)). The range is the **windo
 | `range` | the index of the copied range in `hal_flash_map_t.factory`; at most `FACTORY_COPY_MAX` (960) bytes |
 | `record_addr` | the record's sector: on the chip, clear of every area of the map and of every factory range, and where no CPS address maps |
 | `check` | the board's checker: true when the bytes pass every integrity rule the board knows of the maker's data; else a reason (1-0xEF, the board's numbering) and a byte offset. The board's stricter rules for its own use of a field never fail it |
-| `busy`, `changed` | for the restore (below): a restore is refused while `busy()` is true (the board transmits); `changed()` after every restore job that reached the window's write, from the housekeeping task. It only raises a request: the board reads the state and its table on its own task, then calls `factory_copy_taken()`, and `busy()` holds until then |
+| `busy`, `changed` | for the restore (below): a restore is refused while `busy()` is true (the board transmits, or its transmit arm, radio-features.md 6.3, is not off); `changed()` after every restore job that reached the window's write, from the housekeeping task. It only raises a request: the board reads the state and its table on its own task, then calls `factory_copy_taken()`, and `busy()` holds until then |
 | `table` | the board's RAM of the range's size: the bytes in use after the load and after each restore job, all 0xFF when there are none |
 
 "Valid", for the window and for the record's bytes, means `check` passes: one predicate everywhere below.
@@ -541,7 +541,8 @@ running, and until the board took the load's state or the job's outcome (`factor
 init, and after each `changed()`; a board without `changed()` holds nothing up after a job). So the loaded bytes never
 change under a job, and no job writes the board's table while the board reads it. They answer UNAVAILABLE on a board
 without a factory copy and for a configuration the load refused (`why=config`): the restore runs only with the
-checker, the table and the record sector the load accepted.
+checker, the table and the record sector the load accepted. `factory_copy_restore_busy()` is true in exactly these BUSY
+states, for a board that must not act on the table in use while it may change (its transmit arm refuses then).
 
 Op 5 refused: nothing is posted, nothing written, the reason is the result. Accepted: the result is `pending` and a
 job is posted to the housekeeping task, in a slot of its own (`storage_factory_job_post`, run by `storage_job_poll`
