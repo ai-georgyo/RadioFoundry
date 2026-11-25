@@ -633,6 +633,26 @@ static void test_tx_arm(void)
 		CHECK(dl_tx_arm_op(&r, arm, n, out) == 1 && out[0] == DL_ST_BAD_ARG, "length %u", n);
 	}
 	CHECK(dl_tx_arm_op(&r, arm, 6, out) == 1 && out[0] == DL_ST_BAD_ARG && arm_calls == 0, "length 6");
+	// The arm's state as CHIP_REG asks it (dl_tx_arm_on): the stage not off, false without both hooks
+	CHECK(dl_tx_arm_on(&r) && !dl_tx_arm_on(NULL), "armed: stage 2");
+	r.tx_arm_info = fake_arm_info_none;
+	CHECK(!dl_tx_arm_on(&r), "off: stage 0");
+	r.tx_arm_info = fake_arm_info;
+	r.tx_arm = NULL;
+	CHECK(!dl_tx_arm_on(&r), "tx_arm_info alone");
+	r.tx_arm = fake_arm;
+	// A SoC write noted (dl_soc_written): the board asks it, the op does not; every request goes to the board as
+	// before, and the answer is the board's
+	CHECK(!dl_soc_written(), "no SoC write yet");
+	dl_soc_write_note();
+	CHECK(dl_soc_written(), "a SoC write noted");
+	for (uint8_t s = 0; s <= 4; s++) {
+		const uint8_t a2[5] = { s, 0x78, 0x56, 0x34, 0x12 };
+		arm_calls = 0;
+		arm_answer = HAL_TX_ARM_OK;
+		CHECK(dl_tx_arm_op(&r, a2, 5, out) == 2 && out[0] == DL_ST_OK && arm_calls == 1 && arm_stage == s,
+		      "stage %u after a SoC write: the board's", s);
+	}
 	// The reasons' numbers are the protocol's: append only
 	CHECK(HAL_TX_ARM_NO_CAL == 1 && HAL_TX_ARM_ID == 2 && HAL_TX_ARM_STAGE == 3 && HAL_TX_ARM_STATE == 4, "reasons");
 	CHECK(HAL_TX_ARM_FM_LOW == 1 && HAL_TX_ARM_FM == 2 && HAL_TX_ARM_ALL == 3, "stages");

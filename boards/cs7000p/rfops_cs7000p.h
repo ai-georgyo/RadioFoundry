@@ -91,8 +91,9 @@ typedef enum {
 					// correction the table was not set with: PC8's idle duty the bench's (chip_reg
 					// 3:2, cs7000p_tx_req_t.pc8_bench), a stored reference trim (trim_ppb) or the
 					// bench's reference offset (chip_reg 3:4, cs7000p_rf_ref_bench)
-	CS7000P_TX_ARM_CHIPS = 17,	// ... the arm covers it and a list names it, but the bench wrote the modem or the
-					// synthesizer since the start (chip_reg chips 0 and 1, cs7000p_tx_req_t.bench_chips)
+	CS7000P_TX_ARM_CHIPS = 17,	// ... the arm covers it and a list names it, but the bench wrote the modem, the
+					// synthesizer (chip_reg chips 0 and 1) or a SoC register (chip_reg 0xFF) since the
+					// start (cs7000p_tx_req_t.bench_chips)
 	CS7000P_TX_ARM_BENCH = 18,	// the bench's PA and the owner's arm met: a bench drive armed while the arm is not
 					// off or a transmission on it is up (cs7000p_rf_arm_holds), or a DMR key-up the arm
 					// covers under the debug link's key-up constants (cs7000p_tx_req_t.bench_keyup)
@@ -168,8 +169,8 @@ typedef struct {
 	// PC8's idle duty is the bench's (chip_reg 3:2), not 50 %: its mean level is part of the reference's control
 	// voltage (about 2 kHz end to end)
 	bool pc8_bench;
-	// The bench wrote the modem or the synthesizer since the start (chip_reg chips 0 and 1): a register their set-ups
-	// do not write again keeps the bench's value
+	// The bench wrote the modem or the synthesizer (chip_reg chips 0 and 1) or a SoC register (chip 0xFF, the debug
+	// link's note) since the start: a register their set-ups do not write again keeps the bench's value
 	bool bench_chips;
 	// DMR: the PA key-up constants are the debug link's (RADIO op 37, or a key run's), not the board's: the bursts'
 	// key-up could boost over the admitted drive (radio/pa_keyup.h)

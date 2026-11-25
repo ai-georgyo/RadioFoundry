@@ -7,6 +7,7 @@
 #include "board.h"
 #include "debuglink/debuglink.h"
 #include "debuglink/debuglink_proto.h"
+#include "debuglink/dl_txarm.h"
 #include "debuglink/dlog.h"
 
 static uint32_t get32(const uint8_t *p)
@@ -39,9 +40,15 @@ static size_t soc_reg(const uint8_t *req, uint16_t len, uint8_t *out)
 	bool write = len == 9;
 	uint32_t addr = get32(req + 1);
 	uint32_t v = write ? get32(req + 5) : 0u;
-	// Not while transmitting: a timer or an interrupt mask written then could leave the transmitter keyed
-	if (write && debuglink_transmitting()) {
+	// Not while transmitting: a timer or an interrupt mask written then could leave the transmitter keyed. Nor while
+	// the owner's transmit arm is not off: an armed transmission runs on the calibration the owner checked, and a
+	// register written now would reach it outside the board's checks. One tried otherwise is noted, for a board's arm
+	// to ask (dl_soc_written)
+	if (write && (debuglink_transmitting() || dl_tx_arm_on(board.radio))) {
 		return answer(out, DL_ST_REFUSED, 0);
+	}
+	if (write) {
+		dl_soc_write_note();
 	}
 	if (!board.system->reg(addr, &v, write)) {
 		return answer(out, DL_ST_REFUSED, 0);	// outside the windows, as READ_MEM answers

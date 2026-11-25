@@ -51,6 +51,9 @@
 #include "storage/factory_copy.h"
 #include "debuglink/dlog.h"
 #include "debuglink/dl_fmt.h"
+#if CONFIG_DEBUGLINK
+#include "debuglink/dl_txarm.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
@@ -693,6 +696,8 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 	tx_limit_info_t limit;
 	tx_limit_get(&limit, NULL, 0);
 	q.limit_list = limit.on && !limit.block && limit.n != 0u && tx_limit_allows(hz);
+	// A raw SoC register written through the debug link since the start (dl_txarm.h): as a chip's
+	q.bench_chips = q.bench_chips || dl_soc_written();
 #endif
 	return q;
 }
@@ -1118,10 +1123,10 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 // Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. The states that refuse it: the
 // chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2), a stored reference trim or
 // the bench's reference offset (3:4) set or still held (trim A is the table's whole correction of the reference), a
-// bench write to the modem or the synthesizer since the start, a bench drive armed or in use or the debug link's DMR
-// key-up constants (the bench's PA and the arm exclude each other), the power's off state, a restore pending. Each is
-// asked under the interrupt mask with the change itself, so a power-off (its off state, then a safe request that
-// clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
+// bench write to the modem, the synthesizer or (the debug link's note) a SoC register since the start, a bench drive
+// armed or in use or the debug link's DMR key-up constants (the bench's PA and the arm exclude each other), the
+// power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a power-off
+// (its off state, then a safe request that clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
 // transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
 // is set after it). A change of stage asks for a receive set-up at the next status poll (the values written at
 // receive entries follow the arm); the same stage again asks for none
@@ -1137,8 +1142,8 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
 		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending() ||
 		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0 ||
-		    cs7000p_rf_ref_bench(&cs7000p_rf) || bench_chips || cs7000p_rf_bench_drive(&cs7000p_rf) ||
-		    keyup_bench()) {
+		    cs7000p_rf_ref_bench(&cs7000p_rf) || bench_chips || dl_soc_written() ||
+		    cs7000p_rf_bench_drive(&cs7000p_rf) || keyup_bench()) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1264,6 +1269,7 @@ typedef struct {
 	uint32_t arm_id;
 	bool list;
 	bool chips;			// bench_chips: the arm refused until a restart
+	bool soc;			// a raw SoC register write since the start (dl_soc_written): the same
 	uint16_t bench_drive;		// a bench drive armed, or the drive of a transmission on one (0: none)
 	bool bench_keyup;		// the DMR key-up's constants the debug link's
 	bool busy;			// no state could be copied (a change outlasted VIEW_WAIT_MS)
@@ -1304,6 +1310,7 @@ static void view_fill(cal_view_t *v)
 	tx_limit_get(&limit, NULL, 0);
 	v->list = limit.on && !limit.block && limit.n != 0u;
 	v->chips = bench_chips;
+	v->soc = dl_soc_written();
 	v->bench_drive = cs7000p_rf.ovr_drive != 0u ? cs7000p_rf.ovr_drive
 			 : cs7000p_rf_bench_drive(&cs7000p_rf) ? cs7000p_rf.admit_drive : 0u;
 	v->bench_keyup = keyup_bench();
@@ -1433,7 +1440,8 @@ static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
 
 // The owner's transmit arm (13.2): the stage, the id it was armed with (the CRC-32 of the table in use then), and
 // whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15); chips=1
-// only after a bench write to the modem or the synthesizer since the start (the arm refused until a restart). Then,
+// only after a bench write to the modem or the synthesizer since the start, soc=1 after one to a SoC register (either:
+// the arm refused until a restart). Then,
 // only while one holds, the bench's PA state that refuses the arm: bench_drive= the bench drive armed or in use,
 // bench_keyup=1 the debug link's DMR key-up constants
 static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
@@ -1442,8 +1450,8 @@ static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
 	if (v->bench_drive != 0u) {
 		dl_fmt(drive, sizeof(drive), " bench_drive=%u", (unsigned)v->bench_drive);
 	}
-	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u%s%s%s", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u,
-	       v->chips ? " chips=1" : "", drive, v->bench_keyup ? " bench_keyup=1" : "");
+	dl_fmt(buf, len, "tx_arm=%s id=0x%08x list=%u%s%s%s%s", arm_name(v->arm), (unsigned)v->arm_id, v->list ? 1u : 0u,
+	       v->chips ? " chips=1" : "", v->soc ? " soc=1" : "", drive, v->bench_keyup ? " bench_keyup=1" : "");
 }
 
 static void (*const view_fmt[CS7000P_CAL_VIEW_LINES])(const cal_view_t *v, char *buf, uint8_t len) = {

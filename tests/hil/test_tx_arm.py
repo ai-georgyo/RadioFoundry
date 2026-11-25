@@ -91,7 +91,7 @@ def test_tx_arm_refusals(radio, arm):
     try:
         why = refused(radio, struct.pack("<BI", 1, wrong))
         if why == 4:
-            skip("state", "the radio refuses every arm now (reason 4: a bench state, a stored reference trim, "
+            skip("state", "the radio refuses every arm now (reason 4: a bench state or write, a stored trim, "
                           "the power's off state, a restore pending): no id check to see")
         assert why == (2 if info["cal_ok"] else 1), f"an arm with another id: reason {why}"
         assert refused(radio, struct.pack("<BI", info["max"] + 1, wrong)) == 3, "a stage over the highest"
@@ -158,7 +158,7 @@ def test_tx_arm_under_block(radio, arm, pytestconfig):
             radio.link.tx_arm(1, backup)
         except DebugLinkError as e:
             if e.status == ST_REFUSED and e.data and e.data[0] == 4:
-                skip("state", "the radio refuses every arm now (reason 4: a bench state, a stored reference trim, "
+                skip("state", "the radio refuses every arm now (reason 4: a bench state or write, a stored trim, "
                               "the power's off state, a restore pending)")
             raise
         now = radio.link.tx_arm_info()

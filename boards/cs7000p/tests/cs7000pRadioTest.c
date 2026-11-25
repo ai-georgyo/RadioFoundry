@@ -43,6 +43,7 @@
 #include "storage/factory_copy.h"
 #include "debuglink/dlog.h"
 #include "debuglink/dl_frame.h"
+#include "debuglink/dl_txarm.h"
 #include "sim/sim_flash.h"
 #include "radio/tx_limit.h"
 #include "radio/pa_keyup.h"
@@ -2747,6 +2748,48 @@ static void test_arm_bench_keyup(void)
 		cs7000p_radio.tx_off();
 	}
 }
+
+// A raw SoC register write through the debug link since the start (dl_txarm.h: the debug link refuses one while
+// armed and notes one tried otherwise): the arm refused (a state) after it, the view says soc=1; a key-up the arm
+// covers refused (17) should the two ever meet; the bench route, unarmed, as before. Last: only a restart of the
+// program clears the debug link's note, and the board's own start does not (the SoC is not the board's to set up)
+static void test_soc_write(void)
+{
+	radio_status_t st;
+	char line[128];
+	const uint32_t a = crc(table_a);
+	chip(table_a, NULL);
+	boot(true, 0);
+	CHECK(!dl_soc_written());
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	keyup_on_table(0, false);
+	cs7000p_radio.tx_off();
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	dl_soc_write_note();
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1 soc=1"));
+	for (uint8_t stage = HAL_TX_ARM_FM_LOW; stage <= ARM_TOP; stage++) {
+		CHECK(cs7000p_radio.tx_arm(stage, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+	}
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	// The arm and the note met all the same (past the arm's check): every key-up the arm covers refused (17)
+	cs7000p_rf_arm_set(&cs7000p_rf, CS7000P_ARM_ALL, a);
+	keyup_refused(0, false, CS7000P_TX_ARM_CHIPS);
+	keyup_refused(1, false, CS7000P_TX_ARM_CHIPS);
+#if CONFIG_DMR
+	keyup_refused(0, true, CS7000P_TX_ARM_CHIPS);
+#endif
+	cs7000p_rf_arm_set(&cs7000p_rf, CS7000P_ARM_OFF, 0);
+	// The bench route, unarmed: as before, write for write
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	bench_keyup_pinned(BENCH_PIN_TABLE);
+	cs7000p_tx_arm_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_arm=off id=0x00000000 list=1 soc=1"));
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM_LOW, a) == HAL_TX_ARM_STATE && cs7000p_rf.arm == CS7000P_ARM_OFF);
+}
 #endif
 
 int main(void)
@@ -2792,6 +2835,7 @@ int main(void)
 #if CONFIG_FACTORY_COPY
 	test_tx_arm_restore();
 #endif
+	test_soc_write();	// last: the debug link's note of a SoC write stays
 #endif
 	sim_flash_free();
 	printf("# cs7000pRadio%sTest %s (%d failures)\n", CONFIG_FACTORY_COPY ? "" : "NoCopy", failures ? "FAILED" : "PASSED",
