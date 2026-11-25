@@ -1091,13 +1091,13 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 }
 
 // Raised (or the same stage again): the handshake, id the CRC-32 of the table in use. The states that refuse it: the
-// chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2) or a stored reference trim
-// (trim A is the table's whole correction of the reference), the power's off state, a restore pending. Each is
-// asked under the interrupt mask with the change itself, so a power-off (its off state, then a safe request that
-// clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
-// transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
-// is set after it). A change of stage asks for a receive set-up at the next status poll (the values written at
-// receive entries follow the arm); the same stage again asks for none
+// chain not up, the maker's coding asked for (3:5) or still held, a bench PC8 idle (3:2), a stored reference trim or
+// the bench's reference offset (3:4) set or still held (trim A is the table's whole correction of the reference),
+// the power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a
+// power-off (its off state, then a safe request that clears the arm) can't land between them. Lowered or off:
+// always taken, keeping the id it was armed with; a transmission the new stage no longer covers ends at once, by the
+// safe request (which clears the arm; the new stage is set after it). A change of stage asks for a receive set-up at
+// the next status poll (the values written at receive entries follow the arm); the same stage again asks for none
 static uint8_t tx_arm(uint8_t stage, uint32_t id)
 {
 	if (stage > ARM_MAX) {
@@ -1109,7 +1109,8 @@ static uint8_t tx_arm(uint8_t stage, uint32_t id)
 	if (stage != CS7000P_ARM_OFF && stage >= was) {
 		if (!radio_up || cs7000p_rf.ref_coding != CS7000P_REF_HOLD ||
 		    cs7000p_c6000_ref_coding() != CS7000P_REF_HOLD || cs7000p_power_off_state() || cal_pending() ||
-		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0) {
+		    cs7000p_subtone_pc8_idle() != CS7000P_SUBPWM_IDLE || cs7000p_rf.trim_ppb != 0 ||
+		    cs7000p_rf_ref_bench(&cs7000p_rf)) {
 			why = HAL_TX_ARM_STATE;
 		} else if (!maker.valid) {
 			why = HAL_TX_ARM_NO_CAL;
@@ -1547,11 +1548,15 @@ static bool board_reg(uint8_t reg, uint32_t *val, bool write)
 		if (write) {
 			// A signed byte: 0..127 as it is, -128..-1 as its two's complement byte or sign extended. It is the
 			// receive level's offset and 4:0x04's, over trim A. REF_RELEASE gives the level back to trim A (or
-			// today's value) and 4:0x04 back to today's
+			// today's value) and 4:0x04 back to today's. An offset is refused while transmission is armed: an
+			// armed key-up takes the reference from the table alone (raising the arm asks for none). The release
+			// is not: while armed none can be set, so it finds the values it writes and asks only for a receive
+			// set-up, which the status poll holds past any transmission; and were one set, it goes back to trim A
 			if (*val == REF_RELEASE) {
 				cs7000p_rf.ref_override = false;
 				cs7000p_rf.ref_offset = cs7000p_cal_ref_offset(cs7000p_rf.cal);
-			} else if (*val > 0xFFu && *val < 0xFFFFFF80u) {
+			} else if ((*val > 0xFFu && *val < 0xFFFFFF80u) || cs7000p_rf.arm != CS7000P_ARM_OFF ||
+				   cs7000p_rf.admit_arm) {
 				return false;
 			} else {
 				cs7000p_rf.ref_offset = (int8_t)(uint8_t)*val;
