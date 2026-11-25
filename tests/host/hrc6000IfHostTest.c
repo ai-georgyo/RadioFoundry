@@ -401,6 +401,11 @@ static void test_plain(void)
 	hrc6000_if_fm_tx_end(&h);
 	CHECK(!h.fm_tx && regs[4][0x10] == 0x6E && regs[4][0x36] == 0x00 && regs[4][0x60] == 0x00);
 	CHECK(regs[4][0x25] == plain_25);	// the transmit set-up's, never the hold
+	// A negative offset without the hold: the driver's FM transmit form, as on the boards that call it directly
+	hrc6000_if_retune(&h, HZ_A);
+	CHECK(hrc6000_if_fm_tx(&h, HZ_A, false, 9));
+	CHECK(regs[4][0x47] == 0xFB && regs[4][0x04] == 0xFB && regs[4][0x48] == 0x00);
+	hrc6000_if_fm_tx_end(&h);
 	CHECK(h.errors == 0);
 }
 
@@ -482,7 +487,7 @@ static void test_fm(void)
 	CHECK(regs[4][0x45] == pair_byte(HZ_B, false, false) && regs[4][0x46] == pair_byte(HZ_B, false, true));
 	CHECK(regs[4][0xE4] == 0x20 + 11);
 	CHECK(regs[4][0x35] == hrc6000_fm_deviation(true, false).voice);
-	CHECK(regs[4][0x47] == 9 && regs[4][0x04] == 9 && regs[4][0x48] == 0x00);	// the transmit form
+	CHECK(regs[4][0x47] == 9 && regs[4][0x04] == 9 && regs[4][0x48] == 0x00);	// ten bits: 0x009
 	CHECK(regs[4][0xE0] == (uint8_t)((plain_e0_fm_tx & ~0x40u) | 0x02u));
 	CHECK(regs[4][0xE0] == 0x8B);
 	CHECK(regs[4][0x36] == 0x00);			// the feed-through is for FM receive
@@ -518,6 +523,9 @@ static void test_fm(void)
 
 	// a retune across the LO side during a transmission is noted too: the end brings the chip to that side
 	CHECK(hrc6000_if_fm_tx(&h, HZ_A, false, 7));
+	// A negative offset with the hold: the bias in ten bits under the set-up's 0x0E (-5 is 0x3FB), never the driver's
+	// FM transmit form (0x0FB, 256 steps up)
+	CHECK(regs[4][0x25] == 0x0E && regs[4][0x47] == 0xFB && regs[4][0x48] == 0x03 && regs[4][0x04] == 0xFB);
 	w01 = n_w[0x01];
 	hrc6000_if_retune(&h, HZ_HIGH_SIDE);
 	CHECK(n_w[0x01] == w01 && regs[4][0x01] == 0xB0);
@@ -1150,14 +1158,15 @@ static uint32_t script(const hrc6000_if_cfg_t *cfg)
 }
 
 // The logs of the code before the reference coding and the receive 4:0x04 callback existed, taken from it once. The
-// hold's again since the end of an FM transmission writes the hold before the I/Q order (test_coding), the only
-// change: the plain and bare logs, which have no hold, are the same as before it
+// hold's again since the end of an FM transmission writes the hold before the I/Q order (test_coding), and since the
+// FM transmit set-up writes the bias in ten bits with the hold (walk's key-up on HZ_A, a negative offset): the plain
+// and bare logs, which have no hold, are the same as before both
 #if CONFIG_DMR
-#define LOG_HOLD	0x95f8a3cfu
+#define LOG_HOLD	0x95d5a3b2u
 #define LOG_PLAIN	0x77e3cdaau
 #define LOG_BARE	0xf59b2579u
 #else
-#define LOG_HOLD	0xaaa0c7c3u
+#define LOG_HOLD	0xde89146au
 #define LOG_PLAIN	0x1c76dd26u
 #define LOG_BARE	0x47eaacebu
 #endif

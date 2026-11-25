@@ -364,6 +364,9 @@ bool hrc6000_if_fm_tx(hrc6000_if_t *h, uint32_t hz, bool wide, uint8_t mic_gain)
 		.mod1 = mod1,
 		.ref_offset = c->ref_offset != NULL ? c->ref_offset(c->ctx, hz) : 0,
 		.mic_gain = mic_gain,
+		// With the hold, the bias is the reference's level: the driver's FM TX form (0x48 = 0) would put a negative
+		// offset 256 steps up under the set-up's 0x0E. Ten bits, as the signed coding writes it there
+		.ref_ten_bits = c->ref_dac_hold,
 	};
 	tx_rows_back(h);	// keyed again without an end: the last rows' registers as a set-up left them, first
 	h->fm_tx = true;

@@ -27,6 +27,10 @@ typedef struct {
 	uint8_t mod1;		// 4:0x46 (calibration "Q", FM pair)
 	int8_t ref_offset;	// reference oscillator tune - 128 for the TX band
 	uint8_t mic_gain;	// 0..31
+	// The bias (0x47 / 0x48) as ten bits two's complement, the receive form (0x48 = 0x03 for a negative offset), in
+	// place of the FM TX form (0x48 = 0): for a board whose reference hangs on the bias's DAC, where the FM TX form
+	// puts a negative offset 256 steps away from its level (hrc6000_if_host.h ref_dac_hold)
+	bool ref_ten_bits;
 } hrc6000_fm_tx_t;
 
 // The FM TX signaling generator used for single tones and DTMF (hrc6000_tx_pair): the registers it borrows, kept
