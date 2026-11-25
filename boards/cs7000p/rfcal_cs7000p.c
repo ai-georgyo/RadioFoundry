@@ -7,8 +7,9 @@
 #define U	CS7000P_CAL_UNSET
 #define UNSET_ROW	{ U, U, U, U, U, U, U, U, U }
 
-// Nothing here is measured, so nothing is set, and the radio refuses every transmission. A measured radio's values
-// replace the rows one by one; the verdict follows the rows, there is no switch to flip.
+// Nothing here is measured, so nothing is set, and the radio refuses every transmission on these rows (the maker's
+// table serves one only behind the owner's arm). A measured radio's values replace the rows one by one; the verdict
+// follows the rows, there is no switch to flip.
 // The floor is the shared DAC's interlock threshold (exp_cs7000p.c): the build's CS7000P_APC_FLOOR when it gives
 // one, so that the two can't differ, and 0 otherwise
 const cs7000p_cal_t cs7000p_cal_model = {
