@@ -2024,6 +2024,63 @@ static void test_arm_tone(void)
 	run_arm = CS7000P_ARM_OFF;
 }
 
+// The tone's level is the one at f_tx: split channels on a table whose 67.0 Hz and DCS rows move with the frequency,
+// keyed inside the switch segment (P[1]'s value), between points and past the last one, receiving at 480 MHz (another
+// level) and at 515 MHz (outside the transmit band: no level there at all); just past the band's top nothing is
+// admitted
+static void test_arm_tone_freq(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	static const uint8_t l67[8] = { 30, 34, 38, 42, 46, 50, 54, 58 };
+	static const uint8_t dcs_row[8] = { 100, 110, 120, 130, 140, 150, 160, 170 };
+	static const subtone_t tones[] = { { TONE_CTCSS, 885 }, { TONE_DCS, 023 } };
+	static const uint32_t tx_hz[] = { 429900000u, 445000000u, 465000000u, 500000000u, 511900000u };
+	static const uint32_t rx_list[2] = { 480u * MHZ, 515u * MHZ };
+	static cs7000p_maker_t m;
+	invented(t);
+	memcpy(t + 0x084, l67, 8);
+	memcpy(t + 0x094, dcs_row, 8);
+	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &m) && m.fields == CS7000P_MK_F_ALL);
+	run_maker = &m;
+	run_arm = CS7000P_ARM_FM;
+	const unsigned n_tx = sizeof(tx_hz) / sizeof(tx_hz[0]), n_tones = sizeof(tones) / sizeof(tones[0]);
+	for (unsigned r = 0; r < 2u; r++) {
+		const uint32_t rx_hz = rx_list[r];
+		bring_up(&cs7000p_cal_model, rx_hz);
+		for (unsigned n = 0; n < n_tx * n_tones; n++) {
+			const uint32_t hz = tx_hz[n / n_tones];
+			const subtone_t *tone = &tones[n % n_tones];
+			uint8_t want = 0, at_rx = 0, wide = 0;
+			CHECK(cs7000p_cal_maker_tone(&m, hz, tone, false, &want));
+			CHECK(cs7000p_cal_maker_tone(&m, hz, tone, true, &wide));
+			CHECK(r == 0u ? cs7000p_cal_maker_tone(&m, rx_hz, tone, false, &at_rx) && at_rx != want
+				      : !cs7000p_cal_maker_tone(&m, rx_hz, tone, false, &at_rx));
+			cs7000p_tx_req_t q = req(hz, 0, false);
+			q.limit_list = true;
+			q.tone = true;
+			q.tone_sel = *tone;
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+			uint16_t d = 9;
+			CHECK(cs7000p_rf_tone_depth(&rf, hz, false, tone, &d) && d == cs7000p_subpwm_depth_pm(want));
+			CHECK(cs7000p_rf_tone_depth(&rf, hz, true, tone, &d) && d == cs7000p_subpwm_depth_pm(wide));
+			d = 9;
+			CHECK(!cs7000p_rf_tone_depth(&rf, rx_hz, false, tone, &d) && d == 9);
+			admitted_fm(&m, hz, 0, 0);
+		}
+	}
+	// Inside the switch segment: P[1]'s DCS level, 110, not the line's mix toward P[2]'s 120
+	uint8_t l = 0;
+	CHECK(cs7000p_cal_maker_tone(&m, tx_hz[0], &tones[1], false, &l) && l == 110u);
+	cs7000p_tx_req_t q = req(512100000u, 0, false);
+	q.limit_list = true;
+	q.tone = true;
+	q.tone_sel = tones[1];
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	nothing_live_at(512100000u, 0, false, 0u);
+	run_maker = NULL;
+	run_arm = CS7000P_ARM_OFF;
+}
+
 // A source whose model rows are set (cal_ok) under a table that holds the transmission's values: the table wins at
 // every stage. An uncovered one, with a tone or without, is the arm's reason, never the model's drive; a covered one
 // keys the table's drive, not the model's
@@ -2376,6 +2433,7 @@ int main(void)
 	test_arm_drive();
 	test_arm_windows();
 	test_arm_tone();
+	test_arm_tone_freq();
 	test_arm_over_model();
 	test_arm_floor();
 	test_arm_lowered();

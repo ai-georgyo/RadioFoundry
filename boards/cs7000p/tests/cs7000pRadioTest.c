@@ -448,7 +448,8 @@ void cs7000p_subtone_tx_start(const subtone_t *t, uint16_t depth_pm)
 	tone_got = *t;
 	tone_pm_got = depth_pm;
 }
-void cs7000p_subtone_tx_stop(void) {}
+static int tone_stops;
+void cs7000p_subtone_tx_stop(void) { tone_stops++; }
 bool cs7000p_subtone_tx_tail(bool on) { (void)on; return false; }
 uint16_t cs7000p_subtone_pc8(void) { return 0; }
 bool cs7000p_subtone_pc8_set(uint16_t duty) { (void)duty; return false; }
@@ -2132,6 +2133,22 @@ static void test_tx_arm(void)
 	cs7000p_radio.status(&st);
 	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_RX && (shadow & EXP_TX_BITS) == 0u && mic_off());
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	// The arm cleared during a tone transmission: the safe request ends it at once, the tone stops at the key-down,
+	// and the same channel keyed again (PTT held through it) is the arm's refusal, no tone started
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &tones[1]) && cs7000p_rf.admit_arm);
+	{
+		const int safes0 = board_safes, starts = tone_starts, stops = tone_stops;
+		CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && board_safes == safes0 + 1);
+		CHECK((shadow & EXP_TX_BITS) == 0u && dac_now == 0);
+		cs7000p_radio.tx_off();
+		CHECK(tone_stops > stops);
+		cs7000p_radio.status(&st);
+		CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &tones[1]));
+		CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_UNARMED && !cs7000p_rf.admit && tone_starts == starts);
+		CHECK((shadow & EXP_TX_BITS) == 0u && !modem.fm_tx);
+	}
 
 	// A bench state forbids it: the maker's reference coding (3:5); back to the hold, it is taken
 	uint32_t v = CS7000P_REF_MAKER;
