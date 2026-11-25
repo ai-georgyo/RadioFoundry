@@ -1126,10 +1126,10 @@ static void tx_arm_info(hal_tx_arm_info_t *info)
 // bench write to the modem, the synthesizer or (the debug link's note) a SoC register since the start, a bench drive
 // armed or in use or the debug link's DMR key-up constants (the bench's PA and the arm exclude each other), the
 // power's off state, a restore pending. Each is asked under the interrupt mask with the change itself, so a power-off
-// (its off state, then a safe request that clears the arm) can't land between them. Lowered or off: always taken, keeping the id it was armed with; a
-// transmission the new stage no longer covers ends at once, by the safe request (which clears the arm; the new stage
-// is set after it). A change of stage asks for a receive set-up at the next status poll (the values written at
-// receive entries follow the arm); the same stage again asks for none
+// (its off state, then a safe request that clears the arm) can't land between them. Lowered or off: always taken,
+// keeping the id it was armed with; a transmission the new stage no longer covers ends at once, by the safe request
+// (which clears the arm; the new stage is set after it). A change of stage asks for a receive set-up at the next
+// status poll (the values written at receive entries follow the arm); the same stage again asks for none
 static uint8_t tx_arm(uint8_t stage, uint32_t id)
 {
 	if (stage > ARM_MAX) {
@@ -1441,9 +1441,8 @@ static void fmt_sq_maker(const cal_view_t *v, char *buf, uint8_t len)
 // The owner's transmit arm (13.2): the stage, the id it was armed with (the CRC-32 of the table in use then), and
 // whether a test TX limit list is set (list=0: an armed key-up on the maker's values is refused, why=15); chips=1
 // only after a bench write to the modem or the synthesizer since the start, soc=1 after one to a SoC register (either:
-// the arm refused until a restart). Then,
-// only while one holds, the bench's PA state that refuses the arm: bench_drive= the bench drive armed or in use,
-// bench_keyup=1 the debug link's DMR key-up constants
+// the arm refused until a restart). Then, only while one holds, the bench's PA state that refuses the arm:
+// bench_drive= the bench drive armed or in use, bench_keyup=1 the debug link's DMR key-up constants
 static void fmt_tx_arm(const cal_view_t *v, char *buf, uint8_t len)
 {
 	char drive[20] = "";
