@@ -16,7 +16,7 @@
 // None of it is part of this repository or a release. The calls and the checks are the shared ones
 // (platform/stm32/hrc/vocoder.c); this file says which build and where. Without a valid descriptor and codec,
 // present() is false and DMR voice is off ("No codec: voice off"); DMR data, the hotspot and FM don't need the codec.
-// Untested: nothing here has run on a radio (docs/testing/cs7000p-bringup.md).
+// On one radio the boot check passes and decode runs; encode has not run on a radio (docs/testing/cs7000p-bringup.md).
 //
 // Nothing of the board is included here: the host test compiles this file as it is
 // (boards/cs7000p/tests/cs7000pCodecTest.c).
