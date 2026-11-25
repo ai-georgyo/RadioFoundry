@@ -2,8 +2,9 @@
 // Copyright (c) 2026 The RadioFoundry Authors
 // CS7000 M17 PLUS: the maker's factory calibration table, read, checked and looked up
 // (docs/spec/calibration-cs7000p.md). Pure: no flash, no RTOS, no pins; tests/cs7000pMakerCalTest.c runs it on
-// invented tables. Nothing on the radio calls it yet: reading the table, choosing its source and using its values
-// come later, each behind its own fallback (docs/spec/hardware-cs7000p.md 13).
+// invented tables. radio_cs7000p.c checks and parses the table in use through it and takes every value from its
+// lookups, each behind its own fallback (docs/spec/hardware-cs7000p.md 13). On the first radio it accepted a maker's
+// table with every field group (docs/testing/cs7000p-bringup.md, First radio); no transmission has used it.
 //
 // The table is 512 bytes (data flash 0x001000-0x0011FF). The maker's program checks none of its values (spec 2.2),
 // so this reader refuses what the spec's section 7 refuses, in two kinds of rule:

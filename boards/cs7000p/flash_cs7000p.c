@@ -4,7 +4,7 @@
 // select PE4 (docs/spec/hardware-cs7000p.md 10), through the shared driver (platform/stm32/spi_flash). The board
 // builds that driver with 4-byte addresses and core/storage as a flash that must be claimed before its first write and
 // whose maker's bytes every rewrite keeps (board.mk); the map, its factory ranges and the board sector are in
-// store_cs7000p.{h,c}. Unverified on a radio.
+// store_cs7000p.{h,c}. What has run on a radio is the bring-up page's First radio (docs/testing/cs7000p-bringup.md).
 #include "cs7000p.h"
 #include "pins.h"
 #include "store_cs7000p.h"
