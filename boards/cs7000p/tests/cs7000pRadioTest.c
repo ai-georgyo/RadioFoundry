@@ -26,10 +26,13 @@
 // refused), and DMR at the top stage on its drive, its DMR pair at f_tx (a split channel) and trim B; 4:0x04 in DMR
 // receive trim B on the top stage only; the bench's drive now stays at or under the admitted drive; the bench drive's
 // key-up writes as without a table, at every stage, but for the bias it inherits. board2.tx_maker: what a key-up on
-// the table would take, unarmed and unkeyed, the admission's verdict and the getters' values. Built again without
+// the table would take, unarmed and unkeyed, the admission's verdict and the getters' values, and what an armed
+// key-up then hands the chain (FM at both levels, tone channels, DMR at the top stage), the line moving nothing in any
+// state (before the radio is up, asleep, keyed, during a take). Built again without
 // CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "cs7000p.h"
 #include "pins.h"
@@ -1111,14 +1114,17 @@ static void test_table_request_asleep(void)
 // copied, a change between them included; the next reply's are the new state's, whole
 static char mid_lines[CS7000P_CAL_VIEW_LINES][128];
 static uint32_t mid_waited_us;
+static unsigned mid_writes;	// the hardware writes the lines made (none)
 
 static void view_mid_setup(void)
 {
 	const uint32_t t0 = now_us;
+	const unsigned n = hw_n;
 	for (uint8_t k = 0; k < CS7000P_CAL_VIEW_LINES; k++) {
 		cs7000p_cal_view_line(k, mid_lines[k], sizeof(mid_lines[k]));
 	}
 	mid_waited_us = now_us - t0;
+	mid_writes = hw_n - n;
 }
 
 static void test_view_whole(void)
@@ -1154,7 +1160,7 @@ static void test_view_whole(void)
 		snprintf(want, sizeof(want), "%s=busy", keys[k]);
 		CHECK(line_is(mid_lines[k], "%s", want));
 	}
-	CHECK(mid_waited_us >= 250000u && mid_waited_us < 300000u);
+	CHECK(mid_waited_us >= 250000u && mid_waited_us < 300000u && mid_writes == 0u);
 	// The next reply: the new state, every line of it
 	cs7000p_cal_view_line(0, line, sizeof(line));
 	CHECK(line_is(line, "cal_table=ok src=window crc=0x%08x why=none off=0x000 fields=0x%04x bat=0xa0",
@@ -2067,6 +2073,12 @@ static void test_tx_arm_before_init(void)
 	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK && cs7000p_rf.arm == CS7000P_ARM_OFF);
 	hal_tx_arm_info_t i = arm_info();
 	CHECK(i.stage == HAL_TX_ARM_OFF && i.max == ARM_TOP && !i.cal_ok && i.crc == 0u);
+	// board2.tx_maker before the radio is up: no table, no receive frequency, nothing written or set up
+	char line[160];
+	const unsigned n = hw_n;
+	cs7000p_tx_maker_line(line, sizeof(line));
+	CHECK(line_is(line, "tx_maker=none at=rx hz=0 mode=fm lvl=0 lo=- hi=- pair=- d_a=- no=band why=band"));
+	CHECK(hw_n == n && !cs7000p_rf.admit && cs7000p_rf.arm == CS7000P_ARM_OFF);
 }
 
 // Another correction of the reference than trim A: a bench PC8 idle (3:2) or a stored reference trim refuses the arm
@@ -2751,13 +2763,13 @@ static void test_arm_bench_keyup(void)
 }
 
 // board2.tx_maker (hardware-cs7000p.md 15): what a key-up on the table in use would take, read without arming and
-// without keying. Its two sources: at=rx after a start (the receive set-up as a simplex channel's, the lowest level,
-// no tone), at=tx once the core asked for a transmission (refused ones included) while the receive set-up it was asked
-// from stands. The values of the invented table at each level, mode, tone and split frequency, and each lookup that
-// refuses (the band, no table, the drive inside a wide VCO switch segment, the burst fields' group, the tone's level
-// and its range; the pair and the trims, which no parsed table refuses alone, on a parse with one group taken out).
-// Reading it writes nothing and moves no counter, and its verdict is the admission's (cs7000p_cal_maker_tx) at every
-// frequency and level in both modes, its values the key-up getters'
+// without keying. Its two sources: at=rx after a start (the receive set-up as a simplex channel's, the lowest level, no
+// tone), at=tx once the core asked for a transmission (refused ones included), until its next receive set-up, a mode
+// change or a restart. The values of the invented table at each level, mode, tone and split frequency, and each lookup
+// that refuses (the band, no table, the drive inside a wide VCO switch segment, the burst fields' group, the tone's
+// level and its range; the pair and the trims, which no parsed table refuses alone, on a parse with one group taken
+// out). Reading it writes nothing and moves no counter, and its verdict is the admission's (cs7000p_cal_maker_tx) at
+// every frequency and level in both modes, its values the key-up getters'
 
 static char txm[192];
 
@@ -2972,6 +2984,13 @@ static void test_tx_maker(void)
 		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, true, false, NULL, &v);
 		CHECK(v.no == CS7000P_TXL_TRIM_B && v.why == CS7000P_MK_LK_GROUP && !(v.have & CS7000P_TXV_TRIM_B));
 		CHECK(!cs7000p_cal_maker_tx(&m, 446u * MHZ, 0, true) && cs7000p_cal_maker_tx(&m, 446u * MHZ, 0, false));
+		// A tone named in DMR: none is sent there, so none is looked up (a CTCSS tone out of range refuses
+		// nothing)
+		parse(table_a, &m);
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, true, false, &low_tone, &v);
+		CHECK(v.no == CS7000P_TXL_OK && !(v.have & CS7000P_TXV_TONE) && v.tone_pm == 0u);
+		cs7000p_rf_tx_view(&rf, 446u * MHZ, 0, false, false, &low_tone, &v);
+		CHECK(v.no == CS7000P_TXL_TONE && v.why == CS7000P_TXL_WHY_RANGE);
 		// The verdict and the values, everywhere: the invented table, the wide switch segment's, a group out
 		tx_view_agrees(&m);
 		parse(table_a, &m);
@@ -2980,6 +2999,183 @@ static void test_tx_maker(void)
 		tx_view_agrees(&m);
 	}
 	cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL);
+}
+
+// The line's numbers, as an owner reads them off it before arming
+typedef struct {
+	bool ok, at_tx;
+	long hz, lvl, lo, hi, d_a, d_b, tone_pm;	// -1: "-" or not shown (no invented trim is -1)
+	unsigned m2, m1;
+} txm_fields_t;
+
+static long txm_num(const char *line, const char *key)
+{
+	char k[16];
+	snprintf(k, sizeof(k), " %s=", key);
+	const char *p = strstr(line, k);
+	if (p == NULL) {
+		return -1;
+	}
+	p += strlen(k);
+	char *end;
+	long v = strtol(p, &end, 10);
+	return end != p && (*end == ' ' || *end == '\0') ? v : -1;
+}
+
+static txm_fields_t txm_fields(const char *line)
+{
+	txm_fields_t f = { 0 };
+	const char *p = strstr(line, " pair=");
+	f.ok = strstr(line, "tx_maker=ok ") == line;
+	f.at_tx = strstr(line, " at=tx ") != NULL;
+	f.hz = txm_num(line, "hz");
+	f.lvl = txm_num(line, "lvl");
+	f.lo = txm_num(line, "lo");
+	f.hi = txm_num(line, "hi");
+	f.d_a = txm_num(line, "d_a");
+	f.d_b = txm_num(line, "d_b");
+	f.tone_pm = txm_num(line, "tone_pm");
+	CHECK(p != NULL && sscanf(p, " pair=0x%x,0x%x", &f.m2, &f.m1) == 2);
+	return f;
+}
+
+// The line read three times, and what it may not move: no write to the hardware, no admission, no arm, no burst plan,
+// no refusal counted, no tone started, the chain's state as it was
+static const char *tx_maker_quiet(void)
+{
+	const unsigned n = hw_n;
+	const uint32_t sh = shadow, refused = cs7000p_rf.tx_refused;
+	const uint16_t dac = dac_now;
+	const bool admit = cs7000p_rf.admit, admit_arm = cs7000p_rf.admit_arm, armed = runner.armed;
+	const uint8_t arm = cs7000p_rf.arm, st = cs7000p_rf.seq.state;
+	const int arms = runner.arms, txs = modem.dmr_txs, starts = tone_starts, retunes = modem.retunes;
+	char first[sizeof(txm)];
+	snprintf(first, sizeof(first), "%s", tx_maker_now());
+	for (int k = 0; k < 2; k++) {
+		CHECK(strcmp(tx_maker_now(), first) == 0);
+	}
+	CHECK(hw_n == n && shadow == sh && dac_now == dac && cs7000p_rf.tx_refused == refused);
+	CHECK(cs7000p_rf.admit == admit && cs7000p_rf.admit_arm == admit_arm && cs7000p_rf.arm == arm);
+	CHECK(cs7000p_rf.seq.state == st && runner.armed == armed && runner.arms == arms && modem.dmr_txs == txs);
+	CHECK(tone_starts == starts && modem.retunes == retunes);
+	return txm;
+}
+
+// What the line shows before the arm is what the armed key-up hands the chain. Each key-up is asked first unarmed
+// (refused, 13; the bring-up's reading before stage 1) and the line read; then armed at the lowest stage that covers
+// it and keyed, and what the fake chain and modem got compared with the line's fields: FM the DAC's drive at the
+// level, the pair and 4:0x04 of the transmit set-up, a tone channel's depth; DMR the burst plan's drive and top drive,
+// the DMR pair at f_tx and trim B. Read again while keyed it is the same line and moves nothing
+static void keyed_as_shown(uint32_t hz, radio_bw_t bw, uint8_t level, const subtone_t *tone, bool dmr)
+{
+	radio_status_t st;
+	char before[sizeof(txm)];
+	const uint8_t stage = dmr ? HAL_TX_ARM_ALL : level == 0u ? HAL_TX_ARM_FM_LOW : HAL_TX_ARM_FM;
+	if (dmr) {
+		cs7000p_radio.set_mode(RADIO_MODE_DMR);
+		CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+		runner.answer = runner.plan = true;
+	}
+	CHECK(!cs7000p_radio.tx(hz, bw, level, tone) && cs7000p_rf.tx_refused_why == CS7000P_TX_UNARMED);
+	snprintf(before, sizeof(before), "%s", tx_maker_quiet());
+	const txm_fields_t f = txm_fields(before);
+	CHECK(f.ok && f.at_tx && f.hz == (long)hz && f.lvl == level && f.lo > 0 && f.hi > f.lo && f.d_a != -1);
+	CHECK(strstr(before, dmr ? " mode=dmr " : " mode=fm ") != NULL && (f.d_b != -1) == dmr);
+	CHECK((f.tone_pm != -1) == (!dmr && tone != NULL && tone->type != TONE_NONE));
+	// Armed: the receive set-up of the next poll keeps the note (the same receive frequency, width and mode)
+	CHECK(cs7000p_radio.tx_arm(stage, crc(table_a)) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	CHECK(strcmp(tx_maker_quiet(), before) == 0);
+	hw_n = 0;
+	const int starts = tone_starts;
+	CHECK(cs7000p_radio.tx(hz, bw, level, tone) && cs7000p_rf.admit_arm && cs7000p_rf.admit_hz == hz);
+	if (dmr) {
+		uint16_t top = 0;
+		const pa_keyup_t ku = pa_keyup_last(&top, NULL);
+		CHECK(runner.armed && cs7000p_rf.admit_dmr && modem.dmr_tx_hz == hz);
+		CHECK(ku.drive == (uint16_t)(level ? f.hi : f.lo) && top == (uint16_t)f.hi);
+		CHECK(cs7000p_rf.admit_drive == ku.drive);
+		CHECK(last_of(HW_DMRTX) == (int32_t)(f.m2 << 8 | f.m1) && last_b(HW_DMRTX) == (int32_t)(uint8_t)f.d_b);
+	} else {
+		CHECK(modem.fm_tx && cs7000p_rf.seq.state == CHAINSEQ_ST_TX && (shadow & EXP_TX_BITS) == EXP_TX_BITS);
+		CHECK(dac_now == (uint16_t)(level ? f.hi : f.lo));
+		CHECK(last_of(HW_TXPAIR) == (int32_t)(f.m2 << 8 | f.m1) && last_of(HW_TXREF) == f.d_a);
+		if (f.tone_pm != -1) {
+			CHECK(tone_starts == starts + 1 && tone_pm_got == f.tone_pm);
+		} else {
+			CHECK(tone_starts == starts);
+		}
+	}
+	CHECK(strcmp(tx_maker_quiet(), before) == 0);	// keyed: the same line, nothing moved
+	// The radio's own receive set-ups keep it: the transmission's end, the poll's after the arm is off
+	cs7000p_radio.tx_off();
+	CHECK(strcmp(tx_maker_quiet(), before) == 0);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	CHECK(strcmp(tx_maker_quiet(), before) == 0);
+	if (dmr) {
+		runner.answer = runner.plan = false;
+		cs7000p_radio.set_mode(RADIO_MODE_FM);
+	}
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+}
+
+static void test_tx_maker_keyed(void)
+{
+	radio_status_t st;
+	static const subtone_t ctcss = { TONE_CTCSS, 885 }, dcs = { TONE_DCS, 023 }, dcs_inv = { TONE_DCS_INV, 0754 };
+	static const uint32_t limit[2] = { 446u * MHZ, 441u * MHZ };
+	chip(table_a, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	CHECK(tx_limit_set(false, limit, 2));
+	// FM at the low and the high level, both widths, a tone channel of each kind, a split channel
+	keyed_as_shown(446u * MHZ, RADIO_BW_12K5, 0, NULL, false);
+	keyed_as_shown(446u * MHZ, RADIO_BW_25K, 1, NULL, false);
+	keyed_as_shown(446u * MHZ, RADIO_BW_25K, 0, &ctcss, false);
+	keyed_as_shown(446u * MHZ, RADIO_BW_12K5, 1, &ctcss, false);
+	keyed_as_shown(446u * MHZ, RADIO_BW_12K5, 0, &dcs, false);
+	keyed_as_shown(446u * MHZ, RADIO_BW_25K, 1, &dcs_inv, false);
+	keyed_as_shown(441u * MHZ, RADIO_BW_12K5, 0, NULL, false);
+	keyed_as_shown(441u * MHZ, RADIO_BW_25K, 1, &ctcss, false);
+#if CONFIG_DMR
+	// DMR at the top stage, both levels, simplex and split (the pair at f_tx)
+	keyed_as_shown(446u * MHZ, RADIO_BW_12K5, 0, NULL, true);
+	keyed_as_shown(446u * MHZ, RADIO_BW_12K5, 1, NULL, true);
+	keyed_as_shown(F_SPLIT, RADIO_BW_12K5, 0, NULL, true);
+	keyed_as_shown(F_SPLIT, RADIO_BW_12K5, 1, NULL, true);
+#endif
+
+	// Another channel on the same receive frequency, width and mode (a simplex one after a tone channel) is the
+	// core's receive set-up: the note is dropped, never shown for the channel after it
+	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, &ctcss));
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=tx hz=441000000 mode=fm lvl=1 ") == txm);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=rx hz=446000000 mode=fm lvl=0 ") == txm);
+	CHECK(strstr(txm, "tone_pm") == NULL);
+	// ... and the same after a scan step away and back
+	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
+	CHECK(cs7000p_radio.rx(447500000u, RADIO_BW_25K, NULL) && cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=rx hz=446000000 ") == txm);
+	// A restart drops it, before the core's first receive set-up too
+	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=tx ") == txm);
+	cs7000p_radio.init();
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=") == txm && strstr(txm, " at=rx ") != NULL);
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
+	hal_delay_ms(CS7000P_REF_SETTLE_MS + 1u);
+	cs7000p_radio.status(&st);
+	// Asleep: the line reads the same and wakes nothing
+	CHECK(!cs7000p_radio.tx(441u * MHZ, RADIO_BW_25K, 1, NULL));
+	cs7000p_radio.rx_sleep(true);
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_SLEEP);
+	CHECK(strstr(tx_maker_quiet(), "tx_maker=ok at=tx hz=441000000 ") == txm);
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_SLEEP);
+	cs7000p_radio.rx_sleep(false);
+	static const uint32_t one[1] = { 446u * MHZ };
+	CHECK(tx_limit_set(false, one, 1));
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_25K, NULL));
 }
 
 // A raw SoC register write through the debug link since the start (dl_txarm.h: the debug link refuses one while
@@ -3066,6 +3262,7 @@ int main(void)
 #endif
 	test_arm_bench_keyup();
 	test_tx_maker();
+	test_tx_maker_keyed();
 #if CONFIG_FACTORY_COPY
 	test_tx_arm_restore();
 #endif
