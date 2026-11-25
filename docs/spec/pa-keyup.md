@@ -131,7 +131,8 @@ restores the board's. Constants set this way apply on every band until `default`
 sets a drive that is not in the table, for one transmission; the key-up is planned for that drive. On a radio with
 the owner's transmit arm both are the bench's and exclude the arm ([radio-features.md](radio-features.md) 6.3): while
 op 37's constants hold (`pa_keyup_custom`) the arm is refused and an armed DMR key-up too, and op 36 takes no drive
-while armed.
+while armed. `pa_keyup_custom` is true from before op 37's constants are switched in to after the board's are back,
+so a key-up planned while op 37 is half done never takes the debug link's constants for the board's.
 
 | `core` view key | Values |
 |---|---|
