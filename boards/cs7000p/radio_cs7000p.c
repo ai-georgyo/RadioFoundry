@@ -6,12 +6,14 @@
 // 13, 14). Written from the maker's schematic and the chips' data sheets: nothing here has run on a radio
 // (docs/testing/cs7000p-bringup.md).
 //
-// The radio has no calibration, so it refuses every transmission (rfcal_cs7000p.h, rfops_cs7000p.h): the one way to
-// key it is the bench's drive override under a test TX limit. The maker's factory table is taken at init (the bytes
-// in use the core's factory copy chose, core/storage/factory_copy.h) and parsed (makercal_cs7000p.h), and shown.
-// Receive uses it (the tune row, trim A in the held level, the RSSI points), each value with today's as its fallback;
-// nothing transmits on it (hardware-cs7000p.md 13.1). The owner's transmit arm (hal_radio_t.tx_arm, 13.2) is checked
-// against it and refuses a key-up it would serve until armed; even armed, none of its transmit values is served yet.
+// The radio has no calibration of the tree's own, so without the maker's table it refuses every transmission
+// (rfcal_cs7000p.h, rfops_cs7000p.h): the one way to key it is the bench's drive override under a test TX limit. The
+// maker's factory table is taken at init (the bytes in use the core's factory copy chose, core/storage/factory_copy.h)
+// and parsed (makercal_cs7000p.h), and shown. Receive uses it (the tune row, trim A in the held level, the RSSI
+// points), each value with today's as its fallback (hardware-cs7000p.md 13.1). The owner's transmit arm
+// (hal_radio_t.tx_arm, 13.2) is checked against it and refuses a key-up it would serve until armed: armed, and with a
+// test TX limit list naming the frequency, FM without a tone keys on its drive, pair and trim A; a tone channel and
+// DMR stay refused.
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
@@ -705,6 +707,8 @@ static bool tx(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tx_to
 #endif
 	}
 	cs7000p_tx_req_t q = tx_request(hz, power, false);
+	// Whatever the build sends: a tone channel is one on the maker's values too, which serve no tone level yet
+	q.tone = tx_tone != NULL && tx_tone->type != TONE_NONE;
 	if (cs7000p_rf_tx_admit(&cs7000p_rf, &q) != CS7000P_TX_OK) {
 		return false;	// nothing was written
 	}
@@ -777,7 +781,7 @@ static bool tx_drive_now(uint16_t drive)
 		return false;
 	}
 	const uint32_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
-	bool ok = tx_steady && chainseq_drive_now(&cs7000p_rf.seq, drive);
+	bool ok = tx_steady && cs7000p_rf_drive_now_ok(&cs7000p_rf, drive) && chainseq_drive_now(&cs7000p_rf.seq, drive);
 	portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
 	return ok;
 }

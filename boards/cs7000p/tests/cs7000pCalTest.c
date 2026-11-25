@@ -5,8 +5,8 @@
 // point missing is no row. The RSSI and noise mappings never step back. The receive getters with the maker's table
 // (invented here): a refused one, or none, gives every value as without it; a valid one each value from its own field
 // group, the tune row's lookup and trim A's receive bound falling back alone. Whether the table would serve a
-// transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; the
-// transmit getters stay the model's.
+// transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; an FM
+// transmission's values (the drive, the pair, trim A) exactly there; the model's transmit getters unchanged.
 #include <stdio.h>
 #include <string.h>
 #include "rfcal_cs7000p.h"
@@ -395,7 +395,7 @@ static void test_maker_rx(void)
 	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 485u * MHZ, &src) == 16u * 124u && src == CS7000P_SRC_MAKER);
 }
 
-// --- Transmit, the maker's table: asked, not served ---
+// --- Transmit, the maker's table: its FM values, served only by the RF chain behind the arm ---
 
 static void test_maker_tx(void)
 {
@@ -471,7 +471,31 @@ static void test_maker_tx(void)
 	CHECK(!cs7000p_cal_maker_tx(&mm, 431u * MHZ, 0, false) && !cs7000p_cal_maker_tx(&mm, 429900000u, 1, true));
 	CHECK(cs7000p_cal_maker_tx(&mm, 429u * MHZ, 0, false) && cs7000p_cal_maker_tx(&mm, 433u * MHZ, 1, true));
 
-	// None of it reaches the transmit getters: they read the model alone, unset as shipped, wherever the table
+	// The FM values themselves, exactly where the table holds an FM transmission's: the reader's drive for the level
+	// at f_tx (16 c), the FM pair, trim A as d; v untouched where it holds none
+	for (uint32_t hz = 399u * MHZ; hz <= 513u * MHZ; hz += 250000u) {
+		for (uint8_t level = 0; level <= CS7000P_POWER_LEVELS; level++) {
+			cs7000p_fm_tx_t v = { 7, 7, 7, 7 };
+			uint16_t drive = 0;
+			const bool has = cs7000p_cal_maker_tx(&m, hz, level, false);
+			CHECK(cs7000p_cal_maker_fm(&m, hz, level, &v) == has);
+			if (has) {
+				CHECK(cs7000p_maker_drive(&m, hz, level, &drive, NULL) && v.drive == drive && drive % 16u == 0u);
+				CHECK(v.mod2 == t[0x0C4] && v.mod1 == t[0x0CC] && v.trim == (int8_t)(t[0x0DC] - 128));
+			} else {
+				CHECK(v.drive == 7 && v.mod2 == 7 && v.mod1 == 7 && v.trim == 7);
+			}
+		}
+	}
+	cs7000p_fm_tx_t v = { 7, 7, 7, 7 };
+	CHECK(cs7000p_cal_maker_fm(&m, 446u * MHZ, 0, &v) && v.drive == 16u * 109u && v.trim == -5);
+	CHECK(cs7000p_cal_maker_fm(&m, 446u * MHZ, 1, &v) && v.drive == 16u * 210u);
+	CHECK(!cs7000p_cal_maker_fm(NULL, 446u * MHZ, 0, &v) && !cs7000p_cal_maker_fm(&mm, 431u * MHZ, 0, &v));
+	mm = m;
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_DMR_PAIR);	// DMR's alone missing: FM still has them
+	CHECK(cs7000p_cal_maker_fm(&mm, 446u * MHZ, 1, &v) && !cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, true));
+
+	// None of it reaches the model's getters: they read the model alone, unset as shipped, wherever the table
 	// would serve
 	uint16_t d = 7;
 	uint8_t m2 = 7, m1 = 7;

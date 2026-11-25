@@ -165,19 +165,36 @@ int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv
 	return cs7000p_rssi_dbm(mv);
 }
 
-// --- Transmit, the maker's table: asked, not served ---
+// --- Transmit, the maker's table ---
+
+// Every lookup an FM transmission takes, into v; then DMR's own on top
+static bool maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr, cs7000p_fm_tx_t *v)
+{
+	int16_t d;
+	cs7000p_mk_burst_t b;
+	if (m == NULL || !m->valid || !cs7000p_maker_drive(m, hz, level, &v->drive, NULL) ||
+	    !cs7000p_maker_pair(m, hz, dmr, &v->mod2, &v->mod1, NULL) || !cs7000p_maker_trim(m, false, &d)) {
+		return false;
+	}
+	v->trim = (int8_t)d;	// within CS7000P_MAKER_TRIM_MAX of 0: the group passed
+	return !dmr || (cs7000p_maker_trim(m, true, &d) && cs7000p_maker_burst(m, hz, level, &b, NULL));
+}
 
 bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr)
 {
-	uint16_t drive;
-	uint8_t mod2, mod1;
-	int16_t d;
-	cs7000p_mk_burst_t b;
-	if (m == NULL || !m->valid || !cs7000p_maker_drive(m, hz, level, &drive, NULL) ||
-	    !cs7000p_maker_pair(m, hz, dmr, &mod2, &mod1, NULL) || !cs7000p_maker_trim(m, false, &d)) {
+	cs7000p_fm_tx_t v;
+	return maker_tx(m, hz, level, dmr, &v);
+}
+
+bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v)
+{
+	cs7000p_fm_tx_t got;
+	// The drive's level is the caller's: a level past the table's two rows is refused by the reader (LK_ROW)
+	if (!maker_tx(m, hz, level, false, &got)) {
 		return false;
 	}
-	return !dmr || (cs7000p_maker_trim(m, true, &d) && cs7000p_maker_burst(m, hz, level, &b, NULL));
+	*v = got;
+	return true;
 }
 
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between

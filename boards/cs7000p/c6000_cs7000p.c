@@ -36,7 +36,7 @@
 
 #define C6000_PWD_WAIT_MS	12	// at least 10 ms after the sleep line goes low before the first access
 #define DMR_MIC_GAIN		7	// the other HR_C6000 radios' value (unverified here)
-#define FM_MIC_GAIN		7	// the same
+#define FM_MIC_GAIN		7	// the same; on the maker's values its own, a row (cs7000p_rf_fm_tx_rows)
 #define RX_GAIN_DB		2	// 4:0x37, as the tree's other IF-fed HR_C6000 (unverified here)
 #define SAFE_GAIN		0x80u	// the DMR modulation pair while the calibration has none
 #define VOICE_SPI_PINS		(PIN_MASK(PIN_DMR_VCLK) | PIN_MASK(PIN_DMR_VMISO) | PIN_MASK(PIN_DMR_VMOSI))
@@ -74,7 +74,8 @@ static bool mod_pair(void *ctx, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *m
 static bool fm_tx_setup;
 
 // The values are the chain's choice, host-tested there (rfops_cs7000p.h): the held level or the FM transmit set-up's
-// 4:0x04, the coding chip_reg 3:5 asks for, 4:0x04 in receive
+// 4:0x04 (trim A on the maker's values, behind the owner's arm), the coding chip_reg 3:5 asks for, 4:0x04 in
+// receive, the maker's FM transmit registers
 static int8_t ref_offset(void *ctx, uint32_t hz)
 {
 	(void)ctx;
@@ -96,6 +97,12 @@ static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 	return cs7000p_rf_rx_r04(&cs7000p_rf);
 }
 
+static const hrc6000_if_row_t *fm_tx_rows(void *ctx, uint32_t hz, bool wide, uint8_t *n)
+{
+	(void)ctx;
+	return cs7000p_rf_fm_tx_rows(&cs7000p_rf, hz, wide, n);
+}
+
 static const hrc6000_if_cfg_t host_cfg = {
 	.dmr_mic_gain = DMR_MIC_GAIN,
 	.rx_gain_db = RX_GAIN_DB,
@@ -108,6 +115,7 @@ static const hrc6000_if_cfg_t host_cfg = {
 	.ref_offset = ref_offset,
 	.ref_coding = ref_coding,
 	.rx_tx_offset = rx_tx_offset,
+	.fm_tx_rows = fm_tx_rows,
 #if CONFIG_DMR
 	.dmr_enter = stm32_hrc_dmr_enter,
 	.dmr_leave = stm32_hrc_dmr_leave,
