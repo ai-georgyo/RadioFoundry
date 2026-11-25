@@ -10,8 +10,8 @@
 // 0x001000-0x0011FF, docs/spec/calibration-cs7000p.md, read by makercal_cs7000p.h) serves receive only so far: the
 // front-end tune, the receive reference level and the RSSI scale (the cs7000p_cal_*_m getters below), each from its
 // own field group, with today's value whenever that group or that lookup gives none. Its FM transmit values (the
-// drive, the pair, trim A: cs7000p_cal_maker_fm) serve a transmission only behind the owner's arm, which the RF
-// chain asks (rfops_cs7000p.h); none of DMR's yet.
+// drive, the pair, trim A: cs7000p_cal_maker_fm) and DMR's (the drive, the DMR pair, trim B: cs7000p_cal_maker_dmr)
+// serve a transmission only behind the owner's arm, which the RF chain asks (rfops_cs7000p.h).
 //
 // A row is nine points, 400 to 520 MHz in steps of 15 MHz, read with linear interpolation between two points and
 // held flat past the ends. A row with one point unset is unset as a whole: half a row is never used.
@@ -132,9 +132,22 @@ typedef struct {
 	int8_t trim;
 } cs7000p_fm_tx_t;
 bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v);
+// A DMR transmission's values from the table in use, f_tx = hz, power level level (the rows as FM's): the drive (16
+// c, 12-bit; P, not the maker's P + step of its burst rise: the factory set P, calibration-cs7000p.md 5.4), the DMR
+// pair (0x0B4 to 4:0x45, 0x0BC to 4:0x46) and trim B as 4:0x04's offset (d_B, d mod 256 there, spec 5.2). The
+// level's burst fields are checked, not given: the port's key-up times the bursts. False, v as it was:
+// cs7000p_cal_maker_tx(m, hz, level, true) is false. The arm is not asked here (cs7000p_rf_maker_dmr)
+typedef struct {
+	uint16_t drive;
+	uint8_t mod2, mod1;
+	int8_t trim;
+} cs7000p_dmr_tx_t;
+bool cs7000p_cal_maker_dmr(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v);
 // The table in use holds an FM transmission's values somewhere in the transmit ranges, at some level (every 100 kHz
 // from 400 to 512 MHz): what the view shows as cal=maker, a radio that transmits there once the owner arms it
 bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m);
+// ... a DMR transmission's, the same way (cal=maker on a build with DMR, where the top stage serves it)
+bool cs7000p_cal_maker_any_dmr(const cs7000p_maker_t *m);
 
 // The IF chip's RSSI output in millivolts as dBm at its input, from the data sheet's two typical points (0.3 V at
 // -100 dBm, 2.0 V at -30 dBm), less CS7000P_FE_GAIN_DB. A relative reading until it has been measured

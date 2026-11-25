@@ -70,12 +70,14 @@ static bool mod_pair(void *ctx, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *m
 }
 
 // True only inside the FM transmit set-up, the one place the IF host asks ref_offset for 4:0x04 rather than for the
-// held level of a receive entry
-static bool fm_tx_setup;
+// held level of a receive entry; and inside the DMR one (hrc6000_if_tx_freq), where rx_tx_offset is asked for the
+// transmission's 4:0x04
+static bool fm_tx_setup, dmr_tx_setup;
 
 // The values are the chain's choice, host-tested there (rfops_cs7000p.h): the held level or the FM transmit set-up's
-// 4:0x04 (trim A on the maker's values, behind the owner's arm), the coding chip_reg 3:5 asks for, 4:0x04 in
-// receive, the maker's FM transmit registers
+// 4:0x04 (trim A on the maker's values, behind the owner's arm), the coding chip_reg 3:5 asks for, 4:0x04 at a
+// receive entry and at the DMR key-up (trim B on the maker's values, behind the arm), the maker's FM transmit
+// registers
 static int8_t ref_offset(void *ctx, uint32_t hz)
 {
 	(void)ctx;
@@ -93,8 +95,7 @@ static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 {
 	(void)ctx;
 	(void)hz;
-	(void)dmr;
-	return cs7000p_rf_rx_r04(&cs7000p_rf);
+	return cs7000p_rf_r04(&cs7000p_rf, dmr, dmr_tx_setup);
 }
 
 static const hrc6000_if_row_t *fm_tx_rows(void *ctx, uint32_t hz, bool wide, uint8_t *n)
@@ -200,6 +201,18 @@ bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
 	cs7000p_radio_speaker();
 	return ok;
 }
+
+#if CONFIG_DMR
+bool cs7000p_c6000_dmr_tx(uint32_t hz, bool *pair)
+{
+	uint32_t errors = host.errors;
+	dmr_tx_setup = true;
+	*pair = hrc6000_if_tx_freq(&host, hz);
+	dmr_tx_setup = false;
+	// A write that failed: not a modulator to key a burst with
+	return host.up && host.dmr && host.errors == errors;
+}
+#endif
 
 void cs7000p_c6000_fm_tx_end(void)
 {

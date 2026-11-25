@@ -197,19 +197,41 @@ bool cs7000p_cal_maker_fm(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, 
 	return true;
 }
 
-bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m)
+bool cs7000p_cal_maker_dmr(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v)
+{
+	cs7000p_fm_tx_t got;
+	int16_t d;
+	// maker_tx with dmr looks the DMR pair up and has checked trim B and the burst fields; trim B as d here
+	if (!maker_tx(m, hz, level, true, &got) || !cs7000p_maker_trim(m, true, &d)) {
+		return false;
+	}
+	*v = (cs7000p_dmr_tx_t){ .drive = got.drive, .mod2 = got.mod2, .mod1 = got.mod1, .trim = (int8_t)d };
+	return true;
+}
+
+static bool maker_any(const cs7000p_maker_t *m, bool dmr)
 {
 	if (m == NULL || !m->valid) {
 		return false;
 	}
 	for (uint32_t hz = 400000000u; hz <= 512000000u; hz += 100000u) {
 		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
-			if (cs7000p_cal_maker_tx(m, hz, level, false)) {	// the reader refuses outside the ranges
+			if (cs7000p_cal_maker_tx(m, hz, level, dmr)) {	// the reader refuses outside the ranges
 				return true;
 			}
 		}
 	}
 	return false;
+}
+
+bool cs7000p_cal_maker_any_fm(const cs7000p_maker_t *m)
+{
+	return maker_any(m, false);
+}
+
+bool cs7000p_cal_maker_any_dmr(const cs7000p_maker_t *m)
+{
+	return maker_any(m, true);
 }
 
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between

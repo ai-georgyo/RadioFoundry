@@ -6,7 +6,8 @@
 // (invented here): a refused one, or none, gives every value as without it; a valid one each value from its own field
 // group, the tune row's lookup and trim A's receive bound falling back alone. Whether the table would serve a
 // transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; an FM
-// transmission's values (the drive, the pair, trim A) exactly there; the model's transmit getters unchanged.
+// transmission's values (the drive, the pair, trim A) and a DMR one's (the drive, the DMR pair, trim B) exactly
+// there; the model's transmit getters unchanged.
 #include <stdio.h>
 #include <string.h>
 #include "rfcal_cs7000p.h"
@@ -506,6 +507,45 @@ static void test_maker_tx(void)
 	mm = m;
 	mm.valid = false;
 	CHECK(!cs7000p_cal_maker_any_fm(&mm));
+
+	// The DMR values, exactly where the table holds a DMR transmission's: the same drive for the level (P, never the
+	// maker's P + step), the reader's DMR pair at f_tx (0x0B4, 0x0BC: not FM's) and trim B as d (not trim A); v
+	// untouched where it holds none
+	for (uint32_t hz = 399u * MHZ; hz <= 513u * MHZ; hz += 250000u) {
+		for (uint8_t level = 0; level <= CS7000P_POWER_LEVELS; level++) {
+			cs7000p_dmr_tx_t w = { 7, 7, 7, 7 };
+			uint16_t drive = 0;
+			uint8_t p2 = 0, p1 = 0;
+			const bool has = cs7000p_cal_maker_tx(&m, hz, level, true);
+			CHECK(cs7000p_cal_maker_dmr(&m, hz, level, &w) == has);
+			if (has) {
+				CHECK(cs7000p_maker_drive(&m, hz, level, &drive, NULL) && w.drive == drive);
+				CHECK(cs7000p_maker_pair(&m, hz, true, &p2, &p1, NULL) && w.mod2 == p2 && w.mod1 == p1);
+				CHECK(w.trim == (int8_t)(t[0x174] - 128));
+			} else {
+				CHECK(w.drive == 7 && w.mod2 == 7 && w.mod1 == 7 && w.trim == 7);
+			}
+		}
+	}
+	invented(t, rx_pts);
+	cs7000p_dmr_tx_t w = { 7, 7, 7, 7 };
+	CHECK(cs7000p_cal_maker_dmr(&m, 446u * MHZ, 1, &w) && w.drive == 16u * 210u && w.trim == -3);
+	CHECK(w.mod2 == t[0x0B4] && w.mod1 == t[0x0BC] && w.trim != (int8_t)(t[0x0DC] - 128));
+	CHECK(!cs7000p_cal_maker_dmr(NULL, 446u * MHZ, 0, &w));
+	// DMR's groups each alone missing: no DMR value and no DMR anywhere (cal=maker then from FM alone); FM's pair alone
+	// missing: DMR still has them
+	static const uint16_t dmr_groups[] = { CS7000P_MK_F_POWER, CS7000P_MK_F_DMR_PAIR, CS7000P_MK_F_TRIM_A,
+					       CS7000P_MK_F_TRIM_B, CS7000P_MK_F_BURST_LO | CS7000P_MK_F_BURST_HI };
+	CHECK(cs7000p_cal_maker_any_dmr(&m) && !cs7000p_cal_maker_any_dmr(NULL));
+	for (unsigned i = 0; i < sizeof(dmr_groups) / sizeof(dmr_groups[0]); i++) {
+		mm = m;
+		mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~dmr_groups[i]);
+		CHECK(!cs7000p_cal_maker_dmr(&mm, 446u * MHZ, 0, &w) && !cs7000p_cal_maker_any_dmr(&mm));
+	}
+	mm = m;
+	mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~CS7000P_MK_F_FM_PAIR);
+	CHECK(cs7000p_cal_maker_dmr(&mm, 446u * MHZ, 0, &w) && cs7000p_cal_maker_any_dmr(&mm) &&
+	      !cs7000p_cal_maker_any_fm(&mm));
 
 	// None of it reaches the model's getters: they read the model alone, unset as shipped, wherever the table
 	// would serve
