@@ -12,8 +12,8 @@
 // and parsed (makercal_cs7000p.h), and shown. Receive uses it (the tune row, trim A in the held level, the RSSI
 // points), each value with today's as its fallback (hardware-cs7000p.md 13.1). The owner's transmit arm
 // (hal_radio_t.tx_arm, 13.2) is checked against it and refuses a key-up it would serve until armed: armed, and with a
-// test TX limit list naming the frequency, FM without a tone keys on its drive, pair and trim A; a tone channel and
-// DMR stay refused.
+// test TX limit list naming the frequency, FM without a tone keys on its drive, pair and trim A, and DMR (the top
+// stage) on its drive, DMR pair at f_tx and trim B; a tone channel stays refused.
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
@@ -250,7 +250,7 @@ static void cal_take(void)
 	const uint32_t crc = s.source == FACTORY_COPY_SRC_WINDOW ? s.win_crc :
 			     (s.source == FACTORY_COPY_SRC_RECORD ? s.rec_crc : 0u);
 	(void)cs7000p_maker_parse(any ? cal_raw : NULL, crc, CS7000P_APC_FLOOR, &maker);
-	cal_maker = cs7000p_cal_maker_any_fm(&maker);
+	cal_maker = cs7000p_cal_maker_any_fm(&maker) || (CONFIG_DMR && cs7000p_cal_maker_any_dmr(&maker));
 	cal_st = s;
 #if CONFIG_FACTORY_COPY
 	factory_copy_taken();	// cal_raw is read: a restore may write it again from here on
@@ -854,8 +854,19 @@ static bool keyup_plan(void *ctx, uint32_t hz, uint8_t power, pa_keyup_t *ku)
 		cs7000p_rf_refuse(&cs7000p_rf, CS7000P_TX_MODEM);
 		return false;
 	}
+	// The drives first: a plan the runner refuses (a drive of 0: the arm lowered since the check) writes nothing
 	cs7000p_rf_burst_drives(&cs7000p_rf, &drive, &top, &floor);
 	*ku = pa_keyup_plan(drive, top, floor);
+	if (ku->drive == 0u) {
+		return false;
+	}
+	// The pair and 4:0x04 for f_tx before the first burst: the receive entries wrote f_rx's pair (a split channel's
+	// differs) and 4:0x04 for receive. On the maker's values its pair or nothing: never the safe gain under its drive
+	bool pair = false;
+	if (!cs7000p_c6000_dmr_tx(hz, &pair) || (cs7000p_rf.admit_arm && !pair)) {
+		cs7000p_rf_refuse(&cs7000p_rf, CS7000P_TX_MODEM);
+		return false;
+	}
 	return true;
 }
 
@@ -1227,7 +1238,7 @@ static void view_fill(cal_view_t *v)
 	v->ref_src = cs7000p_rf.ref_src;
 	v->ref_why = cs7000p_rf.ref_why;
 	v->rx_ref = cs7000p_rf.rx_ref;
-	v->r04 = cs7000p_rf.ref_offset;
+	v->r04 = cs7000p_rf.r04;
 	v->a_ok = cs7000p_maker_trim(&maker, false, &v->d_a);
 	v->b_ok = cs7000p_maker_trim(&maker, true, &v->d_b);
 	v->tune_src = cs7000p_rf.tune_src;
@@ -1325,9 +1336,10 @@ static const char *coding_name(uint8_t k)
 }
 
 // The receive reference (hardware-cs7000p.md 6.5, 15): the coding the modem holds (taken at its last full receive
-// set-up), the level the last receive entry wrote in it (the bias), 4:0x04 in receive, the two trims of the table in
-// use, the level's source and, when it is not trim A, why; and the coding chip_reg 3:5 asks for while the modem has
-// not taken it yet (until the next status poll)
+// set-up), the level the last receive entry wrote in it (the bias), 4:0x04 as the last receive entry or DMR key-up
+// wrote it (trim B in DMR on the arm's top stage, else today's), the two trims of the table in use, the level's
+// source and, when it is not trim A, why; and the coding chip_reg 3:5 asks for while the modem has not taken it yet
+// (until the next status poll)
 static void fmt_ref(const cal_view_t *v, char *buf, uint8_t len)
 {
 	static const char *const whys[] = { "none", "table", "group", "rx_bound", "build" };

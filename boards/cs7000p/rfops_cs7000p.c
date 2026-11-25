@@ -144,6 +144,7 @@ void cs7000p_rf_init(cs7000p_rf_t *rf, const cs7000p_rf_io_t *io, const cs7000p_
 		.lo_high = CS7000P_LO_HIGH != 0,
 		.ref_offset = cs7000p_cal_ref_offset(cal),
 		.rx_ref = cs7000p_cal_ref_offset(cal),
+		.r04 = cs7000p_cal_ref_offset(cal),
 		.ref_why = CS7000P_RXREF_WHY_TABLE,	// until the radio gives the table in use and receives
 		.ops = {
 			.line = op_line,
@@ -271,16 +272,19 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 			// No bench drive armed: a bench key-up keeps its own reasons. A tone channel is refused as without
 			// values, at every stage and never on the model's rows either: the table serves no sub-audio level
 			// yet, and one would be a guess (hardware-cs7000p.md 13.2). Else the owner's arm decides first, then
-			// a list must name hz; then FM keys on the table's drive at hz, the pair and trim A following from
-			// the same getter in the modem's set-up. DMR stays 2: none of its values is served yet
-			cs7000p_fm_tx_t v;
+			// a list must name hz; then the transmission keys on the table's drive at hz, the pair and the trim
+			// following from the same getter: FM's in the modem's set-up, DMR's at the burst plan (the pair at
+			// f_tx, trim B in 4:0x04). The bursts' timing stays the port's key-up
 			why = q->tone && !q->dmr ? CS7000P_TX_UNCAL
 						 : cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
 			if (why == CS7000P_TX_OK) {
-				if (q->dmr || !cs7000p_rf_maker_fm(rf, q->hz, q->power, &v)) {
+				cs7000p_fm_tx_t v;
+				cs7000p_dmr_tx_t w;
+				if (q->dmr ? !cs7000p_rf_maker_dmr(rf, q->hz, q->power, &w)
+					   : !cs7000p_rf_maker_fm(rf, q->hz, q->power, &v)) {
 					why = CS7000P_TX_UNCAL;
 				} else {
-					drive = v.drive;
+					drive = q->dmr ? w.drive : v.drive;
 					on_arm = true;
 				}
 			}
@@ -372,9 +376,31 @@ void cs7000p_rf_arm_set(cs7000p_rf_t *rf, uint8_t stage, uint32_t id)
 	rf->arm = stage;
 }
 
+// The DMR transmission admitted on the maker's values at hz, and its values while the arm still covers it
+static bool armed_dmr(const cs7000p_rf_t *rf, uint32_t hz, cs7000p_dmr_tx_t *v)
+{
+	return rf->admit && rf->admit_arm && rf->admit_dmr && hz == rf->admit_hz &&
+	       cs7000p_rf_maker_dmr(rf, hz, rf->admit_power, v);
+}
+
 void cs7000p_rf_burst_drives(const cs7000p_rf_t *rf, uint16_t *drive, uint16_t *top, uint16_t *floor)
 {
 	uint16_t t = 0;
+	cs7000p_dmr_tx_t v;
+	if (rf->admit && rf->admit_arm) {
+		// On the maker's values: the admitted drive and the top level's from the same getter (the stage that covers
+		// DMR covers both levels), never the model's; nothing once the arm no longer covers the transmission, so
+		// the plan refuses (a drive of 0)
+		*floor = rf->cal->floor;
+		if (!armed_dmr(rf, rf->admit_hz, &v)) {
+			*drive = *top = 0;
+			return;
+		}
+		*drive = rf->admit_drive;
+		*top = cs7000p_rf_maker_dmr(rf, rf->admit_hz, CS7000P_POWER_LEVELS - 1u, &v) && v.drive > *drive ? v.drive
+														  : *drive;
+		return;
+	}
 	*drive = rf->admit ? rf->admit_drive : 0u;
 	if (!cs7000p_cal_drive(rf->cal, rf->admit_hz, CS7000P_POWER_LEVELS - 1u, &t) || t < *drive) {
 		t = *drive;
@@ -423,6 +449,12 @@ bool cs7000p_rf_maker_fm(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7
 {
 	const uint8_t arm = rf->arm;	// once: the debug link's task may change it
 	return cs7000p_arm_covers(arm, level, false) && cs7000p_cal_maker_fm(rf->maker, hz, level, v);
+}
+
+bool cs7000p_rf_maker_dmr(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7000p_dmr_tx_t *v)
+{
+	const uint8_t arm = rf->arm;
+	return cs7000p_arm_covers(arm, level, true) && cs7000p_cal_maker_dmr(rf->maker, hz, level, v);
 }
 
 uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level)
@@ -493,16 +525,41 @@ int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup)
 	return rf->ref_offset;
 }
 
+int8_t cs7000p_rf_r04(cs7000p_rf_t *rf, bool dmr, bool tx_setup)
+{
+	cs7000p_dmr_tx_t v;
+	int16_t d;
+	int8_t r = rf->ref_offset;	// today's, and the bench's 3:4 while it is set
+	if (dmr && !rf->ref_override) {
+		if (tx_setup) {
+			// The DMR key-up: trim B for the transmission admitted on the table while the arm covers it; a bench
+			// key-up or the model's keeps today's
+			if (armed_dmr(rf, rf->admit_hz, &v)) {
+				r = v.trim;
+			}
+		} else if (cs7000p_arm_covers(rf->arm, 0, true) && cs7000p_maker_trim(rf->maker, true, &d)) {
+			// A DMR receive entry while the arm covers DMR: what the next burst carries (nothing else writes 4:0x04
+			// before it), and the maker's own state in DMR receive after a transmission (calibration-cs7000p.md
+			// 6.4). Within CS7000P_MAKER_TRIM_MAX of 0: the group passed
+			r = (int8_t)d;
+		}
+	}
+	rf->r04 = r;
+	return r;
+}
+
 bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *mod1)
 {
 	cs7000p_fm_tx_t v;
-	if (!dmr && rf->admit && rf->admit_arm) {
-		// The table's pair or none: never the model's, nor the bench's carrier, under a key-up on the table's drive
-		if (!armed_fm(rf, hz, &v)) {
+	cs7000p_dmr_tx_t w;
+	if (rf->admit && rf->admit_arm) {
+		// The table's pair for the mode and frequency admitted, or none: never the model's, nor the bench's carrier,
+		// nor DMR's safe gain under a key-up on the table's drive
+		if (dmr ? !armed_dmr(rf, hz, &w) : !armed_fm(rf, hz, &v)) {
 			return false;
 		}
-		*mod2 = v.mod2;
-		*mod1 = v.mod1;
+		*mod2 = dmr ? w.mod2 : v.mod2;
+		*mod1 = dmr ? w.mod1 : v.mod1;
 		return true;
 	}
 	if (cs7000p_cal_mod_pair(rf->cal, hz, dmr, mod2, mod1)) {

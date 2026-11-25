@@ -22,8 +22,9 @@
 // restore pending or its request untaken), the restore refused while armed, a lower stage always taken, the arm gone
 // at a safe request and a start; unarmed and armed without a list no key-up the table would serve goes ahead, armed
 // with one FM keys on the table's drive, pair, trim A and registers (from the window, the record, a restored table)
-// while DMR and tone channels stay refused, and the bench's drive now stays at or under the admitted drive; the bench
-// drive's key-up writes as without a table, at every stage, but for the bias it inherits. Built
+// and DMR at the top stage on its drive, its DMR pair at f_tx (a split channel) and trim B, while tone channels stay
+// refused; 4:0x04 in DMR receive trim B on the top stage only; the bench's drive now stays at or under the admitted
+// drive; the bench drive's key-up writes as without a table, at every stage, but for the bias it inherits. Built
 // again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
@@ -82,6 +83,7 @@ static uint32_t hw_n;
 #define HW_REF		9u
 #define HW_TXREF	10u
 #define HW_TXPAIR	11u	// the FM transmit set-up's pair (mod2 << 8 | mod1) and the board's row count
+#define HW_DMRTX	12u	// the DMR key-up's pair at f_tx (mod2 << 8 | mod1, the safe gain without one) and its 4:0x04
 
 static void hw(uint32_t kind, uint32_t a, uint32_t b)
 {
@@ -297,7 +299,10 @@ uint16_t cs7000p_adc_raw(uint8_t rank) { return rank == CS7000P_ADC_RSSI ? rssi_
 static struct {
 	bool dmr, fm_tx, audio;
 	int retunes, fm_tx_ends;
-	bool refuse_fm_tx;
+	bool refuse_fm_tx, refuse_dmr_tx;
+	bool no_dmr_pair;	// the DMR key-up's pair missing (as with the arm lowered between the check and the plan)
+	uint32_t dmr_tx_hz;	// the last DMR key-up's frequency, dmr_txs of them
+	int dmr_txs;
 	uint8_t coding;		// the reference coding taken at the last full receive set-up (CS7000P_REF_*)
 	const hrc6000_if_row_t *rows;	// the board's rows at the last FM transmit set-up, n_rows of them
 	uint8_t n_rows;
@@ -314,10 +319,11 @@ static uint8_t coding_asked(void)
 uint8_t cs7000p_c6000_ref_coding(void) { return modem.coding; }
 
 // The held reference as the real IF host asks for it at a receive entry, through the calls c6000_cs7000p.c's
-// ref_offset and rx_tx_offset make: the level's offset, then 4:0x04
+// ref_offset and rx_tx_offset make: the level's offset, then 4:0x04 for the mode
 static void ref_entry(void)
 {
-	hw(HW_REF, (uint32_t)(int32_t)cs7000p_rf_ref_for(&cs7000p_rf, false), (uint8_t)cs7000p_rf_rx_r04(&cs7000p_rf));
+	hw(HW_REF, (uint32_t)(int32_t)cs7000p_rf_ref_for(&cs7000p_rf, false),
+	   (uint8_t)cs7000p_rf_r04(&cs7000p_rf, modem.dmr, false));
 }
 
 // A run with no table at all, as before the board read one (the radio's own pointer cleared once set)
@@ -382,6 +388,25 @@ bool cs7000p_c6000_fm_tx(uint32_t hz, bool wide)
 	return true;
 }
 
+// The DMR key-up's part as the real IF host asks it (hrc6000_if_tx_freq): the pair at hz, the safe gain without one,
+// then 4:0x04 with the DMR set-up's flag. Only in DMR
+bool cs7000p_c6000_dmr_tx(uint32_t hz, bool *pair)
+{
+	uint8_t m2 = 0x80, m1 = 0x80;
+	*pair = false;
+	if (!modem.dmr) {
+		return false;
+	}
+	*pair = !modem.no_dmr_pair && cs7000p_rf_mod_pair(&cs7000p_rf, hz, true, &m2, &m1);
+	if (!*pair) {
+		m2 = m1 = 0x80;
+	}
+	modem.dmr_tx_hz = hz;
+	modem.dmr_txs++;
+	hw(HW_DMRTX, (uint32_t)m2 << 8 | m1, (uint8_t)cs7000p_rf_r04(&cs7000p_rf, true, true));
+	return !modem.refuse_dmr_tx;
+}
+
 void cs7000p_c6000_fm_tx_end(void)
 {
 	modem.fm_tx = false;
@@ -390,8 +415,16 @@ void cs7000p_c6000_fm_tx_end(void)
 	ref_entry();
 }
 
+// Set: the arm drops to this stage at the next state read, as from the debug link's task between the burst plan's
+// check and its drives (0xFF: never)
+static uint8_t arm_drop_at_state = 0xFFu;
+
 void cs7000p_c6000_state(bool *up, uint8_t *r10, uint8_t *r25)
 {
+	if (arm_drop_at_state != 0xFFu) {
+		cs7000p_rf_arm_set(&cs7000p_rf, arm_drop_at_state, 0);
+		arm_drop_at_state = 0xFFu;
+	}
 	*up = true;
 	*r10 = 0;
 	*r25 = 0;
@@ -648,6 +681,8 @@ static void invented(uint8_t t[N], uint8_t other)
 	static const uint8_t high[8] = { 190, 194, 195, 210, 213, 215, 212, 209 };
 	static const uint8_t low[8] = { 100, 99, 99, 108, 115, 122, 126, 127 };
 	static const uint8_t tune[8] = { 120, 124, 128, 132, 136, 140, 150, 160 };
+	static const uint8_t dmr2[8] = { 70, 72, 74, 76, 79, 82, 85, 88 };
+	static const uint8_t dmr1[8] = { 96, 97, 98, 100, 102, 104, 106, 108 };
 	memset(t, 0, N);
 	for (unsigned i = 0; i < 8; i++) {
 		put32be(t, 0x000u + 4u * i, tx[i]);
@@ -665,8 +700,8 @@ static void invented(uint8_t t[N], uint8_t other)
 	memset(t + 0x084, 40, 8);	// CTCSS at 67.0 and 254.1 Hz, DCS
 	memset(t + 0x08C, 52, 8);
 	memset(t + 0x094, 200, 8);
-	memset(t + 0x0B4, 80, 8);	// the DMR and FM pairs
-	memset(t + 0x0BC, 100, 8);
+	memcpy(t + 0x0B4, dmr2, 8);	// the DMR pair, a slope a split channel tells apart, and the FM pair
+	memcpy(t + 0x0BC, dmr1, 8);
 	memset(t + 0x0C4, 120, 8);
 	memset(t + 0x0CC, 135, 8);
 	t[0x0DC] = 0x7B;		// trim A
@@ -924,6 +959,17 @@ static int32_t last_of(uint32_t kind)
 	for (uint32_t i = hw_n < HW_LOG_MAX ? hw_n : HW_LOG_MAX; i-- > 0u;) {
 		if (hw_log[i].kind == kind) {
 			return (int32_t)hw_log[i].a;
+		}
+	}
+	return INT32_MIN;
+}
+
+// The second value of the last event of a kind (the 4:0x04 of HW_REF and HW_DMRTX), or INT32_MIN
+static int32_t last_b(uint32_t kind)
+{
+	for (uint32_t i = hw_n < HW_LOG_MAX ? hw_n : HW_LOG_MAX; i-- > 0u;) {
+		if (hw_log[i].kind == kind) {
+			return (int32_t)hw_log[i].b;
 		}
 	}
 	return INT32_MIN;
@@ -1861,9 +1907,56 @@ static void keyup_on_table(uint8_t level, bool wide)
 	CHECK((shadow & EXP_TX_BITS) == 0u && dac_now <= CS7000P_TUNE_MAX);
 }
 
+#if CONFIG_DMR
+// The table's DMR pair at hz as the modem gets it (mod2 << 8 | mod1), and its drive for a level there
+static int32_t table_dmr_pair(uint32_t hz)
+{
+	cs7000p_maker_t m;
+	uint8_t m2 = 0, m1 = 0;
+	CHECK(cs7000p_maker_parse(table_a, crc(table_a), CS7000P_APC_FLOOR, &m));
+	CHECK(cs7000p_maker_pair(&m, hz, true, &m2, &m1, NULL));
+	return (int32_t)((uint32_t)m2 << 8 | m1);
+}
+
+static uint16_t table_dmr_drive(uint32_t hz, uint8_t level)
+{
+	cs7000p_maker_t m;
+	uint16_t d = 0;
+	CHECK(cs7000p_maker_parse(table_a, crc(table_a), CS7000P_APC_FLOOR, &m));
+	CHECK(cs7000p_maker_drive(&m, hz, level, &d, NULL));
+	return d;
+}
+
+#define TABLE_TRIM_B	(-3)	// 0x7D
+
+// A DMR key-up on the table's values at hz and a level, the receiver on 446 MHz: the burst plan admits it on the
+// table's drive at hz, the modem gets the table's DMR pair at hz (on a split channel not the receive frequency's) and
+// trim B in 4:0x04, the plan the top level's drive at hz, the microphone on; the end takes it all away
+static void keyup_on_table_dmr(uint32_t hz, uint8_t level)
+{
+	uint16_t top = 0;
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	runner.answer = runner.plan = true;
+	const int txs = modem.dmr_txs;
+	hw_n = 0;
+	CHECK(cs7000p_radio.tx(hz, RADIO_BW_12K5, level, NULL));
+	CHECK(runner.armed && cs7000p_rf.admit && cs7000p_rf.admit_arm && cs7000p_rf.admit_dmr && mic_on());
+	CHECK(cs7000p_rf.admit_hz == hz && cs7000p_rf.admit_drive == table_dmr_drive(hz, level));
+	CHECK(modem.dmr_txs == txs + 1 && modem.dmr_tx_hz == hz);
+	CHECK(last_of(HW_DMRTX) == table_dmr_pair(hz) && last_b(HW_DMRTX) == (uint8_t)TABLE_TRIM_B);
+	const pa_keyup_t ku = pa_keyup_last(&top, NULL);
+	CHECK(ku.drive == table_dmr_drive(hz, level) && top == table_dmr_drive(hz, 1));
+	CHECK((shadow & EXP_TX_BITS) == 0u);	// the runner keys the bursts, not the arm
+	cs7000p_radio.tx_off();
+	CHECK(!runner.armed && mic_off() && !cs7000p_rf.admit && cs7000p_rf.seq.state == CHAINSEQ_ST_RX);
+	runner.answer = runner.plan = false;
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+}
+#endif
+
 // Every key-up the invented table would serve, at both levels and in both modes, at the stage armed now; listed: the
 // test TX limit names 446 MHz (start() sets it). The arm's reason where the stage or the list is missing; covered and
-// listed, FM keys on the table (both widths across the levels) and DMR is refused as without values
+// listed, FM keys on the table (both widths across the levels) and DMR keys on the table at the top stage
 static void keyups_check(uint8_t stage, bool listed)
 {
 	static const uint8_t from[2][2] = { { 1, 2 }, { 3, 3 } };	// [dmr][level]: the first stage that covers it
@@ -1872,9 +1965,12 @@ static void keyups_check(uint8_t stage, bool listed)
 			const bool covered = stage >= from[dmr][level];
 			if (covered && listed && !dmr) {
 				keyup_on_table(level, level != 0);
+#if CONFIG_DMR
+			} else if (covered && listed) {
+				keyup_on_table_dmr(446u * MHZ, level);
+#endif
 			} else {
-				keyup_refused(level, dmr != 0, !covered ? CS7000P_TX_UNARMED :
-							      (listed ? CS7000P_TX_UNCAL : CS7000P_TX_ARM_NO_LIST));
+				keyup_refused(level, dmr != 0, !covered ? CS7000P_TX_UNARMED : CS7000P_TX_ARM_NO_LIST);
 			}
 		}
 	}
@@ -1923,7 +2019,7 @@ static void test_tx_arm(void)
 	CHECK(modem.retunes == retunes0);	// off while off: no receive set-up
 
 	// Each stage, against the table's CRC: a receive set-up at the next poll; the arm's reasons at each, and with a
-	// list what the stage covers keys in FM on the table, DMR still refused
+	// list what the stage covers keys on the table, DMR at the top stage
 	for (uint8_t stage = HAL_TX_ARM_FM_LOW; stage <= ARM_TOP; stage++) {
 		int retunes = modem.retunes;
 		CHECK(cs7000p_radio.tx_arm(stage, a) == HAL_TX_ARM_OK && cs7000p_rf.arm == stage && cs7000p_rf.arm_id == a);
@@ -2059,6 +2155,118 @@ static void test_tx_arm(void)
 #endif
 }
 
+#if CONFIG_DMR
+#define F_SPLIT	(441u * MHZ)
+
+// DMR on the table, receiving on 446 MHz and transmitting on 441 MHz (the test TX limit names both). Below the top
+// stage every DMR key-up is refused (13) and 4:0x04 in DMR receive is today's; on it, the key-up is admitted on the
+// table's drive at f_tx for each level, the modem gets the DMR pair at f_tx and trim B, and 4:0x04 in DMR receive is
+// trim B too (what the bursts carry). FM receive keeps today's 4:0x04 at every stage. The arm lowered: the next
+// receive set-up gives today's back, and a running DMR transmission on the table ends at once. The bench's 3:4 over
+// trim B, in receive and at the key-up
+static void test_tx_arm_dmr(void)
+{
+	radio_status_t st;
+	const uint32_t a = crc(table_a);
+	const uint8_t today = (uint8_t)(int8_t)CS7000P_REF_OFFSET;
+	CHECK(table_dmr_pair(F_SPLIT) != table_dmr_pair(446u * MHZ));	// the invented rows tell the two apart
+	chip(table_a, NULL);
+	boot(true, 0);
+	static const uint32_t limit[2] = { 446u * MHZ, F_SPLIT };
+	CHECK(tx_limit_set(false, limit, 2));
+	for (uint8_t stage = HAL_TX_ARM_OFF; stage <= HAL_TX_ARM_ALL; stage++) {
+		if (stage != HAL_TX_ARM_OFF) {
+			CHECK(cs7000p_radio.tx_arm(stage, a) == HAL_TX_ARM_OK);
+		}
+		cs7000p_radio.status(&st);
+		// FM receive: today's 4:0x04, whatever the stage
+		hw_n = 0;
+		CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+		CHECK(last_b(HW_REF) == today && cs7000p_rf.r04 == CS7000P_REF_OFFSET);
+		// DMR receive: trim B on the top stage only
+		cs7000p_radio.set_mode(RADIO_MODE_DMR);
+		hw_n = 0;
+		CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+		const uint8_t r04 = stage == HAL_TX_ARM_ALL ? (uint8_t)TABLE_TRIM_B : today;
+		CHECK(last_b(HW_REF) == r04 && (uint8_t)cs7000p_rf.r04 == r04);
+		runner.answer = runner.plan = true;
+		for (uint8_t level = 0; level < 2; level++) {
+			if (stage != HAL_TX_ARM_ALL) {
+				const int txs = modem.dmr_txs, writes = mic_writes;
+				cs7000p_rf.tx_refused_why = 0;
+				CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, level, NULL));
+				CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_UNARMED && modem.dmr_txs == txs);
+				CHECK(!runner.armed && mic_writes == writes && !cs7000p_rf.admit);
+			} else {
+				keyup_on_table_dmr(F_SPLIT, level);
+				keyup_on_table_dmr(446u * MHZ, level);	// simplex: the receive frequency's pair
+			}
+		}
+		runner.answer = runner.plan = false;
+		cs7000p_radio.set_mode(RADIO_MODE_FM);
+	}
+	// Lowered to stage 2 while in DMR: the next status poll's receive set-up writes today's 4:0x04 again
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	CHECK(cs7000p_rf.r04 == TABLE_TRIM_B);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, 0) == HAL_TX_ARM_OK);
+	hw_n = 0;
+	cs7000p_radio.status(&st);
+	CHECK(last_b(HW_REF) == today && cs7000p_rf.r04 == CS7000P_REF_OFFSET);
+	// A DMR transmission on the table up, then a lower stage: ended at once by the safe request
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	runner.answer = runner.plan = true;
+	const int safes = board_safes;
+	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 1, NULL) && runner.armed && cs7000p_rf.admit_arm);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK && board_safes == safes);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_FM, 0) == HAL_TX_ARM_OK && board_safes == safes + 1);
+	CHECK(cs7000p_rf.safed && dac_now == 0 && (shadow & EXP_TX_BITS) == 0u);
+	cs7000p_radio.tx_off();
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.seq.state == CHAINSEQ_ST_RX && mic_off() && cs7000p_rf.r04 == CS7000P_REF_OFFSET);
+	// The bench's 3:4 over trim B: in DMR receive and at the key-up
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
+	uint32_t v = 0xF0;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.r04 == (int8_t)0xF0);
+	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && last_b(HW_DMRTX) == 0xF0);
+	CHECK(last_of(HW_DMRTX) == table_dmr_pair(F_SPLIT));
+	cs7000p_radio.tx_off();
+	v = 0x100;
+	CHECK(cs7000p_chip_reg(3, 0, 4, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(cs7000p_rf.r04 == TABLE_TRIM_B);
+	// The modem refusing the key-up's writes: refused (9), nothing armed, no microphone
+	modem.refuse_dmr_tx = true;
+	const int writes = mic_writes;
+	CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL));
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_MODEM && !runner.armed && mic_writes == writes);
+	modem.refuse_dmr_tx = false;
+	// No pair for a key-up on the table's drive: refused (9), never keyed on the safe gain
+	modem.no_dmr_pair = true;
+	cs7000p_rf.tx_refused_why = 0;
+	CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL));
+	CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_MODEM && !runner.armed && mic_writes == writes);
+	modem.no_dmr_pair = false;
+	CHECK(cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && runner.armed);
+	cs7000p_radio.tx_off();
+	// The arm lowered after the plan's check, before its drives: refused with nothing written to the modem
+	const int txs = modem.dmr_txs, writes2 = mic_writes;
+	arm_drop_at_state = HAL_TX_ARM_FM;
+	CHECK(!cs7000p_radio.tx(F_SPLIT, RADIO_BW_12K5, 0, NULL) && !runner.armed && modem.dmr_txs == txs);
+	CHECK(cs7000p_rf.arm == HAL_TX_ARM_FM && mic_writes == writes2);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_ALL, a) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	runner.answer = runner.plan = false;
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	static const uint32_t one[1] = { 446u * MHZ };
+	CHECK(tx_limit_set(false, one, 1));
+}
+#endif
+
 #if CONFIG_FACTORY_COPY
 // The arm and the restore exclude each other. A restore's job pending, its outcome not taken by the copy, or its
 // changed() not taken by the radio task: every arm but off refused (reason 4), the table about to change. Armed: the
@@ -2183,6 +2391,9 @@ int main(void)
 	test_if_words();
 	test_sq_maker();
 	test_tx_arm();
+#if CONFIG_DMR
+	test_tx_arm_dmr();
+#endif
 	test_arm_bench_keyup();
 #if CONFIG_FACTORY_COPY
 	test_tx_arm_restore();
