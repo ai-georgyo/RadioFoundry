@@ -538,6 +538,13 @@ static void fake_arm_info(hal_tx_arm_info_t *info)
 				     .cal_ok = true };
 }
 
+// A radio with no calibration in use and a lower top stage: every byte of the reply follows the board's answer
+static void fake_arm_info_none(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){ .stage = 0, .max = 2, .addr = 0x00012345u, .len = 0x00000100u, .crc = 0,
+				     .cal_ok = false };
+}
+
 static uint8_t fake_arm(uint8_t stage, uint32_t id)
 {
 	arm_calls++;
@@ -569,6 +576,13 @@ static void test_tx_arm(void)
 	memset(out, 0x55, sizeof(out));
 	CHECK(dl_tx_arm_op(&r, arm, 0, out) == DL_TX_ARM_INFO_LEN && memcmp(out, info, sizeof(info)) == 0, "info");
 	CHECK(arm_calls == 0, "the info arms nothing");
+	r.tx_arm_info = fake_arm_info_none;
+	static const uint8_t none[DL_TX_ARM_INFO_LEN] = { DL_ST_OK, 0, 2, 0x45, 0x23, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+							  0, 0, 0, 0, 0 };
+	memset(out, 0x55, sizeof(out));
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == DL_TX_ARM_INFO_LEN && memcmp(out, none, sizeof(none)) == 0,
+	      "info: no calibration, max 2");
+	r.tx_arm_info = fake_arm_info;
 	// stage u8 + id u32: the arm, the id as sent; OK with reason 0, or REFUSED with the board's reason
 	arm_answer = HAL_TX_ARM_OK;
 	CHECK(dl_tx_arm_op(&r, arm, 5, out) == DL_TX_ARM_REPLY_LEN && out[0] == DL_ST_OK && out[1] == 0, "armed");
