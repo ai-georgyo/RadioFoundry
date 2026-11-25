@@ -704,26 +704,25 @@ static cs7000p_tx_req_t tx_request(uint32_t hz, uint8_t power, bool dmr)
 
 #if CONFIG_DEBUGLINK
 // The transmission the core last asked for, admitted or refused, for board2.tx_maker: the core gives the board a
-// channel's transmit frequency, power level and tone only in tx(). It stands while the receive set-up it was asked
-// from does (the same receive frequency, width and mode): a channel change, a scan step or a beacon's retune drops it.
-// The radio task writes it; the view reads it under the interrupt mask, below that task's priority
+// channel's transmit frequency, power level and tone only in tx(). It stands until the core asks for a receive set-up
+// (rx(): a channel change, a scan step, a beacon's retune, also another channel on the same receive frequency), a mode
+// change or a restart: the board learns of no channel change any other way. The radio's own receive set-ups (a
+// transmission's end, the status poll's) keep it. The radio task writes it; the view reads it under the interrupt
+// mask, below that task's priority
 static struct {
 	bool set, dmr, wide;
 	uint8_t power;
-	radio_bw_t rx_bw;
-	uint32_t hz, rx_hz;
+	uint32_t hz;
 	subtone_t tone;			// TONE_NONE: none (and always in DMR)
 } tx_asked;
 
 static void tx_note(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tone)
 {
-	tx_asked.set = rx_valid;
+	tx_asked.set = true;
 	tx_asked.dmr = dmr_mode;
 	tx_asked.wide = bw == RADIO_BW_25K && !dmr_mode;	// DMR is a 12.5 kHz signal whatever the channel says
 	tx_asked.power = power;
-	tx_asked.rx_bw = rx_bw;
 	tx_asked.hz = hz;
-	tx_asked.rx_hz = cs7000p_rf.seq.rx_hz;
 	tx_asked.tone = tone != NULL && !dmr_mode ? *tone : (subtone_t){ TONE_NONE, 0 };
 }
 #endif
@@ -1022,6 +1021,9 @@ static void set_mode(radio_mode_t mode)
 
 static bool rx(uint32_t hz, radio_bw_t bw, const subtone_t *rx_tone)
 {
+#if CONFIG_DEBUGLINK
+	tx_asked.set = false;	// the core's receive set-up: another channel's transmit side may follow (view)
+#endif
 	if (!cs7000p_rx_band(hz)) {
 		// Refused, and nothing set up on hz. The core also calls rx() to end a DMR transmission (the hotspot's
 		// retune): one that is up ends in order all the same, back on the last receive set-up
@@ -1304,8 +1306,8 @@ typedef struct {
 	bool soc;			// a raw SoC register write since the start (dl_soc_written): the same
 	uint16_t bench_drive;		// a bench drive armed, or the drive of a transmission on one (0: none)
 	bool bench_keyup;		// the DMR key-up's constants the debug link's
-	// What a key-up on the table would take: the transmission the core last asked for while its receive set-up
-	// stands (tx_at), else the receive set-up as a simplex channel's at the lowest level, no tone
+	// What a key-up on the table would take: the transmission the core last asked for while it stands (tx_at,
+	// tx_asked), else the receive set-up as a simplex channel's at the lowest level, no tone
 	bool tx_at, tx_dmr, tx_tone;	// ... tx_tone: that request named a tone (FM)
 	uint8_t tx_level;
 	uint32_t tx_hz;
@@ -1352,7 +1354,7 @@ static void view_fill(cal_view_t *v)
 	v->bench_drive = cs7000p_rf.ovr_drive != 0u ? cs7000p_rf.ovr_drive
 			 : cs7000p_rf_bench_drive(&cs7000p_rf) ? cs7000p_rf.admit_drive : 0u;
 	v->bench_keyup = keyup_bench();
-	v->tx_at = tx_asked.set && rx_valid && tx_asked.rx_hz == hz && tx_asked.rx_bw == rx_bw && tx_asked.dmr == dmr_mode;
+	v->tx_at = tx_asked.set && tx_asked.dmr == dmr_mode;
 	v->tx_dmr = dmr_mode;
 	v->tx_tone = v->tx_at && tx_asked.tone.type != TONE_NONE;
 	if (v->tx_at) {
@@ -1362,7 +1364,7 @@ static void view_fill(cal_view_t *v)
 	} else {
 		v->tx_hz = rx_valid ? hz : 0u;
 		v->tx_level = 0;
-		cs7000p_rf_tx_view(&cs7000p_rf, v->tx_hz, 0, dmr_mode, rx_bw == RADIO_BW_25K && !dmr_mode, NULL, &v->tx);
+		cs7000p_rf_tx_view(&cs7000p_rf, v->tx_hz, 0, dmr_mode, false, NULL, &v->tx);	// no tone: no width
 	}
 	v->busy = false;
 }
@@ -1517,10 +1519,10 @@ static void have_text(char *t, uint8_t len, bool have, int32_t n)
 // What a key-up on the table in use would take (13.2), shown before the owner arms and never a key-up itself: ok when
 // the table serves it (an armed key-up whose stage covers it then takes these values), none with no= the first lookup
 // that refuses in the admission's order and why= its reason. at=tx: the transmission the core last asked for (refused
-// ones included) while the receive set-up it was asked from stands; at=rx: no such request, the receive frequency as
-// a simplex channel's, the lowest level, no tone. hz= the transmit frequency, mode=, lvl= the power level; the drive
-// at both levels (lo=, hi=: 12-bit DAC codes), the mode's pair= (4:0x45, 4:0x46), d_a= trim A, in DMR d_b= trim B,
-// on a tone channel tone_pm= the tone's depth in per mille; "-" where that lookup gives none
+// ones included) while it stands (tx_asked); at=rx: no such request, the receive frequency as a simplex channel's,
+// the lowest level, no tone. hz= the transmit frequency, mode=, lvl= the power level; the drive at both levels (lo=,
+// hi=: 12-bit DAC codes), the mode's pair= (4:0x45, 4:0x46), d_a= trim A, in DMR d_b= trim B, on a tone channel
+// tone_pm= the tone's depth in per mille; "-" where that lookup gives none
 static void fmt_tx_maker(const cal_view_t *v, char *buf, uint8_t len)
 {
 	const cs7000p_tx_view_t *x = &v->tx;
