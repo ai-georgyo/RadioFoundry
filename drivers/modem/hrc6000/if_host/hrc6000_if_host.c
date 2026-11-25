@@ -326,6 +326,26 @@ bool hrc6000_if_retune(hrc6000_if_t *h, uint32_t hz)
 	return false;
 }
 
+bool hrc6000_if_tx_freq(hrc6000_if_t *h, uint32_t hz)
+{
+	if (!h->up || !h->dmr) {
+		return false;	// a DMR entry ended any FM transmit set-up: h->fm_tx is false here
+	}
+	const hrc6000_if_cfg_t *c = h->cfg;
+	uint8_t mod2 = c->safe_gain, mod1 = c->safe_gain;
+	const bool pair = c->mod_pair != NULL && c->mod_pair(c->ctx, hz, true, &mod2, &mod1);
+	if (!pair) {
+		mod2 = mod1 = c->safe_gain;	// never what the board's function left behind
+	}
+	count(h, hrc_set_mod_gain(h->dev, mod2, mod1));
+	if (c->ref_dac_hold && c->rx_tx_offset != NULL) {
+		// The value the bursts carry, from the callback that gives it at receive entries: the board may want another
+		// for a transmission than for receive. The held level and 4:0x25 stay: this is no receive entry
+		count(h, hrc_write(h->dev, 4, 0x04, (uint8_t)c->rx_tx_offset(c->ctx, hz, true)));
+	}
+	return pair;
+}
+
 bool hrc6000_if_fm_tx(hrc6000_if_t *h, uint32_t hz, bool wide, uint8_t mic_gain)
 {
 	if (!h->up || h->dmr) {

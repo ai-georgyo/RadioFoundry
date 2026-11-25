@@ -162,6 +162,7 @@ static uint8_t coding_now, adc_now;
 static bool r04_own;		// rx_tx_offset answers r04_val, else ref_offset's value
 static int8_t r04_val;
 static bool r04_dmr;		// the mode rx_tx_offset was last asked for
+static uint32_t r04_hz;		// ... and the frequency
 static int n_coding, n_r04;
 
 static uint8_t ref_coding(void *ctx, uint8_t *adc_ctl)
@@ -177,6 +178,7 @@ static int8_t rx_tx_offset(void *ctx, uint32_t hz, bool dmr)
 	see_ctx(ctx);
 	n_r04++;
 	r04_dmr = dmr;
+	r04_hz = hz;
 	return r04_own ? r04_val : ref_offset(ctx, hz);
 }
 
@@ -875,6 +877,97 @@ static void test_rx_tx_offset(void)
 	CHECK(h.errors == 0);
 }
 
+#if CONFIG_DMR
+// A DMR transmission's own frequency (hrc6000_if_tx_freq): in DMR only, its pair (on a split channel the receive
+// entry wrote the receive frequency's) and the transmission's 4:0x04 from rx_tx_offset, three writes and nothing
+// else: the held level, 0x25 and the engine as they were, no restart. No pair there: the safe gain, and false. The
+// pair stays through a receive entry on the same channel, 4:0x04 does not
+static void test_tx_freq(void)
+{
+	hrc6000_if_t h;
+	static uint8_t before[256];
+	fake_reset();
+	r04_own = true;
+	r04_val = 0x21;
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	// FM receive: nothing, nothing asked
+	uint32_t x = n_xfer;
+	int asked = n_r04;
+	CHECK(!hrc6000_if_tx_freq(&h, HZ_B) && n_xfer == x && n_r04 == asked);
+	hrc6000_if_mode(&h, true, HZ_A);
+	CHECK(regs[4][0x45] == pair_byte(HZ_A, true, false) && regs[4][0x46] == pair_byte(HZ_A, true, true));
+	CHECK(regs[4][0x04] == 0x21 && held(regs[4][0x25]));
+	// Receiving on HZ_A, transmitting on HZ_B
+	r04_val = -3;
+	memcpy(before, regs[4], sizeof(before));
+	x = n_xfer;
+	const uint32_t from = n_wl;
+	const int restarts = n_restart, enters = n_enter, leaves = n_leave;
+	asked = n_r04;
+	CHECK(hrc6000_if_tx_freq(&h, HZ_B));
+	CHECK(regs[4][0x45] == pair_byte(HZ_B, true, false) && regs[4][0x46] == pair_byte(HZ_B, true, true));
+	CHECK(regs[4][0x04] == 0xFD && n_r04 == asked + 1 && r04_dmr && r04_hz == HZ_B);
+	CHECK(n_xfer == x + 3u && n_wl == from + 3u);
+	CHECK(wl[from].reg == 0x45 && wl[from + 1u].reg == 0x46 && wl[from + 2u].reg == 0x04);
+	for (unsigned r = 0; r < 256u; r++) {
+		if (r != 0x45u && r != 0x46u && r != 0x04u) {
+			CHECK(regs[4][r] == before[r]);
+		}
+	}
+	CHECK(n_restart == restarts && n_enter == enters && n_leave == leaves && h.dmr && h.tuned_hz == HZ_A);
+	CHECK(h.errors == 0);
+	// A receive entry on the same channel: 4:0x04 the entry's again, the transmit frequency's pair left (receive does
+	// not modulate); on another channel that channel's pair
+	r04_val = 0x21;
+	CHECK(!hrc6000_if_retune(&h, HZ_A));
+	CHECK(regs[4][0x04] == 0x21 && regs[4][0x45] == pair_byte(HZ_B, true, false) && n_restart == restarts);
+	CHECK(hrc6000_if_tx_freq(&h, HZ_A) && regs[4][0x45] == pair_byte(HZ_A, true, false));
+	hrc6000_if_retune(&h, HZ_HIGH_SIDE);
+	CHECK(regs[4][0x45] == pair_byte(HZ_HIGH_SIDE, true, false) && n_restart == restarts + 1);
+	// No pair at the transmit frequency: the safe gain, never what the board's function left behind
+	have_dmr_pair = false;
+	CHECK(!hrc6000_if_tx_freq(&h, HZ_B) && regs[4][0x45] == SAFE_GAIN && regs[4][0x46] == SAFE_GAIN);
+	CHECK(regs[4][0x04] == 0x21 && h.errors == 0);
+	have_dmr_pair = true;
+	// A write that fails: counted
+	fail_w = 0x46;
+	CHECK(hrc6000_if_tx_freq(&h, HZ_B) && h.errors == 1);
+	fail_w = 0x04;
+	CHECK(hrc6000_if_tx_freq(&h, HZ_B) && h.errors == 2);
+	fail_w = -1;
+	// Without rx_tx_offset, and without the hold: the pair alone, 4:0x04 never written here
+	static const hrc6000_if_cfg_t *const cfgs[] = { &cfg_hold, &cfg_plain, &cfg_plain_opts };
+	for (unsigned i = 0; i < sizeof(cfgs) / sizeof(cfgs[0]); i++) {
+		fake_reset();
+		CHECK(hrc6000_if_init(&h, &dev, cfgs[i], HZ_A));
+		hrc6000_if_mode(&h, true, HZ_A);
+		const uint32_t w04 = n_w[0x04];
+		n_r04 = 0;
+		CHECK(hrc6000_if_tx_freq(&h, HZ_B) && n_w[0x04] == w04 && n_r04 == 0);
+		CHECK(regs[4][0x45] == pair_byte(HZ_B, true, false) && regs[4][0x46] == pair_byte(HZ_B, true, true));
+		CHECK(h.errors == 0);
+	}
+	// Not up: nothing
+	fake_reset();
+	fail_all = true;
+	CHECK(!hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	fail_all = false;
+	x = n_xfer;
+	CHECK(!hrc6000_if_tx_freq(&h, HZ_B) && n_xfer == x);
+}
+#else
+static void test_tx_freq(void)
+{
+	// Without DMR the chip never enters it: nothing is written
+	hrc6000_if_t h;
+	fake_reset();
+	CHECK(hrc6000_if_init(&h, &dev, &cfg_opts, HZ_A));
+	hrc6000_if_mode(&h, true, HZ_A);
+	uint32_t x = n_xfer;
+	CHECK(!hrc6000_if_tx_freq(&h, HZ_B) && n_xfer == x);
+}
+#endif
+
 // Page 4 as a run leaves it, for runs with and without the rows to compare
 static uint8_t page_tx[256], page_end[256];
 
@@ -1201,6 +1294,7 @@ int main(void)
 	test_coding();
 	test_rx_tx_offset();
 	test_fm_tx_rows();
+	test_tx_freq();
 	CHECK(ctx_seen > 0 && ctx_bad == 0);	// every callback got the board's context
 	printf("hrc6000IfHostTest%s: %d checks, %d failures\n", CONFIG_DMR ? "" : " (no DMR)", checks, failures);
 	return failures != 0;
