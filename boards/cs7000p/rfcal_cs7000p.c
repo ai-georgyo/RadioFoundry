@@ -120,7 +120,7 @@ uint16_t cs7000p_cal_rx_tune_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m,
 	uint16_t dac;
 	// The reader refuses for a NULL or not valid table, a refused group and a lookup that wrapped or crosses the VCO
 	// switch past the end points: each of them today's value
-	if (m != NULL && cs7000p_maker_rx_tune(m, hz, &dac, NULL)) {
+	if (CS7000P_RX_MAKER && m != NULL && cs7000p_maker_rx_tune(m, hz, &dac, NULL)) {
 		src_is(src, CS7000P_SRC_MAKER);
 		return dac;
 	}
@@ -132,7 +132,9 @@ int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, ui
 {
 	int16_t d;
 	uint8_t w = CS7000P_RXREF_WHY_NONE;
-	if (m == NULL || !m->valid) {
+	if (!CS7000P_RX_MAKER) {
+		w = CS7000P_RXREF_WHY_BUILD;
+	} else if (m == NULL || !m->valid) {
 		w = CS7000P_RXREF_WHY_TABLE;
 	} else if (!cs7000p_maker_trim(m, false, &d)) {
 		w = CS7000P_RXREF_WHY_GROUP;
@@ -155,7 +157,7 @@ int8_t cs7000p_cal_rx_ref_m(const cs7000p_cal_t *c, const cs7000p_maker_t *m, ui
 int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv, uint8_t *src)
 {
 	int16_t dbm;
-	if (m != NULL && cs7000p_maker_rssi_dbm(m, raw12, &dbm)) {
+	if (CS7000P_RX_MAKER && m != NULL && cs7000p_maker_rssi_dbm(m, raw12, &dbm)) {
 		src_is(src, CS7000P_SRC_MAKER);
 		return dbm;
 	}

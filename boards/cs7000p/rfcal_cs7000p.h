@@ -40,6 +40,15 @@
 #ifndef CS7000P_REF_OFFSET
 #define CS7000P_REF_OFFSET	0
 #endif
+// Receive takes the maker's table (1), or never (0): today's tune, reference level and RSSI scale whatever the table
+// holds, the lasting way back should a valid table receive worse than today's values (the bench's 3:0 and 3:4 are
+// RAM only). The table is still read, checked, shown and copied either way, and transmit is not affected
+#ifndef CS7000P_RX_MAKER
+#define CS7000P_RX_MAKER	1
+#endif
+#if CS7000P_RX_MAKER != 0 && CS7000P_RX_MAKER != 1
+#error "CS7000P_RX_MAKER is 0 or 1"
+#endif
 // The gain ahead of the IF chip, dB, taken off its RSSI reading. Unmeasured: the reading is not an absolute level
 #ifndef CS7000P_FE_GAIN_DB
 #define CS7000P_FE_GAIN_DB	0
@@ -80,8 +89,9 @@ bool cs7000p_cal_any_tx(const cs7000p_cal_t *c);
 
 // --- Receive, the maker's table first (hardware-cs7000p.md 13.1) ---
 // m is the table in use (the window's or the copy's record): NULL, or one not valid, is none. Each value comes from
-// the maker's table only when its own field group passed and its lookup gives one, else from the model and the build's
-// default exactly as without the table, so a refused table changes nothing. src (may be NULL): where the value came
+// the maker's table only when its own field group passed and its lookup gives one, and the build has
+// CS7000P_RX_MAKER, else from the model and the build's default exactly as without the table, so a refused table
+// changes nothing. src (may be NULL): where the value came
 // from. The bench's knobs (chip_reg 3:0, 3:4) are the caller's, and win over all of this
 enum { CS7000P_SRC_DEFAULT = 0, CS7000P_SRC_MAKER = 1, CS7000P_SRC_BENCH = 2 };
 // Why the receive reference level is not trim A (cs7000p_cal_rx_ref_m)
@@ -90,6 +100,7 @@ enum {
 	CS7000P_RXREF_WHY_TABLE,	// no valid table in use
 	CS7000P_RXREF_WHY_GROUP,	// the table's TRIM_A group was refused
 	CS7000P_RXREF_WHY_BOUND,	// trim A is farther than CS7000P_MAKER_RX_TRIM_MAX from 128
+	CS7000P_RXREF_WHY_BUILD,	// the build has CS7000P_RX_MAKER 0
 };
 // The front end's tuning value for hz: the tune row (0x044 at f_rx, 16 c, CS7000P_TUNE_MIN..MAX), else
 // cs7000p_cal_rx_tune(c, hz)
