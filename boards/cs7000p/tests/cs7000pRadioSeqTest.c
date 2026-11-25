@@ -12,16 +12,18 @@
 // the receive tuning values move, and nothing transmits on it unarmed. Last the owner's transmit arm over a table that
 // holds every transmit value (invented): why 13 unarmed, 15 armed without a list, 14 under the bench's coding, at
 // every level and mode, and no transmit value from any getter while the arm doesn't cover it; armed and listed, FM
-// admitted on the table's drive at f_tx for its level (pinned values), its pair, trim A and the maker's registers;
-// DMR at the top stage on the table's drive, its DMR pair at f_tx (a split channel too) and trim B, with bursts under
-// the chain's rules; tone channels still 2; the switch window and the extensions refused; the arm lowered between the
-// check and the key-up keys nothing; the bench drive's key-up as before at every stage; a lower stage ending a
-// covered transmission; 4:0x04 trim B in DMR on the top stage only.
+// admitted on the table's drive at f_tx for its level (pinned values), its pair, trim A and the maker's registers, a
+// tone channel too where the table gives its tone's level, at that level's depth (pinned), and a tone without a level
+// 2; DMR at the top stage on the table's drive, its DMR pair at f_tx (a split channel too) and trim B, with bursts
+// under the chain's rules; the switch window and the extensions refused; the arm lowered between the check and the
+// key-up keys nothing; the bench drive's key-up as before at every stage; a lower stage ending a covered
+// transmission; 4:0x04 trim B in DMR on the top stage only.
 #include <stdio.h>
 #include <string.h>
 #include "rfops_cs7000p.h"
 #include "rfplan_cs7000p.h"
 #include "exp_cs7000p.h"
+#include "subpwm_cs7000p.h"
 #include "radio/pa_keyup.h"
 
 static int failures;
@@ -1902,43 +1904,129 @@ static void test_arm_windows(void)
 	run_arm = CS7000P_ARM_OFF;
 }
 
-// A tone channel (CTCSS or DCS) on the table: refused as without values (2) at every stage, listed or not, so no
-// sub-audio level is ever guessed. DMR is not a tone channel: its reasons are the arm's, and the top stage admits it.
-// The bench drive keys a tone channel as before (its own conditions)
+// A tone channel (CTCSS or DCS) on the table: the arm's reasons first, as without a tone; covered and listed it is
+// admitted where the table gives its tone's level at f_tx, on the same drive as without a tone, and its depth is that
+// level's (pinned), twice the level on 25 kHz; only for the admitted frequency and while the arm covers it, never the
+// build's depth. A tone the table holds no level for (a CTCSS tone past the two it was set at, a refused group) is
+// refused as without values (2), nothing written. DMR is not a tone channel: its reasons are the arm's, and the top
+// stage admits it. The bench drive keys a tone channel as before (its own conditions), at the build's depth on both
+// bandwidths
 static void test_arm_tone(void)
 {
 	static uint8_t t[CS7000P_MAKER_SIZE];
+	static const subtone_t tones[] = { { TONE_CTCSS, 885 }, { TONE_DCS, 023 }, { TONE_DCS_INV, 0754 } };
+	// On the invented table (CTCSS 40 at 67.0 Hz and 52 at 254.1 Hz, DCS 200): the levels narrow and wide, and their
+	// depths, (4000 L + 525) / 1050
+	static const uint8_t lvl[3][2] = { { 41, 82 }, { 200, 254 }, { 200, 254 } };
+	static const uint16_t pm[3][2] = { { 156, 312 }, { 762, 968 }, { 762, 968 } };
+	const uint32_t hz = 446u * MHZ;
 	invented(t);
 	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &armed_table));
 	run_maker = &armed_table;
 	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
 		run_arm = stage;
-		bring_up(&cs7000p_cal_model, 446u * MHZ);
+		bring_up(&cs7000p_cal_model, hz);
 		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
 			for (int listed = 0; listed < 2; listed++) {
-				cs7000p_tx_req_t q = req(446u * MHZ, level, false);
-				q.limit_list = listed != 0;
-				q.tone = true;
-				CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL);
-				nothing_live_at(446u * MHZ, level, false, level_drive(&armed_table, stage, 446u * MHZ, level));
-				q.dmr = true;
-				CHECK(cs7000p_rf_tx_admit(&rf, &q) == want_why(stage, level, true, listed != 0));
+				for (unsigned k = 0; k < sizeof(tones) / sizeof(tones[0]); k++) {
+					cs7000p_tx_req_t q = req(hz, level, false);
+					q.limit_list = listed != 0;
+					q.tone = true;
+					q.tone_sel = tones[k];
+					const cs7000p_tx_why_t w = want_why(stage, level, false, listed != 0);
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == w);
+					if (w == CS7000P_TX_OK) {
+						uint16_t d = 9;
+						uint8_t l = 9;
+						for (int wide = 0; wide < 2; wide++) {
+							CHECK(cs7000p_cal_maker_tone(&armed_table, hz, &tones[k], wide != 0, &l));
+							CHECK(l == lvl[k][wide]);
+							CHECK(cs7000p_rf_tone_depth(&rf, hz, wide != 0, &tones[k], &d));
+							CHECK(d == pm[k][wide] && d == cs7000p_subpwm_depth_pm(l));
+						}
+						// Another frequency than the admitted one, or the arm gone: no depth at all
+						d = 9;
+						CHECK(!cs7000p_rf_tone_depth(&rf, hz + 12500u, false, &tones[k], &d) && d == 9);
+						rf.arm = CS7000P_ARM_OFF;
+						CHECK(!cs7000p_rf_tone_depth(&rf, hz, false, &tones[k], &d) && d == 9);
+						rf.arm = stage;
+						admitted_fm(&armed_table, hz, level, 0);	// as without a tone; ends it
+						CHECK(!cs7000p_rf_tone_depth(&rf, hz, false, &tones[k], &d) && d == 9);
+					} else {
+						nothing_live_at(hz, level, false, level_drive(&armed_table, stage, hz, level));
+					}
+					// DMR carries no tone: the arm's reasons alone, and the top stage admits it
+					q.dmr = true;
+					if (cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK) {
+						CHECK(want_why(stage, level, true, listed != 0) == CS7000P_TX_OK);
+						admitted_dmr(&armed_table, hz, level);
+					} else {
+						CHECK(rf.tx_refused_why == want_why(stage, level, true, listed != 0));
+						CHECK(!rf.admit && !rf.admit_arm);
+					}
+				}
 			}
 		}
 		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
-		cs7000p_tx_req_t q = req(446u * MHZ, 0, false);
+		cs7000p_tx_req_t q = req(hz, 0, false);
 		q.limit_list = true;
 		q.tone = true;
+		q.tone_sel = tones[0];
 		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm);
+		for (int wide = 0; wide < 2; wide++) {
+			uint16_t d = 9;
+			CHECK(cs7000p_rf_tone_depth(&rf, hz, wide != 0, &tones[0], &d) && d == CS7000P_CTCSS_DEPTH_PM);
+		}
 		cs7000p_rf_tx_off(&rf, false);
+	}
+	// Armed for everything and listed: a tone the table holds no level for is 2, nothing written, whatever else the
+	// table holds; the other kind of tone still goes ahead
+	run_arm = CS7000P_ARM_ALL;
+	static const subtone_t past[] = { { TONE_CTCSS, 669 }, { TONE_CTCSS, 2542 }, { TONE_CTCSS, 0 }, { 9, 885 } };
+	bring_up(&cs7000p_cal_model, hz);
+	for (unsigned k = 0; k < sizeof(past) / sizeof(past[0]); k++) {
+		cs7000p_tx_req_t q = req(hz, 0, false);
+		q.limit_list = true;
+		q.tone = true;
+		q.tone_sel = past[k];
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL && rf.tx_refused_why == CS7000P_TX_UNCAL);
+		nothing_live_at(hz, 0, false, level_drive(&armed_table, CS7000P_ARM_ALL, hz, 0));
+	}
+	static cs7000p_maker_t part;
+	static const uint16_t groups[2] = { CS7000P_MK_F_CTCSS, CS7000P_MK_F_DCS };
+	for (unsigned g = 0; g < 2; g++) {
+		part = armed_table;
+		part.fields = (uint16_t)(part.fields & ~groups[g]);
+		run_maker = &part;
+		bring_up(&cs7000p_cal_model, hz);
+		for (unsigned k = 0; k < sizeof(tones) / sizeof(tones[0]); k++) {
+			const bool has = (k == 0u) != (g == 0u);	// CTCSS without its group, DCS without its own: none
+			cs7000p_tx_req_t q = req(hz, 0, false);
+			q.limit_list = true;
+			q.tone = true;
+			q.tone_sel = tones[k];
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == (has ? CS7000P_TX_OK : CS7000P_TX_UNCAL));
+			if (has) {
+				uint16_t d = 9;
+				CHECK(cs7000p_rf_tone_depth(&rf, hz, false, &tones[k], &d) && d == pm[k][0]);
+				admitted_fm(&part, hz, 0, 0);
+			} else {
+				nothing_live_at(hz, 0, false, level_drive(&part, CS7000P_ARM_ALL, hz, 0));
+			}
+		}
+		// Without a tone the group asks nothing
+		cs7000p_tx_req_t q = req(hz, 0, false);
+		q.limit_list = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+		admitted_fm(&part, hz, 0, 0);
 	}
 	run_maker = NULL;
 	run_arm = CS7000P_ARM_OFF;
 }
 
 // A source whose model rows are set (cal_ok) under a table that holds the transmission's values: the table wins at
-// every stage. A tone channel is 2 and an uncovered one the arm's reason, never the model's drive; a covered one keys
-// the table's drive, not the model's
+// every stage. An uncovered one, with a tone or without, is the arm's reason, never the model's drive; a covered one
+// keys the table's drive, not the model's
 static void test_arm_over_model(void)
 {
 	static uint8_t t[CS7000P_MAKER_SIZE];
@@ -1954,8 +2042,8 @@ static void test_arm_over_model(void)
 					cs7000p_tx_req_t q = req(446u * MHZ, level, false);
 					q.limit_list = listed != 0;
 					q.tone = tone != 0;
-					const cs7000p_tx_why_t w = tone ? CS7000P_TX_UNCAL :
-									  want_why(stage, level, false, listed != 0);
+					q.tone_sel = (subtone_t){ tone ? TONE_CTCSS : TONE_NONE, tone ? 885 : 0 };
+					const cs7000p_tx_why_t w = want_why(stage, level, false, listed != 0);
 					CHECK(cs7000p_rf_tx_admit(&rf, &q) == w);
 					if (w == CS7000P_TX_OK) {
 						uint8_t m2 = 9, m1 = 9;

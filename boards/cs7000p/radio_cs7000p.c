@@ -12,8 +12,8 @@
 // and parsed (makercal_cs7000p.h), and shown. Receive uses it (the tune row, trim A in the held level, the RSSI
 // points), each value with today's as its fallback (hardware-cs7000p.md 13.1). The owner's transmit arm
 // (hal_radio_t.tx_arm, 13.2) is checked against it and refuses a key-up it would serve until armed: armed, and with a
-// test TX limit list naming the frequency, FM without a tone keys on its drive, pair and trim A, and DMR (the top
-// stage) on its drive, DMR pair at f_tx and trim B; a tone channel stays refused.
+// test TX limit list naming the frequency, FM keys on its drive, pair and trim A (a tone channel at the depth of the
+// table's level for its tone), and DMR (the top stage) on its drive, DMR pair at f_tx and trim B.
 //
 // The synthesizer's bus is PD8-PD10; the IF receiver's is PE3 (clock) and PC13 (data, both ways) with its select an
 // expander bit. Each frame runs with the RTOS interrupt mask held: frames from the radio task, the burst runner's
@@ -709,11 +709,23 @@ static bool tx(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tx_to
 #endif
 	}
 	cs7000p_tx_req_t q = tx_request(hz, power, false);
-	// Whatever the build sends: a tone channel is one on the maker's values too, which serve no tone level yet
+	// Whatever the build sends: a tone channel is one on the maker's values too, which need its level
 	q.tone = tx_tone != NULL && tx_tone->type != TONE_NONE;
+	if (q.tone) {
+		q.tone_sel = *tx_tone;
+	}
 	if (cs7000p_rf_tx_admit(&cs7000p_rf, &q) != CS7000P_TX_OK) {
 		return false;	// nothing was written
 	}
+#if CONFIG_SUBTONE
+	// The tone's depth before anything is written: on the maker's values the table's level at f_tx, which the arm
+	// still covers, or no key-up
+	uint16_t depth_pm = 0;
+	if (q.tone && !cs7000p_rf_tone_depth(&cs7000p_rf, hz, bw == RADIO_BW_25K, tx_tone, &depth_pm)) {
+		cs7000p_rf_refuse(&cs7000p_rf, CS7000P_TX_UNCAL);
+		return false;
+	}
+#endif
 	// The DAC to 0 and the receiver off, then the modulation, then the RF: the PA keys last
 	if (!cs7000p_rf_tx_begin(&cs7000p_rf)) {
 		rx_again();
@@ -741,7 +753,7 @@ static bool tx(uint32_t hz, radio_bw_t bw, uint8_t power, const subtone_t *tx_to
 	tx_steady = true;
 #if CONFIG_SUBTONE
 	if (tx_tone != NULL) {
-		cs7000p_subtone_tx_start(tx_tone);
+		cs7000p_subtone_tx_start(tx_tone, depth_pm);
 	}
 #else
 	(void)tx_tone;

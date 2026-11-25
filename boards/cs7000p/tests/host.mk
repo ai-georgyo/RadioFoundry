@@ -139,6 +139,13 @@ cs7000pSubPwmTest: $(CS7000P_T)/cs7000pSubPwmTest.c $(CS7000P_H)
 	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_T)/cs7000pSubPwmTest.c
 run-boards:: cs7000pSubPwmTest
 	./cs7000pSubPwmTest
+# The depth's old name was a percent: a build that still passes it must fail on its #error, not mean 30 per mille
+run-boards::
+	@out=$$($(CC) $(CFLAGS) $(CS7000P_INC) -DCS7000P_CTCSS_DEPTH=30 -fsyntax-only \
+		$(CS7000P_T)/cs7000pSubPwmTest.c 2>&1) && { echo "FAIL: CS7000P_CTCSS_DEPTH still builds"; exit 1; }; \
+	echo "$$out" | grep -q 'CS7000P_CTCSS_DEPTH is now CS7000P_CTCSS_DEPTH_PM' || \
+		{ echo "FAIL: CS7000P_CTCSS_DEPTH refused, but not by its #error:"; echo "$$out"; exit 1; }; \
+	echo "# cs7000pSubPwmOldName PASSED (CS7000P_CTCSS_DEPTH refused by its #error)"
 
 # The hal_radio_t (radio_cs7000p.c) over the real chain and its buses, with a fake expander, modem, burst runner and
 # power state: the microphone for every transmission and off at every end, the power's off state (the interrupt

@@ -21,10 +21,11 @@
 // a restored one's), every refusal (a stage over the top, another id, no table, the bench's coding, the off state, a
 // restore pending or its request untaken), the restore refused while armed, a lower stage always taken, the arm gone
 // at a safe request and a start; unarmed and armed without a list no key-up the table would serve goes ahead, armed
-// with one FM keys on the table's drive, pair, trim A and registers (from the window, the record, a restored table)
-// and DMR at the top stage on its drive, its DMR pair at f_tx (a split channel) and trim B, while tone channels stay
-// refused; 4:0x04 in DMR receive trim B on the top stage only; the bench's drive now stays at or under the admitted
-// drive; the bench drive's key-up writes as without a table, at every stage, but for the bias it inherits. Built
+// with one FM keys on the table's drive, pair, trim A and registers (from the window, the record, a restored table),
+// a tone channel with its tone at the depth of the table's level for it (a tone without one refused), and DMR at the
+// top stage on its drive, its DMR pair at f_tx (a split channel) and trim B; 4:0x04 in DMR receive trim B on the top
+// stage only; the bench's drive now stays at or under the admitted drive; the bench drive's key-up writes as without
+// a table, at every stage, but for the bias it inherits. Built
 // again without CONFIG_FACTORY_COPY (cs7000pRadioNoCopyTest): the window alone. Every table here is invented.
 #include <stdarg.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@
 #include "pins.h"
 #include "exp_cs7000p.h"
 #include "speaker_cs7000p.h"
+#include "subpwm_cs7000p.h"
 #include "rfops_cs7000p.h"
 #include "rfplan_cs7000p.h"
 #include "makercal_cs7000p.h"
@@ -436,7 +438,16 @@ void cs7000p_subtone_init(void) {}
 void cs7000p_subtone_rx_set(const subtone_t *t) { (void)t; }
 void cs7000p_subtone_rx_run(bool on) { (void)on; }
 bool cs7000p_subtone_rx_match(void) { return true; }
-void cs7000p_subtone_tx_start(const subtone_t *t) { (void)t; }
+// The generator's starts: the tone and the depth the radio gave
+static int tone_starts;
+static subtone_t tone_got;
+static uint16_t tone_pm_got;
+void cs7000p_subtone_tx_start(const subtone_t *t, uint16_t depth_pm)
+{
+	tone_starts++;
+	tone_got = *t;
+	tone_pm_got = depth_pm;
+}
 void cs7000p_subtone_tx_stop(void) {}
 bool cs7000p_subtone_tx_tail(bool on) { (void)on; return false; }
 uint16_t cs7000p_subtone_pc8(void) { return 0; }
@@ -2077,17 +2088,35 @@ static void test_tx_arm(void)
 	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, NULL) && cs7000p_radio.tx_drive_top() == table_drive[1]);
 	CHECK(!cs7000p_radio.tx_drive_now(table_drive[0] + 1u) && dac_now == table_drive[0]);
 	cs7000p_radio.tx_off();
-	// A tone channel on the table: refused as without values (2), nothing keyed, whatever the stage; no tone is a
-	// tone channel too only when it names one
+	// A tone channel on the table: keyed on the table's drive, its tone started after the key-up at the depth of the
+	// table's level for it at f_tx (invented: CTCSS 40 at 67.0 Hz and 52 at 254.1 Hz, DCS 200), twice the level on
+	// 25 kHz (calibration-cs7000p.md 5.5); a tone the table holds no level for refused as without values (2), nothing
+	// keyed and no tone. No tone is a tone channel only when it names one
 	static const subtone_t tones[] = { { TONE_CTCSS, 885 }, { TONE_DCS, 023 }, { TONE_DCS_INV, 023 } };
+	static const uint16_t tone_pm[3][2] = { { 156, 312 }, { 762, 968 }, { 762, 968 } };	// [tone][wide]
 	for (unsigned k = 0; k < sizeof(tones) / sizeof(tones[0]); k++) {
-		const int writes = mic_writes;
-		CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &tones[k]));
+		for (int wide = 0; wide < 2; wide++) {
+			const int starts = tone_starts;
+			CHECK(cs7000p_radio.tx(446u * MHZ, wide ? RADIO_BW_25K : RADIO_BW_12K5, 0, &tones[k]));
+			CHECK(cs7000p_rf.admit_arm && modem.fm_tx && dac_now == table_drive[0]);
+			CHECK(tone_starts == starts + 1 && tone_got.type == tones[k].type && tone_got.value == tones[k].value);
+			CHECK(tone_pm_got == tone_pm[k][wide]);
+			cs7000p_radio.tx_off();
+		}
+	}
+	static const subtone_t no_level[] = { { TONE_CTCSS, 669 }, { TONE_CTCSS, 2542 } };
+	for (unsigned k = 0; k < sizeof(no_level) / sizeof(no_level[0]); k++) {
+		const int writes = mic_writes, starts = tone_starts;
+		CHECK(!cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &no_level[k]));
 		CHECK(cs7000p_rf.tx_refused_why == CS7000P_TX_UNCAL && !modem.fm_tx && mic_writes == writes);
-		CHECK((shadow & EXP_TX_BITS) == 0u && !cs7000p_rf.admit);
+		CHECK((shadow & EXP_TX_BITS) == 0u && !cs7000p_rf.admit && tone_starts == starts);
 	}
 	static const subtone_t none = { TONE_NONE, 0 };
 	CHECK(cs7000p_radio.tx(446u * MHZ, RADIO_BW_25K, 0, &none) && cs7000p_rf.admit_arm);
+	cs7000p_radio.tx_off();
+	// The bench drive's tone: the build's depth on either bandwidth, as without the table
+	CHECK(cs7000p_radio.tx_drive(600) && cs7000p_radio.tx(446u * MHZ, RADIO_BW_12K5, 0, &tones[0]));
+	CHECK(cs7000p_rf.admit_ovr && !cs7000p_rf.admit_arm && tone_pm_got == CS7000P_CTCSS_DEPTH_PM);
 	cs7000p_radio.tx_off();
 	// One on the table's values, FM at level 1 under stage 2. Stage 2 again keeps it; stage 1 ends it at once by the
 	// safe request, and the new stage stands after it

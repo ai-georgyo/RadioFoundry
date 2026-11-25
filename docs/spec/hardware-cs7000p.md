@@ -868,8 +868,10 @@ PC8 is TIM3 CH3 behind a 2-pole RC filter, summed into the reference oscillator'
 - From `board_early_init()` on, PC8 carries a PWM at **50 % duty, 93.75 kHz** (96 MHz / 1024), and is never
   released. The radio's frequency calibration holds for that level only (open question 4).
 - The sub-audio generator (`subtone_cs7000p.c`) sets one duty value per ADC scan tick, 2,400 a second:
-  512 / 1024 plus the sample scaled by `CS7000P_CTCSS_DEPTH`, clamped so it never reaches 0 or the period
-  (`subpwm_cs7000p.h`, `cs7000pSubPwmTest`).
+  512 / 1024 plus the sample scaled by the transmission's depth, in per mille of half the period, clamped so it never
+  reaches 0 or the period (`subpwm_cs7000p.h`, `cs7000pSubPwmTest`). The depth: on the maker's values the table's
+  level for the tone at f_tx (13.2); otherwise the build's `CS7000P_CTCSS_DEPTH_PM` (300), the same on both
+  bandwidths. The old option `CS7000P_CTCSS_DEPTH` (a percent) fails the build.
 - DCS polarity: `CS7000P_DCS_INVERT` 0 on transmit, `CS7000P_DCS_RX_INVERT` 0 on the detector's input; both
   unverified, and the receive one may follow the first LO's side.
 - Receive: the sub-audio filter's output on PA2, scanned at 2,400 Hz, into the shared detector (CTCSS Goertzel, DCS
@@ -919,7 +921,7 @@ in order inside the receive set-up.
 | 4 | `EXP_VCO_LOW` for f_tx (set under 430.00001 MHz); synthesizer to the carrier; wait for lock. **Unlocked: back to receive, refused** | the transmit rail is still off (7.2) |
 | 5 | `EXP_TX_RAIL` on; 500 us | pre-drivers, LO, antenna switch |
 | 6 | DAC at the floor, `EXP_APC_LOOP` on, then a ramp of 8 steps of 250 us to the drive | the loop closes on a zero reference |
-| 7 | Sub-audio generator on | |
+| 7 | Sub-audio generator on, at the depth chosen at step 0 (on the maker's table its level for the tone at f_tx, 13.2) | the tone's depth is chosen before anything is written, so a tone channel without a level writes nothing |
 | End | DCS turn-off, ramp down, `EXP_APC_LOOP` off, `EXP_TX_RAIL` off, the whole receive sequence of the RF chain, then the microphone off and the HR_C6000 back to FM receive (the maker's fixed registers written back first), its retune and the sub-audio detector | the modem leaves its transmit set-up only after the PA is down: its DAC is the reference oscillator's control |
 
 ### 7.10 DMR transmit
@@ -1355,9 +1357,9 @@ maker's program checks none of its values (that page's 2.2), and no transmission
 at its init (the window's or the copy's record, 10.3), parses it and shows it (`board.cal_table`, 15). Receive takes
 three values from it on the radio task, each from its own field group, with the value without the table as its
 fallback (receive side below). The port has model tables in source (`rfcal_cs7000p.c`), all unset. Unarmed, every
-transmit value below is the model's, as without the table; armed, an FM transmission without a tone takes the
-drive, the FM pair and trim A from the table, and a DMR transmission (the top stage) the drive, the DMR pair and
-trim B (13.2); the sub-audio levels none yet. The last column is the maker's field for the same value:
+transmit value below is the model's, as without the table; armed, an FM transmission takes the drive, the FM pair
+and trim A from the table, a tone channel also its sub-audio level, and a DMR transmission (the top stage) the
+drive, the DMR pair and trim B (13.2). The last column is the maker's field for the same value:
 
 | Value | Now | Supplied by | In the maker's table ([calibration-cs7000p.md](calibration-cs7000p.md)) |
 |---|---|---|---|
@@ -1367,7 +1369,7 @@ trim B (13.2); the sub-audio levels none yet. The last column is the maker's fie
 | Reference offset and bias | 0, unverified; the receive level trim A within 32 steps (6.5); armed, 4:0x04 in FM transmit trim A, and on the top stage 4:0x04 in DMR (receive entries and the key-up) trim B | a frequency counter on the carrier, then the reference trim for the unit | trim A 0x0DC (receive, FM transmit) and trim B 0x174 (DMR transmit, and the bias in two DMR receive paths), offset binary. Under the port's 4:0x25 hold the bias equivalent is inferred, and the coding under the maker's 0x0E is open: 5.2 |
 | Front-end tuning DAC per frequency | the maker's row, else mid scale | a sensitivity sweep with `chip_reg` 3:0 | 0x044 at f_rx: 5.1 |
 | Squelch thresholds, RSSI offset | the plain mappings, the maker's thresholds shown (`board.sq_maker`); the RSSI the maker's points | a signal generator | squelch 0x04C-0x064 (levels 1 and 9, open and close), RSSI 0x040 / 0x041: 5.7, 5.8 |
-| Sub-audio depth | `CS7000P_CTCSS_DEPTH`, one value; a tone channel is never keyed on the table (`why=2`) | deviation on a service monitor | CTCSS 0x084 / 0x08C, DCS 0x094: 5.5 |
+| Sub-audio depth | `CS7000P_CTCSS_DEPTH_PM`, one value in per mille of half the PWM period; armed, the table's level for the tone at f_tx as a depth (13.2) | deviation on a service monitor | CTCSS 0x084 / 0x08C over the tone, DCS 0x094, at f_tx, doubled on 25 kHz: 5.5 |
 | DMR key-up constants | a fixed lead | `tools/bench/pa_cal.py`, after the PA rows, the DMR modulation pair and the reference offset are built in (it stops while the view's `tx_drive` is 0), with `CS7000P_BENCH_DMR_TX=1` | burst timing 0x0EC-0x14C, from the RF TX interrupt; the time base and the place of the interrupt are not established: 5.4 |
 
 The maker's sequences around these values are not copied, only the values
@@ -1428,7 +1430,7 @@ reason as `why=`:
 |---|---|
 | 0 | nothing refused yet |
 | 1 | outside the transmit ranges: outside 400.0-405.9875 and 406.1125-512.0 MHz |
-| 2 | no calibration and no bench drive armed; on the maker's table also a tone channel (CTCSS or DCS), and a lookup the reader refuses at f_tx (a switch segment over 1 MHz, an extension across the switch, a clamped or 0 / 255 result, DMR burst fields that fail the burst rules there) |
+| 2 | no calibration and no bench drive armed; on the maker's table also a tone channel whose tone has no level in the table at f_tx (a CTCSS tone outside 67.0-254.1 Hz, a refused CTCSS or DCS group, a lookup refused there), and a lookup the reader refuses at f_tx (a switch segment over 1 MHz, an extension across the switch, a clamped or 0 / 255 result, DMR burst fields that fail the burst rules there) |
 | 3 | a bench drive armed, but no debug link in the build |
 | 4 | a bench drive armed, but no test TX limit lists this frequency |
 | 5 | a bench drive armed, but DMR without `CS7000P_BENCH_DMR_TX` |
@@ -1447,15 +1449,17 @@ reason as `why=`:
 would serve (`cs7000p_cal_maker_tx`: FM the level's drive row, the FM pair and trim A at f_tx; DMR also the DMR pair,
 trim B and the level's burst fields, every one passing the reader's transmit rules there) is refused until the owner
 arms transmission. With no bench drive armed the table wins over the model wherever it holds the values. Armed for
-the mode and level, and listed, an FM key-up without a tone and a DMR key-up go ahead on the table's values; a tone
-channel is refused with 2, as without values, at every stage and never on the model's rows either. What an armed FM
-key-up takes, all at f_tx, all from one getter (`cs7000p_rf_maker_fm`, which asks the arm anew at every call):
+the mode and level, and listed, an FM key-up and a DMR key-up go ahead on the table's values, a tone channel only
+where the table gives its tone's level at f_tx (never on the model's rows, nor at the build's depth). What an armed
+FM key-up takes, all at f_tx, all from one getter (`cs7000p_rf_maker_fm`, which asks the arm anew at every call; the
+tone's level from `cs7000p_rf_tone_depth`, which asks it too):
 
 | Value | From the table | Through |
 |---|---|---|
 | Drive | level 0 (`1W`) the low row 0x074, level 1 (`4W`) the high row 0x06C, 16 c, over the floor; the reader's transmit rules (13.1) | the admission (`admit_drive`) and the sequencer's plan: the port's ramp of 7.9, never the maker's (that page's 6.5) |
 | FM pair | 0x0C4 to 4:0x45, 0x0CC to 4:0x46 | the modem's pair callback, for the admitted frequency only |
 | 4:0x04 | trim A, d mod 256 (the bench's 3:4 over it while set, as in receive) | the modem's FM transmit set-up |
+| Sub-audio depth (a tone channel) | L: CTCSS the line between 0x084 (67.0 Hz) and 0x08C (254.1 Hz), each at f_tx, over the tone in 0.1 Hz (that page's 4.5); DCS 0x094 at f_tx, either polarity; doubled on a 25 kHz channel, to at most 254. The depth in per mille of half the period: (4000 L + 525) / 1050, the maker's swing of about 4 L counts of its 1050-count half period taken as the same share of this PWM's (L = 40: 152; 254: 968). A CTCSS tone outside 67.0-254.1 Hz has no level: refused | the admission (the level must exist) and the depth at the key-up, before anything is written (`cs7000p_rf_tone_depth`; refused, `why=2`, should the arm drop in between); the generator after the PA is up (7.9 step 7). Inferred, not measured: the maker set its levels at a 48.76 % idle on its own PWM period, this one idles at 50 % (open question 4) |
 | Fixed registers (that page's 5.13) | 4:0x3F 0x04 narrow / 0x07 wide, 4:0x35 0x20, 4:0x34 0xBC, 4:0x3E 0x06, 4:0xE4 0x20 narrow / 0x22 wide (the microphone gain) | the IF host's FM transmit rows ([modem-hrc6000.md](modem-hrc6000.md) 8.2), written after the set-up and written back at its end: receive after the transmission writes what it writes after any other. Wide 4:0x35 is the one value recorded, 0x20: if the maker's differs on wide, this under-deviates. The receive registers (4:0x37, the AK2365A words) stay the port's |
 
 What an armed DMR key-up takes (the top stage only), all at f_tx, all from one getter (`cs7000p_rf_maker_dmr`,
@@ -1490,14 +1494,16 @@ past the last point), its pair, trim A and rows, the whole key-up's writes under
 stage on the table's drive with its DMR pair at f_tx (a split channel: never the receive frequency's), trim B and
 the top level's drive for the burst plan, two bursts under the chain's rules; 4:0x04 trim B in DMR on the top stage
 only, today's in FM; a wide switch segment and an extension across the switch refused, in FM and DMR alike, and
-outside the transmit ranges in both; tone channels refused; the table over a model with set rows; a drive at or
-under the floor, in both modes; the arm lowered before the key-up or the bursts.
+outside the transmit ranges in both; tone channels at their level's depth (pinned, narrow and wide, for the
+admitted frequency only and while armed), a tone without a level refused; the table over a model with set rows; a
+drive at or under the floor, in both modes; the arm lowered before the key-up or the bursts.
 `cs7000pRadioTest` the handshake against each source, every refusal, armed FM key-ups from the window and from the
-record, armed DMR key-ups on a split channel (the pair the modem gets at f_tx, trim B at the key-up and in DMR
-receive on the top stage only, back to today's at a lower stage, a DMR transmission ended by a lower stage, no
-pair and a failed write refused, the arm lowered inside the burst plan refused with nothing written), the
-restore and the arm excluding each other, and the bench key-up's writes at every stage; `hrc6000IfHostTest` the
-rows and their write-back, and `hrc6000_if_tx_freq`.
+record, tone channels with the depth the generator gets, armed DMR key-ups on a split channel (the pair the modem
+gets at f_tx, trim B at the key-up and in DMR receive on the top stage only, back to today's at a lower stage, a DMR
+transmission ended by a lower stage, no pair and a failed write refused, the arm lowered inside the burst plan
+refused with nothing written), the restore and the arm excluding each other, and the bench key-up's writes at every
+stage; `cs7000pCalTest` the tone's level from the table, `cs7000pSubPwmTest` the duty and the level's depth;
+`hrc6000IfHostTest` the rows and their write-back, and `hrc6000_if_tx_freq`.
 
 The only way the firmware keys an uncalibrated radio is the debug link's drive override (`tx_drive`, 1 to 4095).
 (A raw SoC `CHIP_REG` write to DAC1 or GPIOE can key the PA outside every check here, 4.3: the bench must not make
