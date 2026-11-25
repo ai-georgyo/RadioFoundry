@@ -163,6 +163,21 @@ int16_t cs7000p_cal_rssi_m(const cs7000p_maker_t *m, uint32_t raw12, uint32_t mv
 	return cs7000p_rssi_dbm(mv);
 }
 
+// --- Transmit, the maker's table: asked, not served ---
+
+bool cs7000p_cal_maker_tx(const cs7000p_maker_t *m, uint32_t hz, uint8_t level, bool dmr)
+{
+	uint16_t drive;
+	uint8_t mod2, mod1;
+	int16_t d;
+	cs7000p_mk_burst_t b;
+	if (m == NULL || !m->valid || !cs7000p_maker_drive(m, hz, level, &drive, NULL) ||
+	    !cs7000p_maker_pair(m, hz, dmr, &mod2, &mod1, NULL) || !cs7000p_maker_trim(m, false, &d)) {
+		return false;
+	}
+	return !dmr || (cs7000p_maker_trim(m, true, &d) && cs7000p_maker_burst(m, hz, level, &b, NULL));
+}
+
 // AK2365A data sheet, typical: 0.3 V at -100 dBm and 2.0 V at -30 dBm at the chip's input, a straight line between
 #define RSSI_LO_MV	300
 #define RSSI_LO_DBM	(-100)

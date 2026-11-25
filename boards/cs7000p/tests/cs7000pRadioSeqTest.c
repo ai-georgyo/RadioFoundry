@@ -9,7 +9,10 @@
 // time, the battery, the power's off state, an unlocked synthesizer, a refused write, a safe request from outside.
 // Last the VCO line by frequency: the owner's 433.5 MHz receive set-up and bench key-up write for write as before
 // the rule, and the line on both sides of each switch point. Then the same run with the maker's table in use: only
-// the receive tuning values move, and nothing transmits on it.
+// the receive tuning values move, and nothing transmits on it. Last the owner's transmit arm over a table that holds
+// every transmit value (invented): why 13 unarmed, 15 armed without a list, 14 under the bench's coding, at every
+// level and mode; the stages; still no admission, no write and no value with the arm at its top and a list, so
+// nothing is live; the bench drive's key-up as before at every stage; a lower stage ending a covered transmission.
 #include <stdio.h>
 #include <string.h>
 #include "rfops_cs7000p.h"
@@ -192,8 +195,10 @@ static void clear_log(void)
 	ev_n = 0;
 }
 
-// The maker's table the next bring-up gives the chain (NULL: none, as every test but test_maker_table runs)
+// The maker's table the next bring-up gives the chain (NULL: none, as every test but test_maker_table runs), and the
+// owner's transmit arm it sets after the init
 static const cs7000p_maker_t *run_maker;
+static uint8_t run_arm;
 
 // A radio after reset and start-up, with the given calibration; receiving on rx_hz when that is not 0
 static void bring_up(const cs7000p_cal_t *cal, uint32_t rx_hz)
@@ -212,6 +217,8 @@ static void bring_up(const cs7000p_cal_t *cal, uint32_t rx_hz)
 	clear_log();
 	cs7000p_rf_init(&rf, &io, cal);
 	rf.maker = run_maker;	// as the radio sets it after the init
+	CHECK(rf.arm == CS7000P_ARM_OFF && rf.arm_id == 0u);	// every start: off
+	cs7000p_rf_arm_set(&rf, run_arm, 0x5EEDu);
 	CHECK(cs7000p_rf_start(&rf, T0));
 	if (rx_hz != 0) {
 		CHECK(cs7000p_rf_rx(&rf, rx_hz, true));
@@ -1292,6 +1299,361 @@ static void test_maker_table(void)
 	run_maker = NULL;
 }
 
+// --- The owner's transmit arm ---
+
+static void put32be(uint8_t *t, unsigned off, uint32_t v)
+{
+	t[off] = (uint8_t)(v >> 24);
+	t[off + 1] = (uint8_t)(v >> 16);
+	t[off + 2] = (uint8_t)(v >> 8);
+	t[off + 3] = (uint8_t)v;
+}
+
+static void fill16(uint8_t *t, unsigned off, uint16_t v)
+{
+	for (unsigned i = 0; i < 8; i++) {
+		t[off + 2u * i] = (uint8_t)v;
+		t[off + 2u * i + 1u] = (uint8_t)(v >> 8);
+	}
+}
+
+// An invented table that passes every rule of the reader and holds every transmit value between its points
+// (cs7000pCalTest's, calibration-cs7000p.md 3's layout; the values made up)
+static void invented(uint8_t t[CS7000P_MAKER_SIZE])
+{
+	static const uint32_t tx[8] = { 400200000u, 429800000u, 430200000u, 445000000u, 458000000u, 472000000u,
+					492000000u, 511800000u };
+	static const uint32_t rx[8] = { 400500000u, 420000000u, 440000000u, 460000000u, 478950000u, 479050000u,
+					495000000u, 511500000u };
+	static const uint8_t high[8] = { 190, 194, 195, 210, 213, 215, 212, 209 };
+	static const uint8_t low[8] = { 100, 99, 99, 108, 115, 122, 126, 127 };
+	static const uint8_t tune[8] = { 120, 124, 128, 132, 136, 140, 150, 160 };
+	memset(t, 0, CS7000P_MAKER_SIZE);
+	for (unsigned i = 0; i < 8; i++) {
+		put32be(t, 0x000u + 4u * i, tx[i]);
+		put32be(t, 0x020u + 4u * i, rx[i]);
+	}
+	t[0x040] = 60;
+	t[0x041] = 160;
+	memcpy(t + 0x044, tune, 8);
+	memset(t + 0x04C, 40, 8);
+	memset(t + 0x054, 50, 8);
+	memset(t + 0x05C, 120, 8);
+	memset(t + 0x064, 130, 8);
+	memcpy(t + 0x06C, high, 8);
+	memcpy(t + 0x074, low, 8);
+	memset(t + 0x084, 40, 8);
+	memset(t + 0x08C, 52, 8);
+	memset(t + 0x094, 200, 8);
+	memset(t + 0x0B4, 80, 8);
+	memset(t + 0x0BC, 100, 8);
+	memset(t + 0x0C4, 120, 8);
+	memset(t + 0x0CC, 135, 8);
+	t[0x0DC] = 0x7B;
+	t[0x0DD] = 0xA0;
+	memset(t + 0x0EC, 20, 8);
+	memset(t + 0x0F4, 12, 8);
+	memset(t + 0x0FC, 19, 8);
+	fill16(t, 0x104, 300);
+	fill16(t, 0x114, 310);
+	memset(t + 0x124, 21, 8);
+	memset(t + 0x12C, 12, 8);
+	memset(t + 0x134, 20, 8);
+	fill16(t, 0x13C, 301);
+	fill16(t, 0x14C, 311);
+	memset(t + 0x15C, 61, 8);
+	memset(t + 0x164, 159, 8);
+	t[0x174] = 0x7D;
+}
+
+static cs7000p_maker_t armed_table;
+
+// The arm's verdict, written out (not cs7000p_arm_covers): FM at the lowest level from stage 1, FM at both from 2,
+// DMR from 3
+static cs7000p_tx_why_t want_why(uint8_t stage, uint8_t level, bool dmr, bool listed)
+{
+	static const uint8_t from[2][2] = { { 1, 2 }, { 3, 3 } };	// [dmr][level]
+	if (stage < from[dmr ? 1 : 0][level]) {
+		return CS7000P_TX_UNARMED;
+	}
+	return listed ? CS7000P_TX_UNCAL : CS7000P_TX_ARM_NO_LIST;
+}
+
+// Nothing is live: no admission, no write, no transmit value of any getter, and the steps behind the check refuse
+static void nothing_live(uint32_t hz, uint8_t level, bool dmr)
+{
+	uint16_t d = 9, top = 9, fl = 9;
+	uint8_t m2 = 9, m1 = 9;
+	CHECK(!rf.admit && !rf.admit_arm && ev_n == 0 && !tx_bits_ever() && dac_now != 0u);	// the receive tune held
+	CHECK(cs7000p_rf_drive_level(&rf, hz, level) == 0u && cs7000p_rf_drive_top(&rf) == 0u);
+	CHECK(!cs7000p_rf_mod_pair(&rf, hz, dmr, &m2, &m1) && m2 == 9 && m1 == 9);
+	cs7000p_rf_burst_drives(&rf, &d, &top, &fl);
+	CHECK(d == 0u && top == 0u);
+	CHECK(!cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) != CS7000P_TX_OK);
+	CHECK(chainseq_tx(&rf.seq, hz, level) == CHAINSEQ_REFUSED_CAL);
+#if CONFIG_DMR
+	CHECK(!chainseq_burst_tune(&rf.seq, hz) && !chainseq_burst_point(&rf.seq, PA_KEYUP_PT_PA, 2000));
+#endif
+	CHECK(ev_n == 0 && !tx_bits_ever() && rf.seq.state == CHAINSEQ_ST_RX);
+}
+
+// The rule and its numbers; a start and a safe request clear the arm
+static void test_arm_rule(void)
+{
+	CHECK(CS7000P_TX_UNARMED == 13 && CS7000P_TX_ARM_NO_LIST == 15);	// the hardware page's: append only
+	CHECK(CS7000P_TX_ARM_REQUIRED == 1);
+	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			for (int dmr = 0; dmr < 2; dmr++) {
+				const bool c = want_why(stage, level, dmr != 0, true) != CS7000P_TX_UNARMED;
+				CHECK(cs7000p_arm_covers(stage, level, dmr != 0) == c);
+				CHECK(cs7000p_arm_why(stage, level, dmr != 0, false) ==
+				      (c ? CS7000P_TX_ARM_NO_LIST : CS7000P_TX_UNARMED));
+				CHECK(cs7000p_arm_why(stage, level, dmr != 0, true) == (c ? CS7000P_TX_OK : CS7000P_TX_UNARMED));
+			}
+		}
+	}
+	// arm_set: the stage and its id; off forgets the id
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0xCAFEF00Du);
+	CHECK(rf.arm == CS7000P_ARM_FM && rf.arm_id == 0xCAFEF00Du && ev_n == 0);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_OFF, 0xCAFEF00Du);
+	CHECK(rf.arm == CS7000P_ARM_OFF && rf.arm_id == 0u);
+	// A safe request (a fault path, the power's off state) disarms; so does a new chain
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_ALL, 0x1234u);
+	board_rf_safe_fake();
+	CHECK(rf.arm == CS7000P_ARM_OFF && rf.arm_id == 0u && safe_wrote == 0);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_ALL, 0x1234u);
+	cs7000p_rf_init(&rf, &io, &cs7000p_cal_model);
+	CHECK(rf.arm == CS7000P_ARM_OFF && rf.arm_id == 0u);
+}
+
+// The table holds every value at these frequencies (both VCOs, a point, inside the 0.4 MHz switch segment, past the
+// last point): every level and mode is refused with the arm's reason at every stage, with and without a list, and
+// nothing is admitted, written or given by any getter at any of them
+static void test_arm_admit(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	static const uint32_t freqs[] = { 420000000u, 430000000u, 433500000u, 445000000u, 446u * MHZ, 511900000u };
+	invented(t);
+	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &armed_table) && armed_table.fields == CS7000P_MK_F_ALL);
+	run_maker = &armed_table;
+	for (unsigned f = 0; f < sizeof(freqs) / sizeof(freqs[0]); f++) {
+		const uint32_t hz = freqs[f];
+		for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+			run_arm = stage;
+			bring_up(&cs7000p_cal_model, 446u * MHZ);
+			uint32_t n = 0;
+			for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+				for (int dmr = 0; dmr < 2; dmr++) {
+					CHECK(cs7000p_cal_maker_tx(&armed_table, hz, level, dmr != 0));
+					for (int listed = 0; listed < 2; listed++) {
+						cs7000p_tx_req_t q = req(hz, level, dmr != 0);
+						q.limit_list = listed != 0;
+						q.bench_dmr = true;
+						const cs7000p_tx_why_t w = want_why(stage, level, dmr != 0, listed != 0);
+						CHECK(cs7000p_rf_tx_admit(&rf, &q) == w && rf.tx_refused_why == w);
+						nothing_live(hz, level, dmr != 0);
+						n++;
+					}
+					// The bench's reference coding first, whatever the arm; the off state before it
+					cs7000p_tx_req_t q = req(hz, level, dmr != 0);
+					q.limit_list = true;
+					rf.ref_coding = CS7000P_REF_MAKER;
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING);
+					rf.ref_coding = CS7000P_REF_MAKER_ADC;
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_REF_CODING);
+					q.off = true;
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OFF);
+					rf.ref_coding = CS7000P_REF_HOLD;
+					nothing_live(hz, level, dmr != 0);
+					n += 3;
+				}
+			}
+			CHECK(rf.tx_refused == n && rf.arm == stage);
+		}
+	}
+	// Outside the transmit ranges the band's reason, armed or not
+	run_arm = CS7000P_ARM_ALL;
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	cs7000p_tx_req_t q = req(406050000u, 0, false);
+	q.limit_list = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	q.hz = 520u * MHZ;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_BAND);
+	// A list cleared under an arm that covers the transmission: 15 again
+	q = req(446u * MHZ, 1, false);
+	q.limit_list = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL);
+	q.limit_list = false;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_ARM_NO_LIST);
+	nothing_live(446u * MHZ, 1, false);
+	// A stage lowered under it: 13 again
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM_LOW, 0x5EEDu);
+	q.limit_list = true;
+	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNARMED);
+
+	// A table without what a mode needs answers 2 for that mode, armed or not, as a table without values; the other
+	// mode keeps the arm's reasons. Each group alone, as a refusal would clear it
+	static const struct { uint16_t group; bool fm, dmr0, dmr1; } need[] = {
+		{ CS7000P_MK_F_POWER, false, false, false },
+		{ CS7000P_MK_F_FM_PAIR, false, true, true },
+		{ CS7000P_MK_F_DMR_PAIR, true, false, false },
+		{ CS7000P_MK_F_TRIM_A, false, false, false },
+		{ CS7000P_MK_F_TRIM_B, true, false, false },
+		{ CS7000P_MK_F_BURST_LO, true, false, true },
+		{ CS7000P_MK_F_BURST_HI, true, true, false },
+		{ CS7000P_MK_F_TUNE | CS7000P_MK_F_SQUELCH | CS7000P_MK_F_RSSI | CS7000P_MK_F_CTCSS | CS7000P_MK_F_DCS |
+		  CS7000P_MK_F_BATTERY, true, true, true },
+	};
+	static cs7000p_maker_t m;
+	run_maker = &m;
+	for (unsigned i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+		m = armed_table;
+		m.fields = (uint16_t)(CS7000P_MK_F_ALL & ~need[i].group);
+		for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage += CS7000P_ARM_ALL) {
+			run_arm = stage;
+			bring_up(&cs7000p_cal_model, 446u * MHZ);
+			for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+				for (int dmr = 0; dmr < 2; dmr++) {
+					const bool has = dmr ? (level ? need[i].dmr1 : need[i].dmr0) : need[i].fm;
+					q = req(446u * MHZ, level, dmr != 0);
+					q.limit_list = true;
+					const cs7000p_tx_why_t w = has ? want_why(stage, level, dmr != 0, true) : CS7000P_TX_UNCAL;
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == w);
+					nothing_live(446u * MHZ, level, dmr != 0);
+				}
+			}
+		}
+	}
+	// No table, or one not valid: 2 everywhere, at every stage
+	static uint8_t blank[CS7000P_MAKER_SIZE];
+	memset(blank, 0xFF, sizeof(blank));
+	CHECK(!cs7000p_maker_parse(blank, 0, 0, &m));
+	for (int k = 0; k < 2; k++) {
+		run_maker = k == 0 ? NULL : &m;
+		for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+			run_arm = stage;
+			bring_up(&cs7000p_cal_model, 446u * MHZ);
+			for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+				for (int dmr = 0; dmr < 2; dmr++) {
+					q = req(446u * MHZ, level, dmr != 0);
+					q.limit_list = true;
+					CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_UNCAL);
+					nothing_live(446u * MHZ, level, dmr != 0);
+				}
+			}
+		}
+	}
+	run_maker = NULL;
+	run_arm = CS7000P_ARM_OFF;
+}
+
+// The bench drive with a valid table: admitted unarmed under its own four conditions, with its own reasons (the arm's
+// never replace them), at every stage the same; its key-up's writes are today's but for the receive tuning values
+// (the modem's held level, which carries trim A, is cs7000pRadioTest's)
+static void test_arm_bench(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	invented(t);
+	CHECK(cs7000p_maker_parse(t, 0x600DCAFEu, 0, &armed_table));
+	run_maker = &armed_table;
+	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+		run_arm = stage;
+		bring_up(&cs7000p_cal_model, F_OWNER);
+		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+		cs7000p_tx_req_t q = req(F_OWNER, 1, false);
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LIST);
+		q.dmr = true;
+		q.limit_list = true;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_DMR);
+		q.debuglink = false;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_NO_LINK);
+		q = req(F_OWNER, 1, false);
+		q.limit_list = true;
+		q.now_ms = T_SETTLED + CS7000P_OVERRIDE_MS + 1u;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OVR_EXPIRED);
+		CHECK(ev_n == 0 && !rf.admit);
+		CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+		q.now_ms = T_SETTLED;
+		CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_ovr && !rf.admit_arm && rf.admit_drive == 600);
+		uint8_t m2 = 9, m1 = 9;
+		CHECK(cs7000p_rf_mod_pair(&rf, F_OWNER, false, &m2, &m1) && m2 == 0 && m1 == 0);	// no pair: a carrier
+		cs7000p_rf_tx_off(&rf, false);
+	}
+	// The owner's run, write for write, at every stage: today's log with the table's receive tune in place
+	uint16_t tune = 0;
+	CHECK(cs7000p_maker_rx_tune(&armed_table, F_OWNER, &tune, NULL) && tune != CS7000P_RX_TUNE_NOMINAL);
+	owner_ev_t want[sizeof(owner_fm) / sizeof(owner_fm[0])];
+	const int n = (int)(sizeof(want) / sizeof(want[0]));
+	for (int i = 0; i < n; i++) {
+		want[i] = owner_fm[i];
+		if (want[i].type == EV_DAC && want[i].a == CS7000P_RX_TUNE_NOMINAL) {
+			want[i].a = tune;
+		}
+	}
+	for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+		run_arm = stage;
+		owner_run(0);
+		owner_match(want, n, __LINE__);
+		CHECK(inv_fail == 0 && trips == 0 && rf.arm == stage);
+	}
+	run_maker = NULL;
+	run_arm = CS7000P_ARM_OFF;
+}
+
+// A lower stage ends a transmission it no longer covers. No transmission is admitted on the maker's values yet, so
+// the rule is checked on an admission marked as one (rf.admit_arm, as the transmit side will set it), the board's
+// sequence after it: arm_ends, the safe request, then the new stage
+static void test_arm_ends(void)
+{
+	static const struct { uint8_t level; bool dmr; uint8_t covered_from; } tx[] = {
+		{ 0, false, CS7000P_ARM_FM_LOW }, { 1, false, CS7000P_ARM_FM }, { 0, true, CS7000P_ARM_ALL },
+		{ 1, true, CS7000P_ARM_ALL },
+	};
+	for (unsigned i = 0; i < sizeof(tx) / sizeof(tx[0]); i++) {
+		bring_up(&cs7000p_cal_model, 446u * MHZ);
+		rf.admit = true;
+		rf.admit_arm = true;
+		rf.admit_power = tx[i].level;
+		rf.admit_dmr = tx[i].dmr;
+		rf.admit_hz = 446u * MHZ;
+		for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+			CHECK(cs7000p_rf_arm_ends(&rf, stage) == (stage < tx[i].covered_from));
+		}
+		// Not on the maker's values (the bench drive, the model's): no stage ends it
+		rf.admit_arm = false;
+		for (uint8_t stage = 0; stage <= CS7000P_ARM_ALL; stage++) {
+			CHECK(!cs7000p_rf_arm_ends(&rf, stage));
+		}
+		// Nothing admitted: nothing to end
+		rf.admit_arm = true;
+		rf.admit = false;
+		CHECK(!cs7000p_rf_arm_ends(&rf, CS7000P_ARM_OFF));
+	}
+	// A carrier up (the bench drive's key-up), marked as on the maker's values at stage 2, FM level 1. Stage 2 again
+	// keeps it; stage 1 ends it: the safe request, the chain safe and nothing keys again until the radio task's next
+	// request, and the new stage set after it
+	bring_up(&cs7000p_cal_model, 446u * MHZ);
+	cs7000p_tx_req_t q = req(446u * MHZ, 1, false);
+	q.limit_list = true;
+	drive_cap = 600;
+	CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED) && cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK);
+	CHECK(cs7000p_rf_tx_begin(&rf) && cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK && rf.seq.state == CHAINSEQ_ST_TX);
+	rf.admit_arm = true;
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x77u);
+	CHECK(!cs7000p_rf_arm_ends(&rf, CS7000P_ARM_FM) && !cs7000p_rf_arm_ends(&rf, CS7000P_ARM_ALL));
+	CHECK(rf.seq.state == CHAINSEQ_ST_TX && dac_now == 600);
+	CHECK(cs7000p_rf_arm_ends(&rf, CS7000P_ARM_FM_LOW));
+	const uint32_t kept = rf.arm_id;	// the board takes the id it keeps before the safe request clears it
+	board_rf_safe_fake();
+	CHECK(rf.arm == CS7000P_ARM_OFF && rf.arm_id == 0u);
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM_LOW, kept);
+	check_safed();
+	CHECK(rf.arm == CS7000P_ARM_FM_LOW && rf.arm_id == 0x77u && rf.restore);
+	CHECK(inv_fail == 0 && trips == 0);
+}
+
 int main(void)
 {
 	test_start();
@@ -1310,6 +1672,10 @@ int main(void)
 #endif
 	test_vco_rule();
 	test_maker_table();
+	test_arm_rule();
+	test_arm_admit();
+	test_arm_bench();
+	test_arm_ends();
 	printf("# cs7000pRadioSeqTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

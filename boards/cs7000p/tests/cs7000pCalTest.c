@@ -4,10 +4,13 @@
 // may transmit and no level has a drive. On a made-up table: the interpolation, the ends, and that a row with one
 // point missing is no row. The RSSI and noise mappings never step back. The receive getters with the maker's table
 // (invented here): a refused one, or none, gives every value as without it; a valid one each value from its own field
-// group, the tune row's lookup and trim A's receive bound falling back alone.
+// group, the tune row's lookup and trim A's receive bound falling back alone. Whether the table would serve a
+// transmission (the owner's arm asks it): every group the mode needs at that level, each lookup at f_tx; the
+// transmit getters stay the model's.
 #include <stdio.h>
 #include <string.h>
 #include "rfcal_cs7000p.h"
+#include "rfplan_cs7000p.h"
 
 static int failures;
 
@@ -392,6 +395,97 @@ static void test_maker_rx(void)
 	CHECK(cs7000p_cal_rx_tune_m(&synth, &m, 485u * MHZ, &src) == 16u * 124u && src == CS7000P_SRC_MAKER);
 }
 
+// --- Transmit, the maker's table: asked, not served ---
+
+static void test_maker_tx(void)
+{
+	static uint8_t t[CS7000P_MAKER_SIZE];
+	cs7000p_maker_t m, mm;
+	invented(t, rx_pts);
+	CHECK(parsed(t, &m) && m.fields == CS7000P_MK_F_ALL);
+
+	// The invented table holds every value in the transmit ranges: on both VCOs, inside its 0.4 MHz switch segment,
+	// below its first point and past its last
+	for (uint32_t hz = 400u * MHZ; hz <= 512u * MHZ; hz += 500000u) {
+		CHECK(cs7000p_tx_band(hz) == (hz != 406u * MHZ));
+		if (!cs7000p_tx_band(hz)) {
+			CHECK(!cs7000p_cal_maker_tx(&m, hz, 0, false) && !cs7000p_cal_maker_tx(&m, hz, 1, true));
+			continue;
+		}
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			CHECK(cs7000p_cal_maker_tx(&m, hz, level, false) && cs7000p_cal_maker_tx(&m, hz, level, true));
+		}
+	}
+	CHECK(cs7000p_cal_maker_tx(&m, 430000000u, 1, true) && cs7000p_cal_maker_tx(&m, 430000010u, 0, false));
+	// No such level; outside the transmit band; no table, or one not valid
+	CHECK(!cs7000p_cal_maker_tx(&m, 446u * MHZ, CS7000P_POWER_LEVELS, false));
+	CHECK(!cs7000p_cal_maker_tx(&m, 399u * MHZ, 0, false) && !cs7000p_cal_maker_tx(&m, 520u * MHZ, 0, true));
+	CHECK(!cs7000p_cal_maker_tx(NULL, 446u * MHZ, 0, false));
+	memset(t, 0xFF, sizeof(t));
+	CHECK(!parsed(t, &mm) && !cs7000p_cal_maker_tx(&mm, 446u * MHZ, 0, false));
+	invented(t, rx_pts);
+	t[0x0C4 + 3] = 0;	// an FM pair code of 0: an integrity rule, the whole table refused
+	CHECK(!parsed(t, &mm) && !cs7000p_cal_maker_tx(&mm, 446u * MHZ, 0, true));
+
+	// Each group alone, cleared as a refusal would: what each mode and level needs (FM: the level's drive, the FM
+	// pair, trim A; DMR: also the DMR pair, trim B, the level's burst fields), and nothing it doesn't
+	static const struct { uint16_t group; bool fm, dmr0, dmr1; } need[] = {
+		{ CS7000P_MK_F_POWER, false, false, false },
+		{ CS7000P_MK_F_FM_PAIR, false, true, true },
+		{ CS7000P_MK_F_DMR_PAIR, true, false, false },
+		{ CS7000P_MK_F_TRIM_A, false, false, false },
+		{ CS7000P_MK_F_TRIM_B, true, false, false },
+		{ CS7000P_MK_F_BURST_LO, true, false, true },
+		{ CS7000P_MK_F_BURST_HI, true, true, false },
+		{ CS7000P_MK_F_TUNE, true, true, true },
+		{ CS7000P_MK_F_SQUELCH, true, true, true },
+		{ CS7000P_MK_F_RSSI, true, true, true },
+		{ CS7000P_MK_F_CTCSS, true, true, true },
+		{ CS7000P_MK_F_DCS, true, true, true },
+		{ CS7000P_MK_F_BATTERY, true, true, true },
+	};
+	for (unsigned i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+		mm = m;
+		mm.fields = (uint16_t)(CS7000P_MK_F_ALL & ~need[i].group);
+		CHECK(cs7000p_cal_maker_tx(&mm, 446u * MHZ, 0, false) == need[i].fm);
+		CHECK(cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, false) == need[i].fm);
+		CHECK(cs7000p_cal_maker_tx(&mm, 446u * MHZ, 0, true) == need[i].dmr0);
+		CHECK(cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, true) == need[i].dmr1);
+	}
+	// A use rule's refusal clears its group the same way: the RSSI's (a point at 0x00) asks nothing of transmit
+	invented(t, rx_pts);
+	t[0x040] = 0;
+	CHECK(parsed(t, &mm) && cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, true));
+	// A drive at or under the PA floor (the low row's 99 is 1584, under a floor of 1590) is an integrity rule: no
+	// valid table
+	invented(t, rx_pts);
+	CHECK(!cs7000p_maker_parse(t, 0, 1590, &mm) && mm.why == CS7000P_MK_WHY_POWER_FLOOR);
+	CHECK(!cs7000p_cal_maker_tx(&mm, 446u * MHZ, 1, false));
+	// A lookup the reader refuses at some frequencies only: inside a switch segment wider than 1 MHz (the points at
+	// 429.8 and 432.0 MHz), not outside it
+	invented(t, rx_pts);
+	t[0x000 + 4u * 2u + 1u] = (uint8_t)(432000000u >> 16);
+	t[0x000 + 4u * 2u + 2u] = (uint8_t)(432000000u >> 8);
+	t[0x000 + 4u * 2u + 3u] = (uint8_t)432000000u;
+	CHECK(parsed(t, &mm));
+	CHECK(!cs7000p_cal_maker_tx(&mm, 431u * MHZ, 0, false) && !cs7000p_cal_maker_tx(&mm, 429900000u, 1, true));
+	CHECK(cs7000p_cal_maker_tx(&mm, 429u * MHZ, 0, false) && cs7000p_cal_maker_tx(&mm, 433u * MHZ, 1, true));
+
+	// None of it reaches the transmit getters: they read the model alone, unset as shipped, wherever the table
+	// would serve
+	uint16_t d = 7;
+	uint8_t m2 = 7, m1 = 7;
+	for (uint32_t hz = 400u * MHZ; hz <= 512u * MHZ; hz += 2u * MHZ) {
+		for (uint8_t level = 0; level < CS7000P_POWER_LEVELS; level++) {
+			CHECK(!cs7000p_cal_tx_ok(&cs7000p_cal_model, hz, level, false));
+			CHECK(!cs7000p_cal_tx_ok(&cs7000p_cal_model, hz, level, true));
+			CHECK(!cs7000p_cal_drive(&cs7000p_cal_model, hz, level, &d));
+		}
+		CHECK(!cs7000p_cal_mod_pair(&cs7000p_cal_model, hz, false, &m2, &m1));
+	}
+	CHECK(d == 7 && m2 == 7 && m1 == 7 && !cs7000p_cal_any_tx(&cs7000p_cal_model));
+}
+
 int main(void)
 {
 	test_shipped();
@@ -399,6 +493,7 @@ int main(void)
 	test_verdict();
 	test_status();
 	test_maker_rx();
+	test_maker_tx();
 	printf("# cs7000pCalTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

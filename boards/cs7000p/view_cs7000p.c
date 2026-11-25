@@ -341,6 +341,11 @@ static void line_sq_maker(char *buf, uint8_t len)
 	cs7000p_cal_view_line(4, buf, len);
 }
 
+static void line_tx_arm(char *buf, uint8_t len)
+{
+	cs7000p_cal_view_line(5, buf, len);
+}
+
 // The `board` section's lines, the bring-up readings, near one reply's size; from CS7000P_VIEW_SPLIT on the
 // `board2` section's (board.view_split), keys still board.<key>
 static void (*const lines[])(char *buf, uint8_t len) = {
@@ -355,7 +360,7 @@ static void (*const lines[])(char *buf, uint8_t len) = {
 	// board2
 	line_cal_table, line_cal_rec,
 	line_ref, line_rx_cal,
-	line_sq_maker,
+	line_sq_maker, line_tx_arm,
 };
 #define LINES	(sizeof(lines) / sizeof(lines[0]))
 // board2 is exactly the table's lines, in cs7000p_cal_view_line's order: its first takes the copy for the others

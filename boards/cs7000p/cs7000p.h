@@ -98,11 +98,13 @@ void cs7000p_cal_rec_line(char *buf, uint8_t len);
 // ... and the receive side's: the reference level and its source, the tune's and the RSSI scale's sources
 void cs7000p_ref_line(char *buf, uint8_t len);
 void cs7000p_rx_cal_line(char *buf, uint8_t len);
-// ... and the maker's squelch thresholds at the receive frequency, shown only. Each from a copy of its own
+// ... and the maker's squelch thresholds at the receive frequency, shown only; the owner's transmit arm. Each from a
+// copy of its own
 void cs7000p_sq_maker_line(char *buf, uint8_t len);
-// The same five as board2's lines k = 0 to 4, in that order, all from one copy of a state that isn't changing: k = 0
+void cs7000p_tx_arm_line(char *buf, uint8_t len);
+// The same six as board2's lines k = 0 to 5, in that order, all from one copy of a state that isn't changing: k = 0
 // takes it (the reply's first board2 line), the others format it. "<key>=busy" when no copy could be taken
-#define CS7000P_CAL_VIEW_LINES	5u
+#define CS7000P_CAL_VIEW_LINES	6u
 void cs7000p_cal_view_line(uint8_t k, char *buf, uint8_t len);
 
 #endif

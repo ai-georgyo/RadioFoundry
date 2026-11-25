@@ -261,6 +261,16 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 		} else if (!cs7000p_cal_tx_ok(rf->cal, q->hz, q->power, q->dmr) ||
 			   !cs7000p_cal_drive(rf->cal, q->hz, q->power, &drive)) {
 			why = ovr_why;	// never key without calibration
+			if (why == CS7000P_TX_UNCAL && cs7000p_cal_maker_tx(rf->maker, q->hz, q->power, q->dmr)) {
+				// The maker's table has this transmission's values (no bench drive armed: a bench key-up keeps
+				// its own reasons). The owner's arm decides first; once it covers the transmission and a list
+				// names hz, the reason is still 2: none of the table's transmit values is served yet, so nothing
+				// keys on it (hardware-cs7000p.md 13.2)
+				why = cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
+				if (why == CS7000P_TX_OK) {
+					why = CS7000P_TX_UNCAL;
+				}
+			}
 		}
 	}
 	if (why == CS7000P_TX_OK && (drive == 0u || drive > CS7000P_DAC_MAX || drive <= rf->cal->floor)) {
@@ -282,6 +292,7 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	rf->admit_drive = drive;
 	rf->admit_ovr = ovr;
 	rf->admit_dmr = q->dmr;
+	rf->admit_arm = false;	// the model's values or the bench drive: the arm has no say
 	rf->admit = true;
 	return CS7000P_TX_OK;
 }
@@ -330,6 +341,20 @@ void cs7000p_rf_tx_off(cs7000p_rf_t *rf, bool keep)
 	}
 }
 
+// --- The owner's transmit arm ---
+
+bool cs7000p_rf_arm_ends(const cs7000p_rf_t *rf, uint8_t stage)
+{
+	return rf->admit && rf->admit_arm && !cs7000p_arm_covers(stage, rf->admit_power, rf->admit_dmr);
+}
+
+void cs7000p_rf_arm_set(cs7000p_rf_t *rf, uint8_t stage, uint32_t id)
+{
+	rf->arm = CS7000P_ARM_OFF;	// never the new id under the old stage
+	rf->arm_id = stage != CS7000P_ARM_OFF ? id : 0u;
+	rf->arm = stage;
+}
+
 void cs7000p_rf_burst_drives(const cs7000p_rf_t *rf, uint16_t *drive, uint16_t *top, uint16_t *floor)
 {
 	uint16_t t = 0;
@@ -348,6 +373,8 @@ void cs7000p_rf_safe(cs7000p_rf_t *rf)
 	}
 	rf->safed = true;	// first: what a sequence writes from here on is checked against it
 	rf->restore = true;
+	rf->arm = CS7000P_ARM_OFF;	// the owner arms again, after a fault path or the power's off state
+	rf->arm_id = 0;
 	// The state only. The caller has written the four lines itself, and this is the end of every task's deepest
 	// path (an assert into reboot()): a second pass through the ops and the interlock does not fit the stacks
 	chainseq_safed(&rf->seq);
