@@ -1433,6 +1433,57 @@ static void test_table_rx_bench(void)
 #endif
 
 #if CONFIG_DEBUGLINK
+// chip_reg 3:8, the data sheet's RSSI line in place of the table's points, for an A/B of what the dBm scale does to the
+// DMR scan and roaming: RAM only, taken at the next status poll, shown as board.rx_cal rssi=bench, and nothing written
+static void test_rssi_line(void)
+{
+	radio_status_t st;
+	char line[128];
+	uint32_t v = 9;
+	invented(table_a, 0x5A);
+	chip(table_a, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	CHECK(st.rssi_dbm == -95);
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, false) && v == 0u);
+	v = 2;
+	CHECK(!cs7000p_chip_reg(3, 0, 8, &v, true) && !cs7000p_rf.rssi_sheet);
+	v = 1;
+	const int retunes = modem.retunes;
+	hw_n = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, true) && v == 1u && cs7000p_rf.rssi_sheet);
+	cs7000p_radio.status(&st);
+	CHECK(st.rssi_dbm == cs7000p_rssi_dbm(500u) && st.rssi_dbm != -95);
+	CHECK(modem.retunes == retunes && hw_n == 0u);	// no receive set-up, nothing written
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=bench vco=low vco_rule=freq ifw=port"));
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, true) && v == 0u && !cs7000p_rf.rssi_sheet);
+	cs7000p_radio.status(&st);
+	CHECK(st.rssi_dbm == -95);
+	cs7000p_rx_cal_line(line, sizeof(line));
+	CHECK(line_is(line, "rx_cal=maker rssi=maker vco=low vco_rule=freq ifw=port"));
+	// Never stored: a new start is the table's points
+	v = 1;
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, true));
+	start();
+	cs7000p_radio.status(&st);
+	CHECK(!cs7000p_rf.rssi_sheet && st.rssi_dbm == -95);
+	// Without a valid table it is the same line either way
+	chip(NULL, NULL);
+	boot(true, 0);
+	cs7000p_radio.status(&st);
+	const int16_t sheet = st.rssi_dbm;
+	v = 1;
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, true));
+	cs7000p_radio.status(&st);
+	CHECK(st.rssi_dbm == sheet && sheet == cs7000p_rssi_dbm(500u));
+	v = 0;
+	CHECK(cs7000p_chip_reg(3, 0, 8, &v, true));
+}
+#endif
+
+#if CONFIG_DEBUGLINK
 // chip_reg 3:5, the reference DAC's coding for a receive test: RAM only, taken at the next status poll by a receive
 // set-up, and while it is not the hold every transmission is refused, the bench drive's too
 static void test_ref_coding(void)
@@ -2055,6 +2106,7 @@ int main(void)
 #if CONFIG_DEBUGLINK
 	test_ref_coding();
 	test_table_rx_bench();
+	test_rssi_line();
 	test_if_words();
 	test_sq_maker();
 	test_tx_arm();

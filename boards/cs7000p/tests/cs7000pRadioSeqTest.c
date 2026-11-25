@@ -1706,6 +1706,19 @@ static void test_ref_choice(void)
 	uint8_t adc = 0x55;
 	CHECK(!cs7000p_ref_signed(3, &adc) && adc == 0u);	// not a coding: the hold
 	CHECK(cs7000p_ref_coding_of(false, 0x7D) == CS7000P_REF_HOLD);
+
+	// The RSSI: the table's points (code 110 on 60 / 160: -95 dBm), the data sheet's line with the bench's 3:8
+	run_maker = &armed_table;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	uint8_t src = 9;
+	CHECK(cs7000p_rf_rssi(&rf, 110u << 4, 500u, &src) == -95 && src == CS7000P_SRC_MAKER);
+	rf.rssi_sheet = true;
+	CHECK(cs7000p_rf_rssi(&rf, 110u << 4, 500u, &src) == cs7000p_rssi_dbm(500u) && src == CS7000P_SRC_BENCH);
+	CHECK(cs7000p_rf_rssi(&rf, 110u << 4, 500u, NULL) == cs7000p_rssi_dbm(500u));
+	run_maker = NULL;
+	bring_up(&cs7000p_cal_model, F_OWNER);
+	CHECK(!rf.rssi_sheet);	// a new chain: the table's
+	CHECK(cs7000p_rf_rssi(&rf, 110u << 4, 500u, &src) == cs7000p_rssi_dbm(500u) && src == CS7000P_SRC_DEFAULT);
 }
 
 int main(void)

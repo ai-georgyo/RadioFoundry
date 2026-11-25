@@ -41,8 +41,8 @@
 #define CS7000P_REF_OFFSET	0
 #endif
 // Receive takes the maker's table (1), or never (0): today's tune, reference level and RSSI scale whatever the table
-// holds, the lasting way back should a valid table receive worse than today's values (the bench's 3:0 and 3:4 are
-// RAM only). The table is still read, checked, shown and copied either way, and transmit is not affected
+// holds, the lasting way back should a valid table receive worse than today's values (the bench's 3:0, 3:4 and 3:8
+// are RAM only). The table is still read, checked, shown and copied either way, and transmit is not affected
 #ifndef CS7000P_RX_MAKER
 #define CS7000P_RX_MAKER	1
 #endif
@@ -92,7 +92,7 @@ bool cs7000p_cal_any_tx(const cs7000p_cal_t *c);
 // the maker's table only when its own field group passed and its lookup gives one, and the build has
 // CS7000P_RX_MAKER, else from the model and the build's default exactly as without the table, so a refused table
 // changes nothing. src (may be NULL): where the value came
-// from. The bench's knobs (chip_reg 3:0, 3:4) are the caller's, and win over all of this
+// from. The bench's knobs (chip_reg 3:0, 3:4, 3:8) are the caller's, and win over all of this
 enum { CS7000P_SRC_DEFAULT = 0, CS7000P_SRC_MAKER = 1, CS7000P_SRC_BENCH = 2 };
 // Why the receive reference level is not trim A (cs7000p_cal_rx_ref_m)
 enum {

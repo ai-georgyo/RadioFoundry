@@ -192,7 +192,8 @@ model tables in `rfcal_cs7000p.c`; the polarity of an expander bit in `exp_cs700
 Run-time, over the debug link (`tools/rfoundry_debug.py reg 3 N [VALUE]`,
 [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 14): 3:0 the receive tuning DAC, 3:1 the expander shadow (read),
 3:2 PC8's idle duty, 3:3 the LO side, 3:4 the reference offset (0x100 releases it), 3:5 the reference DAC's coding
-(receive only), 3:6 the receive VCO rule, 3:7 the IF chip's words (receive only). None of them is stored: a restart
+(receive only), 3:6 the receive VCO rule, 3:7 the IF chip's words (receive only), 3:8 the RSSI scale (the table's
+points or the data sheet's line). None of them is stored: a restart
 puts each back to its default. Chip 0 is the HR_C6000, 1 the SKY72310 (write
 only), 2 the AK2365A. **Never write DAC1 or GPIOE with `reg soc`**: such a write bypasses the interlock and can key
 the PA, at any stage and whatever `board.cal` says (hardware page 4.3, 14). No step on this page needs a SoC write.
@@ -441,6 +442,10 @@ frequency. Write each reading into the bring-up record. All commands are `tools/
    source and talk group shown) with today's values (`reg 3 0 2048`, `reg 3 4 0`), then with the table's (`reg 3 0
    0`, `reg 3 4 0x100`). Expect the same calls decoded each way. The RSSI (`call.rssi_dbm`, the S-meter) is on the
    table's scale now (`rx_cal ... rssi=maker`), so its figures differ from before: compare the decode, not the dBm.
+   The scale itself is the third knob: `reg 3 8 1` puts the dBm back on the data sheet's line (`rssi=bench`), `reg 3
+   8 0` on the table's points, at the next status poll. The DMR scan's strength test and roaming's leave threshold
+   read the dBm: if a scan stops or skips, or roaming changes, after the restore, try the same with `reg 3 8 1`, and
+   note which. For good: `CS7000P_RX_MAKER=0` (Bench knobs), which also gives back today's tune and level.
 4. **The maker's coding of the reference DAC** ([calibration-cs7000p.md](../spec/calibration-cs7000p.md) 8 item 1),
    FM only. Note what `reg 3 4` reads (0x0100: no bench offset). Then `reg 3 5 1` and `reg 3 4 0` (bias 0, 4:0x04
    0): `board.hrc` reads `r25=0x0e`, `board.ref` `ref=maker bias=0x000`. Listen: on channel, the same audio as
