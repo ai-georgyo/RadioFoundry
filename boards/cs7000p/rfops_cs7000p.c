@@ -117,6 +117,9 @@ static bool op_tx_plan(void *ctx, uint32_t hz, uint8_t power, uint32_t *vco_hz, 
 	if (!rf->admit || hz != rf->admit_hz || !cs7000p_pll_plan(hz, true, false, rf->trim_ppb, &p)) {
 		return false;
 	}
+	if (rf->admit_arm && !cs7000p_arm_covers(rf->arm, rf->admit_power, rf->admit_dmr)) {
+		return false;	// on the maker's values, and the arm lowered since the admission: nothing keys
+	}
 	*vco_hz = p.vco_hz;
 	*drive = rf->admit_drive;
 	*floor = rf->cal->floor;
@@ -176,6 +179,7 @@ bool cs7000p_rf_rx(cs7000p_rf_t *rf, uint32_t hz, bool wide)
 {
 	rf->safed = false;
 	rf->admit = false;	// a receive set-up ends whatever transmission there was
+	rf->admit_arm = false;
 	if (chainseq_rx(&rf->seq, hz, wide) != CHAINSEQ_OK) {
 		return false;
 	}
@@ -203,6 +207,7 @@ void cs7000p_rf_sleep(cs7000p_rf_t *rf, bool sleep)
 void cs7000p_rf_refuse(cs7000p_rf_t *rf, cs7000p_tx_why_t why)
 {
 	rf->admit = false;
+	rf->admit_arm = false;
 	rf->tx_refused++;
 	rf->tx_refused_why = (uint8_t)why;
 }
@@ -231,7 +236,7 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 {
 	cs7000p_tx_why_t why = CS7000P_TX_OK;
 	uint16_t drive = 0;
-	bool ovr = false;
+	bool ovr = false, on_arm = false;
 
 	if (q->off) {
 		// First: a radio that switched itself off keys nothing, whatever the pack reads since and whatever is
@@ -241,6 +246,7 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	}
 	rf->safed = false;
 	rf->admit = false;
+	rf->admit_arm = false;
 	if (rf->ref_coding != CS7000P_REF_HOLD || q->ref_other) {
 		// A receive test of the maker's coding: transmit was never looked at under it, and it is no bench state to
 		// key a carrier in. Asked for, or still the modem's after the bench went back to the hold and before the
@@ -260,19 +266,27 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 		if (ovr_why == CS7000P_TX_OK) {
 			drive = armed;
 			ovr = true;
+		} else if (ovr_why == CS7000P_TX_UNCAL && cs7000p_cal_maker_tx(rf->maker, q->hz, q->power, q->dmr)) {
+			// The maker's table has this transmission's values, and wins over the model's (it is this unit's).
+			// No bench drive armed: a bench key-up keeps its own reasons. A tone channel is refused as without
+			// values, at every stage and never on the model's rows either: the table serves no sub-audio level
+			// yet, and one would be a guess (hardware-cs7000p.md 13.2). Else the owner's arm decides first, then
+			// a list must name hz; then FM keys on the table's drive at hz, the pair and trim A following from
+			// the same getter in the modem's set-up. DMR stays 2: none of its values is served yet
+			cs7000p_fm_tx_t v;
+			why = q->tone && !q->dmr ? CS7000P_TX_UNCAL
+						 : cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
+			if (why == CS7000P_TX_OK) {
+				if (q->dmr || !cs7000p_rf_maker_fm(rf, q->hz, q->power, &v)) {
+					why = CS7000P_TX_UNCAL;
+				} else {
+					drive = v.drive;
+					on_arm = true;
+				}
+			}
 		} else if (!cs7000p_cal_tx_ok(rf->cal, q->hz, q->power, q->dmr) ||
 			   !cs7000p_cal_drive(rf->cal, q->hz, q->power, &drive)) {
 			why = ovr_why;	// never key without calibration
-			if (why == CS7000P_TX_UNCAL && cs7000p_cal_maker_tx(rf->maker, q->hz, q->power, q->dmr)) {
-				// The maker's table has this transmission's values (no bench drive armed: a bench key-up keeps
-				// its own reasons). The owner's arm decides first; once it covers the transmission and a list
-				// names hz, the reason is still 2: none of the table's transmit values is served yet, so nothing
-				// keys on it (hardware-cs7000p.md 13.2)
-				why = cs7000p_arm_why(rf->arm, q->power, q->dmr, q->limit_list);
-				if (why == CS7000P_TX_OK) {
-					why = CS7000P_TX_UNCAL;
-				}
-			}
 		}
 	}
 	if (why == CS7000P_TX_OK && (drive == 0u || drive > CS7000P_DAC_MAX || drive <= rf->cal->floor)) {
@@ -294,7 +308,7 @@ cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q
 	rf->admit_drive = drive;
 	rf->admit_ovr = ovr;
 	rf->admit_dmr = q->dmr;
-	rf->admit_arm = false;	// the model's values or the bench drive: the arm has no say
+	rf->admit_arm = on_arm;	// else the model's values or the bench drive: the arm has no say
 	rf->admit = true;
 	return CS7000P_TX_OK;
 }
@@ -333,6 +347,7 @@ void cs7000p_rf_tx_off(cs7000p_rf_t *rf, bool keep)
 	bool bursts = rf->admit && rf->admit_dmr;
 	rf->safed = false;
 	rf->admit = false;
+	rf->admit_arm = false;
 	rf->ovr_drive = 0;	// one transmission only
 	if (rf->seq.state != CHAINSEQ_ST_RX) {
 		chainseq_tx_off(&rf->seq);	// down in order, then the whole receive set-up
@@ -404,15 +419,34 @@ bool cs7000p_rf_drive(cs7000p_rf_t *rf, uint16_t drive, uint32_t now_ms)
 	return true;
 }
 
+bool cs7000p_rf_maker_fm(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v)
+{
+	const uint8_t arm = rf->arm;	// once: the debug link's task may change it
+	return cs7000p_arm_covers(arm, level, false) && cs7000p_cal_maker_fm(rf->maker, hz, level, v);
+}
+
 uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level)
 {
 	uint16_t d;
-	return cs7000p_tx_band(hz) && cs7000p_cal_drive(rf->cal, hz, level, &d) ? d : 0u;
+	cs7000p_fm_tx_t v;
+	if (!cs7000p_tx_band(hz)) {
+		return 0u;
+	}
+	if (cs7000p_cal_maker_tx(rf->maker, hz, level, false)) {
+		// The table's level, as the key-up would take it: only under the arm
+		return cs7000p_rf_maker_fm(rf, hz, level, &v) ? v.drive : 0u;
+	}
+	return cs7000p_cal_drive(rf->cal, hz, level, &d) ? d : 0u;
 }
 
 uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf)
 {
 	return rf->seq.state == CHAINSEQ_ST_TX ? cs7000p_rf_drive_level(rf, rf->seq.tx_hz, CS7000P_POWER_LEVELS - 1u) : 0u;
+}
+
+bool cs7000p_rf_drive_now_ok(const cs7000p_rf_t *rf, uint16_t drive)
+{
+	return !(rf->admit && rf->admit_arm) || drive <= rf->admit_drive;
 }
 
 int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf)
@@ -438,13 +472,39 @@ int16_t cs7000p_rf_rssi(const cs7000p_rf_t *rf, uint32_t raw12, uint32_t mv, uin
 	return cs7000p_cal_rssi_m(rf->maker, raw12, mv, src);
 }
 
+// The FM transmission admitted on the maker's values at hz, and its values while the arm still covers it
+static bool armed_fm(const cs7000p_rf_t *rf, uint32_t hz, cs7000p_fm_tx_t *v)
+{
+	return rf->admit && rf->admit_arm && !rf->admit_dmr && hz == rf->admit_hz &&
+	       cs7000p_rf_maker_fm(rf, hz, rf->admit_power, v);
+}
+
 int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup)
 {
-	return tx_setup ? rf->ref_offset : cs7000p_rf_rx_ref(rf);
+	cs7000p_fm_tx_t v;
+	if (!tx_setup) {
+		return cs7000p_rf_rx_ref(rf);
+	}
+	// 4:0x04 in FM transmit: trim A, in the maker's own coding there (d mod 256). The bench's 3:4 moves receive and
+	// transmit together, as without the table
+	if (!rf->ref_override && armed_fm(rf, rf->admit_hz, &v)) {
+		return v.trim;
+	}
+	return rf->ref_offset;
 }
 
 bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *mod1)
 {
+	cs7000p_fm_tx_t v;
+	if (!dmr && rf->admit && rf->admit_arm) {
+		// The table's pair or none: never the model's, nor the bench's carrier, under a key-up on the table's drive
+		if (!armed_fm(rf, hz, &v)) {
+			return false;
+		}
+		*mod2 = v.mod2;
+		*mod1 = v.mod1;
+		return true;
+	}
 	if (cs7000p_cal_mod_pair(rf->cal, hz, dmr, mod2, mod1)) {
 		return true;
 	}
@@ -454,4 +514,25 @@ bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t 
 		return true;
 	}
 	return false;
+}
+
+// The maker's FM transmit registers (calibration-cs7000p.md 5.13): 4:0x3F the limiter (0x04 narrow, 0x07 wide), 4:0x35
+// the voice deviation (0x20, the one value recorded: on wide it under-deviates if the maker's differs, the safe side),
+// 4:0x34 0xBC, 4:0x3E 0x06, and the microphone gain 4:0xE4 (0x20 narrow, 0x22 wide) as a register, so the IF host
+// writes the set-up's gain back with the rest at the end. The receive registers (4:0x37, the AK2365A words) stay the
+// port's
+static const hrc6000_if_row_t maker_fm_rows[2][5] = {
+	{ { 4, 0x3F, 0x04 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x20 } },
+	{ { 4, 0x3F, 0x07 }, { 4, 0x35, 0x20 }, { 4, 0x34, 0xBC }, { 4, 0x3E, 0x06 }, { 4, 0xE4, 0x22 } },
+};
+
+const hrc6000_if_row_t *cs7000p_rf_fm_tx_rows(const cs7000p_rf_t *rf, uint32_t hz, bool wide, uint8_t *n)
+{
+	cs7000p_fm_tx_t v;
+	if (!armed_fm(rf, hz, &v)) {
+		*n = 0;
+		return NULL;
+	}
+	*n = (uint8_t)(sizeof(maker_fm_rows[0]) / sizeof(maker_fm_rows[0][0]));
+	return maker_fm_rows[wide ? 1 : 0];
 }

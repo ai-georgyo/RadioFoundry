@@ -79,8 +79,8 @@ The board's host tests (`boards/cs7000p/tests`, run by `make -C tests/host`), ea
 | `cs7000pExpTest` (and `...Floor`) | the expander's one writer and the shared DAC's interlock, an interrupt racing the interlock's masked section, the reset word, the SK1 wait before a software reset |
 | `cs7000pPowerTest` | `power_cs7000p.c` on fakes: the hold, the power-off order, the scan stopping, a sagging pack, the off state's LEDs, a `led()` call the power-off cuts into, the off watch idle once the off state ends |
 | `cs7000pBatteryTest` | the battery model, the knob's switch-open threshold, the hold and the off watch rules |
-| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR; `chip_reg` 3:5: RAM only, a receive set-up, every key-up refused; the owner's transmit arm: its handshake against each source of the table, every refusal, the restore refused while armed and the arm while a restore is pending |
-| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`), the reference coding's (`why=14`), the transmit arm's (`why=13`, `why=15`) at every level, mode and stage with nothing admitted at any, a lower stage ending a covered transmission |
+| `cs7000pRadioTest` | `radio_cs7000p.c` over the real chain: the microphone in FM and DMR, the off state: no receiver restore, no amplifier (also behind a speaker call the power-off cuts into), no transmission in FM or DMR; `chip_reg` 3:5: RAM only, a receive set-up, every key-up refused; the owner's transmit arm: its handshake against each source of the table, every refusal, the restore refused while armed and the arm while a restore is pending; armed and listed, FM key-ups on the table's drive, pair, trim A and registers, tone channels and DMR refused |
+| `cs7000pRadioSeqTest` | the RF sequences on a model of the chain, partial calibrations, the bench drive at a measured floor, a safe request in the middle of a key-up at floor 0, the off state's refusal (`why=12`), the reference coding's (`why=14`), the transmit arm's (`why=13`, `why=15`) at every level, mode and stage with nothing admitted without both; armed and listed, FM on the table's drive at f_tx (pinned), the switch window and extension refusals, tone channels and DMR refused, the arm lowered before the key-up, a lower stage ending a covered transmission |
 | `cs7000pRfTest`, `cs7000pCalTest` | the frequency plan, the band edges, the calibration verdict, which field groups a key-up on the maker's table needs |
 | `cs7000pPinsTest`, `cs7000pPanelTest`, `cs7000pKeysTest`, `cs7000pSpeakerTest`, `cs7000pSubPwmTest`, `cs7000pStoreTest` | the pin set-up and its never-driven list, the LCD board check and the panel ID, the keys and the selector, the speaker lines, PC8's duty, the flash map |
 
@@ -483,6 +483,9 @@ Everything before this stage ran without RF. **Nothing transmits unless the test
 ([tests/hil/README.md](../../tests/hil/README.md)), and never without the dummy load.
 
 The radio refuses every transmission while its tables are unset: `board.cal=none`, and `board.tx_refused` counts.
+With the maker's table in use it still refuses every key-up until the owner arms transmission over the debug link
+(RADIO op 44, [hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2): then FM without a tone keys on the table's
+drive, pair and trim A, on the frequencies a test TX limit lists, and nothing else.
 The one way the firmware keys it is the bench drive override, honored only under a test TX limit that lists the
 frequency, in FM, for one transmission, within 60 s of arming
 ([hardware-cs7000p.md](../spec/hardware-cs7000p.md) 13.2). A `reg soc` write to DAC1 or GPIOE is outside all of

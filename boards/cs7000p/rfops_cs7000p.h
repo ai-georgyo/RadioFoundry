@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "rf/chainseq/chainseq.h"
+#include "modem/hrc6000/if_host/hrc6000_if_host.h"
 #include "rfcal_cs7000p.h"
 
 // No transmission, and no frequency measurement, before this long after the synthesizer rail came on: the
@@ -68,7 +69,8 @@ typedef struct {
 typedef enum {
 	CS7000P_TX_OK = 0,
 	CS7000P_TX_BAND = 1,		// outside 400.0-405.9875 and 406.1125-512.0 MHz
-	CS7000P_TX_UNCAL = 2,		// no calibration for this frequency, level and mode, and no bench drive armed
+	CS7000P_TX_UNCAL = 2,		// no calibration for this frequency, level and mode, and no bench drive armed (a
+					// tone channel or DMR on the maker's table too: none of those values is served yet)
 	CS7000P_TX_OVR_NO_LINK = 3,	// a bench drive is armed, but the build has no debug link
 	CS7000P_TX_OVR_NO_LIST = 4,	// ... but no test TX limit names this frequency
 	CS7000P_TX_OVR_DMR = 5,		// ... but the mode is DMR and the build has no CS7000P_BENCH_DMR_TX
@@ -147,6 +149,7 @@ typedef struct {
 	bool limit_list;		// a test TX limit is set as a list of frequencies, and hz is on it
 	bool bench_dmr;			// the build allows the bench drive in DMR (CS7000P_BENCH_DMR_TX)
 	bool off;			// the power's off state (cs7000p_power_off_state)
+	bool tone;			// FM with a sub-audio tone (CTCSS or DCS): the maker's table serves none yet
 	// The modem still holds another coding than the measured hold: it takes the one chip_reg 3:5 asks for only at
 	// its next full receive set-up (the status poll's), and a burst keeps the one it holds
 	bool ref_other;
@@ -156,8 +159,8 @@ typedef struct {
 	const cs7000p_rf_io_t *io;
 	const cs7000p_cal_t *cal;
 	// The maker's table in use, as checked (makercal_cs7000p.h; NULL or not valid: none). The radio task's: set after
-	// cs7000p_rf_init, parsed anew only on that task. Receive (the cs7000p_cal_*_m getters), and whether a
-	// transmission would find the maker's values (the arm's question; none is served)
+	// cs7000p_rf_init, parsed anew only on that task. Receive (the cs7000p_cal_*_m getters), and FM transmit behind
+	// the owner's arm (cs7000p_rf_maker_fm); DMR's values are only asked for the arm's reasons
 	const cs7000p_maker_t *maker;
 	chainseq_ops_t ops;
 	chainseq_t seq;
@@ -187,7 +190,7 @@ typedef struct {
 	volatile uint8_t arm;
 	volatile uint32_t arm_id;
 	// The transmission that passed cs7000p_rf_tx_admit: the only one the transmit plan answers for. admit_arm: it is
-	// on the maker's values, under the arm (none is yet: hardware-cs7000p.md 13.2)
+	// on the maker's values, under the arm (FM: the drive, the pair, trim A and the fixed registers, 13.2)
 	bool admit, admit_ovr, admit_dmr, admit_arm;
 	uint32_t admit_hz;
 	uint8_t admit_power;
@@ -220,7 +223,10 @@ void cs7000p_rf_sleep(cs7000p_rf_t *rf, bool sleep);
 // May this transmission go ahead? Nothing is written. CS7000P_TX_OK: it is admitted, and the sequencer's transmit
 // plan answers for it (hz, the drive of its level or the bench drive) until cs7000p_rf_tx_off. Anything else: it
 // is refused and counted, and an earlier admission is gone. In the power's off state that is all: an armed bench
-// drive is neither used nor dropped, and a safe request stands
+// drive is neither used nor dropped, and a safe request stands. With no bench drive armed, the maker's table wins
+// over the model wherever it holds the transmission's values: then the arm decides (13, 15), and once it covers
+// the transmission and a list names hz, an FM one without a tone is admitted on the table's drive at hz (admit_arm);
+// a tone channel or DMR is refused as without values (2)
 cs7000p_tx_why_t cs7000p_rf_tx_admit(cs7000p_rf_t *rf, const cs7000p_tx_req_t *q);
 // FM, in this order around the modem's transmit set-up. tx_begin: the DAC to 0 (it held the tuning voltage and must
 // not become a power request) and the receive rail off. tx_key: the VCO line for the carrier, the synthesizer on it
@@ -262,10 +268,19 @@ bool cs7000p_rf_restore_take(cs7000p_rf_t *rf);
 
 // hal_radio_t.tx_drive: arm a drive (1..CS7000P_DAC_MAX) for the next transmission, 0: none. False: out of range
 bool cs7000p_rf_drive(cs7000p_rf_t *rf, uint16_t drive, uint32_t now_ms);
-// hal_radio_t.tx_drive_level: 0 without calibration or outside the transmit ranges
+// hal_radio_t.tx_drive_level: 0 without calibration or outside the transmit ranges. Where the maker's table holds
+// the level's FM values: its drive while the arm covers the level, else 0 (the model's never: the table wins)
 uint16_t cs7000p_rf_drive_level(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level);
-// hal_radio_t.tx_drive_top: during an FM transmission the top level's drive at its frequency, else 0
+// hal_radio_t.tx_drive_top: during an FM transmission the top level's drive at its frequency, else 0. On the maker's
+// table that is 0 below the stage that covers the top level (CS7000P_ARM_FM): the drive sweep is then refused
 uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf);
+// hal_radio_t.tx_drive_now's limit: during a transmission on the maker's values no drive above the admitted one,
+// so no write of the bench's reaches a value the arm does not cover; any drive otherwise
+bool cs7000p_rf_drive_now_ok(const cs7000p_rf_t *rf, uint16_t drive);
+// The one place the maker's FM transmit values are served (cs7000p_cal_maker_fm): only while the arm covers FM at
+// level, asked anew at every call, so a lowered arm takes them away at once. The test TX limit's list is the
+// admission's rule, not this one's
+bool cs7000p_rf_maker_fm(const cs7000p_rf_t *rf, uint32_t hz, uint8_t level, cs7000p_fm_tx_t *v);
 
 // The reference offset of the held level at a receive entry (the bias, 0x200 + it under the measured hold; the
 // signed level under the maker's coding): the bench's (chip_reg 3:4) while it is set, else cs7000p_cal_rx_ref_m (trim
@@ -273,8 +288,9 @@ uint16_t cs7000p_rf_drive_top(const cs7000p_rf_t *rf);
 // today's value. Radio task: the IF host asks it at its receive entries
 int8_t cs7000p_rf_rx_ref(cs7000p_rf_t *rf);
 // The IF host's ref_offset callback (c6000_cs7000p.c, one call): a receive entry's held level (cs7000p_rf_rx_ref),
-// or, inside the FM transmit set-up (tx_setup), its 4:0x04 and transmit bias: ref_offset, today's value, never trim
-// A, so that the table changes no FM transmission (hardware-cs7000p.md 13.1)
+// or, inside the FM transmit set-up (tx_setup), its 4:0x04 and transmit bias: trim A for a transmission admitted on
+// the maker's values while the arm covers it, the bench's 3:4 over it while that is set; else ref_offset, today's
+// value (hardware-cs7000p.md 13.2)
 int8_t cs7000p_rf_ref_for(cs7000p_rf_t *rf, bool tx_setup);
 // 4:0x04 at a receive entry (the IF host's rx_tx_offset): ref_offset, never trim A. What 4:0x04 does under the hold
 // is not measured, and a DMR burst carries the value
@@ -287,9 +303,14 @@ static inline int8_t cs7000p_rf_rx_r04(const cs7000p_rf_t *rf)
 // CS7000P_SRC_BENCH), else cs7000p_cal_rssi_m on the table in use. src may be NULL
 int16_t cs7000p_rf_rssi(const cs7000p_rf_t *rf, uint32_t raw12, uint32_t mv, uint8_t *src);
 
-// The modem's callbacks (hrc6000_if_cfg_t). The pair: the table's; without one, 0 / 0 (an unmodulated carrier) for
-// an FM transmission admitted on the bench drive, and false otherwise
+// The modem's callbacks (hrc6000_if_cfg_t). The pair: for the FM transmission admitted on the maker's values (at its
+// f_tx) the table's FM pair while the arm covers it, and false once it doesn't; else the model's; without one, 0 / 0
+// (an unmodulated carrier) for an FM transmission admitted on the bench drive, and false otherwise
 bool cs7000p_rf_mod_pair(const cs7000p_rf_t *rf, uint32_t hz, bool dmr, uint8_t *mod2, uint8_t *mod1);
+// fm_tx_rows: the maker's FM transmit registers (calibration-cs7000p.md 5.13: the limiter, the voice deviation, the
+// filter, 4:0x3E and the microphone gain, narrow or wide), under which its FM pair and trim A were set, for the same
+// transmission and arm as the pair above; NULL and 0 otherwise. The IF host writes the driver's values back at its end
+const hrc6000_if_row_t *cs7000p_rf_fm_tx_rows(const cs7000p_rf_t *rf, uint32_t hz, bool wide, uint8_t *n);
 
 // --- The radio's other files (target only; nothing below is part of the host-clean code above) ---
 
