@@ -1596,7 +1596,7 @@ Bench access through the debug link ([debuglink.md](debuglink.md) 3.24):
 
 ## 15. Debug link view keys
 
-`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last six, which are in section 39
+`view_cs7000p.c`; each is `board.<key>`, in view section 28 (`board`) but the last seven, which are in section 39
 (`board2`, `board_t.view_split`: `board` is near the size of one reply; [debuglink.md](debuglink.md) 3.7). The
 diagnostics page shows the bring-up readings.
 
@@ -1633,16 +1633,19 @@ diagnostics page shows the bring-up readings.
 | `rx_cal` (`board2`) | the tune's source, `maker` / `default` / `bench` (3:0); `rssi=` the last status poll's scale, `maker` (the table's points) / `sheet` (the data sheet's line) / `bench` (the data sheet's line by 3:8); `vco=` the VCO line now, `low` / `high`; `vco_rule=` `freq` / `dir` (3:6); `ifw=` the IF chip's words, `port` / `maker` (3:7) |
 | `sq_maker` (`board2`) | the maker's squelch thresholds at the receive frequency, shown and never applied (13.1): `ok o1= c1= o9= c9=`, open and close at levels 1 and 9 as 8-bit noise codes (the scale of `noise_raw` >> 4; [calibration-cs7000p.md](calibration-cs7000p.md) 5.7), by the receive rows' lookup (inside the 479 MHz switch segment the end value on the frequency's VCO side; past the end points extended, where their order need not hold); `none why=` the lookup's reason, `table` (none valid) / `group` / `band` (out of the receive band, or no receive yet) / `switch` / `math`. `sq_maker=ok o1=120 c1=130 o9=40 c9=50` |
 | `tx_arm` (`board2`) | the owner's transmit arm (13.2): `off` / `fm-low` / `fm` / `dmr`; `id=` the CRC-32 it was armed with (0 when off); `list=` 1 while a test TX limit list is set (an armed key-up on the maker's values needs one naming its frequency, `why=15`); `chips=1` only after a bench write to the modem or the synthesizer since the start, `soc=1` after one to a SoC register (either: the arm refused until a restart, `why=17`); `bench_drive=` the bench drive armed or in use and `bench_keyup=1` while the DMR key-up constants are op 37's, each only while it holds (the arm refused meanwhile, `why=18`). `tx_arm=off id=0x00000000 list=0` after every start |
+| `tx_maker` (`board2`) | what a key-up on the table in use would take (13.2), read without arming and never a key-up itself: the same lookups the admission and the key-up's getters make, nothing written. `ok` when the table serves it (an armed key-up whose stage covers it, on a listed frequency, then takes these values), `none` when it does not. `at=` which transmission: `tx` the one the core last asked for (`tx()`, refused ones included: a key-up while the arm is off is refused `why=13` and noted) while the receive set-up it was asked from stands (the same receive frequency, width and mode; a channel change, a scan step or a beacon's retune drops it, and so does a restart); `rx` without one, the receive frequency as a simplex channel's at the lowest level with no tone. The board learns a channel's transmit frequency, power level and tone only from the key-up request, so a power level or tone changed since shows at the next one. `hz=` the transmit frequency, `mode=` `fm` / `dmr`, `lvl=` the power level (0 the low row); `lo=`, `hi=` the drive at the two levels at that frequency (12-bit DAC codes, 16 c), `pair=` the mode's modulation pair (4:0x45, 4:0x46), `d_a=` trim A and in DMR `d_b=` trim B as d, on an FM tone channel `tone_pm=` the tone's depth in per mille at the channel's width; `-` where that lookup gives none. With `none`, `no=` the first lookup that refuses in the admission's order, `band` (outside the transmit band) / `table` (none valid) / `drive` / `pair` / `trim_a` / `trim_b` / `burst` (DMR, the level's burst fields) / `tone`, and `why=` its reason: the reader's (`band`, `group`, `row`, `switch`, `window`, `math`, `code`, `floor`, `burst`, `table`) or a tone's own, `range` (a CTCSS tone outside 67.0 to 254.1 Hz). `tx_maker=ok at=rx hz=446000000 mode=fm lvl=0 lo=1744 hi=3360 pair=0x78,0x87 d_a=-5` on the host tests' invented table; on a radio the unit's own values, which stay on its debug link |
 
-The six `board2` keys of one reply describe one state: the table in use and the receive set-up on it. A restore's
-take changes the table and sets receive up on it in one step of the radio task; the reply copies the state at its
-first `board2` line, never during such a step, and its other lines format that copy. A reply asked during the step
-waits for its end; one that waited 250 ms gives `<key>=busy` for each of the six instead (not expected: the step is
-one receive set-up). The other keys, in `board`, are read one by one.
+The seven `board2` keys of one reply describe one state: the table in use, the receive set-up on it and the last
+key-up request. A restore's take changes the table and sets receive up on it in one step of the radio task; the reply
+copies the state at its first `board2` line, never during such a step, and its other lines format that copy. A reply
+asked during the step waits for its end; one that waited 250 ms gives `<key>=busy` for each of the seven instead (not
+expected: the step is one receive set-up). The other keys, in `board`, are read one by one. The longest `board2`
+reply, every line at its longest, is about 600 bytes of the 1,002 a reply has for them.
 
 `boards/cs7000p/hil/test_cs7000p.py` reads them on a radio, and compares `cal_table`'s CRC with the window read
-through STORAGE READ (and an ok record's bytes with `cal_rec`'s), and `tx_arm` with RADIO op 44's info (the stage,
-the table's range and CRC, the top stage). It never transmits, writes or arms; `tests/hil/test_tx_arm.py` is the arm's.
+through STORAGE READ (and an ok record's bytes with `cal_rec`'s), `tx_arm` with RADIO op 44's info (the stage, the
+table's range and CRC, the top stage), and checks `tx_maker`'s form and the order of its two drives. It never
+transmits, writes or arms; `tests/hil/test_tx_arm.py` is the arm's.
 
 ---
 
