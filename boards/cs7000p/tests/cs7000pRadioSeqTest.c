@@ -1718,6 +1718,43 @@ static void test_arm_admit(void)
 	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x5EEDu);
 	CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm);
 	cs7000p_rf_tx_off(&rf, false);
+	// A trim stored after the admission (the core's ref_trim, from any task): the tune on the table refused, nothing
+	// keyed, FM's key-up and a DMR transmission's tune alike; without it the same tune runs. A bench carrier's tune
+	// (unarmed) takes the trim as before
+	const uint32_t rx_hz = rf.seq.rx_hz;
+	const bool rx_wide = rf.seq.wide;
+	for (int k = 0; k < 3; k++) {
+		for (int dmr = 0; dmr < 2; dmr++) {
+			cs7000p_rf_arm_set(&rf, k == 2 ? CS7000P_ARM_OFF : CS7000P_ARM_ALL, 0x5EEDu);
+			q = req(446u * MHZ, 1, dmr != 0);
+			q.limit_list = true;
+			q.bench_dmr = true;
+			if (k == 2) {
+				CHECK(cs7000p_rf_drive(&rf, 600, T_SETTLED));
+			}
+			CHECK(cs7000p_rf_tx_admit(&rf, &q) == CS7000P_TX_OK && rf.admit_arm == (k != 2));
+			rf.trim_ppb = k != 0 ? 300 : 0;
+			clear_log();
+			const bool keys = k != 1;
+			if (dmr) {
+				CHECK(chainseq_burst_tune(&rf.seq, 446u * MHZ) == keys);
+			} else {
+				CHECK(cs7000p_rf_tx_begin(&rf) && (cs7000p_rf_tx_key(&rf) == CS7000P_TX_OK) == keys);
+				CHECK(tx_bits_ever() == keys);
+			}
+			if (keys) {
+				// 446 MHz + 0.3 ppm under the bench's trim
+				CHECK(find_ev(0, EV_SYNTH) >= 0 &&
+				      ev[find_ev(0, EV_SYNTH)].b == 446u * MHZ + (k == 2 ? 134u : 0u));
+			} else {
+				CHECK(find_ev(0, EV_SYNTH) < 0 && !tx_bits_ever());
+			}
+			rf.trim_ppb = 0;
+			cs7000p_rf_tx_off(&rf, false);
+			CHECK(cs7000p_rf_rx(&rf, rx_hz, rx_wide));
+		}
+	}
+	cs7000p_rf_arm_set(&rf, CS7000P_ARM_FM, 0x5EEDu);
 
 	// A table without what a mode needs answers 2 for that mode, armed or not, as a table without values; the other
 	// mode keeps the arm's reasons. Each group alone, as a refusal would clear it
