@@ -167,6 +167,7 @@ supply_mv = [10000, 16000]
 
 # Features built and known not to work yet on this radio (tools/bringup.py: "unsupported"), each with its reason
 [features]
+tx_arm = { state = "n/a", reason = "no transmit arm (hal_radio_t.tx_arm): this radio transmits on its calibration without one" }
 sfr = { state = "unsupported", reason = "test_sfr_repeater_quality loses 24 inbound frames of a bench call (3 allowed) on the radio's single receive path; parked until that is looked into" }
 
 # The open-firmware CPS radio types qdmr knows the radio by (docs/spec/cps-protocol.md 2.2), as board.c's hal_cps_t

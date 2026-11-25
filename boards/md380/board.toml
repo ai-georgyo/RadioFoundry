@@ -35,6 +35,9 @@ FM with CTCSS both ways, DMR voice and SMS in simplex and through a repeater or 
 and ID database programming work on a UHF radio. Open: DCS, the tone deviation and the untested VHF image."""
 release = "stable"
 
+[features]
+tx_arm = { state = "n/a", reason = "no transmit arm (hal_radio_t.tx_arm): this radio transmits on its calibration without one" }
+
 # One band per radio, a build choice (board.mk BAND). The first value is the default build; ci and the release
 # build every other one too. board_name: what the radio reports as board= on the debug link
 [[build_options]]
