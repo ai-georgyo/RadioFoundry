@@ -247,8 +247,9 @@ static void hotspot_section(dl_text_t *t)
 	dl_text(t, "hostlink=%s\n", (unsigned)m < 4 ? modes[m] : "?");
 	dl_text(t, "hostlink.left=%s\n", (unsigned)l < 5 ? leaves[l] : "?");
 	dl_text(t, "hostlink.noise=%lu\n", (unsigned long)hostlink_hotspot_noise());
-	dl_text(t, "usb.network=%u\nusb.net_up=%u\n", hostlink_network_mode(),
-		(board.netif != NULL) && board.netif->up());
+	// usb.reattach_tx: the host port's reattaches asked for after a transmission lost it (hostlink.h)
+	dl_text(t, "usb.network=%u\nusb.net_up=%u\nusb.reattach_tx=%u\n", hostlink_network_mode(),
+		(board.netif != NULL) && board.netif->up(), (unsigned)hostlink_reattach_count());
 #if CONFIG_DMR_IP_GATEWAY
 	hostlink_net_stats_t ns;
 	// The three settings fields read in place: no copy of the whole settings on the host task's stack (its deepest
