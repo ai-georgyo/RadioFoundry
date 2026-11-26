@@ -649,6 +649,13 @@ datagram of an NTB only after it. macOS packs several frames into one NTB in a b
 and with one receive NTB the link then went dead both ways for good, re-enumeration included. Also: TinyUSB after
 0.21.0 fixes a DWC2 race on the TX FIFO empty interrupt mask (an IN transfer that never completes).
 
+**9.13 The radio's own transmission can leave the USB controller deaf.** A port that leaves the bus at a key-up usually
+comes back by itself after the release. After several such key-ups it can stop answering the host instead (Linux: "not
+accepting address", error -71) while the firmware runs on, until a power cycle. Without VBUS sensing the radio never
+sees a replug, so a replug doesn't help, and a soft disconnect isn't enough: only a controller reset is
+(`cdc_reattach`). The host link asks for one after a transmission that lost the port ([cps-protocol.md](cps-protocol.md)
+1.1). Rule: never reset the controller while the radio transmits, and give the host its own re-enumeration first.
+
 ## 10. Flash and storage
 
 **10.1 The HR_C7000 data flash driver was stubbed.** Read returned an uninitialized value and program / erase did nothing, so

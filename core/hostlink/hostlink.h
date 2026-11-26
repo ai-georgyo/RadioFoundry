@@ -130,4 +130,26 @@ hostlink_leave_t hostlink_session_check(hostlink_session_t *s, bool connected, b
 // frame as noise, the framer threw bytes away (junk), or HOSTLINK_HOTSPOT_OPEN_MS passed since the 0xE0
 bool hostlink_trial_failed(bool open, bool dropped, bool junk, uint32_t since_entry_ms);
 
+// The host port after a transmission (docs/spec/cps-protocol.md 1.1; hostlink_policy.c, no RTOS: the host tests run
+// it). The radio's own transmission can take a USB port off the bus, or leave its controller deaf to the host until it
+// is reset. A port that was up as a transmission began or while it lasted, and that no host has again
+// HOSTLINK_REATTACH_WAIT_MS after its end, gets the port's reattach (hal_stream_t.reattach), once
+#define HOSTLINK_REATTACH_WAIT_MS	2000	// a host finds a port that left the bus cleanly about 1 s after the end
+						// by itself; a reattach is for one that didn't, so twice that
+
+typedef struct {
+	bool keyed;		// the radio transmitted at the last check
+	bool up;		// a host had the port at the last check
+	bool owed;		// the port was up as a transmission began or while it lasted, no host has had it since
+	uint32_t end_ms;	// when the last transmission ended
+} hostlink_reattach_t;
+
+// Fed on every pass of the host link task. transmitting: the radio is on the air (a hotspot's transmission included);
+// mounted: the port's mounted(). True: ask for the port's reattach now. Never while transmitting; a transmission
+// during the wait restarts it at its own end. A port no host ever had (no cable) is never asked for one, nor one
+// already lost when the transmission began (a reattach no host took included)
+bool hostlink_reattach_check(hostlink_reattach_t *r, bool transmitting, bool mounted, uint32_t now_ms);
+// The reattaches asked for after a transmission since boot (the debug link's usb.reattach_tx)
+uint32_t hostlink_reattach_count(void);
+
 #endif
