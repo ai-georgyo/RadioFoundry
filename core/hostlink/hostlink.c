@@ -42,6 +42,7 @@
 #endif
 #include "debuglink/dlog.h"
 #include "settings/settings.h"
+#include "radio/radio.h"
 #if CONFIG_WATCHDOG
 #include "app/watchdog.h"
 #endif
@@ -95,6 +96,8 @@ static hostlink_session_t session;
 static uint32_t entered_ms;		// when hotspot mode began (idle time before the first whole frame)
 static uint32_t noise_count;		// 0xE0 starts that never opened an MMDVM session (hostlink_hotspot_noise)
 #endif
+static hostlink_reattach_t reattach;	// the host port after a transmission (hostlink_reattach_check)
+static uint32_t reattach_count;
 
 hostlink_mode_t hostlink_mode(void)
 {
@@ -113,6 +116,11 @@ uint32_t hostlink_hotspot_noise(void)
 #else
 	return 0;
 #endif
+}
+
+uint32_t hostlink_reattach_count(void)
+{
+	return reattach_count;
 }
 
 hostlink_leave_t hostlink_last_leave(void)
@@ -463,6 +471,24 @@ static void ppp_switch_now(uint32_t now)
 }
 #endif
 
+// A port that a transmission took from the host and that didn't come back by itself (hostlink.h): its reattach, here
+// in the host link task, which may wait (the reattach waits for the reply before it to leave), never the radio task.
+// The port hears of every transmission, so it resets no controller while the radio is on the air
+static void port_after_tx(const hal_stream_t *port, uint32_t now)
+{
+	if ((port->reattach == NULL) || (port->host == NULL)) {
+		return;		// before radio_on_air: a port without the rule takes no view lock on each pass
+	}
+	bool tx = radio_on_air();
+#if CONFIG_HOTSPOT
+	tx = tx || hotspot_transmitting();	// the hotspot keys the modem from this task, outside the radio's state
+#endif
+	if (hostlink_port_after_tx(&reattach, port, tx, now)) {
+		reattach_count++;
+		dlog("hostlink: host port lost after a transmission: reattach %u", (unsigned)reattach_count);
+	}
+}
+
 void hostlink_settings_changed(void)
 {
 #if CONFIG_DMR_IP_GATEWAY
@@ -565,6 +591,7 @@ static void hostlink_task(void *arg)
 		cps_fast_tick(now);		// the fast codeplug protocol: session time-out, a commit's next sector
 #endif
 		usb_switch_now();
+		port_after_tx(port, now);
 #if CONFIG_NET_PPP
 		ppp_switch_now(now);
 		if (ppp_on && !ppp_running()) {
@@ -580,9 +607,9 @@ static void hostlink_task(void *arg)
 				break;
 			}
 			mmdvm_poll(now);
-			// Never gated on DTR being set, only on it dropping (hostlink.h). The port can't report USB unmount or
-			// suspend apart from DTR yet (hal_stream_t has no such call), so with DTR never set an unplugged host
-			// is noticed by the idle timeout
+			// Never gated on DTR being set, only on it dropping (hostlink.h). The session doesn't use the port's
+			// host() (USB unmount or suspend) yet, only DTR, so with DTR never set an unplugged host is noticed by
+			// the idle timeout
 			uint32_t last = (mmdvm_last_frame_ms() != 0) ? mmdvm_last_frame_ms() : entered_ms;
 
 			hostlink_leave_t why = hostlink_session_check(&session, port->connected(), true, exit_now,

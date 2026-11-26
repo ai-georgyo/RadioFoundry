@@ -1394,6 +1394,12 @@ overwritten: tuning data, fonts, voice prompts, pictures, the model and serial n
 | PHONE_DET | contact C-1 behind 10 k, on PA13 (SWDIO) | read from `GPIOA->IDR` for the view only (`board.phone_det`). What pulls it low is open |
 | External PTT, microphone, speaker | contacts C-9, C-10, C-7 / C-8 | external PTT only |
 
+On one radio the USB link dropped for the length of each key-up and came back after it, the radio running on; why is
+open (question 43). On 2026-11-25 the port also went deaf after several key-ups: the host saw a device and got no
+answer from it until the radio was switched off and on. A replug can't help on this board, since no VBUS reaches the
+MCU and the radio never sees one. The firmware now resets the USB controller by itself after a transmission that left
+the port without a host ([cps-protocol.md](cps-protocol.md) 1.1): untested on a radio.
+
 ---
 
 ## 12. On the board and not used
@@ -1761,3 +1767,4 @@ the source comments use.
 | 40 | Another radio's valid table in the window or the record: no path replaces it (10.3). An override behind the identity gate is designed, not written | a radio that cannot get its own table back | The owner's decision |
 | 41 | Going back to the maker's firmware needs the whole backup written back; no tool in the tree writes the whole chip (10.3) | the maker's data RadioFoundry overwrote after the claim | The owner's decision whether to build one |
 | 42 | The arm itself: lifting it (`CS7000P_TX_ARM_REQUIRED` 0, 13.2) also lifts the test TX limit list's requirement | a radio that transmits on the maker's values without the owner | Not before every stage's checks have passed on the radio; the owner's decision |
+| 43 | **The USB link at a key-up.** On one radio (2026-11-25) the host saw the USB device leave the bus at each key-up, injected or physical PTT, and enumerate again after the release; the radio did not restart. Nothing in the firmware touches USB at a key-up; RF from the antenna on the programming cable is suspected, not shown. The same day the port also went deaf after several key-ups (the host saw a device and got no answer, a replug changed nothing) until the radio was switched off and on; a replug can't help on this board (no VBUS, section 11). The firmware now resets the controller by itself after a transmission that left the port without a host ([cps-protocol.md](cps-protocol.md) 1.1): untested on a radio | the debug link's stops (`radio tx-arm off`, `radio tx-limit block`) can't be relied on while keyed; `ptt --seconds` loses its release, and the radio's PTT time-out ends the key-up (bring-up 11.1) | The host's kernel log at key-ups with the cable routed away from the antenna, with a ferrite on it, and into a dummy load instead of the antenna |

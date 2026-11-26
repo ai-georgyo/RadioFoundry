@@ -27,6 +27,45 @@ so the rest of the request is never taken for a debug or MMDVM frame. Limitation
 doesn't give (`D`, unknown bytes) that pauses for more than 3 ms after a data byte of `0xA5` may still lose its
 next bytes to a debug frame.
 
+### 1.1 The port after a transmission
+
+A radio's own transmission can take its USB port off the bus, or leave the USB controller deaf to the host: the host
+sees a device and gets no answer from it, until a power cycle. A radio without VBUS sensing never sees a replug, so a
+replug can't clear that. The host link (`core/hostlink`) asks for the port's reattach by itself when a transmission
+left the port without a host: the controller from reset, as a power-on has it. Whether that brings back a deaf port is
+not confirmed on a radio. The host link does so for a `board.host_port` that has `reattach` and `host`
+(`hal_stream_t`): the USB port of `drivers/usb`. A UART host port has neither, and the rule does nothing there.
+
+`host()` reads the port as `HAL_STREAM_HOST_UP` (configured, the bus awake), `HAL_STREAM_HOST_IDLE` (configured, the
+bus suspended: a host that put an unused port to sleep, or a pulled cable without VBUS sensing) or
+`HAL_STREAM_HOST_NONE` (not configured: no host yet, a host that reset the port and got no answer, the stack down).
+
+| Step | Rule |
+|---|---|
+| On the air | `radio_on_air()` (the radio in `RS_TX`: a call, data, APRS, a beacon; or a repeater role's keyed slot) or `hotspot_transmitting()` |
+| Owed | the most a host had of the port (`UP` above `IDLE`) at the host link's pass before the key-up or during the transmission. The pass before counts because the port can go at the key-up itself |
+| Wait | `HOSTLINK_REATTACH_WAIT_MS`, 2 s, from the end of the transmission. A host finds a port that left the bus cleanly by itself in about 1 s; then nothing is asked. A port `UP` again at any time after the end owes nothing. A transmission during the wait restarts it at its own end. Nothing is asked while the radio transmits |
+| Ask | `reattach()`, once, at the end of the wait: for a port owed `UP` that isn't `UP`, or one owed `IDLE` that is `NONE` (a host woke a sleeping port, reset it and got no answer). The USB task stops the stack, resets the controller and starts it again after 0.5 s off the bus, and again every 4 s for about a minute until a host takes the port (as a PA key run's flag does, [pa-keyup.md](pa-keyup.md) 4) |
+| Not asked | for a port no host had (no cable); one already `NONE` before the key-up (a reattach no host took, a host that gave up on it); one that slept through the transmission and is still `IDLE` after the wait (an idle host, a pulled cable). The next ask needs a host to have had the port again |
+| On the air during a reattach | the host link tells the port on every pass (`transmitting()`). No try resets the controller while the radio transmits: a try due then is made at the end, and the next 4 s after it |
+
+The rule is `hostlink_reattach_check` and its wiring to the port `hostlink_port_after_tx`
+(`core/hostlink/hostlink_policy.c`, host test `hostlinkReattachTest`). It runs in
+the host link task, never the radio task: a reattach waits 50 ms for the reply before it to leave. The debug link's
+`hotspot` section counts the asks (`usb.reattach_tx`), and each one logs `hostlink: host port lost after a
+transmission: reattach N`.
+
+In the network personality the reattach keeps the personality: the host finds the network adapter again, and its
+interface goes down and up. Meanwhile the adapter reads as down (`usb.net_up=0`): the gateway sends nothing to it, and
+the adapter's stall and quiet timers start again when the host configures it. A frame left queued for the host goes
+out then. USRP voice over the adapter ([usb-audio.md](usb-audio.md)) stops with the link: what the radio sends meanwhile
+is dropped. A PA key run's reattach does the same there. A program that had the serial port open opens it again.
+
+Limits. A controller that misses both the host's bus reset and the idle bus keeps reading as `UP` and gets no
+reattach; one asleep at the key-up that misses the host's bus reset keeps reading as `IDLE`, likewise. Neither is
+seen so far: what a deaf controller reads is not known. A pulled cable that reads a bus reset at a transmission gets
+one reattach and its retries, with no host to take them.
+
 ## 2. The open-firmware shim (`core/cps`, `CONFIG_CPS_OPENFW`)
 
 `core/cps/cps_openfw.c` is the protocol engine with no RTOS or USB in it. `cps_port.c` hooks it to the host link

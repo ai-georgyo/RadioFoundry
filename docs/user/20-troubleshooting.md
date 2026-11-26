@@ -56,6 +56,7 @@ also from the installer's [manual install kit](02-installing.md#install-from-the
 | The radio is stuck on the hotspot screen | A host has the serial port open. Press **OK**, or stop the host program. Turn **Settings > Connections > Hotspot allowed** off to prevent it |
 | Zone or channel changed by itself | A scan is running (SCAN in the status line). Press **Back** on Home |
 | qdmr, rfoundry or a hotspot host doesn't find the radio's serial port | USB is in network mode. Switch back in **Tools > USB network**, or turn off **Settings > Connections > USB network at start** and restart. The debug link and MMDVM also answer on UDP port 3334 ([USB network](15-usb-network.md#serial-tools-in-network-mode)) |
+| The computer loses the radio's USB port while it transmits | The radio's own transmission can upset its USB link, more so with the antenna near the cable. The computer usually finds the port again about a second after the transmission. If it hasn't after 2 s, the radio resets its USB port by itself, and tries again for about a minute. Programs that had the port open must open it again. Route the cable away from the antenna. If the port still doesn't come back, turn the radio off and on: on a radio that can't sense the cable, replugging it doesn't help |
 | In network mode the computer gets no address | The radio goes back to serial when the computer doesn't set the adapter up within 10 s. Check that the computer shows a new network adapter, then switch again |
 
 ## Settings are not kept

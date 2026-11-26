@@ -156,6 +156,10 @@ After the reply, flag bit 1 has the host port leave the bus and come back (`hal_
 its stack, resets the controller and starts again, every 4 s for about a minute until a host takes it). Flag bit 2
 restarts the radio instead. A restart loses the RAM settings: the constants, the test TX limit and `pa_keyrun.last`.
 A host can give up on a radio's USB port while the radio transmits, and then ignore the port's return for a while.
+A transmission can also leave the controller deaf to the host until it is reset. Outside a key run the host link
+asks for the same reattach by itself after a transmission that left the port without a host
+([cps-protocol.md](cps-protocol.md) 1.1). A key run holds the host link, so its keys never reach that rule: the flag
+stays the way to ask for one after a run. No try of either resets the controller while the radio transmits.
 A restart brings it back where a reattach doesn't. `--key-run` (`reattach`) or `--key-run restart` asks for one after
 every run and opens the link again. After a restart it tunes the radio again and counts the keys in the capture. A
 radio whose USB drops at every key is calibrated by one command.

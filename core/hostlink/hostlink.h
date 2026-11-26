@@ -40,6 +40,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "config.h"
+#include "hal_stream.h"
 
 #define HOSTLINK_HOTSPOT_IDLE_MS	20000	// a standard host polls GET_STATUS every 250 ms; 20 s of nothing = gone
 #define HOSTLINK_HOTSPOT_OPEN_MS	500	// the trial's two frames come this soon after its 0xE0 (a host sends its
@@ -129,5 +130,33 @@ hostlink_leave_t hostlink_session_check(hostlink_session_t *s, bool connected, b
 // A trial begun by a 0xE0 (see the top of this file) failed: still in it (open = !mmdvm_in_trial()) and mmdvm dropped a
 // frame as noise, the framer threw bytes away (junk), or HOSTLINK_HOTSPOT_OPEN_MS passed since the 0xE0
 bool hostlink_trial_failed(bool open, bool dropped, bool junk, uint32_t since_entry_ms);
+
+// The host port after a transmission (docs/spec/cps-protocol.md 1.1; hostlink_policy.c, no RTOS: the host tests run
+// it). The radio's own transmission can take a USB port off the bus, or leave its controller deaf to the host. A port a
+// host had as a transmission began or while it lasted, and that no host has awake again HOSTLINK_REATTACH_WAIT_MS
+// after its end, gets the port's reattach (hal_stream_t.reattach), once: when it was awake then and isn't now, or when
+// it was asleep then (a host that suspended it) and has lost its configuration since (a host reset it and got no answer)
+#define HOSTLINK_REATTACH_WAIT_MS	2000	// a host finds a port that left the bus cleanly about 1 s after the end
+						// by itself; a reattach is for one that didn't, so twice that
+
+typedef struct {
+	bool keyed;		// the radio transmitted at the last check
+	uint8_t was;		// the port's hal_stream_host_t at the last check
+	uint8_t owed;		// the most a host had of the port as a transmission began or while it lasted, until a host
+				// has it awake again (HAL_STREAM_HOST_NONE: nothing owed)
+	uint32_t end_ms;	// when the last transmission ended
+} hostlink_reattach_t;
+
+// Fed on every pass of the host link task. transmitting: the radio is on the air (a hotspot's transmission included);
+// host: the port's host(). True: ask for the port's reattach now. Never while transmitting; a transmission during the
+// wait restarts it at its own end. Never for a port no host had (no cable), nor one already unconfigured when the
+// transmission began (a reattach no host took included), nor one still configured on a suspended bus after a
+// transmission that began with it so (an idle host, a pulled cable)
+bool hostlink_reattach_check(hostlink_reattach_t *r, bool transmitting, hal_stream_host_t host, uint32_t now_ms);
+// The rule on a port, as the host link task runs it on each pass: tells the port whether the radio transmits, and asks
+// for its reattach when the rule says so (true then). Nothing for a port without reattach or host
+bool hostlink_port_after_tx(hostlink_reattach_t *r, const hal_stream_t *port, bool transmitting, uint32_t now_ms);
+// The reattaches asked for after a transmission since boot (the debug link's usb.reattach_tx)
+uint32_t hostlink_reattach_count(void);
 
 #endif

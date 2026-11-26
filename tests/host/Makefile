@@ -975,9 +975,17 @@ TESTS   += mmdvmTest
 mmdvmTest: $(MMDVM) $(wildcard $(CORE)/hotspot/*.h $(CORE)/hostlink/*.h $(CORE)/dmr/call/dmr_lc.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ $(MMDVM)
 
+# The host link's rule for the host port's reattach after a transmission, and its wiring to the port
+# (core/hostlink/hostlink_policy.c)
+TESTS   += hostlinkReattachTest
+hostlinkReattachTest: hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c $(CORE)/hostlink/hostlink.h \
+                      $(ROOT)/hal/hal_stream.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c
+
 run: run-mmdvm
-run-mmdvm: mmdvmTest
+run-mmdvm: mmdvmTest hostlinkReattachTest
 	./mmdvmTest
+	./hostlinkReattachTest
 
 # The hotspot's SFR mode (core/hotspot/hotspotSfr.c on core/dmr/sfrRunner.c and sfr.c) through mmdvm.c and hotspot.c,
 # against the simulated modem

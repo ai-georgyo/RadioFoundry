@@ -40,6 +40,7 @@ static volatile usb_mode_t mode = USB_MODE_SERIAL;
 static SemaphoreHandle_t rx_ready;
 static volatile bool started;
 static volatile bool reinit_pending;	// cdc_reattach asked the USB task to start the stack again
+static volatile bool on_air;		// the radio transmits (the host link says so): a reattach's try waits for the end
 // The stack is up: false while a reattach takes it down and starts it again. The CDC calls of other tasks run under
 // stack_lock, so none is inside the stack while it is taken down
 static volatile bool live;
@@ -297,7 +298,7 @@ static void usb_task(void *arg)
 	live = true;
 	started = true;
 	uint8_t tries = 0;
-	TickType_t at = 0;
+	TickType_t at = 0;	// when the reattach was asked for, then when its last try was made
 	for (;;) {
 		tud_task_ext(REINIT_POLL_MS, false);	// the stack's events, and now and then a reinit asked for
 		if (reinit_pending) {
@@ -307,11 +308,16 @@ static void usb_task(void *arg)
 		} else if (tries > 0 && tud_mounted()) {
 			tries = 0;			// the host has the port again
 		}
-		if (tries > 0 && (xTaskGetTickCount() - at) >= pdMS_TO_TICKS(REATTACH_RETRY_MS) * (REATTACH_TRIES - tries)) {
+		// The first try at once, the next REATTACH_RETRY_MS after the one before. None while the radio transmits: the
+		// reset would come in the middle of the very thing that upsets the port, and a try held until the end is
+		// counted from there, so the next can't follow it before a host has had its chance
+		TickType_t wait = (tries == REATTACH_TRIES) ? 0 : pdMS_TO_TICKS(REATTACH_RETRY_MS);
+		if (tries > 0 && !on_air && (xTaskGetTickCount() - at) >= wait) {
 			// What a power-on does: the stack and the controller from reset, the host seeing an unplug for the gap.
 			// Again until a host takes the port: one that gave up on it while the radio transmitted may ignore the
 			// first comeback, as it does a replug made too soon
 			tries--;
+			at = xTaskGetTickCount();
 			xSemaphoreTake(stack_lock, portMAX_DELAY);	// a CDC call still running ends first
 			live = false;
 			xSemaphoreGive(stack_lock);
@@ -441,6 +447,22 @@ static void cdc_reattach(void)
 	reinit_pending = true;
 }
 
+// Either personality. A suspended bus is IDLE, not UP (usbNcmIsUp's reasoning: without VBUS sensing a pulled cable
+// reads only as the bus going idle); a bus reset the controller saw clears the configuration, so a host that reset the
+// port and got no answer reads NONE
+static hal_stream_host_t cdc_host(void)
+{
+	if (!live || !tud_mounted()) {
+		return HAL_STREAM_HOST_NONE;
+	}
+	return tud_suspended() ? HAL_STREAM_HOST_IDLE : HAL_STREAM_HOST_UP;
+}
+
+static void cdc_transmitting(bool on)
+{
+	on_air = on;
+}
+
 const hal_stream_t usb_cdc_stream = {
 	.start = cdc_start,
 	.connected = cdc_connected,
@@ -448,4 +470,6 @@ const hal_stream_t usb_cdc_stream = {
 	.wait_rx = cdc_wait_rx,
 	.write = cdc_write,
 	.reattach = cdc_reattach,
+	.host = cdc_host,
+	.transmitting = cdc_transmitting,
 };
