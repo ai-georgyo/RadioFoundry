@@ -106,9 +106,10 @@ REQ_MAX = 64
 INJECT_MAX_S = 10.0
 # ptt: a port lost during the key-up that no host finds again by itself is reset by the radio after the transmission
 # (docs/spec/cps-protocol.md 1.1): its wait after the end (HOSTLINK_REATTACH_WAIT_MS), the reattach's flush and pick-up
-# (REATTACH_FLUSH_MS, REINIT_POLL_MS) and time off the bus (REATTACH_GAP_MS), one more try for a host that ignored the
-# first (REATTACH_RETRY_MS), and an enumeration
-PTT_PORT_REATTACH_S = 2.0 + 0.15 + 0.5 + 4.0 + 0.5 + 1.0
+# (REATTACH_FLUSH_MS, REINIT_POLL_MS), one more try for a host that ignored the first (REATTACH_RETRY_MS from the
+# first try's start, so the first try's time off the bus is inside it) and its pick-up, its time off the bus
+# (REATTACH_GAP_MS), and an enumeration
+PTT_PORT_REATTACH_S = 2.0 + 0.15 + 4.0 + 0.1 + 0.5 + 1.0
 PTT_LINK_BACK_S = 10.0      # ptt: how long past the PTT's time-out a port lost during the key-up may take to come back
 PTT_LINK_POLL_S = 0.5       # ptt: how often the lost port is tried meanwhile
 
