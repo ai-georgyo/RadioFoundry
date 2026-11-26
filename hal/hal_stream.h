@@ -25,6 +25,12 @@ typedef struct {
 	// Optional (NULL: none): leave the bus and come back, so the host sees an unplug and finds the port again (USB).
 	// For a host whose USB port gave up on the radio during its own transmission
 	void (*reattach)(void);
+	// Optional (NULL: can't tell): a host has the port, open or not (USB: configured and the bus not suspended). With
+	// reattach, the host link asks for one when a transmission lost the port (docs/spec/cps-protocol.md 1.1)
+	bool (*mounted)(void);
+	// Optional, with reattach: the radio transmits (true) or not, told on every pass of the host link. Meanwhile a
+	// reattach asked for, or its next try, waits for the end rather than reset the controller on the air
+	void (*transmitting)(bool on);
 } hal_stream_t;
 
 #endif
