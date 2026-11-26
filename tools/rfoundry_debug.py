@@ -354,13 +354,18 @@ class DebugLinkError(Exception):
 
 
 class PttLinkLost(DebugLinkError):
-    """The link was lost after the radio accepted a PTT down: the release, or its answer, didn't get through (the port
-    gone, or no answer). The radio still ends the injected PTT by itself, timeout_ms after the down."""
+    """The link was lost during a PTT key-up: the release, or its answer, didn't get through (the port gone, or no
+    answer). down: None when the radio accepted the PTT down, else the down's own failure, lost with the link too, so
+    the radio may or may not have keyed. Either way the radio ends an injected PTT by itself, timeout_ms after the
+    down."""
 
-    def __init__(self, cause, timeout_ms):
-        super().__init__(f"the debug link dropped during the key-up ({str(cause) or type(cause).__name__})")
+    def __init__(self, cause, timeout_ms, down=None):
+        what = (f"the PTT down not confirmed ({str(down) or type(down).__name__}) and the debug link dropped"
+                if down is not None else "the debug link dropped during the key-up")
+        super().__init__(f"{what} ({str(cause) or type(cause).__name__})")
         self.cause = cause
         self.timeout_ms = timeout_ms
+        self.down = down
 
 
 def crc16(data, crc=0xFFFF):
@@ -1399,24 +1404,29 @@ class DebugLink:
 
     def ptt_for(self, seconds, sleep=time.sleep):
         """Key PTT for seconds (<= 10), then release. The firmware's time-out is set just past the hold, so a lost
-        host can't leave it keyed; the release is sent in any case. A release lost with the link after the down was
-        accepted (the port gone, or no answer) raises PttLinkLost, which carries that time-out."""
+        host can't leave it keyed; the release is sent in any case. A release lost with the link (the port gone, or no
+        answer) raises PttLinkLost, which carries that time-out; its down is the PTT down's own failure when the down
+        was lost with the link too (it may have keyed the radio), else None. A refused down stays that error."""
         if seconds <= 0 or seconds > INJECT_MAX_S:
             raise DebugLinkError(f"PTT hold {seconds} s refused: 0 < S <= {INJECT_MAX_S:g}")
         timeout_ms = min(int(seconds * 1000) + 300, 10000)
-        down = False
+        down = None
         try:
-            self.ptt(True, timeout_ms)
-            down = True
+            try:
+                self.ptt(True, timeout_ms)
+            except (DebugLinkError, OSError) as e:
+                down = e
+                raise
             sleep(seconds)
         finally:
             try:
                 self.ptt(False)
             except (DebugLinkError, OSError) as e:
-                # An answer with an error status is the radio's; a PTT down that failed stays that error
-                if not down or getattr(e, "status", None) is not None:
-                    raise
-                raise PttLinkLost(e, timeout_ms) from e
+                if getattr(down, "status", None) is not None:
+                    raise down from e   # refused: nothing keyed, the refusal is the answer
+                if getattr(e, "status", None) is not None:
+                    raise               # the radio answered the release with an error
+                raise PttLinkLost(e, timeout_ms, down) from e
 
     def log(self):
         """(dropped lines, text) of everything in the ring"""
@@ -3569,7 +3579,8 @@ def cmd_aprobe(link, a):
 def cmd_ptt(link, a, open_link=None, clock=time.monotonic, sleep=time.sleep, back_s=PTT_LINK_BACK_S):
     """ptt --seconds S. A link lost during the key-up (on some radios the USB link drops while they transmit) ends in
     a note, not a traceback: the radio releases an injected PTT by its own time-out, so the port is waited for, opened
-    again as at the start (open_link, for tests), the release sent again and the view checked for an injected key."""
+    again as at the start (open_link, for tests), the release sent again and the view checked for an injected key.
+    A PTT down whose answer was lost with the link is waited out the same way, and still exits 2 (not confirmed)."""
     try:
         link.ptt_for(a.seconds, sleep=sleep)
     except PttLinkLost as e:
@@ -3599,6 +3610,9 @@ def cmd_ptt(link, a, open_link=None, clock=time.monotonic, sleep=time.sleep, bac
             why = e
             continue
         print("PTT released: the link came back, the release was sent again and nothing injected is held")
+        if lost.down is not None:     # a PTT down that failed is still an error, released or not
+            print(f"rfoundry_debug: the PTT down was not confirmed ({lost.down})", file=sys.stderr)
+            return 2
         return 0
     print(f"rfoundry_debug: the release is not confirmed within {wait_s:g} s ({why}).\n"
           "Without the link: release PTT on the radio, or let its TX timeout end the key-up, or switch the radio off",
@@ -4594,28 +4608,39 @@ def self_test():
 
     class FakePtt(DebugLink):
         """PTT and the link view as core/debuglink answers them. drop: every request after an accepted PTT down
-        fails ("gone": the port's I/O error, "quiet": no answer); refuse: the PTT down is refused; stuck: a release
-        leaves the PTT held. log: the requests, shared by the links of one test."""
+        fails ("gone": the port's I/O error, "quiet": no answer); at "down": the down keys the radio but its own
+        answer is lost that way; refuse: the PTT down is refused (and with drop, the link lost after it); refuse_up:
+        the release is refused; stuck: a release leaves the PTT held. log: the requests, shared by the links of one
+        test."""
 
-        def __init__(self, log, drop=None, refuse=False, stuck=False, held=False):
+        def __init__(self, log, drop=None, refuse=False, stuck=False, held=False, at="up", refuse_up=False):
             self.timeout, self.seq, self.buf, self.s, self.port = 0.05, 0, bytearray(), self, "test"
             self.log, self.drop, self.refuse, self.stuck, self.held, self.gone = log, drop, refuse, stuck, held, False
+            self.at, self.refuse_up = at, refuse_up
+
+        def lost(self, cmd):
+            if self.drop == "quiet":
+                return DebugLinkError(f"no answer to command 0x{cmd:02X} within 0.05 s on test")
+            return port_gone("write failed: [Errno 5] Input/output error")
 
         def close(self):
             self.log.append("close")
 
         def request(self, cmd, payload=b"", **kw):
             if self.gone:
-                if self.drop == "quiet":
-                    raise DebugLinkError(f"no answer to command 0x{cmd:02X} within 0.05 s on test")
-                raise port_gone("write failed: [Errno 5] Input/output error")
+                raise self.lost(cmd)
             if cmd == PTT:
                 down, ms = struct.unpack("<BH", payload)
                 self.log.append(("ptt", down, ms))
                 if down and self.refuse:
+                    self.gone = bool(self.drop)
+                    raise DebugLinkError("command 0x07: refused", ST_REFUSED)
+                if not down and self.refuse_up:
                     raise DebugLinkError("command 0x07: refused", ST_REFUSED)
                 self.held = bool(down) or (self.held and self.stuck)
                 self.gone = bool(down and self.drop)
+                if self.gone and self.at == "down":
+                    raise self.lost(cmd)
                 return 0, struct.pack("<H", ms)
             if cmd == GET_VIEW and payload[0] == VIEW_SECTIONS.index("link"):
                 self.log.append("view")
@@ -4624,19 +4649,26 @@ def self_test():
             raise DebugLinkError("unexpected request", ST_BAD_ARG)
 
     class Clock:
-        def __init__(self):
-            self.t = 0.0
+        """interrupt: the first sleep (the hold) is a Ctrl-C. A wait that never ends fails instead of hanging"""
+
+        def __init__(self, interrupt=False):
+            self.t, self.interrupt = 0.0, interrupt
 
         def __call__(self):
             return self.t
 
         def sleep(self, s):
+            if self.interrupt:
+                self.interrupt = False
+                raise KeyboardInterrupt
             self.t += s
+            if self.t > 1000:
+                raise RuntimeError("a wait that doesn't end")
 
-    def ptt_run(link, back=None, seconds=1):
+    def ptt_run(link, back=None, seconds=1, interrupt=False):
         """cmd_ptt on link; back: the links the reopened port gives, in turn (None: it never comes back).
         (exit code or the exception raised, stdout, stderr, clock)"""
-        clk, links = Clock(), list(back or [])
+        clk, links = Clock(interrupt), list(back or [])
 
         def open_link():
             if not links:
@@ -4651,7 +4683,7 @@ def self_test():
             try:
                 rc = cmd_ptt(link, argparse.Namespace(seconds=seconds, port="test"), open_link, clk, clk.sleep,
                              back_s=2.0)
-            except Exception as e:      # the handling missing: what escaped is the failure
+            except BaseException as e:  # the handling missing: what escaped is the failure (or the Ctrl-C)
                 rc = e
         return rc, out.getvalue(), err.getvalue(), clk.t
 
@@ -4681,6 +4713,32 @@ def self_test():
     check(isinstance(rc, DebugLinkError) and not isinstance(rc, PttLinkLost) and rc.status == ST_REFUSED and
           log == [("ptt", 1, 1300), ("ptt", 0, 10000)] and out == err == "",
           "ptt: a refused PTT down stays that error, the release still sent")
+    log = []
+    rc, out, err, t = ptt_run(FakePtt(log, refuse=True, drop="gone"))
+    check(isinstance(rc, DebugLinkError) and not isinstance(rc, PttLinkLost) and rc.status == ST_REFUSED and
+          log == [("ptt", 1, 1300)] and out == err == "" and t == 0,
+          "ptt: a refused PTT down and the link lost at the release: still the refusal, no wait")
+    log = []
+    rc, out, err, t = ptt_run(FakePtt(log, refuse_up=True))
+    check(isinstance(rc, DebugLinkError) and not isinstance(rc, PttLinkLost) and rc.status == ST_REFUSED and
+          log == [("ptt", 1, 1300), ("ptt", 0, 10000)] and out == err == "",
+          "ptt: a release the radio refuses is that error, not a lost link")
+    log = []
+    rc, out, err, t = ptt_run(FakePtt(log), interrupt=True)
+    check(isinstance(rc, KeyboardInterrupt) and log == [("ptt", 1, 1300), ("ptt", 0, 10000)] and out == err == "",
+          "ptt: Ctrl-C during the hold: the release sent, the Ctrl-C passed on")
+    for drop in ("gone", "quiet"):
+        log = []
+        back = FakePtt(log, held=True)
+        rc, out, err, t = ptt_run(FakePtt(log, drop=drop, at="down"), [back])
+        check(rc == 2 and "PTT down not confirmed" in err and "PTT down was not confirmed" in err and
+              "release was sent again" in out and log == [("ptt", 1, 1300), "close", ("ptt", 0, 10000), "view", "close"]
+              and not back.held,
+              f"ptt: the PTT down's answer lost ({drop}) with the link: released again, still exit 2")
+    log = []
+    rc, out, err, t = ptt_run(FakePtt(log, drop="gone", at="down"))
+    check(rc == 1 and "not confirmed within" in err and "switch the radio off" in err and out == "",
+          "ptt: the PTT down's answer lost and the link never back: exit 1 and what to do without it")
     # A detour's steps (debuglink.md 7.4): the RADIO and PTT requests the radio command would make, and waits
     items = detour_steps(["radio freq 461.0875", "wait 500", "ptt 2"])
     check(items == [(RADIO, bytes([5]) + struct.pack("<I", 461087500)), (0, 500), (PTT, struct.pack("<BH", 1, 2300)),
