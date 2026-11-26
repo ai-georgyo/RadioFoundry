@@ -447,11 +447,15 @@ static void cdc_reattach(void)
 	reinit_pending = true;
 }
 
-// Either personality: a host that configured the device and keeps the bus awake. A suspended bus counts as no host
-// (usbNcmIsUp's reasoning: without VBUS sensing a pulled cable reads only as the bus going idle)
-static bool cdc_mounted(void)
+// Either personality. A suspended bus is IDLE, not UP (usbNcmIsUp's reasoning: without VBUS sensing a pulled cable
+// reads only as the bus going idle); a bus reset the controller saw clears the configuration, so a host that reset the
+// port and got no answer reads NONE
+static hal_stream_host_t cdc_host(void)
 {
-	return live && tud_mounted() && !tud_suspended();
+	if (!live || !tud_mounted()) {
+		return HAL_STREAM_HOST_NONE;
+	}
+	return tud_suspended() ? HAL_STREAM_HOST_IDLE : HAL_STREAM_HOST_UP;
 }
 
 static void cdc_transmitting(bool on)
@@ -466,6 +470,6 @@ const hal_stream_t usb_cdc_stream = {
 	.wait_rx = cdc_wait_rx,
 	.write = cdc_write,
 	.reattach = cdc_reattach,
-	.mounted = cdc_mounted,
+	.host = cdc_host,
 	.transmitting = cdc_transmitting,
 };

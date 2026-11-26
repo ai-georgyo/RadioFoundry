@@ -1027,10 +1027,12 @@ TESTS   += mmdvmTest
 mmdvmTest: $(MMDVM) $(wildcard $(CORE)/hotspot/*.h $(CORE)/hostlink/*.h $(CORE)/dmr/call/dmr_lc.h)
 	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ $(MMDVM)
 
-# The host link's rule for the host port's reattach after a transmission (core/hostlink/hostlink_policy.c)
+# The host link's rule for the host port's reattach after a transmission, and its wiring to the port
+# (core/hostlink/hostlink_policy.c)
 TESTS   += hostlinkReattachTest
-hostlinkReattachTest: hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c $(CORE)/hostlink/hostlink.h
-	$(CC) $(CFLAGS) -Wshadow -o $@ hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c
+hostlinkReattachTest: hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c $(CORE)/hostlink/hostlink.h \
+                      $(ROOT)/hal/hal_stream.h
+	$(CC) $(CFLAGS) -I$(ROOT)/hal -Wshadow -o $@ hostlinkReattachTest.c $(CORE)/hostlink/hostlink_policy.c
 
 run: run-mmdvm
 run-mmdvm: mmdvmTest hostlinkReattachTest
