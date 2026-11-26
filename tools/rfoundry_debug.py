@@ -112,7 +112,12 @@ SOF1, SOF2 = 0xA5, 0x5A
 HDR = 6
 REQ_MAX = 64
 INJECT_MAX_S = 10.0
-PTT_LINK_BACK_S = 5.0       # ptt: how long past the PTT's time-out a port lost during the key-up may take to come back
+# ptt: a port lost during the key-up that no host finds again by itself is reset by the radio after the transmission
+# (docs/spec/cps-protocol.md 1.1): its wait after the end (HOSTLINK_REATTACH_WAIT_MS), the reattach's flush and pick-up
+# (REATTACH_FLUSH_MS, REINIT_POLL_MS) and time off the bus (REATTACH_GAP_MS), one more try for a host that ignored the
+# first (REATTACH_RETRY_MS), and an enumeration
+PTT_PORT_REATTACH_S = 2.0 + 0.15 + 0.5 + 4.0 + 0.5 + 1.0
+PTT_LINK_BACK_S = 10.0      # ptt: how long past the PTT's time-out a port lost during the key-up may take to come back
 PTT_LINK_POLL_S = 0.5       # ptt: how often the lost port is tried meanwhile
 
 PING, VERSION, GET_DIAG, RESET_COUNTERS, SCREENSHOT, KEY, PTT, GET_LOG, GET_VIEW, RADIO, INFO_CHIP, READ_MEM, \
@@ -4665,7 +4670,7 @@ def self_test():
             if self.t > 1000:
                 raise RuntimeError("a wait that doesn't end")
 
-    def ptt_run(link, back=None, seconds=1, interrupt=False):
+    def ptt_run(link, back=None, seconds=1, interrupt=False, back_s=2.0):
         """cmd_ptt on link; back: the links the reopened port gives, in turn (None: it never comes back).
         (exit code or the exception raised, stdout, stderr, clock)"""
         clk, links = Clock(interrupt), list(back or [])
@@ -4682,7 +4687,7 @@ def self_test():
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
                 rc = cmd_ptt(link, argparse.Namespace(seconds=seconds, port="test"), open_link, clk, clk.sleep,
-                             back_s=2.0)
+                             back_s=back_s)
             except BaseException as e:  # the handling missing: what escaped is the failure (or the Ctrl-C)
                 rc = e
         return rc, out.getvalue(), err.getvalue(), clk.t
@@ -4704,6 +4709,15 @@ def self_test():
     check(rc == 1 and "dropped during the key-up" in err and "not confirmed" in err and "release PTT" in err and
           "TX timeout" in err and "switch the radio off" in err and 1 + 3.3 <= t < 1 + 3.3 + PTT_LINK_POLL_S + 0.01 and
           out == "", "ptt: the link never back: exit 1 and what to do without it, after the time-out and the bound")
+    # The bound covers a port the radio had to reset after the key-up, with a second try: the key-up ended by the
+    # radio's time-out (1.3 s), the port back PTT_PORT_REATTACH_S later. Tried every PTT_LINK_POLL_S from the release
+    log = []
+    back_at = 1.3 + PTT_PORT_REATTACH_S
+    misses = sum(1 for i in range(1, 1000) if 1 + i * PTT_LINK_POLL_S < back_at)
+    rc, out, err, t = ptt_run(FakePtt(log, drop="gone"), [None] * misses + [FakePtt(log, held=True)],
+                              back_s=PTT_LINK_BACK_S)
+    check(rc == 0 and "release was sent again" in out and back_at <= t <= 1 + 1.3 + PTT_LINK_BACK_S,
+          "ptt: a port back only after the radio's reattach and its next try: within the default bound")
     log = []
     rc, out, err, t = ptt_run(FakePtt(log, drop="gone"), [FakePtt(log, held=True, stuck=True)])
     check(rc == 1 and "not confirmed" in err and "injected keys still held" in err,

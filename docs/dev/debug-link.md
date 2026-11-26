@@ -56,11 +56,12 @@ The HIL tests use the `DebugLink` class from the same module.
 Injected PTT ends after 10 s at most, and the radio's own transmit checks still apply. `ptt --seconds S` sets the
 radio's PTT time-out just past the hold, so the radio ends the key-up by itself when the release never arrives. If
 the link drops during the key-up (the port gone, or no answer, at the release or already at the PTT down), the tool
-says so instead of the release, waits up to a few seconds past that time-out for the port, sends the release again
-and reads the view to check that no injected key is held. Exit 0 when that is confirmed, 2 when it is but the PTT
-down itself was not, else 1 with what to do without the link. One injected key at a time, each held at most 10 s,
-40 ms apart. Radio requests are rate limited. Nothing in the debug link writes internal flash or option bytes. See
-[debuglink.md](../spec/debuglink.md) section 4.
+says so instead of the release, waits up to 10 s past that time-out for the port (time for the radio's own reset of a
+port the transmission left without a host, and one more try: [cps-protocol.md](../spec/cps-protocol.md) 1.1), sends
+the release again and reads the view to check that no injected key is held. Exit 0 when that is confirmed, 2 when it
+is but the PTT down itself was not, else 1 with what to do without the link. One injected key at a time, each held
+at most 10 s, 40 ms apart. Radio requests are rate limited. Nothing in the debug link writes internal flash or option
+bytes. See [debuglink.md](../spec/debuglink.md) section 4.
 
 ## Adding a command
 
