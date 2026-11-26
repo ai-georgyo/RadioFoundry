@@ -553,7 +553,12 @@ connector (hardware page 11), dropped for the length of each key-up, injected or
 after it. The radio ran on: no restart, no crash record. The cause is not established (hardware page 16, question
 43). So the stops to rely on while keyed are release PTT, the TX timeout, the knob and the battery; the arm is lowered
 after the key-up. `ptt --seconds` then reports the dropped link instead of the release: the radio ends the injected
-PTT by its own time-out, set just past the hold.
+PTT by its own time-out, set just past the hold. On 2026-11-25 the port also went deaf after several key-ups: the host
+saw a device and got no answer from it, a replug changed nothing (the radio can't see one: no VBUS, hardware page 11),
+and only switching the radio off and on brought it back. The firmware now resets the USB controller by itself when a
+transmission left the port without a host for 2 s, and tries again every 4 s for about a minute
+([cps-protocol.md](../spec/cps-protocol.md) 1.1; `usb.reattach_tx` in the `hotspot` section counts the asks): untested
+on a radio. `ptt --seconds` waits long enough for that.
 
 After each stage, before the next: `radio tx-arm off`, `radio tx-limit off`, a restart, and the record written. A
 start always begins at `off`. To step back after a check fails, use `radio tx-arm off`: the tool takes a stage over
