@@ -476,20 +476,16 @@ static void ppp_switch_now(uint32_t now)
 // The port hears of every transmission, so it resets no controller while the radio is on the air
 static void port_after_tx(const hal_stream_t *port, uint32_t now)
 {
-	if ((port->reattach == NULL) || (port->mounted == NULL)) {
-		return;
+	if ((port->reattach == NULL) || (port->host == NULL)) {
+		return;		// before radio_on_air: a port without the rule takes no view lock on each pass
 	}
 	bool tx = radio_on_air();
 #if CONFIG_HOTSPOT
 	tx = tx || hotspot_transmitting();	// the hotspot keys the modem from this task, outside the radio's state
 #endif
-	if (port->transmitting != NULL) {
-		port->transmitting(tx);
-	}
-	if (hostlink_reattach_check(&reattach, tx, port->mounted(), now)) {
+	if (hostlink_port_after_tx(&reattach, port, tx, now)) {
 		reattach_count++;
 		dlog("hostlink: host port lost after a transmission: reattach %u", (unsigned)reattach_count);
-		port->reattach();
 	}
 }
 
@@ -611,9 +607,9 @@ static void hostlink_task(void *arg)
 				break;
 			}
 			mmdvm_poll(now);
-			// Never gated on DTR being set, only on it dropping (hostlink.h). The port can't report USB unmount or
-			// suspend apart from DTR yet (hal_stream_t has no such call), so with DTR never set an unplugged host
-			// is noticed by the idle timeout
+			// Never gated on DTR being set, only on it dropping (hostlink.h). The session doesn't use the port's
+			// host() (USB unmount or suspend) yet, only DTR, so with DTR never set an unplugged host is noticed by
+			// the idle timeout
 			uint32_t last = (mmdvm_last_frame_ms() != 0) ? mmdvm_last_frame_ms() : entered_ms;
 
 			hostlink_leave_t why = hostlink_session_check(&session, port->connected(), true, exit_now,
