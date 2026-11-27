@@ -81,6 +81,9 @@ extern const hal_radio_t cs7000p_radio;
 #if CONFIG_DMR
 extern const hal_audio_t cs7000p_audio;
 #endif
+// chip_reg's chip 3 is the board's own values (hardware-cs7000p.md 14: bench settings in RAM that later set-ups read),
+// not a chip's registers: board_t.chip_reg_kept, so a debug link detour never writes it
+#define CS7000P_CHIP_BOARD	3u
 bool cs7000p_chip_reg(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bool write);
 typedef struct { bool lo_high, pll_locked, ak_ok, hrc_ok, cal_tx, cal_maker; uint8_t pll_r, hrc_r10, hrc_r25; uint32_t vco_hz,
 		 unlocks, tx_refused, dac_refused; uint8_t tx_refused_why; uint16_t rx_tune, pc8_duty; int8_t ref_offset; }

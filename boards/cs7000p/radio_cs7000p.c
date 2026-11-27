@@ -1629,6 +1629,7 @@ void cs7000p_tx_maker_line(char *buf, uint8_t len)
 
 #if CONFIG_DEBUGLINK
 enum { CHIP_MODEM, CHIP_PLL, CHIP_IF, CHIP_BOARD };
+_Static_assert(CHIP_BOARD == CS7000P_CHIP_BOARD, "board_t.chip_reg_kept names the board's chip");
 enum {
 	BOARD_RX_TUNE, BOARD_EXP, BOARD_PC8, BOARD_LO_SIDE, BOARD_REF_OFFSET, BOARD_REF_CODING, BOARD_VCO_RULE,
 	BOARD_IF_WORDS, BOARD_RSSI_LINE

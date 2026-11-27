@@ -171,6 +171,7 @@ const board_t board = {
 	.view_line = cs7000p_view_line,
 	.view_split = CS7000P_VIEW_SPLIT,	// the maker's table and its copy in a second section, board2
 	.chip_reg = cs7000p_chip_reg,	// the bench's way to the chips, a debug link request
+	.chip_reg_kept = 1u << CS7000P_CHIP_BOARD,	// the board's bench values: no return of a detour undoes a write
 #endif
 #if CONFIG_DMR
 	.dmr = &stm32_hrc_dmr,

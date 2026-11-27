@@ -229,6 +229,15 @@ static void test_air_policy(void)
 	CHECK(dl_detour_item_allowed(DL_CMD_CHIP_REG, wr, 7), "CHIP_REG write as an item");
 	CHECK(!dl_detour_item_allowed(DL_CMD_CHIP_REG, soc_rd, 5), "SoC register read: not as an item");
 	CHECK(!dl_detour_item_allowed(DL_CMD_CHIP_REG, soc_wr, 9), "SoC register write: not as an item");
+	// A chip of the board's own values (board_t.chip_reg_kept): its writes outlast the return, so never an item; its
+	// reads and the other chips' writes are
+	const uint8_t kept_rd[3] = { 3, 0, 5 }, kept_wr[7] = { 3, 0, 5, 1, 0, 0, 0 }, big_wr[7] = { 9, 0, 5, 1, 0, 0, 0 };
+	CHECK(dl_detour_item_kept(DL_CMD_CHIP_REG, kept_wr, 7, 1u << 3), "kept chip write");
+	CHECK(!dl_detour_item_kept(DL_CMD_CHIP_REG, kept_rd, 3, 1u << 3), "kept chip read: not a write");
+	CHECK(!dl_detour_item_kept(DL_CMD_CHIP_REG, wr, 7, 1u << 3), "an RF chip's write beside a kept chip");
+	CHECK(!dl_detour_item_kept(DL_CMD_CHIP_REG, kept_wr, 7, 0), "no kept chips: the write is an RF chip's");
+	CHECK(!dl_detour_item_kept(DL_CMD_CHIP_REG, big_wr, 7, 0xFF), "a chip past the mask's 8");
+	CHECK(!dl_detour_item_kept(DL_CMD_AUDIO_PROBE, kept_wr, 7, 0xFF), "only CHIP_REG");
 	const uint8_t vol[2] = { DL_OP_VOLUME, 8 }, set_beep[4] = { DL_OP_SETTING, 11, 50, 0 },
 		      set_inhibit[4] = { DL_OP_SETTING, 5, 1, 0 }, txlim[2] = { DL_OP_TX_LIMIT, 0 };
 	CHECK(dl_dmrip_air_allowed(DL_CMD_RADIO, vol, 2), "RADIO VOLUME directly");
@@ -295,13 +304,21 @@ static void test_items(void)
 	const uint8_t vfo[5] = { 5, 0x08, 0x2B, 0x7E, 0x1B };	// VFO_SET
 	n += item(b + n, DL_CMD_RADIO, vfo, sizeof(vfo));
 	n += item(b + n, DL_DETOUR_ITEM_WAIT, w, 2);
-	CHECK(dl_detour_items_check(b, n) == DL_ST_OK, "items");
-	CHECK(dl_detour_items_check(b, (uint16_t)(n - 1)) == DL_ST_BAD_ARG, "cut");
-	CHECK(dl_detour_items_check(b, 1) == DL_ST_BAD_ARG, "one byte");
+	CHECK(dl_detour_items_check(b, n, 0) == DL_ST_OK, "items");
+	CHECK(dl_detour_items_check(b, (uint16_t)(n - 1), 0) == DL_ST_BAD_ARG, "cut");
+	CHECK(dl_detour_items_check(b, 1, 0) == DL_ST_BAD_ARG, "one byte");
+	// A write to a kept chip refuses the whole run; the same run without kept chips is fine
+	uint8_t k[32];
+	uint16_t kn = 0;
+	const uint8_t kwr[7] = { 3, 0, 5, 1, 0, 0, 0 };
+	kn += item(k + kn, DL_CMD_RADIO, vfo, sizeof(vfo));
+	kn += item(k + kn, DL_CMD_CHIP_REG, kwr, sizeof(kwr));
+	CHECK(dl_detour_items_check(k, kn, 1u << 3) == DL_ST_REFUSED, "a kept chip's write refuses the run");
+	CHECK(dl_detour_items_check(k, kn, 1u << 2) == DL_ST_OK, "another chip kept: the write is an RF chip's");
 	const uint8_t reg[3] = { 0, 0, 0 };
 	n += item(b + n, DL_CMD_READ_MEM, reg, 3);
-	CHECK(dl_detour_items_check(b, n) == DL_ST_REFUSED, "one bad item refuses the whole run");
-	CHECK(dl_detour_items_check(b, 0) == DL_ST_OK, "none");
+	CHECK(dl_detour_items_check(b, n, 0) == DL_ST_REFUSED, "one bad item refuses the whole run");
+	CHECK(dl_detour_items_check(b, 0, 0) == DL_ST_OK, "none");
 }
 
 // --- the runner, against a fake radio core ---
@@ -364,7 +381,13 @@ static bool f_clear(void)
 	return core.clear;
 }
 
-static const dl_detour_ops_t OPS = { f_dispatch, f_mark, f_ret, f_armed, f_release, f_clear };
+static const dl_detour_ops_t OPS = { f_dispatch, f_mark, f_ret, f_armed, f_release, f_clear, NULL };
+
+// A board whose chip 3 holds its own values (board_t.chip_reg_kept)
+static uint8_t f_kept(void)
+{
+	return 1u << 3;
+}
 
 static void reset_core(void)
 {
@@ -565,6 +588,32 @@ static void test_runner(void)
 	uint32_t left = (uint32_t)o[2] | ((uint32_t)o[3] << 8) | ((uint32_t)o[4] << 16) | ((uint32_t)o[5] << 24);
 	CHECK(r == 13 && o[0] == DL_ST_OK && o[1] == DL_DETOUR_RUNNING && left > 19800 && left <= 19900, "status %u",
 	      (unsigned)left);
+
+	// The board's kept chips (board_t.chip_reg_kept, through ops.chip_kept): a RUN writing one is refused whole, over
+	// the cable and over the air, before the core is asked for anything; the same items run where nothing is kept
+	static const dl_detour_ops_t kept_ops = { f_dispatch, f_mark, f_ret, f_armed, f_release, f_clear, f_kept };
+	uint8_t kb[DL_REQ_MAX], kq[DL_REQ_MAX], ko[32];
+	uint16_t kn = 0;
+	const uint8_t kwr[7] = { 3, 0, 5, 1, 0, 0, 0 };
+	kn += item(kb + kn, DL_CMD_RADIO, vfo, sizeof(vfo));
+	kn += item(kb + kn, DL_CMD_CHIP_REG, kwr, sizeof(kwr));
+	kq[0] = DL_DETOUR_RUN;
+	kq[1] = 10;
+	kq[2] = 0;
+	memcpy(kq + 3, kb, kn);
+	for (int air = 0; air <= 1; air++) {
+		reset_core();
+		dl_detour_init(&d);
+		dl_detour_request(&d, &kept_ops, kq, (uint16_t)(3u + kn), air != 0, ko, sizeof(ko), now);
+		CHECK(ko[0] == DL_ST_REFUSED && core.marks == 0 && d.phase == DL_DETOUR_IDLE, "kept chip write refused (air %d)",
+		      air);
+	}
+	reset_core();
+	dl_detour_init(&d);
+	dl_detour_request(&d, &OPS, kq, (uint16_t)(3u + kn), false, ko, sizeof(ko), now);
+	CHECK(ko[0] == DL_ST_OK && core.marks == 1, "no kept chips: the run is taken");
+	op_req(&d, DL_DETOUR_RETURN, 0, now);
+	run_until(&d, &now, now + 20);
 }
 
 // --- GET_VIEW's page ---

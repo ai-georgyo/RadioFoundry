@@ -328,7 +328,14 @@ bool dl_detour_item_allowed(uint8_t cmd, const uint8_t *p, uint8_t len)
 	}
 }
 
-uint8_t dl_detour_items_check(const uint8_t *items, uint16_t n)
+// The write chip_reg_air lets a detour make (chip, page, register, value u32) to a chip whose values are the board's own
+// (board_t.chip_reg_kept): no set-up writes them again, so the return would leave it in force. A read is not one
+bool dl_detour_item_kept(uint8_t cmd, const uint8_t *p, uint8_t len, uint8_t kept)
+{
+	return cmd == DL_CMD_CHIP_REG && len == 7 && p[0] < 8u && (kept & (1u << p[0])) != 0u;
+}
+
+uint8_t dl_detour_items_check(const uint8_t *items, uint16_t n, uint8_t kept)
 {
 	uint16_t at = 0;
 	while (at < n) {
@@ -336,7 +343,8 @@ uint8_t dl_detour_items_check(const uint8_t *items, uint16_t n)
 		if (left < 2u || (unsigned)(left - 2u) < items[at + 1]) {
 			return DL_ST_BAD_ARG;
 		}
-		if (!dl_detour_item_allowed(items[at], items + at + 2, items[at + 1])) {
+		if (!dl_detour_item_allowed(items[at], items + at + 2, items[at + 1]) ||
+		    dl_detour_item_kept(items[at], items + at + 2, items[at + 1], kept)) {
 			return DL_ST_REFUSED;
 		}
 		at = (uint16_t)(at + 2u + items[at + 1]);
@@ -389,7 +397,7 @@ size_t dl_detour_request(dl_detour_t *d, const dl_detour_ops_t *o, const uint8_t
 			out[0] = DL_ST_BAD_ARG;	// a longer one is refused, not cut: the host asked for something else
 			return 1;
 		}
-		uint8_t st = dl_detour_items_check(req + 3, (uint16_t)(len - 3u));
+		uint8_t st = dl_detour_items_check(req + 3, (uint16_t)(len - 3u), o->chip_kept != NULL ? o->chip_kept() : 0u);
 		if (st != DL_ST_OK) {
 			out[0] = st;
 			return 1;

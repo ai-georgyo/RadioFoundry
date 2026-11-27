@@ -187,6 +187,11 @@ typedef struct {
 	// Writes val when write, then sets *val to the register as read back (a write-only register: the value written).
 	// False for a chip, page or register it doesn't offer. NULL: none
 	bool (*chip_reg)(uint8_t chip, uint8_t page, uint8_t reg, uint32_t *val, bool write);
+	// Optional, with chip_reg: the chips (bit n: chip n, 0-7) that hold the board's own values rather than a chip's
+	// registers, such as bench settings kept in RAM that later set-ups read. No mode's set-up writes them again, so a
+	// debug link detour (docs/spec/debuglink.md 7.4) never writes them: its return would leave the write in force. 0:
+	// every chip_reg chip is an RF chip whose registers the mode's set-up writes
+	uint8_t chip_reg_kept;
 
 	// Optional: hardware options a person states because software can't read them (hal_hwopt.h): Settings >
 	// Advanced > Hardware and the debug link's HWOPT. NULL / 0 = none. Only in a build whose board.mk says

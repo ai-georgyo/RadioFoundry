@@ -111,6 +111,12 @@ static bool reply_clear(void)
 	       !dmrDataServiceIpBusy() && radio_get_state() != RS_TX;
 }
 
+// The chips whose values are the board's own: a detour never writes them (dl_detour_item_kept)
+static uint8_t chip_kept(void)
+{
+	return board.chip_reg != NULL ? board.chip_reg_kept : 0u;
+}
+
 static const dl_detour_ops_t ops = {
 	.dispatch = item_dispatch,
 	.mark = core_mark,
@@ -118,6 +124,7 @@ static const dl_detour_ops_t ops = {
 	.armed = core_armed,
 	.release = ptt_release,
 	.clear = reply_clear,
+	.chip_kept = chip_kept,
 };
 
 // --- the air ---

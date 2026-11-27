@@ -940,7 +940,8 @@ that register overwrites it.
 | `0xFF`, address u32, value u32 | the value read back u32 |
 
 Chips below `0xFF` are the radio's RF chips, through the board's `board.chip_reg`. The chip and page numbers are the
-board's, listed on its hardware page. A chip, page, register or value the board doesn't offer answers bad argument (2);
+board's, listed on its hardware page. A board may also offer values of its own as a chip (bench settings in RAM that
+later set-ups read); it names those chips in `board_t.chip_reg_kept`, and a detour never writes them (7.4). A chip, page, register or value the board doesn't offer answers bad argument (2);
 a board without the hook answers unavailable (4).
 
 Chip `0xFF` is the SoC: a 32-bit register at a 32-bit address, through the platform's `hal_system_t.reg`. Only aligned
@@ -1303,8 +1304,8 @@ by anyone in range.
 | Over the air | Commands |
 |---|---|
 | Taken | PING, VERSION, GET_DIAG, RESET_COUNTERS, SCREENSHOT, GET_LOG, GET_VIEW, IDDB, DETOUR, DMRIP STATUS; the RADIO operations that leave the radio on the link's channel, mode, color code and slot, able to answer, change nothing later transmissions carry, and store nothing but the volume: power (7), squelch (8), FM tones (10), monitor (11), reply cancel (13), hotspot exit (14), the talk target (15-18), BEEP, VIBRATE, VOLUME (on a radio without a knob the step is stored, as from the UI), voice capture (41), and SETTING 32 (zone share offers); a CHIP_REG read of an RF chip; AUDIO_PROBE status and register read |
-| Only as an item of a detour (7.4) | The RADIO operations that move the link and that the detour undoes (channel, zone, VFO, frequency, step, bandwidth, clear, the DMR fields, VFO copy, P25 and NXDN settings), BEEP too (a beep while the radio is keyed and can't hear the link), PTT; a CHIP_REG write of an RF chip and an AUDIO_PROBE register write, for a level in the detour's mode: the return enters the home mode, which sets its registers again |
-| Never | INFO_CHIP (the UID gives the default key, 7.2), READ_MEM (the windows hold the codec on a codec-merged image), KEY, DMRIP KEY, the RADIO operations that move the radio by themselves, transmit or set the PA (scan, roaming, tone burst, DTMF, privacy, the test TX limit, PA drive and key-up), the owner's transmit arm (44: its stages and its info, cable only, 3.8), the voice test signal (33), the USB and PPP operations (25-28), SETTING 29, 31 and 35 (mic gain, encode options, reference trim: they last until a restart and change later transmissions), SETTING for a stored id outside a detour, CHIP_REG for the SoC (DL_CHIP_SOC), the other AUDIO_PROBE operations, CODEPLUG, CPKV, STORAGE, HWOPT, T3, DMR_DATA, APRS, SNMP, SPLIT, AIR, REBOOT, STUB, CRASH, WATCHDOG, RX2, and any command not listed |
+| Only as an item of a detour (7.4) | The RADIO operations that move the link and that the detour undoes (channel, zone, VFO, frequency, step, bandwidth, clear, the DMR fields, VFO copy, P25 and NXDN settings), BEEP too (a beep while the radio is keyed and can't hear the link), PTT; a CHIP_REG write of an RF chip and an AUDIO_PROBE register write, for a level in the detour's mode: the return enters the home mode, which sets its registers again (not a chip of the board's own values, below) |
+| Never | INFO_CHIP (the UID gives the default key, 7.2), READ_MEM (the windows hold the codec on a codec-merged image), KEY, DMRIP KEY, the RADIO operations that move the radio by themselves, transmit or set the PA (scan, roaming, tone burst, DTMF, privacy, the test TX limit, PA drive and key-up), the owner's transmit arm (44: its stages and its info, cable only, 3.8), the voice test signal (33), the USB and PPP operations (25-28), SETTING 29, 31 and 35 (mic gain, encode options, reference trim: they last until a restart and change later transmissions), SETTING for a stored id outside a detour, CHIP_REG for the SoC (DL_CHIP_SOC), a CHIP_REG write to a chip whose values are the board's own (`board_t.chip_reg_kept`: no set-up writes them again, so the return would leave the write in force; a RUN with one is refused whole, from the cable too), the other AUDIO_PROBE operations, CODEPLUG, CPKV, STORAGE, HWOPT, T3, DMR_DATA, APRS, SNMP, SPLIT, AIR, REBOOT, STUB, CRASH, WATCHDOG, RX2, and any command not listed |
 
 A refused command answers status 7. The air can't restart the radio, so nothing it asks may last until a restart:
 writes no deadline undoes (flash, codeplug, stored keys, the SoC's registers) are refused even inside a detour, and
@@ -1353,8 +1354,9 @@ codeplug unchanged.
 
 Items: RADIO operations 1-12 (channel, zone, VFO, frequency, step, power, squelch, bandwidth, tone, monitor, clear the
 changes for now), 15-18 (DMR talk target), 24 SETTING (the `radio_settings_t` ids 1-28, 30, 33, 34), 31 DMR fields
-(mode, color code, timeslot), 32 copy to VFO, 42 P25 and 43 NXDN settings; PTT; and waits. Nothing else, so the return
-undoes every change a detour can make.
+(mode, color code, timeslot), 32 copy to VFO, 42 P25 and 43 NXDN settings; PTT; CHIP_REG reads and RF chip writes and
+AUDIO_PROBE register reads and writes (7.3: never the SoC's, nor a chip of the board's own values,
+`board_t.chip_reg_kept`); and waits. Nothing else, so the return undoes every change a detour can make.
 
 Transmitting in a detour keeps every transmit check: the band limits, the radio's TX time-out, TX inhibit, the test TX
 limit (RADIO op 35, which no detour can change) and the PTT's own time-out (10 s at most per item). On the SDR bench a
