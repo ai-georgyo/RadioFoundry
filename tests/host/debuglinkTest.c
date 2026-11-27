@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The debug link's portable parts: the printf subset, the CRC, the frame parser and dispatcher, the dlog ring
-// (core/debuglink, docs/spec/debuglink.md)
+// The debug link's portable parts: the printf subset, the CRC, the frame parser and dispatcher, the dlog ring, RADIO
+// op 44's parsing (core/debuglink, docs/spec/debuglink.md)
 #include <stdio.h>
 #include <string.h>
 #include "debuglink/debuglink_proto.h"
@@ -9,6 +9,7 @@
 #include "debuglink/dlog.h"
 #include "debuglink/dl_chip.h"
 #include "debuglink/dl_shot.h"
+#include "debuglink/dl_txarm.h"
 #include "cps/cps_lz4.h"
 #include "../../platform/stm32f4/mem_window.h"
 // As a board with more program flash sets it (board.mk): nothing else in the header may depend on it being unset
@@ -396,6 +397,16 @@ static bool hrc2m(unsigned i, hal_mem_window_t *w)
 	return hrc_mem_window_for(i, w, 0x200000u);
 }
 
+// A platform whose board refuses the software entry to the ROM bootloader (hal_system_t.reboot_ok)
+static int rom_refused_asks;
+static uint8_t rom_refused_mode;
+static bool rom_refused(uint8_t mode)
+{
+	rom_refused_asks++;
+	rom_refused_mode = mode;
+	return mode == HAL_REBOOT_NORMAL;
+}
+
 static void test_chip(void)
 {
 	// Option bytes: RDP levels, write protection, BOR, user bits
@@ -490,6 +501,161 @@ static void test_chip(void)
 	CHECK(dl_reboot_check(HAL_REBOOT_NORMAL, 0x9ABCDEF0u, &h, false) == DL_REBOOT_OK, "HR_C7000 normal");
 	CHECK(dl_reboot_check(HAL_REBOOT_NORMAL, 0x9ABCDEF1u, &h, false) == DL_REBOOT_BAD_TOKEN, "HR_C7000 token");
 	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x9ABCDEF0u, &h, false) == DL_REBOOT_RDP, "HR_C7000 no ROM DFU");
+	// A second family with the RDP byte (STM32H7): the same gate on the same byte of its own option word
+	hal_chip_t h7 = { .uid = { 0x0BADF00Du, 5, 6 }, .optcr = 0x03C6AAF0u, .flash_kb = 2048, .family = HAL_CHIP_STM32H7 };
+	CHECK(dl_chip_has_rdp(HAL_CHIP_STM32F4) && dl_chip_has_rdp(HAL_CHIP_STM32H7) && !dl_chip_has_rdp(HAL_CHIP_HRC7000),
+	      "families with RDP");
+	CHECK(!dl_chip_has_rdp(3) && !dl_chip_has_rdp(0xFF), "an unknown family has none");
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Du, &h7, false) == DL_REBOOT_OK, "STM32H7 ROM DFU at RDP 0");
+	CHECK(dl_reboot_check(HAL_REBOOT_NORMAL, 0x0BADF00Du, &h7, false) == DL_REBOOT_OK, "STM32H7 normal");
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Eu, &h7, false) == DL_REBOOT_BAD_TOKEN, "STM32H7 token");
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Du, &h7, true) == DL_REBOOT_TX, "STM32H7 TX");
+	h7.optcr = 0x03C655F0u;
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Du, &h7, false) == DL_REBOOT_RDP, "STM32H7 RDP 1 refused");
+	CHECK(dl_reboot_check(HAL_REBOOT_NORMAL, 0x0BADF00Du, &h7, false) == DL_REBOOT_OK, "STM32H7 RDP 1: normal reset fine");
+	h7.optcr = 0x03C600F0u;
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Du, &h7, false) == DL_REBOOT_RDP, "STM32H7 RDP byte 0: level 1");
+	h7.optcr = 0x03C6CCF0u;
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 0x0BADF00Du, &h7, false) == DL_REBOOT_RDP, "STM32H7 RDP 2 refused");
+	// A family number this build does not know: no ROM path, whatever its option word says
+	hal_chip_t u = { .uid = { 7, 8, 9 }, .optcr = 0x0FFFAAEDu, .family = 3 };
+	CHECK(dl_reboot_check(HAL_REBOOT_ROM_DFU, 7, &u, false) == DL_REBOOT_RDP, "unknown family: no ROM DFU");
+	CHECK(dl_reboot_check(HAL_REBOOT_NORMAL, 7, &u, false) == DL_REBOOT_OK, "unknown family: normal reset");
+	// After the gate, the platform's own rule (debuglink.c reboot_gate: false is refused with reason 5 before the
+	// reply, not answered OK). No hook: every mode, as every board without such a rule had it
+	const hal_system_t no_rule = { .reboot_ok = NULL };
+	CHECK(hal_reboot_possible(&no_rule, HAL_REBOOT_NORMAL) && hal_reboot_possible(&no_rule, HAL_REBOOT_ROM_DFU),
+	      "no reboot_ok: every mode possible");
+	const hal_system_t refusing = { .reboot_ok = rom_refused };
+	CHECK(!hal_reboot_possible(&refusing, HAL_REBOOT_ROM_DFU) && rom_refused_asks == 1 &&
+	      rom_refused_mode == HAL_REBOOT_ROM_DFU, "the board's refusal of the ROM entry is asked and kept");
+	CHECK(hal_reboot_possible(&refusing, HAL_REBOOT_NORMAL) && rom_refused_asks == 2 &&
+	      rom_refused_mode == HAL_REBOOT_NORMAL, "a normal reset on the same board still possible");
+
+	// INFO_CHIP's decoded bytes (reply offsets 23..28) by family
+	uint8_t o[DL_CHIP_OPT_LEN + 1];
+	static const uint8_t none[DL_CHIP_OPT_LEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	memset(o, 0x5A, sizeof o);
+	c.optcr = 0x0FF855E5u;		// RDP 1, sectors 0-2 protected, BOR level field 1, user bits 7
+	dl_chip_optbytes(&c, o);
+	CHECK(o[0] == 1 && o[1] == 0x55 && o[2] == 0x07 && o[3] == 0x00 && o[4] == 1 && o[5] == 7,
+	      "STM32F4: every field (%02X %02X %02X %02X %02X %02X)", o[0], o[1], o[2], o[3], o[4], o[5]);
+	CHECK(o[DL_CHIP_OPT_LEN] == 0x5A, "six bytes, no more");
+	c.optcr = 0x0EFFAAEDu;		// sector 8: the mask's high byte
+	dl_chip_optbytes(&c, o);
+	CHECK(o[0] == 0 && o[1] == 0xAA && o[2] == 0x00 && o[3] == 0x01 && o[4] == 3 && o[5] == 7, "STM32F4: WRP low byte first");
+	// The STM32H7's word: the RDP level and byte, and nothing read into bits that mean something else there
+	h7.optcr = 0x03C6AAF0u;
+	dl_chip_optbytes(&h7, o);
+	CHECK(o[0] == 0 && o[1] == 0xAA, "STM32H7: RDP 0");
+	CHECK(memcmp(o + 2, none, 4) == 0, "STM32H7: no WRP, BOR or user decode");
+	h7.optcr = 0x03C6CCF0u;
+	dl_chip_optbytes(&h7, o);
+	CHECK(o[0] == 2 && o[1] == 0xCC && memcmp(o + 2, none, 4) == 0, "STM32H7: RDP 2");
+	h7.optcr = 0x03C612F0u;
+	dl_chip_optbytes(&h7, o);
+	CHECK(o[0] == 1 && o[1] == 0x12 && memcmp(o + 2, none, 4) == 0, "STM32H7: RDP 1");
+	h.optcr = 0x0FFFAAEDu;		// a family without option bytes: whatever the word holds, nothing is decoded
+	dl_chip_optbytes(&h, o);
+	CHECK(memcmp(o, none, DL_CHIP_OPT_LEN) == 0, "HR_C7000: all 0xFF");
+	dl_chip_optbytes(&u, o);
+	CHECK(memcmp(o, none, DL_CHIP_OPT_LEN) == 0, "unknown family: all 0xFF");
+}
+
+// --- RADIO op 44, the owner's transmit arm (dl_txarm.c) over a fake board ---
+
+static int arm_calls;
+static uint8_t arm_stage, arm_answer;
+static uint32_t arm_id;
+
+static void fake_arm_info(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){ .stage = 2, .max = 3, .addr = 0x00001000u, .len = 512, .crc = 0xA1B2C3D4u,
+				     .cal_ok = true };
+}
+
+// A radio with no calibration in use and a lower top stage: every byte of the reply follows the board's answer
+static void fake_arm_info_none(hal_tx_arm_info_t *info)
+{
+	*info = (hal_tx_arm_info_t){ .stage = 0, .max = 2, .addr = 0x00012345u, .len = 0x00000100u, .crc = 0,
+				     .cal_ok = false };
+}
+
+static uint8_t fake_arm(uint8_t stage, uint32_t id)
+{
+	arm_calls++;
+	arm_stage = stage;
+	arm_id = id;
+	return arm_answer;
+}
+
+static void test_tx_arm(void)
+{
+	uint8_t out[DL_TX_ARM_INFO_LEN + 4];
+	const uint8_t arm[5] = { 1, 0x78, 0x56, 0x34, 0x12 };
+	hal_radio_t r;
+
+	// Without both hooks: unavailable, nothing asked
+	memset(&r, 0, sizeof(r));
+	CHECK(dl_tx_arm_op(NULL, arm, 5, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "no radio");
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "no hooks");
+	r.tx_arm = fake_arm;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 1 && out[0] == DL_ST_UNAVAILABLE && arm_calls == 0, "tx_arm alone");
+	r.tx_arm = NULL;
+	r.tx_arm_info = fake_arm_info;
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == 1 && out[0] == DL_ST_UNAVAILABLE, "tx_arm_info alone");
+	r.tx_arm = fake_arm;
+
+	// No argument: the info, little endian
+	static const uint8_t info[DL_TX_ARM_INFO_LEN] = { DL_ST_OK, 2, 3, 0x00, 0x10, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00,
+							  0xD4, 0xC3, 0xB2, 0xA1, 1 };
+	memset(out, 0x55, sizeof(out));
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == DL_TX_ARM_INFO_LEN && memcmp(out, info, sizeof(info)) == 0, "info");
+	CHECK(arm_calls == 0, "the info arms nothing");
+	r.tx_arm_info = fake_arm_info_none;
+	static const uint8_t none[DL_TX_ARM_INFO_LEN] = { DL_ST_OK, 0, 2, 0x45, 0x23, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+							  0, 0, 0, 0, 0 };
+	memset(out, 0x55, sizeof(out));
+	CHECK(dl_tx_arm_op(&r, arm, 0, out) == DL_TX_ARM_INFO_LEN && memcmp(out, none, sizeof(none)) == 0,
+	      "info: no calibration, max 2");
+	r.tx_arm_info = fake_arm_info;
+	// stage u8 + id u32: the arm, the id as sent; OK with reason 0, or REFUSED with the board's reason
+	arm_answer = HAL_TX_ARM_OK;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == DL_TX_ARM_REPLY_LEN && out[0] == DL_ST_OK && out[1] == 0, "armed");
+	CHECK(arm_calls == 1 && arm_stage == 1 && arm_id == 0x12345678u, "stage and id passed on");
+	arm_answer = HAL_TX_ARM_ID;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 2 && out[0] == DL_ST_REFUSED && out[1] == HAL_TX_ARM_ID, "refused");
+	arm_answer = HAL_TX_ARM_STATE;
+	CHECK(dl_tx_arm_op(&r, arm, 5, out) == 2 && out[0] == DL_ST_REFUSED && out[1] == 4, "refused, a state");
+	// Any other length: a bad argument, the board not asked
+	arm_calls = 0;
+	for (uint16_t n = 1; n < 5; n++) {
+		CHECK(dl_tx_arm_op(&r, arm, n, out) == 1 && out[0] == DL_ST_BAD_ARG, "length %u", n);
+	}
+	CHECK(dl_tx_arm_op(&r, arm, 6, out) == 1 && out[0] == DL_ST_BAD_ARG && arm_calls == 0, "length 6");
+	// The arm's state as CHIP_REG asks it (dl_tx_arm_on): the stage not off, false without both hooks
+	CHECK(dl_tx_arm_on(&r) && !dl_tx_arm_on(NULL), "armed: stage 2");
+	r.tx_arm_info = fake_arm_info_none;
+	CHECK(!dl_tx_arm_on(&r), "off: stage 0");
+	r.tx_arm_info = fake_arm_info;
+	r.tx_arm = NULL;
+	CHECK(!dl_tx_arm_on(&r), "tx_arm_info alone");
+	r.tx_arm = fake_arm;
+	// A SoC write noted (dl_soc_written): the board asks it, the op does not; every request goes to the board as
+	// before, and the answer is the board's
+	CHECK(!dl_soc_written(), "no SoC write yet");
+	dl_soc_write_note();
+	CHECK(dl_soc_written(), "a SoC write noted");
+	for (uint8_t s = 0; s <= 4; s++) {
+		const uint8_t a2[5] = { s, 0x78, 0x56, 0x34, 0x12 };
+		arm_calls = 0;
+		arm_answer = HAL_TX_ARM_OK;
+		CHECK(dl_tx_arm_op(&r, a2, 5, out) == 2 && out[0] == DL_ST_OK && arm_calls == 1 && arm_stage == s,
+		      "stage %u after a SoC write: the board's", s);
+	}
+	// The reasons' numbers are the protocol's: append only
+	CHECK(HAL_TX_ARM_NO_CAL == 1 && HAL_TX_ARM_ID == 2 && HAL_TX_ARM_STAGE == 3 && HAL_TX_ARM_STATE == 4, "reasons");
+	CHECK(HAL_TX_ARM_FM_LOW == 1 && HAL_TX_ARM_FM == 2 && HAL_TX_ARM_ALL == 3, "stages");
 }
 
 int main(void)
@@ -501,6 +667,7 @@ int main(void)
 	test_dlog();
 	test_chip();
 	test_shot();
+	test_tx_arm();
 	printf("# debuglinkTest: %d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

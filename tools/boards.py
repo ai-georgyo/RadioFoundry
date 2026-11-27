@@ -17,9 +17,9 @@ Sources, each fact in one of them:
                                 pins and the chip selects it keeps high (STM32F4)
 
 Derived rather than typed: the flashing link from the family, the CPU from the platform, the protected range (flash
-base to the application), the erasable sectors (the platform geometry from the application up), the stub's NAND flag
-(the board's drivers), its pins (pins.h), and on the STM32F4 the crystal (HSE_VALUE) and the bootloader's end (APP_BASE)
-for the stub's board record.
+base to the application; none where the loader is the MCU's ROM and the image starts at the flash base), the erasable
+sectors (the platform geometry from the application up), the stub's NAND flag (the board's drivers), its pins
+(pins.h), and on the STM32F4 the crystal (HSE_VALUE) and the bootloader's end (APP_BASE) for the stub's board record.
 
     tools/boards.py list [--platform P[,Q]] [--toolchain T[,U]] [--release stable|testing] [--comma]   board ids (an
                                                   unknown platform or toolchain is an error, so a typo never selects
@@ -59,6 +59,9 @@ CLOCKS = ("backed", "unbacked", "none", "unknown")
 # web: the web flasher's backend for the family (site/static/js/flasher/backends.js); update_mode: the protocol of the
 # radio's own update mode, which the page writes through when nothing else answers or its boot ROM load fails (iap.js,
 # bfloader.js), or None. A board on such a family walks the user into it with flash.bootloader steps
+# loader: "rom" where the loader the route talks to is the MCU's own ROM, outside program flash: the image may then
+# start at the platform's flash_base, and nothing below it is protected. Absent: the loader is in program flash,
+# below the image
 FAMILIES = {
     "usb-dfu": {"link": "usb", "needs": ("flash.dfu",), "web": "anyroad-dfu", "update_mode": None},	# a USB DFU
     # bootloader with a per-model XOR key
@@ -69,7 +72,13 @@ FAMILIES = {
     # loader on the cable, through the RAM stub
     "boot-rom": {"link": "serial-cable", "needs": (), "web": "c7000-stub", "update_mode": None},	# no vendor loader:
     # the SoC's boot ROM serial window on the cable at every power-on, through the RAM stub
+    "dfuse": {"link": "usb", "needs": ("flash.dfu",), "web": "dfuse", "update_mode": None, "loader": "rom"},	# ST's
+    # DfuSe download to an MCU's own ROM bootloader, nothing encrypted; the loader is not in program flash
 }
+# [flash.dfu] keys a bootloader with a key needs besides vid and pid: the USB strings the flashers tell it by before
+# they send an encrypted image, and the key's SHA-256 and first bytes. A ROM loader has no key, and its strings are
+# given only once read on a radio
+DFU_KEYED = ("string1", "product", "key_sha256", "key_prefix")
 # [flash.stub] stock_console: the debug console a stock firmware answers on the cable, by protocol (the web flasher
 # loads the stub through it before RadioFoundry is installed: site/static/js/flasher/usmart.js)
 STOCK_CONSOLES = ("usmart",)
@@ -87,6 +96,11 @@ FLASH_MAP_FIELDS = ("settings_addr", "settings_size", "journal_addr", "openfw_ee
                     "calibration_addr", "calibration_size", "native_addr", "native_size", "staging_addr", "staging_size",
                     "satellite_addr", "satellite_size")
 OPENFW_FLASH_OFFSET = 0x20000
+# hal_flash_map_t .factory (hal/hal_flash.h): the maker's bytes the firmware keeps through every rewrite of their
+# sector (docs/spec/settings-store.md 4.1), {addr, size} byte ranges, at most HAL_FLASH_FACTORY_MAX; a board that lists
+# them builds with STORAGE_FACTORY_KEEP (board.mk MCU_DEFS), and each one is a [[flash.protect]] data entry
+FACTORY_MAX = 4
+FACTORY_KEEP_DEF = "STORAGE_FACTORY_KEEP"
 APP_SLOT = "app+slot"		# [flash] sectors: one sector for the application, one for the codec slot (no geometry)
 NAND_DRIVER = "drivers/flash/spi_nand"	# in BOARD_DIRS: the board's data memory is SPI NAND (the stub's nand flag)
 # The memories a [[flash.protect]] entry names, and what an offset in each means: progmem, the MCU's program flash from
@@ -97,6 +111,10 @@ PROTECT_MEMS = {"progmem": "program flash", "data": "data flash", "nand": "NAND"
 SECREG_LEN, SECREG_COUNT = 256, 3
 PROGMEM_SECTOR = 0x1000		# the erase sector of a program flash without a platform geometry (an SPI NOR chip)
 DATA_SECTOR = 0x1000		# an SPI NOR data flash's smallest erase (sector erase 0x20)
+# The largest SPI NOR data flash three address bytes reach. A larger part needs the driver's 4-byte address commands,
+# which a board builds with -DSPI_NOR_ADDR4=1 in its MCU_DEFS (drivers/flash/spi_nor)
+SPI_NOR_ADDR3_MAX = 0x1000000
+SPI_NOR_ADDR4_DEF = "-DSPI_NOR_ADDR4=1"
 STUB_WRITE_TEST = 0x4000	# [flash.stub] write_test: the data flash bytes stubtool --write-test erases and programs
 NO_PIN = 255			# the universal stub's "no pin"
 # board.mk values the registry reads, through make (conditionals and config.mk included)
@@ -200,13 +218,19 @@ BOARD_SCHEMA = {
         "backup": _req({"stock": _req(("none", "full")), "rfoundry": _req(("none", "full")), "spi_size": _req(int)}),
         # hold: the keys held to enter it, by their key names (the board's KEY_* in lower case, as the drawing's
         # key-<name> ids), for the web flasher's picture; steps stays the instructions
+        # restart: the radio's firmware restarts into this bootloader when asked over the debug link (REBOOT's ROM
+        # bootloader mode, docs/spec/debuglink.md 3.11), so the flashers ask a radio that runs RadioFoundry before
+        # they ask for the keys. restart_hint: what the user can do when the radio refuses just then (reason 5: the
+        # board's own rule), in the board's words; the flashers show it with the refusal (restart_problems)
         "bootloader": _req({"keys": _opt(str), "steps": _req(STR_LIST), "id": _opt(str), "sign": _opt(str),
-                            "hold": _opt(STR_LIST)}),
+                            "hold": _opt(STR_LIST), "restart": _opt(bool), "restart_hint": _opt(str)}),
         # layout: the bootloader's alt 0 interface string, only once read from a radio in its bootloader. The
         # flashers then accept no other device; without it they refuse a layout of only the bootloader's sectors
         # (rfoundry dfu.py normal_mode)
-        "dfu": _opt({"vid": _req(int), "pid": _req(int), "string1": _req(str), "product": _req(str),
-                     "key_sha256": _req(str), "key_prefix": _req(str), "layout": _opt(str)}),
+        # which of the others a family needs or refuses is dfu_problems' (a schema has no "by family"); load()
+        # refuses a keyed bootloader's table without them (dfu_key_problem)
+        "dfu": _opt({"vid": _req(int), "pid": _req(int), "string1": _opt(str), "product": _opt(str),
+                     "key_sha256": _opt(str), "key_prefix": _opt(str), "layout": _opt(str)}),
         # a hardware option the radio can't detect, settled by the version its original firmware reports before the
         # install (rfoundry/origversion.py; docs/dev/board-registry.md "Original firmware version"): how the version is
         # read, the option's name (hal_hwopt_t) and its choice for each major version
@@ -249,8 +273,11 @@ BOARD_SCHEMA = {
                       "idle_cs": _opt(STR_LIST)}),
     }),
     # stock_version: the stock firmware version whose file carries the codec, as the web flasher asks for the file
-    "codec": _req({"tool": _req(CODEC_TOOLS), "stock": _opt(STR_LIST), "profile": _opt(str), "sources": _opt(STR_LIST),
-                   "installed": _opt(STR_LIST), "stock_version": _opt(str)}),
+    # one of three shapes: stock (a stock-file placement), profile (a linker codec slot), or none, the reason a radio
+    # has no codec route at all (its firmware builds without a vocoder). tool goes with the first two: load() refuses
+    # a route without it (codec_tool_problem), check() anything beside none (codec_none_problems)
+    "codec": _req({"tool": _opt(CODEC_TOOLS), "none": _opt(str), "stock": _opt(STR_LIST), "profile": _opt(str),
+                   "sources": _opt(STR_LIST), "installed": _opt(STR_LIST), "stock_version": _opt(str)}),
     "frame": _req({"shape": _req(str), "body": _req(str), "accent": _req(str), "lens": _req(RANGE)}),
     # tests/hil: what the health checks expect (test_health.py), and the features built here but not working yet
     # (tools/bringup.py, which checks the feature ids; what the hardware lacks is config.mk's BOARD_UNSUPPORTED, code
@@ -287,6 +314,10 @@ PLATFORM_SCHEMA = {
     "flash_base": _req(int),
     "default_sectors": _req(str),
     "sectors": _req(("map", ("list", RANGE))),
+    # the longest the SoC takes to erase its whole program flash, in seconds (its data sheet): how long the flashing
+    # tools wait after a ROM loader's Read Unprotect, which erases all of it, before they say the radio may be
+    # switched off. A platform with a board on a ROM loader gives it (mass_erase_problem)
+    "mass_erase_max_s": _opt(int),
 }
 
 
@@ -490,6 +521,89 @@ def flash_map(board_dir):
     return out
 
 
+def _factory_ranges(body, where):
+    """[(addr, size)] of a hal_flash_map_t initializer's .factory list, in order, size 0 entries included; [] without
+    one. Entries are { addr, size } or { .addr = .., .size = .. } of integer literals: the registry reads no macros"""
+    m = re.search(r"\.factory\s*=\s*\{", body)
+    if not m:
+        return []
+    inner = _braced(body, m.end())[:-1]
+    out = []
+    for e in re.findall(r"\{([^{}]*)\}", inner):
+        lit = r"(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*"
+        f = (re.fullmatch(r"\s*\.addr\s*=\s*%s\s*,\s*\.size\s*=\s*%s\s*,?\s*" % (lit, lit), e) or
+             re.fullmatch(r"\s*%s\s*,\s*%s\s*,?\s*" % (lit, lit), e))
+        if not f:
+            raise RegistryError("%s: hal_flash_map_t .factory entry {%s} is not two integer literals { addr, size }"
+                                % (where, e.strip()))
+        out.append((int(f.group(1), 0), int(f.group(2), 0)))
+    if re.sub(r"\{[^{}]*\}|[\s,]", "", inner):
+        raise RegistryError("%s: hal_flash_map_t .factory is a list of { addr, size } entries" % where)
+    return out
+
+
+def flash_factory(board_dir):
+    """The board's hal_flash_map_t .factory list as [(addr, size)] in order (size 0 entries included), from the same map
+    flash_map() reads (maps for smaller chips ignored); [] without one."""
+    sources = list(_c_sources(board_dir))
+    small_maps = {name for _, text in sources
+                  for name in re.findall(r"\.small_map\s*=\s*&\s*(\w+)", text)}
+    out, where = [], None
+    d = board_dir if isinstance(board_dir, str) else board_dir[0]
+    for f, text in sources:
+        for m in re.finditer(r"\bhal_flash_map_t\s+(\w+)\s*=\s*\{", text):
+            if m.group(1) in small_maps:
+                continue
+            found = _factory_ranges(_braced(text, m.end()), "%s/%s" % (os.path.relpath(d, ROOT), f))
+            if where is not None and found != out:
+                raise RegistryError("%s: hal_flash_map_t .factory in %s and %s differ" % (os.path.relpath(d, ROOT),
+                                                                                         where, f))
+            out, where = found, f
+    return out
+
+
+def factory_keep(mcu_defs):
+    """board.mk MCU_DEFS sets STORAGE_FACTORY_KEEP (-DSTORAGE_FACTORY_KEEP, or =1 or another value but 0)"""
+    for d in (mcu_defs or "").split():
+        if d == "-D" + FACTORY_KEEP_DEF or d.startswith("-D%s=" % FACTORY_KEEP_DEF):
+            v = d.partition("=")[2].rstrip("uUlL")
+            try:
+                return v == "" or int(v, 0) != 0
+            except ValueError:
+                return True		# a macro or an expression: the preprocessor's to read, set as far as we know
+    return False
+
+
+def factory_problems(factory, keep, protect):
+    """Why a board's hal_flash_map_t .factory list (factory: [(addr, size)], flash_factory()) can't stand beside its
+    build and its registry: a list without STORAGE_FACTORY_KEEP in board.mk MCU_DEFS or the define without a list (the
+    firmware would keep nothing, or compile the rule for nothing), more than FACTORY_MAX entries, a size 0 entry before
+    a range, ranges out of order or touching, or a list that isn't the board's [[flash.protect]] data entries (the
+    tools must keep what the firmware keeps, and no more there). protect: the board's entries."""
+    out = []
+    ranges = [(a, a + n) for a, n in factory if n]
+    if ranges and not keep:
+        out.append("hal_flash_map_t .factory lists ranges, but board.mk MCU_DEFS doesn't set -D%s=1: the firmware "
+                   "would keep none of them" % FACTORY_KEEP_DEF)
+    if keep and not ranges:
+        out.append("board.mk MCU_DEFS sets %s, but hal_flash_map_t .factory lists no range" % FACTORY_KEEP_DEF)
+    if len(factory) > FACTORY_MAX:
+        out.append("hal_flash_map_t .factory has %d entries, HAL_FLASH_FACTORY_MAX is %d" % (len(factory), FACTORY_MAX))
+    sizes = [n for _, n in factory]
+    if 0 in sizes and any(sizes[sizes.index(0):]):
+        out.append("hal_flash_map_t .factory: a size 0 entry ends the list, but a range follows it")
+    for (a0, e0), (a1, e1) in zip(ranges, ranges[1:]):
+        if a1 <= e0:
+            out.append("hal_flash_map_t .factory: 0x%X-0x%X and 0x%X-0x%X are not ascending and apart" % (a0, e0, a1, e1))
+    data = sorted((p["start"], p["end"]) for p in protect if p["mem"] == "data")
+    if ranges and sorted(ranges) != data:
+        out.append("hal_flash_map_t .factory (%s) isn't the [[flash.protect]] data entries (%s): each range the "
+                   "firmware keeps is a data entry, and each data entry a range" % (
+                       ", ".join("0x%X-0x%X" % r for r in sorted(ranges)) or "none",
+                       ", ".join("0x%X-0x%X" % r for r in data) or "none"))
+    return out
+
+
 def write_floor(board_dir):
     """The data flash's write floor a board gives its driver (hrc_flash_cfg_t .write_floor: below it the firmware only
     reads, the radio's own data), 0 without one."""
@@ -664,6 +778,7 @@ class Board:
         self.pins = pins			# pins.h integer defines
         self.flash_map = fmap or {}		# hal_flash_map_t: FLASH_MAP_FIELDS
         self.write_floor = 0			# hrc_flash_cfg_t .write_floor (write_floor()), set by the loader
+        self.factory = []			# hal_flash_map_t .factory, [(addr, size)] (flash_factory()), set by the loader
         # config.mk BOARD_UNSUPPORTED: {switch: reason}, in the build's order (make's value decides the set)
         reasons = unsupported or {}
         self.unsupported = {s: reasons.get(s, "") for s in mk.get("BOARD_UNSUPPORTED", "").split()}
@@ -701,9 +816,16 @@ class Board:
         return self.data["hardware"].get("cpu", self.platform.data["cpu"])
 
     @property
+    def rom_loader(self):
+        """The family's loader is the MCU's own ROM (FAMILIES loader): no loader lives in program flash."""
+        return self.family.get("loader") == "rom"
+
+    @property
     def protected(self):
-        """The flash below the image, never written: the factory loader's (platform flash_base to app_base)."""
-        return [(self.platform.data["flash_base"], self.app_base)]
+        """The flash below the image, never written: the factory loader's (platform flash_base to app_base). Empty
+        when the image starts at the flash base: the loader is then the MCU's ROM, and no flash lies below the image."""
+        base = self.platform.data["flash_base"]
+        return [(base, self.app_base)] if self.app_base > base else []
 
     @property
     def nand(self):
@@ -841,17 +963,23 @@ class Board:
         s = self.sectors()
         return s[-1][1] + s[-1][2]
 
+    @property
+    def codec_none(self):
+        """[codec] none: why the radio has no codec route, or None for a radio with one."""
+        return self.data["codec"].get("none")
+
     def codec(self):
         """{"profile", "windows": [(addr, length)], "sources", "installed", "code"} for a codec in a linker slot, or
         None for a stock-file placement ([codec] stock, the SHA-256 of each stock file the codec merges from: rfoundry
-        reads each file's windows from its stock-file tables, and the board's are their union)."""
+        reads each file's windows from its stock-file tables, and the board's are their union) and for a radio with no
+        codec route ([codec] none: codec_none tells the two apart)."""
         c = self.data["codec"]
-        if c.get("stock"):
+        if c.get("stock") or "none" in c:
             return None
         slot = self.codec_slot
         if slot is None or not c.get("profile"):
-            raise RegistryError("%s: [codec] needs stock (a stock-file placement) or profile with a linker codec slot"
-                                % self.id)
+            raise RegistryError("%s: [codec] needs stock (a stock-file placement), profile with a linker codec slot, "
+                                "or none (the reason the radio has no codec route)" % self.id)
         return {"profile": c["profile"], "windows": [(slot[0], slot[1] - slot[0])], "sources": c.get("sources", []),
                 "installed": c.get("installed", []), "code": slot[0]}
 
@@ -946,6 +1074,14 @@ def load(root=ROOT, only=None):
         validate(data, BOARD_SCHEMA, "boards/%s/board.toml" % bid)
         if data["id"] != bid:
             raise RegistryError("boards/%s/board.toml: id %r must be the directory name" % (bid, data["id"]))
+        # Two keys are required only beside another key's value, which the schema can't say. They are held here, where
+        # the schema holds the rest, and not only in check(): `json` writes the flashing tools' view without running
+        # check(), and a view without a keyed bootloader's strings lets the flashers skip telling the device
+        fl = data["flash"]
+        for why in (dfu_key_problem(fl["family"], fl["dfu"]) if "dfu" in fl else None,
+                    codec_tool_problem(data["codec"])):
+            if why:
+                raise RegistryError("boards/%s/board.toml: %s" % (bid, why))
         mk = make_vars(root, bid, MAKE_VARS + tuple(o["name"] + "_VALUES" for o in data.get("build_options", [])))
         plat = platforms.get(mk.get("PLATFORM", ""))
         if plat is None:
@@ -960,6 +1096,7 @@ def load(root=ROOT, only=None):
                           **unsupported_reasons(os.path.join(root, "platform", plat.id, "config.mk")),
                           **unsupported_reasons(os.path.join(bdir, "config.mk"))}, flash_map(srcs))
         out[bid].write_floor = write_floor(srcs)
+        out[bid].factory = flash_factory(srcs)
         out[bid].volts = source_volts(srcs)
         out[bid].nand_geo = nand_geometry(srcs) if out[bid].nand else None
         nw = {**not_written_reasons(os.path.join(root, "platform", plat.id, "config.mk")),
@@ -1070,7 +1207,8 @@ def write_test_problems(start, nand, spi_size, areas, protect, floor=0, size=STU
     """Why [flash.stub] write_test can't be the stub's data flash test region [start, start + size): a NAND
     (never written by the stub tool), a negative offset, below the board's write floor (the radio's own data), off the
     sector boundaries, past the chip (an address past it wraps to a low one), or over an area of the flash map or a
-    protected region. areas: Board.map_areas(); protect: the data entries; floor: write_floor()."""
+    protected region, widened to whole sectors (an entry the firmware keeps inside a sector leaves that sector to it:
+    the test erases). areas: Board.map_areas(); protect: the data entries; floor: write_floor()."""
     if size <= 0 or size % DATA_SECTOR:
         return ["size is not a positive multiple of 0x%X" % DATA_SECTOR]
     end = start + size
@@ -1085,17 +1223,21 @@ def write_test_problems(start, nand, spi_size, areas, protect, floor=0, size=STU
         out.append("not on a 0x%X sector boundary" % DATA_SECTOR)
     if end > spi_size:
         out.append("ends past the data flash ([flash] backup spi_size 0x%X)" % spi_size)
-    for lo, hi, what in areas + [(p["start"], p["end"], "the protected region " + p["what"]) for p in protect]:
+    wide = [(p["start"] - p["start"] % DATA_SECTOR, -(-p["end"] // DATA_SECTOR) * DATA_SECTOR,
+             "the protected region " + p["what"]) for p in protect]
+    for lo, hi, what in areas + wide:
         if lo < end and start < hi:
             out.append("overlaps %s (0x%X-0x%X)" % (what, lo, hi))
     return out
 
 
-def protect_problems(entries, mems, owned=()):
+def protect_problems(entries, mems, owned=(), kept=()):
     """Why a board's [[flash.protect]] entries can't stand: a memory the board lacks, an empty or reversed range, one
     past the memory's end or off its erase boundaries, an overlap with another entry, or with flash the firmware owns
     (owned: [(mem, start, end, what)], the application and the codec slot), which every install would then be refused.
-    mems: Board.memories()."""
+    mems: Board.memories(). kept: the [(start, end)] data flash ranges the board's flash map keeps (hal_flash_map_t
+    .factory): a data entry off the erase boundaries is allowed when it is one of them, since the firmware then keeps
+    its bytes through every rewrite of the sector, and the direct writers widen it to whole sectors."""
     out = []
     for i, p in enumerate(entries):
         m, lo, hi = p["mem"], p["start"], p["end"]
@@ -1110,9 +1252,10 @@ def protect_problems(entries, mems, owned=()):
         if hi > size:
             out.append("%s: past the end of the %s (0x%X bytes)" % (tag, PROTECT_MEMS[m], size))
         bounds = (lambda a: a % step == 0) if isinstance(step, int) else (lambda a: a in step or a == size)
-        if not (bounds(lo) and bounds(hi)):
-            out.append("%s: start and end must be on the %s's erase boundaries (%s)" % (
-                tag, PROTECT_MEMS[m], "0x%X" % step if isinstance(step, int) else "its sectors"))
+        if not (bounds(lo) and bounds(hi)) and not (m == "data" and (lo, hi) in kept):
+            out.append("%s: start and end must be on the %s's erase boundaries (%s)%s" % (
+                tag, PROTECT_MEMS[m], "0x%X" % step if isinstance(step, int) else "its sectors",
+                ", or the entry a range the flash map keeps (hal_flash_map_t .factory)" if m == "data" else ""))
         if not p["what"].strip() or not re.search(r"\(.*\d.*\)", p["what"]):
             out.append("%s: what names the data and cites the spec section, e.g. \"factory calibration "
                        "(hardware-<radio>.md 6.1)\"" % tag)
@@ -1123,6 +1266,126 @@ def protect_problems(entries, mems, owned=()):
             if om == m and olo < hi and lo < ohi:
                 out.append("%s overlaps %s (0x%X-0x%X), which every install writes" % (tag, what, olo, ohi))
     return out
+
+
+def base_problem(app_base, flash_base, family):
+    """Why an image can't start at app_base on a platform whose program flash starts at flash_base, or None. Below it
+    is never right. At it nothing is protected, which only a family whose loader is the MCU's ROM can afford (FAMILIES
+    loader "rom"): every other loader lives in the flash below the image."""
+    if app_base < flash_base or (app_base == flash_base and FAMILIES[family].get("loader") != "rom"):
+        return "the image starts at 0x%08X, at or below the platform's flash_base: nothing is protected" % app_base
+    return None
+
+
+def region_end_problem(sectors, region_end, flash_end, family):
+    """Why the application region (the linker script's FLASH) can't end at region_end on a board written through the
+    MCU's ROM loader, or None. That route erases whole sectors and refuses one past the region (rfoundry dfu.check_plain,
+    the web flasher's checkPlain), so a sector across the region's end would be erased past it, into the flash the
+    build keeps unused because the loader must not be asked to erase it. sectors: [(index, address, size)]."""
+    if FAMILIES[family].get("loader") != "rom" or region_end == flash_end or any(a == region_end for _, a, _ in sectors):
+        return None
+    return ("the linker script's FLASH ends at 0x%08X, inside a sector: the plain DfuSe route would erase that sector "
+            "past the application region. End it on a sector boundary" % region_end)
+
+
+def mass_erase_problem(family, platform):
+    """Why a board of this family can't be on this platform (its platform.toml as data), or None: a ROM loader removes
+    a read protection by erasing the whole program flash, and the flashing tools wait that erase out by the platform's
+    mass_erase_max_s (rfoundry cli.unprotect_wait, the web flasher's unprotectWait). Without the figure, or with one
+    that is no time, they could not say when the radio may be switched off."""
+    if FAMILIES[family].get("loader") != "rom" or platform.get("mass_erase_max_s", 0) > 0:
+        return None
+    return ("platform/%s/platform.toml gives no mass_erase_max_s (the SoC's longest mass erase, in seconds): the "
+            "flashing tools need it to wait out a Read Unprotect" % platform["id"])
+
+
+def restart_problems(family, bootloader):
+    """Why a board's [flash.bootloader] restart keys can't stand on its family. restart says the firmware restarts
+    into the bootloader the flashers install through when the debug link asks (REBOOT's ROM bootloader mode). That
+    mode enters the MCU's ROM bootloader, so only a family whose loader is that one can use it (FAMILIES loader
+    "rom"): on any other the flashers would wait for a device they don't write through. restart_hint is the text shown
+    when the radio refuses the restart: without restart nothing shows it, and an empty one says nothing."""
+    out = []
+    if bootloader.get("restart") and FAMILIES[family].get("loader") != "rom":
+        out.append("flash.bootloader restart is for a family installed through the MCU's ROM bootloader (%s): the "
+                   "debug link's restart enters that bootloader, not family %s's"
+                   % (", ".join(f for f, v in FAMILIES.items() if v.get("loader") == "rom"), family))
+    if "restart_hint" in bootloader:
+        if not bootloader.get("restart"):
+            out.append("flash.bootloader restart_hint needs restart = true: it is shown when the radio refuses the "
+                       "restart")
+        if not bootloader["restart_hint"].strip():
+            out.append("flash.bootloader restart_hint is empty: leave it out, or say what the user can do")
+    return out
+
+
+def dfu_key_problem(family, dfu):
+    """What a [flash.dfu] (dfu) lacks for a family whose bootloader has a key, or None: DFU_KEYED. The flashers tell
+    the device by the strings before they send it an encrypted image, and derive and check the key by its hash; a view
+    without one of them has nothing to tell the device by. load() refuses it, as the schema did while every family had
+    a key."""
+    fam = FAMILIES[family]
+    # an empty string is no string: rfoundry and the page would have nothing to tell the bootloader by
+    missing = [k for k in DFU_KEYED if not str(dfu.get(k, "")).strip()]
+    if missing and "flash.dfu" in fam["needs"] and fam.get("loader") != "rom":
+        return "family %s needs flash.dfu %s" % (family, ", ".join(missing))
+    return None
+
+
+def codec_tool_problem(codec):
+    """What a [codec] table (codec) with a codec route lacks, or None: the tool. Only none goes without one. load()
+    refuses it, as the schema did while every radio had a codec route."""
+    if "tool" not in codec and "none" not in codec:
+        return ("codec.tool is missing: the tool that extracts or merges the codec (%s). A radio with no codec route "
+                "has codec.none instead" % ", ".join(CODEC_TOOLS))
+    return None
+
+
+def dfu_problems(family, dfu):
+    """Why a board's [flash.dfu] (dfu) can't stand on its family. A bootloader with a key needs DFU_KEYED: the flashers
+    send it an encrypted image, so they must know the device and the key. A download to the MCU's ROM loader has no key
+    (naming one would say the image is encrypted), and its strings and layout are optional: they are added only once
+    read on a radio."""
+    if "flash.dfu" not in FAMILIES[family]["needs"]:
+        return ["[flash.dfu] is for a family that needs it (%s)"
+                % ", ".join(f for f, v in FAMILIES.items() if "flash.dfu" in v["needs"])]
+    if FAMILIES[family].get("loader") == "rom":
+        return ["flash.dfu %s: a ROM DfuSe download has no key (family %s)" % (k, family)
+                for k in ("key_sha256", "key_prefix") if k in dfu]
+    why = dfu_key_problem(family, dfu)
+    if why:
+        return [why]
+    if not re.fullmatch(r"[0-9a-f]{64}", dfu["key_sha256"]) or not re.fullmatch(r"[0-9A-F]{8}", dfu["key_prefix"]):
+        return ["flash.dfu key_sha256 is 64 lower-case hex digits, key_prefix 8 upper-case"]
+    return []
+
+
+def codec_none_problems(codec, keep_codec, symbols):
+    """Why [codec] none can't stand (codec: the [codec] table, with none in it): its value is the reason the radio has
+    no codec route, so it is not empty and no other key says how a codec is found; nothing can be kept ([flash]
+    keep_codec), and the linker scripts place none (symbols: their __codec_* names)."""
+    out = []
+    if not codec["none"].strip():
+        out.append("codec.none is the reason the radio has no codec route: it can't be empty")
+    if set(codec) - {"none"}:
+        out.append("codec.none stands alone: a radio with no codec route has no codec.%s"
+                   % ", codec.".join(sorted(set(codec) - {"none"})))
+    if keep_codec:
+        out.append("flash.keep_codec is true, but codec.none says the radio has no codec to keep")
+    if symbols:
+        out.append("the linker scripts define %s, but codec.none says the radio has no codec to place"
+                   % ", ".join(sorted(symbols)))
+    return out
+
+
+def addr4_problem(spi_size, mcu_defs):
+    """Why a data flash of spi_size bytes can't be read with the board's build (mcu_defs: board.mk MCU_DEFS), or None:
+    past SPI_NOR_ADDR3_MAX the driver needs its 4-byte address commands, and without them an address wraps to a low
+    one."""
+    if spi_size > SPI_NOR_ADDR3_MAX and SPI_NOR_ADDR4_DEF not in (mcu_defs or "").split():
+        return ("flash.backup spi_size 0x%X is over 0x%X, the most three address bytes reach: board.mk MCU_DEFS needs "
+                "%s (drivers/flash/spi_nor)" % (spi_size, SPI_NOR_ADDR3_MAX, SPI_NOR_ADDR4_DEF))
+    return None
 
 
 def variant_problems(bid, d, boards, bad):
@@ -1279,7 +1542,10 @@ def check(root=ROOT):
         owned = [("progmem", b.app_base - base, b.app_region[1] - base, "the application")]
         if b.codec_slot:
             owned.append(("progmem", b.codec_slot[0] - base, b.codec_slot[1] - base, "the codec slot"))
-        for why in protect_problems(b.protect, b.memories(), owned):
+        kept = [(a, a + n) for a, n in b.factory if n]
+        for why in protect_problems(b.protect, b.memories(), owned, kept):
+            bad(why)
+        for why in factory_problems(b.factory, factory_keep(b.mk.get("MCU_DEFS")), b.protect):
             bad(why)
         for (_, a0, s0), (_, a1, _) in zip(secs, secs[1:]):
             if a0 + s0 > a1:
@@ -1287,8 +1553,11 @@ def check(root=ROOT):
         if not secs or secs[0][1] != b.app_base:
             bad("no sector of %s starts where the image does (linker FLASH origin%s), 0x%08X"
                 % (b.sector_name(), " minus the first stage" if b.first_stage else "", b.app_base))
-        if b.app_base <= b.platform.data["flash_base"]:
-            bad("the image starts at 0x%08X, at or below the platform's flash_base: nothing is protected" % b.app_base)
+        for why in (base_problem(b.app_base, b.platform.data["flash_base"], fl["family"]),
+                    region_end_problem(secs, b.app_region[1], b.flash_end(), fl["family"]),
+                    mass_erase_problem(fl["family"], b.platform.data)):
+            if why:
+                bad(why)
         if codec is not None:
             for a, n in codec["windows"]:
                 if a < b.app_region[1] or a + n > b.flash_end():
@@ -1303,7 +1572,10 @@ def check(root=ROOT):
             for k in ("profile", "sources"):
                 if k in d["codec"]:
                     bad("codec.%s comes from the stock files' profiles when codec.stock is set" % k)
-        if not os.path.isfile(os.path.join(root, "tools", d["codec"]["tool"] + ".py")):
+        if "none" in d["codec"]:
+            for why in codec_none_problems(d["codec"], fl["keep_codec"], b.symbols):
+                bad(why)
+        elif not os.path.isfile(os.path.join(root, "tools", d["codec"]["tool"] + ".py")):
             bad("codec.tool tools/%s.py doesn't exist" % d["codec"]["tool"])
         if codec is not None and not codec["profile"].startswith(bid + "-"):
             bad("codec.profile %r must start with %r: the firmware reports <id>-<stock tag> (RFOUNDRY_BOARD_ID)"
@@ -1314,12 +1586,14 @@ def check(root=ROOT):
         for need in b.family["needs"]:
             if b.get(need) is None:
                 bad("family %s needs %s" % (fl["family"], need))
-        if "dfu" in fl and "flash.dfu" not in b.family["needs"]:
-            bad("[flash.dfu] is for a family that needs it (%s)"
-                % ", ".join(f for f, v in FAMILIES.items() if "flash.dfu" in v["needs"]))
-        if "dfu" in fl and (not re.fullmatch(r"[0-9a-f]{64}", fl["dfu"]["key_sha256"])
-                            or not re.fullmatch(r"[0-9A-F]{8}", fl["dfu"]["key_prefix"])):
-            bad("flash.dfu key_sha256 is 64 lower-case hex digits, key_prefix 8 upper-case")
+        if "dfu" in fl:
+            for why in dfu_problems(fl["family"], fl["dfu"]):
+                bad(why)
+        for why in restart_problems(fl["family"], fl["bootloader"]):
+            bad(why)
+        why = addr4_problem(fl["backup"]["spi_size"], b.mk.get("MCU_DEFS"))
+        if why:
+            bad(why)
         ov = fl.get("original_version")
         if ov is not None:
             if "dfu" not in fl:
@@ -1463,11 +1737,17 @@ def rfoundry_view(boards):
             "rom_base": b.platform.data["flash_base"],
             "app_base": b.app_base, "flash_end": b.flash_end(), "app_region": list(b.app_region),
             "sectors": [list(s) for s in b.sectors()], "protected": [list(p) for p in b.protected],
+            # the SoC's longest mass erase in seconds (the platform's), None where the platform gives none: the wait
+            # after a ROM loader's Read Unprotect
+            "mass_erase_max_s": b.platform.data.get("mass_erase_max_s"),
             # [[flash.protect]]: what no tool erases or writes, by memory, offsets from the memory's start (rfoundry/protect.py)
             "protect": b.protect,
             "keep_codec_supported": fl["keep_codec"],
             "first_stage": [b.first_stage[0], b.first_stage[1].hex()] if b.first_stage else None,
-            "codec_tool": d["codec"]["tool"], "codec_stock": list(d["codec"].get("stock", [])),
+            # codec_none: why the radio has no codec route ([codec] none), else None. Such a radio has no codec tool,
+            # no stock files and nothing under "codec": the tools plan and install it without a codec step
+            "codec_tool": d["codec"].get("tool"), "codec_none": b.codec_none,
+            "codec_stock": list(d["codec"].get("stock", [])),
             # a stock-file placement has no id or windows here: rfoundry reads them from its stock-file tables
             "codec": {"id": codec["profile"] if codec else None,
                       "windows": [list(w) for w in codec["windows"]] if codec else None,
@@ -1480,9 +1760,17 @@ def rfoundry_view(boards):
             "loader_sign": fl["bootloader"].get("sign", ""),
             # what rfoundry tells the user: how to reach the bootloader, where the stock files come from
             "bootloader_steps": list(fl["bootloader"].get("steps", [])), "stock_download": fl.get("stock_download"),
-            "key_sha256": dfu["key_sha256"] if dfu else None, "key_prefix": dfu["key_prefix"] if dfu else None,
+            # the install notice ([flash] notice), which rfoundry prints where an install stops to ask; None without one
+            "notice": fl.get("notice"),
+            # the firmware restarts into the bootloader when the debug link asks ([flash.bootloader] restart), and
+            # what the board says to do when it refuses just then (restart_hint), or None
+            "bootloader_restart": bool(fl["bootloader"].get("restart", False)),
+            "bootloader_restart_hint": fl["bootloader"].get("restart_hint"),
+            # the key is None on a family without one (a ROM loader); the strings and the layout are None until
+            # they were read on a radio
+            "key_sha256": dfu.get("key_sha256") if dfu else None, "key_prefix": dfu.get("key_prefix") if dfu else None,
             "dfu_ids": [dfu["vid"], dfu["pid"]] if dfu else None,
-            "dfu_string1": dfu["string1"] if dfu else None, "dfu_product": dfu["product"] if dfu else None,
+            "dfu_string1": dfu.get("string1") if dfu else None, "dfu_product": dfu.get("product") if dfu else None,
             "dfu_layout": dfu.get("layout") if dfu else None,
             # a hardware option the original firmware's version settles (rfoundry/origversion.py), or None
             "original_version": fl.get("original_version"),
@@ -1572,10 +1860,16 @@ def site_view(boards, root=ROOT):
                  "bootloader": list(fl["bootloader"]["steps"]), "stock_versions": list(fl["stock_versions"]),
                  # the keys to hold, by key name: the flasher marks them on the radio's picture (radiotop.js)
                  "bootloader_hold": list(fl["bootloader"].get("hold", [])),
+                 # the firmware restarts into the bootloader when the page asks over the debug link, and the board's
+                 # words for a refusal, or None (dfuse.js)
+                 "bootloader_restart": bool(fl["bootloader"].get("restart", False)),
+                 "bootloader_restart_hint": fl["bootloader"].get("restart_hint"),
                  # the image starts with a first stage of this size, its first word this signature (board.mk BOOT_*)
                  "first_stage": {"size": b.first_stage[0], "head": b.first_stage[1].hex()} if b.first_stage else None,
                  "stock_console": stub.get("stock_console"), "update_mode": b.family["update_mode"],
                  "read_rate": stub.get("read_rate"), "codec_version": d["codec"].get("stock_version"),
+                 # why the radio has no codec route ([codec] none), else None: the flasher then asks for no codec
+                 "codec_none": b.codec_none,
                  "build_options": json.loads(json.dumps(d.get("build_options", []))),
                  # what no write may touch ([[flash.protect]], site/static/js/flasher/protect.js)
                  "protect": b.protect}
@@ -1867,6 +2161,76 @@ def self_test():
     except RegistryError:
         ok(True, "flash_map refuses two maps that differ")
     shutil.rmtree(tmpc)
+    # hal_flash_map_t .factory: the parser, the define and the registry's data entries
+    tmpf = tempfile.mkdtemp()
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("static const hal_flash_map_t small = { .openfw_end = 1, .factory = { { 0x5000u, 0x10u } } };\n"
+                "const hal_flash_map_t fmap = {\n\t.openfw_eeprom = 0u,\t/* .factory = { { 1, 2 } } */\n"
+                "\t.factory = {\n\t\t{ 0x001000u, 0x200u },\t// the table\n"
+                "\t\t{ .addr = 0x01E000UL, .size = 8192 },\n\t},\n\t.openfw_end = 0x00100000u,\n};\n"
+                "static const cfg_t cfg = { .map = &fmap, .small_map = &small };\n")
+    ok(flash_factory(tmpf) == [(0x1000, 0x200), (0x1E000, 0x2000)] and
+       flash_map(tmpf) == {"openfw_eeprom": 0, "openfw_end": 0x100000},
+       "flash_factory: pairs and designated entries, suffixes and comments; the small map's list is not the board's; "
+       "flash_map reads past the nested list %r" % flash_factory(tmpf))
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t fmap = { .openfw_eeprom = 0u };\n")
+    ok(flash_factory(tmpf) == [], "flash_factory: a map without a list")
+    for text, what in (("const hal_flash_map_t m = { .factory = { { TABLE_ADDR, 0x200u } } };\n", "a macro"),
+                       ("const hal_flash_map_t m = { .factory = { 0x1000u, 0x200u } };\n", "an entry without braces")):
+        with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            flash_factory(tmpf)
+            ok(False, "flash_factory refuses %s" % what)
+        except RegistryError:
+            ok(True, "flash_factory refuses %s" % what)
+    with open(os.path.join(tmpf, "store.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t m = { .factory = { { 0x1000u, 0x200u } } };\n")
+    with open(os.path.join(tmpf, "store2.c"), "w", encoding="utf-8") as f:
+        f.write("const hal_flash_map_t m2 = { .factory = { { 0x1000u, 0x100u } } };\n")
+    try:
+        flash_factory(tmpf)
+        ok(False, "flash_factory refuses two maps whose lists differ")
+    except RegistryError:
+        ok(True, "flash_factory refuses two maps whose lists differ")
+    shutil.rmtree(tmpf)
+    ok(factory_keep("-DX=1 -DSTORAGE_FACTORY_KEEP=1") and factory_keep("-DSTORAGE_FACTORY_KEEP") and
+       not factory_keep("-DSTORAGE_FACTORY_KEEP=0") and not factory_keep("-DSTORAGE_FACTORY_KEEP=0x0u") and
+       factory_keep("-DSTORAGE_FACTORY_KEEP=0x1u") and not factory_keep("-DSTORAGE_FACTORY_KEEPX=1") and
+       not factory_keep(None), "factory_keep: the define set, bare or to a value other than 0")
+    table = {"mem": "data", "start": 0x1000, "end": 0x1200, "what": "t (x.md 2.1)"}
+    recs = {"mem": "data", "start": 0x1E000, "end": 0x20000, "what": "r (x.md 2.4)"}
+    lst = [(0x1000, 0x200), (0x1E000, 0x2000), (0, 0), (0, 0)]
+    ok(factory_problems(lst, True, [recs, table]) == [], "factory: a list with the define, equal to the data entries")
+    ok(factory_problems([], False, [dict(table, start=0x1000, end=0xC9000)]) == [],
+       "factory: data entries without a list or the define pass as before")
+    for args, want in (((lst, False, [table, recs]), "doesn't set -DSTORAGE_FACTORY_KEEP=1"),
+                       (([], True, []), "lists no range"),
+                       (([(0x1000, 0x200), (0, 0), (0x1E000, 0x2000)], True, [table, recs]), "a size 0 entry"),
+                       ((lst + [(0, 0)], True, [table, recs]), "HAL_FLASH_FACTORY_MAX"),
+                       (([(0x1E000, 0x2000), (0x1000, 0x200)], True, [table, recs]), "ascending and apart"),
+                       (([(0x1000, 0x200), (0x1200, 0x10)], True, [table, dict(table, start=0x1200, end=0x1210)]),
+                        "ascending and apart"),
+                       ((lst, True, [table]), "isn't the [[flash.protect]] data entries"),
+                       (([(0x1000, 0x200)], True, [table, recs]), "isn't the [[flash.protect]] data entries"),
+                       (([(0x1000, 0x100)], True, [table]), "isn't the [[flash.protect]] data entries")):
+        got = factory_problems(*args)
+        ok(len(got) == 1 and want in got[0], "factory refuses: %s %r" % (want, got))
+    ok(protect_problems([table, recs], {"data": (0x1000000, 0x1000)}, (), [(0x1000, 0x1200), (0x1E000, 0x20000)])
+       == [], "protect: a data entry off the erase boundaries passes when the map keeps it")
+    got = protect_problems([table], {"data": (0x1000000, 0x1000)})
+    ok(len(got) == 1 and "erase boundaries" in got[0] and ".factory" in got[0],
+       "protect: a data entry off the erase boundaries the map doesn't keep is refused %r" % got)
+    got = protect_problems([dict(table, end=0x1100)], {"data": (0x1000000, 0x1000)}, (), [(0x1000, 0x1200)])
+    ok(len(got) == 1 and "erase boundaries" in got[0], "protect: only the map's exact range passes off the boundaries")
+    got = protect_problems([dict(table, mem="progmem")], {"progmem": (0x100000, 0x1000)}, (), [(0x1000, 0x1200)])
+    ok(len(got) == 1 and "erase boundaries" in got[0], "protect: the map's list allows a data entry only")
+    ok(write_test_problems(0x2000, False, 0x1000000, [], [table]) == [] and
+       write_test_problems(0x1800, False, 0x1000000, [], [table]) == [
+           "not on a 0x1000 sector boundary", "overlaps the protected region t (x.md 2.1) (0x1000-0x2000)"],
+       "write_test: an entry inside a sector counts as its whole sector %r"
+       % write_test_problems(0x1800, False, 0x1000000, [], [table]))
     ok(ld_expr("0x030E8000 - 0x0300C000") == 0xDC000 and ld_expr("128K - 4") == 131068 and ld_expr("1M") == 1 << 20,
        "ld_expr: hex, K and M")
     try:
@@ -1909,6 +2273,84 @@ def self_test():
         got = protect_problems(ents, ms, owned)
         ok(len(got) == 1 and want in got[0], "protect refuses: %s %r" % (want, got))
     ok(protect_problems([pe("progmem", 0x8000, 0x10000)], geo) == [], "protect: on a geometry's sector boundaries")
+    # the flashing families: a loader with a key below the image, or the MCU's ROM loader and an image at the flash base
+    keyed, rom = "usb-dfu", next(f for f, v in FAMILIES.items() if v.get("loader") == "rom")
+    usb = {"vid": 0x0483, "pid": 0xDF11}
+    full = dict(usb, string1="Maker", product="Radio", key_sha256="ab" * 32, key_prefix="0123ABCD")
+    ok(dfu_problems(keyed, full) == [] and dfu_problems(keyed, dict(full, layout="@Flash /0x08000000/4*016Kg")) == [],
+       "dfu: a keyed bootloader with its strings and key passes")
+    got = dfu_problems(keyed, {k: v for k, v in full.items() if k not in ("product", "key_prefix")})
+    ok(len(got) == 1 and "needs flash.dfu product, key_prefix" in got[0],
+       "dfu: a keyed bootloader needs all four %r" % got)
+    ok(len(dfu_problems(keyed, dict(full, key_sha256="AB" * 32))) == 1
+       and len(dfu_problems(keyed, dict(full, key_prefix="0123"))) == 1, "dfu: the key's hash and prefix forms")
+    ok(dfu_problems(rom, usb) == []
+       and dfu_problems(rom, dict(usb, string1="Maker", product="Loader", layout="@x")) == [],
+       "dfu: a ROM loader needs only the USB ids; strings and layout once read on a radio")
+    for k in ("key_sha256", "key_prefix"):
+        got = dfu_problems(rom, dict(usb, **{k: full[k]}))
+        ok(len(got) == 1 and "has no key" in got[0], "dfu: a ROM loader given a %s is refused %r" % (k, got))
+    ok(len(dfu_problems("serial-iap", usb)) == 1, "dfu: a table on a family that takes none")
+    hint = "Turn the knob one step and try again."
+    ok(restart_problems(rom, {"steps": []}) == [] and restart_problems(rom, {"restart": True}) == []
+       and restart_problems(rom, {"restart": True, "restart_hint": hint}) == []
+       and restart_problems(keyed, {"restart": False}) == [],
+       "restart: a ROM loader's board may say its firmware restarts into the bootloader, with or without a hint")
+    got = [restart_problems(f, {"restart": True}) for f in FAMILIES if FAMILIES[f].get("loader") != "rom"]
+    ok(all(len(g) == 1 and "ROM bootloader (%s)" % rom in g[0] for g in got),
+       "restart: refused on every family that is not installed through the ROM bootloader %r" % got[:1])
+    got = restart_problems(rom, {"restart_hint": hint}) + restart_problems(rom, {"restart": False, "restart_hint": hint})
+    ok(len(got) == 2 and all("needs restart = true" in g for g in got), "restart: a hint without the restart %r" % got)
+    got = restart_problems(rom, {"restart": True, "restart_hint": "  "})
+    ok(len(got) == 1 and "is empty" in got[0], "restart: an empty hint is refused %r" % got)
+    ok(dfu_key_problem(keyed, full) is None and dfu_key_problem(rom, usb) is None
+       and dfu_key_problem("serial-iap", usb) is None
+       and all(k in (dfu_key_problem(keyed, {a: b for a, b in full.items() if a != k}) or "") for k in DFU_KEYED),
+       "dfu: what load refuses is a keyed bootloader's table without one of its strings or key parts, nothing else")
+    ok(all(k in (dfu_key_problem(keyed, dict(full, **{k: v})) or "") for k in DFU_KEYED for v in ("", "  ")),
+       "dfu: an empty string or key part is a missing one (the flashers would skip the wrong-device refusal)")
+    ok(base_problem(0x0800C000, 0x08000000, keyed) is None and base_problem(0x08000000, 0x08000000, rom) is None
+       and base_problem(0x08020000, 0x08000000, rom) is None,
+       "image base: above the flash base, or at it for a ROM loader")
+    ok("nothing is protected" in (base_problem(0x08000000, 0x08000000, keyed) or "")
+       and all(base_problem(0x07FFC000, 0x08000000, f) for f in FAMILIES),
+       "image base: at the flash base only for a ROM loader, below it for none")
+    two_banks = [(i, 0x08000000 + i * 0x20000, 0x20000) for i in range(16)]
+    ok(region_end_problem(two_banks, 0x08100000, 0x08200000, rom) is None
+       and region_end_problem(two_banks, 0x08200000, 0x08200000, rom) is None
+       and region_end_problem(two_banks, 0x080F0000, 0x08200000, keyed) is None,
+       "application region: a ROM loader's ends on a sector boundary or at the flash end; other loaders aren't asked")
+    ok("inside a sector" in (region_end_problem(two_banks, 0x080F0000, 0x08200000, rom) or ""),
+       "application region: a ROM loader's that ends inside a sector is refused (its erase would reach past it)")
+    ok(mass_erase_problem(rom, {"id": "p", "mass_erase_max_s": 26}) is None
+       and mass_erase_problem(keyed, {"id": "p"}) is None and mass_erase_problem("serial-iap", {"id": "p"}) is None,
+       "mass erase time: a ROM loader's platform gives it; other loaders aren't asked")
+    ok(all("platform/p/platform.toml gives no mass_erase_max_s" in (mass_erase_problem(rom, dict({"id": "p"}, **kv))
+                                                                    or "") for kv in ({}, {"mass_erase_max_s": 0})),
+       "mass erase time: a ROM loader's platform without one, or with none, is refused")
+    prot = Board.protected.fget
+    ok(prot(NS(platform=NS(data={"flash_base": 0x08000000}), app_base=0x08000000)) == []
+       and prot(NS(platform=NS(data={"flash_base": 0x08000000}), app_base=0x0800C000)) == [(0x08000000, 0x0800C000)],
+       "protected: the flash below the image, none for an image at the flash base")
+    # [codec] none: the reason alone
+    ok(codec_none_problems({"none": "no codec route is known"}, False, {}) == [], "codec none: a reason alone passes")
+    for cd, keep, syms, want in (({"none": " "}, False, {}, "can't be empty"),
+                                 ({"none": "x", "stock": ["ab" * 32], "tool": CODEC_TOOLS[0]}, False, {},
+                                  "no codec.stock, codec.tool"),
+                                 ({"none": "x"}, True, {}, "keep_codec"),
+                                 ({"none": "x"}, False, {"__codec_slot": 0x030E8000}, "define __codec_slot")):
+        got = codec_none_problems(cd, keep, syms)
+        ok(len(got) == 1 and want in got[0], "codec none refuses: %s %r" % (want, got))
+    ok(codec_tool_problem({"none": "x"}) is None and codec_tool_problem({"tool": CODEC_TOOLS[0], "profile": "p"}) is None
+       and "codec.tool is missing" in (codec_tool_problem({"stock": ["ab" * 32]}) or "")
+       and "codec.tool is missing" in (codec_tool_problem({"profile": "p"}) or ""),
+       "codec: a route needs its tool; only none goes without one")
+    # a data flash past three address bytes
+    ok(addr4_problem(0x1000000, "-DX=1") is None and addr4_problem(0, None) is None
+       and addr4_problem(0x2000000, "-DX=1 %s -DY=2" % SPI_NOR_ADDR4_DEF) is None,
+       "flash size: 16 MB as it is, more with the 4-byte address build")
+    ok(all(SPI_NOR_ADDR4_DEF in (addr4_problem(0x2000000, m) or "") for m in ("-DX=1", None, SPI_NOR_ADDR4_DEF + "0")),
+       "flash size: over 16 MB without the 4-byte address build is refused")
     tmpm = tempfile.mkdtemp(prefix="rfoundry-boards-mk-")
     with open(os.path.join(tmpm, "config.mk"), "w", encoding="utf-8") as f:
         f.write("# BOARD_UNSUPPORTED += NO\nBOARD_UNSUPPORTED += USB\t# no USB port\nBOARD_UNSUPPORTED += AM_RX\n"
@@ -2095,8 +2537,34 @@ def self_test():
             for p in _tomllib().load(open(os.path.join(ROOT, "boards", b, "board.toml"), "rb"))["docs"].values():
                 os.makedirs(os.path.dirname(os.path.join(tmp, p)), exist_ok=True)
                 open(os.path.join(tmp, p), "w").close()
+        # The fixture must be consistent whatever state the tree is in, so that each case below fails for its own
+        # reason only. Two things the tree may lack while a radio is being added are made here; check() reports both
+        # on the tree itself. A board whose sources define no board_t yet gets one, and the flashing tools' view is
+        # written from the fixture (the last cases here still find a stale one)
+        for b, x in load(tmp).items():
+            if not x.source_names:
+                with open(os.path.join(tmp, "boards", b, "fixture_board.c"), "w", encoding="utf-8") as f:
+                    f.write('const board_t board = { .name = "%s" };\n' % x.data["model"])
+                print("note the fixture gives %s a board_t: its sources have none yet" % b)
+        reg = load(tmp)
+        with open(os.path.join(tmp, RFOUNDRY_JSON), "w", encoding="utf-8") as f:
+            f.write(dumps(rfoundry_view(reg)))
         ok(check(tmp) == [], "the copied registry is consistent: %s" % check(tmp)[:3])
-        one = board_dirs(tmp)[0]
+
+        def toml_of(b):
+            with open(os.path.join(tmp, "boards", b, "board.toml"), encoding="utf-8") as f:
+                return f.read()
+
+        def loads():
+            """The fixture loads: a view can be written from it."""
+            try:
+                load(tmp)
+            except RegistryError:
+                return False
+            return True
+        # the board the mutations below are made on: one with a stub profile that holds the power latch (the
+        # hold_power and pins.h cases need it), whatever sorts first
+        one = next(b for b in board_dirs(tmp) if re.search(r"(?m)^hold_power = ", toml_of(b)))
         path = os.path.join(tmp, "boards", one, "board.toml")
         good = open(path, encoding="utf-8").read()
 
@@ -2124,7 +2592,7 @@ def self_test():
         if load(tmp)[one].family["update_mode"]:
             broken(re.sub(r"(?ms)^steps = \[.*?^\]\n", "steps = []\n", good, count=1),
                    "an update mode without the steps into it", "flash.bootloader.steps is empty")
-        two = board_dirs(tmp)[1]
+        two = next(b for b in board_dirs(tmp) if b != one)	# any other board: its order and tocall are taken
         other = _tomllib().load(open(os.path.join(tmp, "boards", two, "board.toml"), "rb"))["order"]
         broken(re.sub(r"(?m)^order = .*$", "order = %d" % other, good), "an order another board has", "also the")
         other = _tomllib().load(open(os.path.join(tmp, "boards", two, "board.toml"), "rb"))["aprs_tocall"]
@@ -2199,13 +2667,140 @@ def self_test():
                                      (re.sub(r'(?m)^stock = \[', 'stock = ["abc", ', st_good),
                                       "a codec.stock entry that isn't a SHA-256", "SHA-256"),
                                      (put(arr.group(0) + '\nsources = ["x"]'),
-                                      "codec.sources beside codec.stock", "comes from the stock files")):
+                                      "codec.sources beside codec.stock", "comes from the stock files"),
+                                     (put(arr.group(0) + '\nnone = "no codec route"'),
+                                      "codec.none beside codec.stock", "codec.none stands alone")):
                 with open(sp, "w", encoding="utf-8") as f:
                     f.write(text)
                 got = check(tmp)
                 ok(any(want in q for q in got), "check finds %s (%s)" % (what, got[:2]))
+            # the tool of a codec route was a key of the schema until a radio could have no route: still no load
+            # without it, so no view with a null tool
+            with open(sp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r'(?m)^tool = .*\n', "", st_good))
+            got = check(tmp)
+            ok(any("codec.tool is missing" in q for q in got) and not loads(),
+               "a codec route without its tool is refused at load (%s)" % got[:2])
             with open(sp, "w", encoding="utf-8") as f:
                 f.write(st_good)
+        # a bootloader with a key lives below the image: moved to the flash base, its board protects nothing; and
+        # its [flash.dfu] names the key
+        kb = next((b for b, x in reg.items() if "dfu" in x.data["flash"] and not x.rom_loader), None)
+        if kb:
+            mk = os.path.join(tmp, "boards", kb, "board.mk")
+            mk_good = open(mk, encoding="utf-8").read()
+            with open(mk, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^(APP_BASE\s*:?=\s*)\S+", r"\g<1>0x%08X" % reg[kb].platform.data["flash_base"],
+                               mk_good))
+            got = check(tmp)
+            ok(any("nothing is protected" in p for p in got),
+               "check finds a board with a bootloader in flash moved to the flash base (%s)" % got[:2])
+            with open(mk, "w", encoding="utf-8") as f:
+                f.write(mk_good)
+            kp, k_good = os.path.join(tmp, "boards", kb, "board.toml"), toml_of(kb)
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^key_sha256 = .*\n", "", k_good))
+            got = check(tmp)
+            ok(any("needs flash.dfu key_sha256" in p for p in got) and not loads(),
+               "a keyed bootloader without its key is refused at load (%s)" % got[:2])
+            # the strings are what the flashers tell the device by before they send it an encrypted image: a view
+            # with none would let them skip that
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^string1 = .*\n", "", k_good))
+            got = check(tmp)
+            ok(any("needs flash.dfu string1" in p for p in got) and not loads(),
+               "a keyed bootloader without its USB string is refused at load (%s)" % got[:2])
+            # an empty one passes the schema (a string) and tells the device by nothing as well
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^string1 = .*\n", 'string1 = ""\n', k_good))
+            got = check(tmp)
+            ok(any("needs flash.dfu string1" in p for p in got) and not loads(),
+               "a keyed bootloader with an empty USB string is refused at load (%s)" % got[:2])
+            # the debug link's restart enters the MCU's ROM bootloader, which a keyed board is not installed through
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^(\[flash\.bootloader\]\n)", r"\1restart = true\n", k_good))
+            got = check(tmp)
+            ok(any("flash.bootloader restart is for a family" in p for p in got),
+               "check finds a keyed bootloader's board that claims the restart into the bootloader (%s)" % got[:2])
+            with open(kp, "w", encoding="utf-8") as f:
+                f.write(k_good)
+        # a board installed through the MCU's ROM loader, its image at the flash base: nothing protected, no key
+        rb = next((b for b, x in reg.items() if x.rom_loader and x.app_base == x.platform.data["flash_base"]), None)
+        if rb:
+            x, view = reg[rb], rfoundry_view(reg)["boards"][rb]
+            base = x.platform.data["flash_base"]
+            ok(x.protected == [] and view["protected"] == [] and x.sectors()[0][1] == base
+               and view["sectors"][0][1] == base, "a ROM loader's board: nothing protected, its sectors start at the "
+               "flash base (0x%08X, %s)" % (x.app_base, x.sectors()[:1]))
+            ok(view["key_sha256"] is None and view["key_prefix"] is None and view["dfu_ids"] == [
+               x.data["flash"]["dfu"]["vid"], x.data["flash"]["dfu"]["pid"]], "a ROM loader's board: USB ids, no key")
+            ok(view["mass_erase_max_s"] == x.platform.data["mass_erase_max_s"] > 0,
+               "a ROM loader's board: the view carries its platform's mass erase time (%r)" % view["mass_erase_max_s"])
+            pp = os.path.join(tmp, "platform", x.platform.id, "platform.toml")
+            with open(pp, encoding="utf-8") as f:
+                p_good = f.read()
+            with open(pp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^mass_erase_max_s = .*\n", "", p_good))
+            got = check(tmp)
+            ok(any("gives no mass_erase_max_s" in p for p in got),
+               "check finds a ROM loader's platform without a mass erase time (%s)" % got[:2])
+            with open(pp, "w", encoding="utf-8") as f:
+                f.write(p_good)
+            rp, r_good = os.path.join(tmp, "boards", rb, "board.toml"), toml_of(rb)
+            with open(rp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^(\[flash\.dfu\]\n)", r'\1key_sha256 = "%s"\n' % ("ab" * 32), r_good))
+            got = check(tmp)
+            ok(any("has no key" in p for p in got),
+               "check finds a ROM loader's board given a key_sha256 (%s)" % got[:2])
+            with open(rp, "w", encoding="utf-8") as f:
+                f.write(r_good)
+        # a radio with no codec route: the views say so, and nothing of a codec stands beside the reason
+        nb = next((b for b, x in reg.items() if x.codec_none is not None), None)
+        views = rfoundry_view(reg)["boards"]
+        # the site's view also lists the survey's radios without a board: a survey without rows, for this call only
+        sv = os.path.join(tmp, registry_docs.SURVEY)
+        os.makedirs(os.path.dirname(sv), exist_ok=True)
+        with open(sv, "w", encoding="utf-8") as f:
+            f.write("## Summary table\n\n| Radio | MCU | Port |\n|---|---|---|\n")
+        site = site_view(reg, tmp)["boards"]
+        os.remove(sv)
+        ok(all(v["codec_none"] == reg[b].codec_none for b, v in views.items())
+           and len(site) == len(reg) and all(r["flash"]["codec_none"] == reg[r["id"]].codec_none for r in site),
+           "the views carry codec_none for every board: the reason, or None with a codec route")
+        # the restart into the bootloader: both views say the same, a hint only beside the restart, and only a board
+        # installed through its MCU's ROM bootloader has it
+        boot = {b: reg[b].data["flash"]["bootloader"] for b in reg}
+        ok(all(v["bootloader_restart"] is bool(boot[b].get("restart")) and v["bootloader_restart_hint"]
+               == boot[b].get("restart_hint") for b, v in views.items())
+           and all((r["flash"]["bootloader_restart"], r["flash"]["bootloader_restart_hint"])
+                   == (views[r["id"]]["bootloader_restart"], views[r["id"]]["bootloader_restart_hint"]) for r in site)
+           and all(reg[b].rom_loader and (v["bootloader_restart"] or v["bootloader_restart_hint"] is None)
+                   for b, v in views.items() if v["bootloader_restart"] or v["bootloader_restart_hint"]),
+           "the views carry the restart into the bootloader and its hint the same, on ROM loader boards only")
+        if nb:
+            v = views[nb]
+            ok(v["codec_none"] and v["codec_tool"] is None and v["codec_stock"] == [] and v["codec"]["id"] is None
+               and v["codec"]["windows"] is None and v["codec_slot"] is None and not v["keep_codec_supported"],
+               "a radio with no codec route: no tool, no stock files, no windows in the view")
+            np_, n_good = os.path.join(tmp, "boards", nb, "board.toml"), toml_of(nb)
+            with open(np_, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"(?m)^keep_codec = false$", "keep_codec = true", n_good))
+            got = check(tmp)
+            ok(any("no codec to keep" in p for p in got), "check finds keep_codec beside codec.none (%s)" % got[:2])
+            with open(np_, "w", encoding="utf-8") as f:
+                f.write(n_good)
+        # a data flash past 16 MB on a board built with three address bytes
+        sb = next((b for b, x in reg.items() if 0 < x.data["flash"]["backup"]["spi_size"] <= SPI_NOR_ADDR3_MAX
+                   and SPI_NOR_ADDR4_DEF not in x.mk.get("MCU_DEFS", "").split()), None)
+        if sb:
+            sp, s_good = os.path.join(tmp, "boards", sb, "board.toml"), toml_of(sb)
+            with open(sp, "w", encoding="utf-8") as f:
+                f.write(re.sub(r"\bspi_size = \w+", "spi_size = 0x%X" % (2 * SPI_NOR_ADDR3_MAX), s_good))
+            got = check(tmp)
+            ok(any(SPI_NOR_ADDR4_DEF in p for p in got), "check finds a data flash over 16 MB without the 4-byte "
+               "address build (%s)" % got[:2])
+            with open(sp, "w", encoding="utf-8") as f:
+                f.write(s_good)
         # the build view's file names against the Makefile's
         mkf = os.path.join(tmp, "Makefile")
         mkf_good = open(mkf, encoding="utf-8").read()

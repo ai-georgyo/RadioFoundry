@@ -21,7 +21,7 @@ payload and a CRC-16/CCITT-FALSE. Requests carry at most 64 bytes, replies at mo
 | Protocol and commands | `core/debuglink/debuglink.c`, one `debuglink_<area>.c` per command family, view sections in `debuglink_view*.c` (switch `CONFIG_DEBUGLINK`, on wherever the host link is) |
 | Key injection | `core/input/input_task.c` |
 | Hook into the host port | `core/hostlink/hostlink.c` |
-| Chip commands | `core/debuglink/dl_chip.c`, `hal/hal_system.h`, `platform/stm32f4/sysboot.c` |
+| Chip commands | `core/debuglink/dl_chip.c`, `hal/hal_system.h`, `platform/stm32/sysboot.c` |
 | Host tool and Python module | `tools/rfoundry_debug.py` |
 | Host tests | `tests/host/debuglinkTest.c`; `debuglinkDmrDataTest.c` for the DMR data IP operations |
 
@@ -53,9 +53,15 @@ The HIL tests use the `DebugLink` class from the same module.
 
 ## Safety limits
 
-Injected PTT ends after 10 s at most, and the radio's own transmit checks still apply. One injected key at a time,
-each held at most 10 s, 40 ms apart. Radio requests are rate limited. Nothing in the debug link writes internal flash
-or option bytes. See [debuglink.md](../spec/debuglink.md) section 4.
+Injected PTT ends after 10 s at most, and the radio's own transmit checks still apply. `ptt --seconds S` sets the
+radio's PTT time-out just past the hold, so the radio ends the key-up by itself when the release never arrives. If
+the link drops during the key-up (the port gone, or no answer, at the release or already at the PTT down), the tool
+says so instead of the release, waits up to 10 s past that time-out for the port (time for the radio's own reset of a
+port the transmission left without a host, and one more try: [cps-protocol.md](../spec/cps-protocol.md) 1.1), sends
+the release again and reads the view to check that no injected key is held. Exit 0 when that is confirmed, 2 when it
+is but the PTT down itself was not, else 1 with what to do without the link. One injected key at a time, each held
+at most 10 s, 40 ms apart. Radio requests are rate limited. Nothing in the debug link writes internal flash or option
+bytes. See [debuglink.md](../spec/debuglink.md) section 4.
 
 ## Adding a command
 

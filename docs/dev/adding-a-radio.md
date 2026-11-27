@@ -15,21 +15,32 @@ bootloader and image format, calibration, codec location. Start from the radio's
 
 A board's files list only how it differs from its platform. The platform's defaults are in `platform/<p>/`:
 `platform.mk` (compiler, part defines, HAL modules), `config.mk` (feature defaults), `common.ld` (the sections) and
-`FreeRTOSConfig.h`. Glue that every radio with the same part on that SoC shares is in a subdirectory the board lists
-in `BOARD_DIRS`. The board then keeps only its wiring and what its chips leave to it.
+`FreeRTOSConfig.h`. The STM32 platforms share `platform/stm32`: `common.ld`, `FreeRTOSConfig.h`, `platform.h` and
+everything that is the same on every STM32 family are there, and a family's directory holds the rest
+([the family contract](architecture.md#the-stm32-family-contract)). Glue that every radio with the same part on that
+SoC shares is in a subdirectory the board lists in `BOARD_DIRS`. The board then keeps only its wiring and what its
+chips leave to it.
 
 | Subdirectory | For |
 |---|---|
-| `platform/stm32f4/hrc` | an HR_C6000 or HR_C5000: DMR glue, I2S audio, the chip's ports, the stock codec host |
-| `platform/stm32f4/spi_flash` | the data flash on SPI NOR, with its security registers. A flash that shares its bus with another device takes the board's bus lock (`bus_take`, `bus_give`) instead of the driver's own mutex |
-| `platform/stm32f4/fsmc_keypad` | a key matrix on the LCD data lines |
-| `platform/stm32f4/gps_uart` | a GPS module on a USART |
+| `platform/stm32/hrc` | an HR_C6000 or HR_C5000: DMR glue, I2S audio, the chip's ports. The modem's three interrupt pins are pins 0, 1, 2 of one port unless the board says otherwise (`STM32_HRC_LINE_*`, [build-config.md](../build-config.md#board-defines)) |
+| `platform/stm32f4/hrc` | the stock codec host of the STM32F4 radios. Listed right after `platform/stm32/hrc` |
+| `platform/stm32/spi_flash` | the data flash on SPI NOR, with its security registers. A flash that shares its bus with another device takes the board's bus lock (`bus_take`, `bus_give`) instead of the driver's own mutex. A part over 16 MB needs `SPI_NOR_ADDR4` |
+| `platform/stm32/gps_uart` | a GPS module on a USART |
+| `platform/stm32/lcd8080_gpio` | an 8080 display bus on GPIO lines, which may also be a key matrix's lines |
+| `platform/stm32/gpio_keypad` | a key matrix on GPIO lines, driven low one line at a time and released otherwise |
+| `platform/stm32/dmr_keyup` | the DMR burst key-up runner on the family's one-shot timer (`platform/stm32/oneshot.h`). The STM32H7 has the timer; an STM32F4 board can't list the directory until that family has one |
+| `platform/stm32f4/fsmc_keypad` | a key matrix on the LCD data lines of the FSMC bus |
+| `platform/stm32h7/periph` | the STM32H7's ADC scan, DAC, PWM and one-shot timer |
+
+Rule for such a directory `X`: the shared logic is in `platform/stm32/X`, a family's part in `platform/<family>/X`.
+List both when the family directory has a `.c` file; a family directory with headers only needs no entry.
 
 The board's own files:
 
 | File | Contents |
 |---|---|
-| `boards/<b>/board.mk` | `PLATFORM`, `APP_BASE` (where the image starts: the first byte the bootloader runs), `BOARD_DIRS` (the board directory and each driver it uses) and any `MCU_DEFS` of its own. STM32: `MCU` (the part, which picks the CMSIS define and start-up file) and `HSE_VALUE` (the crystal in Hz); optional `BOARD_HAL_MODULES` (HAL modules beyond the platform's, such as `hal_i2c`) |
+| `boards/<b>/board.mk` | `PLATFORM`, `APP_BASE` (where the image starts: the first byte the bootloader runs), `BOARD_DIRS` (the board directory and each driver it uses) and any `MCU_DEFS` of its own. STM32: `MCU` (the part, which picks the CMSIS define and start-up file) and `HSE_VALUE` (the crystal in Hz); optional `BOARD_HAL_MODULES` (HAL modules beyond the platform's, such as `hal_i2c`; the STM32H7 platform has none to offer yet). Write a comment on the line above a value, not after it. Properties of the board's parts that shared code reads are `MCU_DEFS` too ([board defines](../build-config.md#board-defines)) |
 | `boards/<b>/board.toml` | The board registry entry: identity, status, flashing, codec route, the site's data. `tools/boards.py check` validates it against `board.mk`, the linker script and `board_t`. Every key is in [The board registry](board-registry.md). Copy a neighbor on the same platform |
 | `boards/<b>/config.mk` | Feature defaults where this radio differs from `platform/<p>/config.mk`, with `?=` (for example `CONFIG_USB ?= n` on a radio without USB, `CONFIG_DISPLAY_INSET`), each with the reason. Also `BOARD_UNSUPPORTED` (switches its hardware can't do, one a line with the reason: `BOARD_UNSUPPORTED += AM_RX  # no air band receiver`), `BOARD_NOT_WRITTEN` (the same form: the hardware can, the driver or glue isn't written yet, with `CONFIG_X ?= n`; ci.sh's maximal build leaves both lists off, [the rule](../build-config.md#unsupported-not-written-unconfirmed)), `BOARD_REQUIRED` (switches it can't build without; ci.sh skips their `no-` build) and `MAXIMAL_VARS` (make variables for that build, e.g. `LTO=1`) |
 | `boards/<b>/memory.ld` | The memory map: the codec symbols, then `MEMORY` (the application's `FLASH` region from `__app_start`, which the Makefile defines from `APP_BASE`, and the RAM regions), then `INCLUDE common.ld`, the platform's sections. Keep the region's end below the codec. Keep the application out of every flash sector the codec touches (not only the codec bytes), so rfoundry can update the firmware without erasing the codec. The flashing tools read the region and the codec symbols from it, and derive the erasable sectors and the protected range ([release.md](release.md#sector-maps)) |
@@ -127,7 +138,11 @@ one without a label.
 
 ## Bring-up order
 
-1. Platform: start-up, clocks, a time base, a UART or USB for logging. Blink something.
+1. Platform: start-up, clocks, a time base, a UART or USB for logging. Blink something. Before the first power-on,
+   list what the hardware does at reset without any code: outputs that are undefined until written (a shift register
+   chain), outputs that outlive an MCU reset, a supply hold among them, and what keeps the PA off meanwhile
+   ([gotchas.md](../spec/gotchas.md) 18.3, 18.4). On an STM32H7 these go in `board_reset_safe()` and
+   `board_reset_prepare()`.
 2. `board.c` with the display and input interfaces. The UI comes up with the built-in channels.
 3. The debug link on the host port, so screenshots and key injection work from here on ([Debug link](debug-link.md)).
    If the host port is a two-pin K-type programming jack, check whether PTT shares the line that carries the host's
@@ -137,7 +152,10 @@ one without a label.
    If PTT also comes through a mic jack, power on with the jack empty and watch the raw pin. If it reads low, count it
    only once it has read high (`drivers/input/plugptt`, [gotchas.md](../spec/gotchas.md) 16.3).
 4. Flash, settings and calibration reads. Check the foreign-region guard on a radio that still runs the vendor firmware
-   ([settings-store.md](../spec/settings-store.md) 5).
+   ([settings-store.md](../spec/settings-store.md) 5). Where nobody knows the vendor's layout of the data flash, build
+   the board with `STORAGE_CLAIM_FIRST` and make a backup of the whole chip the first step of its install text.
+   A radio without factory calibration the port can read ships its tables unset and refuses to transmit until they
+   are measured: no guessed drive values.
 5. RF chip: FM receive, then FM transmit into a dummy load.
 6. DMR modem and the codec: receive, then transmit, checked on the SDR bench.
    Then the DMR PA key-up on every band with its own PA: `tools/bench/pa_cal.py`
@@ -156,6 +174,10 @@ one without a label.
      `[codec] stock` entry, so the web flasher and rfoundry find the codec in whatever file or readout the
      owner has.
    - For each of those models, check the bootloader's USB identity, entry keys and key against `[flash]`.
+   - A radio installed through its processor's own ROM bootloader (`[flash] family = "dfuse"`) has no key and no
+     stock file. Check instead the read protection the maker ships, what a Read Unprotect erases, and that the
+     maker's own recovery procedure works on the unit, before the first install
+     ([release.md](release.md#the-rom-bootloader-route)). A radio with no codec route says so in `[codec] none`.
    - Walk the web flasher through each starting point:
      - the vendor's download as the owner gets it (a zip or a `.bin`);
      - a readout of the radio;

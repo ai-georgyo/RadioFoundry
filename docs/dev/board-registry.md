@@ -29,7 +29,7 @@ Derived values:
 |---|---|
 | Flashing link (USB, serial cable) | The family |
 | CPU | The platform, unless `[hardware] cpu` names another |
-| Protected range | The platform's `flash_base` up to the application base |
+| Protected range | The platform's `flash_base` up to the application base. Empty when the image starts at `flash_base` (a family whose loader is the MCU's ROM, [below](#flash)) |
 | Erasable sectors | The platform geometry from the application base up |
 | Stub NAND flag | `drivers/flash/spi_nand` in `BOARD_DIRS` |
 | Stub power pins | `PIN_POWER_LATCH` and `PIN_POWER_KEY` in `pins.h`, when `hold_power` is set |
@@ -133,13 +133,32 @@ to the build directory and the image: `make BOARD=<id> BAND=vhf` writes `build/<
 
 | Key | Meaning |
 |---|---|
-| `family` | The flashing route, by protocol: `usb-dfu`, `serial-loader` or `serial-iap` |
+| `family` | The flashing route, by protocol: `usb-dfu`, `dfuse`, `serial-loader`, `serial-iap` or `boot-rom` (the table below) |
 | `keep_codec` | True when an update leaves the codec in place |
 | `sectors` | Optional: a geometry of the platform other than its `default_sectors` |
 | `stock_download` | Optional: where the stock firmware can be downloaded |
 | `stock_versions` | The stock versions the tools know |
-| `backup` | `{ stock, rfoundry, spi_size }`: what a backup reads from stock firmware and from RadioFoundry (`none` or `full`), and the SPI flash size |
-| `notice` | Optional: a warning the web flasher shows on every step once the radio is picked, for a choice the radio can't check itself (two images that differ in hardware the radio can't report, for example) |
+| `backup` | `{ stock, rfoundry, spi_size }`: what a backup reads from stock firmware and from RadioFoundry (`none` or `full`), and the SPI flash size. A size over 16 MB (0x1000000) is past what three address bytes reach: `check` then requires `-DSPI_NOR_ADDR4=1` in the board's `MCU_DEFS`, the 4-byte address commands of `drivers/flash/spi_nor` |
+| `notice` | Optional: a warning the web flasher shows on every step once the radio is picked, for a choice the radio can't check itself (two images that differ in hardware the radio can't report, for example). `rfoundry` prints it after its own explanation where an install on a `dfuse` board stops at a read-protected radio |
+
+The families (`FAMILIES` in `tools/boards.py`):
+
+| `family` | Route | Link |
+|---|---|---|
+| `usb-dfu` | A USB DFU bootloader with a per-model XOR key | USB |
+| `dfuse` | ST's DfuSe download to the MCU's own ROM bootloader, nothing encrypted | USB |
+| `serial-loader` | A serial bootloader started by a key combination, with its own file format | Serial cable |
+| `serial-iap` | A vendor IAP loader on the cable, through the RAM stub | Serial cable |
+| `boot-rom` | No vendor loader: the SoC's boot ROM serial window on the cable, through the RAM stub | Serial cable |
+
+A loader in the MCU's ROM (`dfuse`) takes no program flash. The image of such a board may start at the platform's
+`flash_base`; the protected range is then empty and the erasable sectors are the whole geometry. On every other
+family the loader lives in the flash below the image, and `check` refuses an image at `flash_base`. It refuses one
+below `flash_base` on every family.
+
+On `dfuse` the linker script's `FLASH` (the application region, `app_region` in the views) must end on a sector
+boundary or at the end of the flash. The flashers erase whole sectors and refuse a sector past the region, so a
+sector across its end would be erased beyond it, into flash the build keeps unused (`region_end_problem`).
 
 `[flash.bootloader]`:
 
@@ -150,12 +169,24 @@ to the build directory and the image: `make BOARD=<id> BAND=vhf` writes `build/<
 | `hold` | Optional: the keys held to enter it, by key name (the board's `KEY_*` in lower case, `["ptt", "sk1"]`). The web flasher marks them on the radio's picture and names them under it; `steps` stays the instructions. Each must be a key of the board (`tools/boards.py check`) and tagged in its drawing or listed in `data-undrawn` ([Radio images](website.md#radio-images)) |
 | `id` | Optional: the string the loader answers, also the magic of its files (`serial-loader`) |
 | `sign` | Optional: what the radio shows in the bootloader |
+| `restart` | Optional, true: the board's firmware restarts into this bootloader when the debug link asks (`REBOOT` with the ROM bootloader mode, [debuglink.md](../spec/debuglink.md) 3.11). rfoundry and the web flasher then ask a radio that runs RadioFoundry before they ask for the keys ([release.md](release.md#the-restart-into-the-bootloader)). Only on a family whose loader is the MCU's ROM (`dfuse`): that is the bootloader the request enters (`restart_problems`). The views carry it as `bootloader_restart` |
+| `restart_hint` | Optional, with `restart`: what the user can do when the radio refuses the restart just then (the board's own rule, reason 5), in a sentence or two. Both tools show it as written, next to their own words for the refusal. `bootloader_restart_hint` in the views |
 
-`[flash.dfu]` (`usb-dfu`): `vid`, `pid`, `string1`, `product` (the USB identity) and `key_sha256`, `key_prefix` (the
-per-model XOR key's hash and first bytes, never the key). Optional `layout`: the bootloader's alt 0 interface string,
-added only once it was read on a radio in its bootloader. The flashers then accept no other device. Without it they
-refuse a layout that shows only the bootloader's sectors (from 0x08000000, at most 48 KB): that is the radio's own
-firmware switched on normally, which has the bootloader's IDs and strings but whose erase can reach the bootloader.
+`[flash.dfu]` (`usb-dfu`, `dfuse`): the bootloader's USB device. What a family needs:
+
+| Key | `usb-dfu` | `dfuse` | Meaning |
+|---|---|---|---|
+| `vid`, `pid` | Required | Required | The USB IDs |
+| `string1`, `product` | Required, not empty | Optional | The USB strings the flashers tell the device by. On `usb-dfu` an empty one is refused at load like a missing one: rfoundry and the web flasher would have nothing to refuse a ROM bootloader by. On `dfuse`, added only once read on a radio in its bootloader |
+| `key_sha256`, `key_prefix` | Required | Refused | The per-model XOR key's hash and first bytes, never the key. A ROM DfuSe download has no key |
+| `layout` | Optional | Optional | The bootloader's alt 0 interface string, added only once read on a radio in its bootloader |
+
+The registry carries a key the board doesn't give as null (`key_sha256`, `key_prefix`, `dfu_string1`, `dfu_product`,
+`dfu_layout`).
+
+On `usb-dfu`, with `layout` the flashers accept no other device. Without it they refuse a layout that shows only the
+bootloader's sectors (from 0x08000000, at most 48 KB): that is the radio's own firmware switched on normally, which
+has the bootloader's IDs and strings but whose erase can reach the bootloader.
 
 #### Original firmware version
 
@@ -207,8 +238,9 @@ without `PIN_LED_RED` or `PIN_LED_GREEN` gets 255 (no LED) for it.
 
 #### Protected regions
 
-`[[flash.protect]]` lists flash that no tool erases or writes: factory data that can't be made again, the calibration
-first. One table per region:
+`[[flash.protect]]` lists flash whose bytes no tool changes: factory data that can't be made again, the calibration
+first. An entry is a byte range; how a tool keeps it depends on how the tool writes (the table below). One table per
+region:
 
 ```toml
 [[flash.protect]]
@@ -221,7 +253,7 @@ what = "factory calibration: the page tagged 2 in the stock codeplug area (hardw
 | Key | Meaning |
 |---|---|
 | `mem` | The memory: `progmem` (the MCU's program flash), `data` (the SPI NOR data flash), `nand` (the SPI NAND's main area, without spare bytes) or `secreg` (the SPI NOR flash's security registers) |
-| `start`, `end` | The range, `end` exclusive, as offsets in that memory: `progmem` from the platform's `flash_base`, `data` and `nand` from 0, `secreg` 256 bytes per register from register 1 at 0 |
+| `start`, `end` | The byte range, `end` exclusive, as offsets in that memory: `progmem` from the platform's `flash_base`, `data` and `nand` from 0, `secreg` 256 bytes per register from register 1 at 0 |
 | `what` | What lies there, with the spec section that establishes it in parentheses |
 
 `tools/boards.py check` refuses an entry:
@@ -230,44 +262,71 @@ what = "factory calibration: the page tagged 2 in the stock codeplug area (hardw
   `spi_nand_t` in the board's sources)
 - that runs past the memory's end
 - that isn't on the memory's erase boundaries: the platform's sectors (or 4 KB) for `progmem`, 4 KB for `data`, a
-  block for `nand`, a register for `secreg`
+  block for `nand`, a register for `secreg`. The one exception is a `data` entry that is a range of the board's flash
+  map (below)
 - that overlaps another entry, the application or the codec slot
 - whose `what` cites no section
+
+**Ranges the firmware keeps.** A board whose maker keeps data inside sectors the firmware writes (a calibration table
+in a codeplug sector) lists those bytes in its flash map, `hal_flash_map_t.factory`, and builds with
+`-DSTORAGE_FACTORY_KEEP=1` in its `board.mk` `MCU_DEFS`. The firmware then carries the stored bytes of each range over
+through every rewrite of its sector ([settings-store.md](../spec/settings-store.md) 4.1). Which boards:
+[feature-matrix.md](../feature-matrix.md). The registry reads the list from the board's sources, as
+`{ 0x001000u, 0x200u }` or `{ .addr = 0x001000u, .size = 0x200u }` entries of integer literals, and `check` refuses:
+
+- a list without the define, or the define without a list
+- more than `HAL_FLASH_FACTORY_MAX` (4) entries, a size 0 entry before a range, ranges out of order or touching
+- a list that isn't the board's `data` entries: each range is a `data` entry, and each `data` entry a range
+
+A board with `data` entries and no list keeps its entries on the 4 KB boundaries, as before.
 
 A region whose place moves (remapped by a bad-block table, for example) is protected over every place it can be. The
 registry carries the list as `protect` (`registry.json`, `radios.json` `flash`, `flash-boards.json` `boards`, `c7000`
 and `f4stub`).
 
 What the tools do with it. `tools/rfoundry/rfoundry/protect.py` and `site/static/js/flasher/protect.js` hold the one
-check each language uses:
+check each language uses. A direct writer erases the chip itself, with no journal, so a cut erase would lose the
+bytes: it works by whole erase units, and an entry off the unit boundaries counts as every unit it touches
+(`protect.widen`, `protect.carved_units`). A writer through the firmware sends sectors that the firmware merges with
+what the flash holds, so it leaves out exactly the entry's bytes (`protect.carve_bytes`):
 
 | Write | Behavior |
 |---|---|
-| An install, a test write, a single sector | Refused before anything is erased |
-| A restore of a whole memory (program flash backup through the stub, internal flash through DFU, SPI flash through the STM32 stub, codeplug through the CPS) | Carved: the protected sectors keep what the radio has, the rest is written |
+| An install, a test write, a single sector (direct) | Refused before anything is erased |
+| A restore of a whole memory, direct (program flash backup through the stub, internal flash through DFU, SPI flash through the STM32 stub) | Carved by erase units: the units an entry touches keep what the radio has, the rest is written |
+| A codeplug write through the CPS shim (`tools/cps_client.py write`, `tools/codeplug_port.py`) | The sector is written, but no byte of an entry is sent: the shim merges only the bytes it is sent into the sector it read from the flash, so the radio keeps its own there. A sector the entries cover whole isn't written; with a base (what the radio holds), a sector that differs only inside an entry isn't either. When the image holds bytes for an entry that are not blank (and differ from the base), one line on stderr names the entry. `verify` leaves the entries out. The board is `--board`, else the one the debug link `VERSION` names on the same port (`board=`, as `cps_fast.py` and the site find it), else (a radio whose `VERSION` names no board the registry knows: another or an older firmware) every board whose `[cps] radio_types` holds the type the radio reports (two boards can share one): the entries of each are kept |
+| A codeplug write through the fast protocol (`tools/cps_fast.py write`) | A block holding an entry is read from the radio first and sent with the radio's bytes there, as a block the regions fill only in part; a block that differs only inside an entry isn't written. The same stderr line. `verify` leaves the entries out |
 | A security register restore | Refused when a protected register differs (a register is written whole) |
 | A loader that erases a fixed area (the vendor IAP and serial loaders, the DFU updater in `tools/stm32_dfu.py`) | Refused when the area holds a protected region: those erases can't be carved |
 | A whole-chip erase | Refused on a memory with any protected region. No tool sends one |
 
-The stub tools check every erase and program command they send, not only the high-level writes. RadioFoundry's own
-firmware keeps its own rules for what it writes (the CPS shim refuses its areas,
-[cps-protocol.md](../spec/cps-protocol.md) 2.3).
+The stub tools check every erase and program command they send, not only the high-level writes. `[flash.stub]
+write_test` must miss every erase unit an entry touches. RadioFoundry's own firmware keeps its own rules for what it
+writes: the CPS shim refuses its areas ([cps-protocol.md](../spec/cps-protocol.md) 2.3), and a board's flash map
+ranges are kept by every rewrite of their sector whatever a tool sends, so the tools' rule is a second line, not the
+only one.
 
 ### [codec]
 
 | Key | Meaning |
 |---|---|
-| `tool` | The tool that extracts or merges it: `codec_extract` or `hrc7000_codec` |
+| `tool` | The tool that extracts or merges it: `codec_extract` or `hrc7000_codec`. Required unless `none` is set |
 | `stock` | A list of SHA-256 digests: the stock files rfoundry merges the codec from (stock-file placement) |
 | `profile` | The codec id the firmware reports, for a codec in a linker slot |
 | `sources` | Where a slot codec comes from, for messages |
 | `installed` | Stock versions that leave exactly this codec in place |
+| `none` | For a radio with no codec route: the reason, in a sentence or two |
 
-A board has either `stock`, or `profile` with a linker codec slot. With `stock`, the profile and sources come from the
-stock files' profiles. The files must hold the same codec; each may put its tables at other addresses. The board's
-codec windows are the union of every file's layout. The image must stay out of all of them, and keeping the codec keeps
-all of them. A merge writes and checks the layout of the file it merges
+A board has exactly one of `stock`, `profile` with a linker codec slot, or `none`. With `stock`, the profile and
+sources come from the stock files' profiles. The files must hold the same codec; each may put its tables at other
+addresses. The board's codec windows are the union of every file's layout. The image must stay out of all of them, and
+keeping the codec keeps all of them. A merge writes and checks the layout of the file it merges
 ([codec-placement.md](../spec/codec-placement.md)).
+
+`none` stands alone. `check` refuses an empty reason, any other `[codec]` key beside it, `[flash] keep_codec = true`
+and a `__codec_*` symbol in the board's linker scripts. The registry carries the reason as `codec_none` (null for a
+board with a codec route), with no codec tool, stock files or windows: the tools plan and install such a board without
+a codec step.
 
 ### [cps]
 
@@ -288,8 +347,9 @@ How the site draws the radio: `shape`, `body` and `accent` colors, `lens` size.
 | `stubs` | Platform stubs ci.sh builds with the platform's compiler |
 | `board_stub` | The stub its boards' `[flash.stub]` is for: `tool`, the required `keys`, the `optional` ones and, for SPI wiring, `spi_af` (the alternate function per bus). Absent: no `[flash.stub]` |
 | `codec_symbols` | The linker symbols every board's scripts must define |
-| `flash_base` | Where program flash starts; the factory loader holds it up to the image |
+| `flash_base` | Where program flash starts; the factory loader holds it up to the image (nothing, where the loader is the MCU's ROM and the image starts here) |
 | `default_sectors`, `[sectors]` | The flash geometries, `[index, address, size]` in the bootloader's erase order |
+| `mass_erase_max_s` | Optional integer, in seconds: the SoC's longest mass erase, from its data sheet. `check` requires it on a platform that has a board whose family's loader is the MCU's ROM: that loader removes a read protection by erasing the whole program flash, and the flashing tools derive their wait after the Read Unprotect from this figure ([release.md](release.md#the-rom-bootloader-route)). The views carry it per board as `mass_erase_max_s` (`registry.json`, `data/flash-boards.json`; null on a platform without one) |
 
 `[toolchain]`:
 

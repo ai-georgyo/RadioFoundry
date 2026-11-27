@@ -4,6 +4,9 @@
 // open-firmware UV380 driver does it: radio info, the session opening, 32-byte block reads of the regions it
 // transfers, prepare / data / commit per sector, close, save and reboot. Plus request assembly from arbitrary chunks,
 // the protected areas, the quick-key slots (written like the rest), the calibration window, the VFO overlay, overflows and the session time-out.
+// Built a second time as a board that keeps the maker's bytes builds it (-DSTORAGE_FACTORY_KEEP=1, cpsKeepTest): the
+// same tests, then a map with factory ranges in the EEPROM image (settings-store.md 4.1), where X 1-3 with other bytes
+// there are acknowledged, the stored bytes stay and the rest of the sector is written, a power cut included.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +15,7 @@
 #include "codeplug/codeplug_kv.h"
 #include "settings/settings.h"
 #include "storage/storage.h"
+#include "debuglink/dlog.h"
 #include "sim/sim_flash.h"
 
 static int failures;
@@ -22,6 +26,9 @@ void storage_lock(void) {}
 void storage_unlock(void) {}
 void storage_quick_lock(void) {}
 void storage_quick_unlock(void) {}
+#if CONFIG_DEBUGLINK
+void dlog(const char *fmt, ...) { (void)fmt; }
+#endif
 
 #define FLASH_SIZE	0x200000u	// 2 MB: the open-firmware layout fits (to 0x120000)
 #define EE		0x000000u
@@ -575,12 +582,28 @@ static void test_foreign(void)
 	CHECK(!codeplug_set_channel(2, &c));		// nor a radio-side edit
 	CHECK(control(6, 2));				// "save the settings": answered, nothing written
 	CHECK(memcmp(snap, sim_flash_data, FLASH_SIZE) == 0);
+	// A live VFO (RAM only here) is not laid over the stored VFO A: a backup before a claim reads the chip as it is
+	uint8_t b[96], rec[56];
+	channel_t ch;
+	settings_t *w = settings_begin();
+	w->vfo_rx_hz = w->vfo_tx_hz = 146520000;
+	settings_end(now);
+	CHECK(read_block(1, EE + 0x7580, 96, b) && memcmp(b, &snap[EE + 0x7580], 96) == 0);
+	CHECK(read_block(1, EE + 0x7590, 32, b) && memcmp(b, &snap[EE + 0x7590], 32) == 0);
+	CHECK(read_block(2, 0x7590, 32, b) && memcmp(b, &snap[EE + 0x7590], 32) == 0);	// the EEPROM image alike
 	// Claimed (the debug link), erased by the housekeeping: writes work again
 	CHECK(storage_claim_request());
 	settings_poll(now);
 	CHECK(storage_ready());
 	CHECK(x_prepare(0x3) && x_data(0x3000, d, 32, 0) && x_commit() && control(5, 0));
 	CHECK(sim_flash_data[0x3000] == 0x11);
+	// Ours now: the overlay is back
+	w = settings_begin();
+	w->vfo_rx_hz = w->vfo_tx_hz = 146520000;
+	settings_end(now);
+	CHECK(read_block(1, EE + 0x7580, 96, b));
+	memcpy(rec, b + 0x10, 56);
+	CHECK(codeplug_openfw_decode(rec, &ch) && ch.rx_hz == 146520000);
 	free(snap);
 }
 
@@ -755,6 +778,242 @@ static void test_bad_requests(void)
 	CHECK(sim_flash_violations() == 0);
 }
 
+#if STORAGE_FACTORY_KEEP
+// ---- The maker's bytes in codeplug sectors (hal_flash_map_t.factory, settings-store.md 4.1) ----
+
+// The same areas, and two factory ranges in the EEPROM image: one inside a sector whose other bytes are the codeplug's,
+// and one whole sector. Every byte here is invented
+#define KEEP_A		0x2100u
+#define KEEP_A_SIZE	0x200u
+#define KEEP_A_SECTOR	0x2000u
+#define KEEP_B		0x5000u
+static const hal_flash_map_t keep_map = {
+	.settings_addr = 0x11000u, .settings_size = 0x8000u, .journal_addr = 0x19000u,
+	.openfw_eeprom = EE, .openfw_flash = FL, .openfw_end = 0x1C0000u,
+	.calibration_addr = 0x10000u, .calibration_size = 0x200u,
+	.native_addr = 0x1C0000u, .native_size = 0x40000u,
+	.factory = { { KEEP_A, KEEP_A_SIZE }, { KEEP_B, STORAGE_SECTOR } },
+};
+static uint8_t maker_a[KEEP_A_SIZE], maker_b[STORAGE_SECTOR];
+static uint8_t keep_old[STORAGE_SECTOR], keep_new[STORAGE_SECTOR];
+
+static void fill(uint8_t *b, uint32_t len, uint8_t seed)
+{
+	for (uint32_t i = 0; i < len; i++) {
+		b[i] = (uint8_t)(seed + i * 13u + (i >> 7));
+	}
+}
+
+// A fresh chip with the keep map: the old codeplug bytes in the EEPROM image, the maker's in the ranges
+static void keep_fresh(void)
+{
+	sim_flash_free();
+	sim_flash_create(FLASH_SIZE, &keep_map);
+	fill(sim_flash_data, 0x10000u, 0x21);
+	memcpy(&sim_flash_data[KEEP_A], maker_a, KEEP_A_SIZE);
+	memcpy(&sim_flash_data[KEEP_B], maker_b, STORAGE_SECTOR);
+	memcpy(keep_old, &sim_flash_data[KEEP_A_SECTOR], STORAGE_SECTOR);
+	boot();
+}
+
+static bool keep_intact(void)
+{
+	return memcmp(&sim_flash_data[KEEP_A], maker_a, KEEP_A_SIZE) == 0 &&
+	       memcmp(&sim_flash_data[KEEP_B], maker_b, STORAGE_SECTOR) == 0;
+}
+
+// The bytes of the sector at KEEP_A_SECTOR outside KEEP_A equal want's
+static bool keep_rest_is(const uint8_t *want)
+{
+	const uint8_t *f = &sim_flash_data[KEEP_A_SECTOR];
+	uint32_t lo = KEEP_A - KEEP_A_SECTOR, hi = lo + KEEP_A_SIZE;
+	return memcmp(f, want, lo) == 0 && memcmp(f + hi, want + hi, STORAGE_SECTOR - hi) == 0;
+}
+
+// X 1, X 2 of [from, to) of data (a sector's bytes, sector offsets) in 32-byte blocks as qdmr sends them, but none of
+// [skip, skip_end), X 3
+static bool keep_send_skip(uint32_t sector, const uint8_t *data, uint32_t from, uint32_t to, uint32_t skip,
+			   uint32_t skip_end)
+{
+	bool ok = x_prepare(sector / STORAGE_SECTOR);
+	for (uint32_t off = from; ok && off < to; off += 32) {
+		uint32_t n = to - off < 32 ? to - off : 32;
+		if (off + n <= skip || off >= skip_end) {
+			ok = x_data(sector + off, data + off, (uint16_t)n, 0);
+		}
+	}
+	return ok && x_commit();
+}
+
+static bool keep_send(uint32_t sector, const uint8_t *data, uint32_t from, uint32_t to)
+{
+	return keep_send_skip(sector, data, from, to, 0, 0);
+}
+
+static void test_keep_writes(void)
+{
+	storage_stats_t s0, s1;
+	uint8_t b[KEEP_A_SIZE];
+	fill(maker_a, KEEP_A_SIZE, 0x90);
+	fill(maker_b, STORAGE_SECTOR, 0xB0);
+	fill(keep_new, STORAGE_SECTOR, 0x47);	// other bytes in the range too: another radio's image
+	keep_fresh();
+	CHECK(storage_region() == STORAGE_REGION_OURS);
+
+	// X 1-3 of the whole sector: acknowledged, the stored bytes of the range stay, the rest is the CPS's
+	storage_get_stats(&s0);
+	CHECK(keep_send(KEEP_A_SECTOR, keep_new, 0, STORAGE_SECTOR));
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_rest_is(keep_new));
+	CHECK(s1.factory_rewrites == s0.factory_rewrites + 1 && s1.factory_dropped == s0.factory_dropped + 1);
+	CHECK(s1.factory_refused == s0.factory_refused && s1.errors == s0.errors);
+	// A CPS that verifies its write reads the radio's bytes there, not its own
+	CHECK(read_block(1, KEEP_A, 32, b) && memcmp(b, maker_a, 32) == 0 && memcmp(b, keep_new + 0x100, 32) != 0);
+	CHECK(read_block(2, KEEP_A + KEEP_A_SIZE - 32u, 32, b) && memcmp(b, maker_a + KEEP_A_SIZE - 32u, 32) == 0);
+
+	// Only bytes of the range sent: acknowledged, nothing to write (no erase), counted as dropped
+	uint32_t erases = sim_flash_erases(KEEP_A_SECTOR);
+	uint8_t other[STORAGE_SECTOR];
+	fill(other, STORAGE_SECTOR, 0x63);
+	storage_get_stats(&s0);
+	CHECK(keep_send(KEEP_A_SECTOR, other, KEEP_A - KEEP_A_SECTOR, KEEP_A - KEEP_A_SECTOR + KEEP_A_SIZE));
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_rest_is(keep_new) && sim_flash_erases(KEEP_A_SECTOR) == erases);
+	CHECK(s1.sector_skips == s0.sector_skips + 1 && s1.factory_dropped == s0.factory_dropped + 1);
+
+	// No byte of the range sent (what the in-tree tools do): the rest written, nothing dropped
+	storage_get_stats(&s0);
+	CHECK(keep_send_skip(KEEP_A_SECTOR, keep_old, 0, STORAGE_SECTOR, KEEP_A - KEEP_A_SECTOR,
+			     KEEP_A - KEEP_A_SECTOR + KEEP_A_SIZE));
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_rest_is(keep_old));
+	CHECK(s1.factory_rewrites == s0.factory_rewrites + 1 && s1.factory_dropped == s0.factory_dropped);
+
+	// The whole kept sector: acknowledged, never erased or programmed
+	erases = sim_flash_erases(KEEP_B);
+	uint32_t programs = sim_flash_programs(KEEP_B);
+	storage_get_stats(&s0);
+	CHECK(keep_send(KEEP_B, other, 0, STORAGE_SECTOR));
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && sim_flash_erases(KEEP_B) == erases && sim_flash_programs(KEEP_B) == programs);
+	CHECK(s1.factory_dropped == s0.factory_dropped + 1 && s1.sector_writes == s0.sector_writes);
+
+	// qdmr's whole write from an image with other bytes in both ranges: done, every other byte the image's
+	uint8_t *img = calloc(1, FLASH_SIZE);
+	CHECK(qdmr_read(img));
+	CHECK(memcmp(img + KEEP_A, maker_a, KEEP_A_SIZE) == 0 && memcmp(img + KEEP_B, maker_b, STORAGE_SECTOR) == 0);
+	fill(img + 0x80, 0x5FE0, 0x3C);
+	CHECK(qdmr_write(img, false));
+	CHECK(keep_intact());
+	for (uint32_t a = 0x80; a < 0x6060; a++) {
+		bool kept_byte = (a >= KEEP_A && a < KEEP_A + KEEP_A_SIZE) ||
+				 (a >= KEEP_B && a < KEEP_B + STORAGE_SECTOR);
+		if (!kept_byte && sim_flash_data[a] != img[a]) {
+			CHECK(sim_flash_data[a] == img[a]);
+			break;
+		}
+	}
+	free(img);
+	cps_stats_t st;
+	cps_get_stats(&st);
+	CHECK(!st.pending);
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+	printf("# kept bytes: X 1-3 acknowledged, the range stays, the rest written; a whole kept sector untouched\n");
+}
+
+// A power cut at every erase and program of an X 3 whose sector holds the range, then a boot: the range always the
+// stored bytes, the rest of the sector all old or all new
+static void keep_pending(void)
+{
+	keep_fresh();
+	bool ok = x_prepare(KEEP_A_SECTOR / STORAGE_SECTOR);
+	for (uint32_t off = 0; ok && off < STORAGE_SECTOR; off += 1024u) {
+		ok = x_data(KEEP_A_SECTOR + off, keep_new + off, 1024, 0);
+	}
+	CHECK(ok);
+}
+
+static void keep_cuts(const char *what)
+{
+	static uint32_t pt[1024];
+	keep_pending();
+	sim_flash_ops_begin();
+	CHECK(x_commit());
+	uint32_t n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	CHECK(n > 20);
+	int olds = 0, news = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		keep_pending();
+		sim_flash_cut_after(pt[i]);
+		bool acked = x_commit();
+		bool was_cut = sim_flash_is_cut();
+		sim_flash_cut_after(0);
+		boot();
+		bool is_old = keep_rest_is(keep_old), is_new = keep_rest_is(keep_new);
+		if (!keep_intact() || !(is_old || is_new) || !was_cut || acked || sim_flash_violations() != 0 ||
+		    sim_flash_ungranted() != 0 || storage_region() != STORAGE_REGION_OURS) {
+			printf("FAIL %s:%d: X 3 cut after %u units (%s)\n", __FILE__, __LINE__, (unsigned)pt[i], what);
+			failures++;
+		}
+		olds += is_old;
+		news += is_new;
+	}
+	CHECK(olds > 0 && news > 0);
+	printf("# %u power cuts through an X 3 on a kept sector, the range %s: %d old, %d new, the range always kept\n",
+	       (unsigned)n, what, olds, news);
+}
+
+// The range as invented bytes, blank (a radio whose table was lost) and all zero: the merge and the journal's kept
+// block carry 0xFF and 0x00 like any other byte
+static void test_keep_cuts(void)
+{
+	keep_cuts("filled");
+	memset(maker_a, 0xFF, KEEP_A_SIZE);
+	keep_cuts("blank");
+	memset(maker_a, 0x00, KEEP_A_SIZE);
+	keep_cuts("zero");
+	sim_flash_free();
+}
+
+// A foreign region on the keep map: reads give the stored bytes, X 1 is refused and nothing is written; claimed, X 1-3
+// with other bytes in the range keep them as for any region of ours
+static void test_keep_foreign(void)
+{
+	uint8_t b[32];
+	fill(maker_a, KEEP_A_SIZE, 0x90);
+	sim_flash_free();
+	sim_flash_create(FLASH_SIZE, &keep_map);
+	fill(sim_flash_data, 0x10000u, 0x21);
+	memcpy(&sim_flash_data[KEEP_A], maker_a, KEEP_A_SIZE);
+	memcpy(&sim_flash_data[KEEP_B], maker_b, STORAGE_SECTOR);
+	memcpy(keep_old, &sim_flash_data[KEEP_A_SECTOR], STORAGE_SECTOR);
+	for (uint32_t i = 0; i < 0xA000u; i++) {
+		sim_flash_data[0x11000u + i] = (uint8_t)(0x30 + i * 11u);	// ring and journal: no record of ours
+	}
+	sim_flash_power_on();
+	CHECK(!storage_init());
+	settings_init();
+	codeplug_init();
+	cps_init(&io);
+	CHECK(storage_region() == STORAGE_REGION_FOREIGN);
+	uint8_t *snap = malloc(FLASH_SIZE);
+	memcpy(snap, sim_flash_data, FLASH_SIZE);
+	CHECK(read_block(1, KEEP_A, 32, b) && memcmp(b, maker_a, 32) == 0);
+	CHECK(!x_prepare(KEEP_A_SECTOR / STORAGE_SECTOR) && !x_commit());
+	CHECK(memcmp(snap, sim_flash_data, FLASH_SIZE) == 0);
+	free(snap);
+
+	CHECK(storage_claim_request());
+	settings_poll(now);
+	CHECK(storage_ready());
+	CHECK(keep_send(KEEP_A_SECTOR, keep_new, 0, STORAGE_SECTOR) && control(5, 0));
+	CHECK(keep_intact() && keep_rest_is(keep_new));
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+	sim_flash_free();
+	printf("# kept bytes on a foreign region: X 1 refused, nothing written; claimed: the range kept\n");
+}
+#endif
+
 int main(void)
 {
 	populate();
@@ -772,6 +1031,11 @@ int main(void)
 	test_settings_area();
 	sim_flash_free();
 	test_no_map();
+#if STORAGE_FACTORY_KEEP
+	test_keep_writes();
+	test_keep_cuts();
+	test_keep_foreign();
+#endif
 	printf("# cpsTest %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;
 }

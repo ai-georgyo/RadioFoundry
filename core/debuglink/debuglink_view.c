@@ -252,8 +252,9 @@ static void hotspot_section(dl_text_t *t)
 	dl_text(t, "hostlink=%s\n", (unsigned)m < 4 ? modes[m] : "?");
 	dl_text(t, "hostlink.left=%s\n", (unsigned)l < 5 ? leaves[l] : "?");
 	dl_text(t, "hostlink.noise=%lu\n", (unsigned long)hostlink_hotspot_noise());
-	dl_text(t, "usb.network=%u\nusb.net_up=%u\n", hostlink_network_mode(),
-		(board.netif != NULL) && board.netif->up());
+	// usb.reattach_tx: the host port's reattaches asked for after a transmission lost it (hostlink.h)
+	dl_text(t, "usb.network=%u\nusb.net_up=%u\nusb.reattach_tx=%u\n", hostlink_network_mode(),
+		(board.netif != NULL) && board.netif->up(), (unsigned)hostlink_reattach_count());
 #if CONFIG_DMR_IP_GATEWAY
 	hostlink_net_stats_t ns;
 	// The three settings fields read in place: no copy of the whole settings on the host task's stack (its deepest
@@ -523,6 +524,12 @@ static void storage_section(dl_text_t *t)
 	uint8_t zone_last;
 	zone_edit_stats(&zone_edits, &zone_last);
 	dl_text(t, "zone.edits=%u\nzone.edit_last=%u\n", (unsigned)zone_edits, zone_last);
+#if STORAGE_FACTORY_KEEP
+	// The maker's bytes kept (settings-store.md 4.1): kept rewrites, writes whose bytes there were dropped, journal
+	// entries finished with them, refusals. Only on a board that keeps some; last, so a full reply drops only this
+	dl_text(t, "storage.factory=%u,%u,%u,%u\n", (unsigned)st.factory_rewrites, (unsigned)st.factory_dropped,
+		(unsigned)st.factory_replays, (unsigned)st.factory_refused);
+#endif
 }
 
 // The CPS shims' counters (were in the storage section until view version 5: with the codeplug keys it outgrew a
@@ -552,22 +559,6 @@ static void cps_section(dl_text_t *t)
 	dl_text(t, "cpsf.state=%u\ncpsf.read=%u\ncpsf.written=%u\ncpsf.commits=%u\ncpsf.refused=%u\n", f.state,
 		(unsigned)f.blocks_read, (unsigned)f.blocks_written, (unsigned)f.commits, (unsigned)f.refused);
 #endif
-}
-
-// The board's name and its own keys, each prefixed "board." (bring-up readings a HIL test checks; docs/spec/debuglink.md
-// 3.7)
-static void board_section(dl_text_t *t)
-{
-	char line[80];
-
-	dl_text_kv_str(t, "board.name", board.name);
-	dl_text(t, "board.variant_mismatch=%u\n", board_variant_mismatch() ? 1u : 0u);
-	for (uint8_t i = 0; board.view_line != NULL && i < 0xFFu && !t->full; i++) {
-		if (!board.view_line(i, line, sizeof(line))) {
-			break;
-		}
-		dl_text(t, "board.%s\n", line);
-	}
 }
 
 // The voice frames captured, in order: 18 hex digits a frame, L a lost one
@@ -601,7 +592,7 @@ static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dm
 						  "dmr_data_stats", "roam", "aprs", "aprs_set", "dmr_ip", "net", "snmp", "usrp",
 						  "sfr", "tasks", "crash", "watchdog", "reset", "air", "net_svc",
 						  "net_link", "cps", "board", "audio", "t3", "t3_svc", "t3_roam", "voice_cap", "t3_msg",
-						  "t3_ra", "p25", "p25_trunk", "nxdn",
+						  "t3_ra", "p25", "p25_trunk", "nxdn", "board2",
 #if CONFIG_DEBUGLINK_DMRIP
 						  "dmrip",
 #endif
@@ -609,12 +600,12 @@ static const char *const section_names[DL_VIEW_COUNT] = { "core", "channel", "dm
 
 const char *debuglink_view_name(uint8_t section)
 {
-	return (section < DL_VIEW_COUNT) ? section_names[section] : NULL;
+	return debuglink_view_present(section) ? section_names[section] : NULL;
 }
 
 void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t)
 {
-	if (section >= DL_VIEW_COUNT) {
+	if (!debuglink_view_present(section)) {
 		return;
 	}
 	dl_text(t, "section=%s\n", section_names[section]);
@@ -693,7 +684,10 @@ void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t
 		debuglink_view_watchdog(t);
 		break;
 	case DL_VIEW_BOARD:
-		board_section(t);
+		debuglink_view_board(0, t);
+		break;
+	case DL_VIEW_BOARD2:
+		debuglink_view_board(1, t);
 		break;
 	case DL_VIEW_RESET:
 		debuglink_view_reset(t);

@@ -290,13 +290,32 @@ class SectorMap(unittest.TestCase):
         self.assertIn("__codec_slot = 0x030E8000;", ld)
         self.assertIs(boards.from_debuglink_name("DM-1801 Pro"), b)
 
+    def test_h743_layout(self):
+        """The CS7000 M17 PLUS: two banks of eight 128 KB sectors from the flash base, written through the ROM
+        bootloader (no first stage, no stub, no key); the linker keeps the image in the first bank"""
+        b = boards.get("cs7000p")
+        self.assertEqual([(x.index, x.addr, x.size) for x in b.sectors],
+                         [(i, 0x08000000 + i * 0x20000, 0x20000) for i in range(16)])
+        self.assertEqual((b.family, b.rom_base, b.app_base, b.flash_end), ("dfuse", 0x08000000, 0x08000000, 0x08200000))
+        self.assertEqual(b.app_region, (0x08000000, 0x08100000))
+        self.assertEqual((b.protected, b.first_stage, b.stub, b.key_sha256, b.key_prefix), ([], None, None, None, None))
+        self.assertEqual(b.dfu_ids, (0x0483, 0xDF11))
+        self.assertEqual(fakedfu.rom_layout(b), "@Internal Flash  /0x08000000/16*128Kg")
+        self.assertEqual(dfumod.region(fakedfu.rom_layout(b)), (0x08000000, 0x200000))
+        for s in b.sectors:						# every sector starts on a block and a flash word
+            self.assertEqual((s.addr - b.app_base) % plan.BLOCK, 0)
+        self.assertEqual(plan.BLOCK % dfumod.FLASH_WORD, 0)
+
     def test_open_firmware_cps_data(self):
         """Every board carries the MCU flash's base (area 5's origin in the open-firmware CPS) and its CPS radio
         types from board.toml [cps]; the base is where the protected bootloader range starts"""
         for b in boards.BOARDS.values():
             with self.subTest(board=b.id):
-                self.assertEqual(b.rom_base, b.protected[0][0])
-                self.assertLess(b.rom_base, b.app_base)
+                # a bootloader in the MCU's ROM leaves the whole flash to the image: nothing is protected
+                self.assertEqual(b.protected == [], b.rom_base == b.app_base)
+                if b.protected:
+                    self.assertEqual(b.rom_base, b.protected[0][0])
+                self.assertLessEqual(b.rom_base, b.app_base)
                 self.assertTrue(all(isinstance(t, int) and 0 <= t < 64 for t in b.cps_radio_types))
                 toml = open(os.path.join(HERE, "..", "..", "..", "boards", b.id, "board.toml")).read()
                 self.assertEqual(bool(b.cps_radio_types), "[cps]" in toml)
@@ -328,6 +347,27 @@ class Planning(unittest.TestCase):
         img = app_image(0x080C0000 - 0x0800C000)
         p = plan.make_plan(DM1701, [(DM1701.app_base, img)], plan.KEEP)
         self.assertEqual([s.index for s in p.erase], [3, 4, 5, 6, 7, 8, 9])
+
+    def test_data_byte_ranges_leave_the_plan_alone(self):
+        """A [[flash.protect]] entry is a byte range of its memory: data flash entries, a range the firmware keeps
+        inside a sector included, change nothing of a program flash plan; the program flash's own still refuse"""
+        import copy
+        from rfoundry import protect
+        img = app_image(220780)
+        b = copy.copy(DM1701)
+        b.protect = [{"mem": "data", "start": 0x1000, "end": 0x1200, "what": "test (x.md 2.1)"},
+                     {"mem": "data", "start": 0x1E000, "end": 0x20000, "what": "test (x.md 2.4)"}]
+        want = plan.make_plan(DM1701, [(DM1701.app_base, img)], plan.KEEP)
+        got = plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
+        self.assertEqual([(st.sector.index, st.action) for st in got.steps],
+                         [(st.sector.index, st.action) for st in want.steps])
+        self.assertEqual(protect.carved_units(b, "data", 0, 0x21000, 0x1000),
+                         [a for a in range(0, 0x21000, 0x1000) if a != 0x1000 and not 0x1E000 <= a < 0x20000])
+        sec = b.sectors[2]
+        b.protect = b.protect + [{"mem": "progmem", "start": sec.addr - b.rom_base + 0x100,
+                                  "end": sec.addr - b.rom_base + 0x200, "what": "test (x.md 1)"}]
+        with self.assertRaises(plan.PlanError):	# a sector holding part of a progmem entry is refused whole
+            plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
 
     def test_second_range_refused(self):
         """The firmware is one image from the base: a second range (as releases from before the codec moved carried for
@@ -1933,6 +1973,1680 @@ class FakeBootloaderEndToEnd(unittest.TestCase):
             rc, out, err = run_cli(["flash", bp, "--board", "dm1701", "--simulate", "rfoundry-codec", "--yes"])
             self.assertEqual(rc, 0, out + err)
             self.assertIn("no manifest", err)
+
+
+def rom_board():
+    """A board installed through its MCU's ROM bootloader by plain DfuSe"""
+    return next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "dfuse")
+
+
+def rom_image(n, seed=1):
+    return stockfw.random_bytes(random.Random(seed), n)
+
+
+class NoCodecBoard(unittest.TestCase):
+    """A board without a codec route (board.toml [codec] none): it loads, plans and gets a manifest, with nothing to
+    keep or merge."""
+
+    def setUp(self):
+        self.b = next((b for _, b in sorted(boards.BOARDS.items()) if b.codec_none), None)
+        if self.b is None:
+            self.skipTest("every board has a codec route")
+
+    def test_loads_without_a_codec(self):
+        b = self.b
+        self.assertFalse(b.has_codec)
+        self.assertIsInstance(b.codec_none, str)
+        self.assertEqual((b.codec.id, b.codec.windows, b.codec.installed, b.codec.sources), (None, [], [], []))
+        self.assertEqual((b.codec_tool, b.codec_stock, b.codec_layouts, b.codec_codes, b.codec_former),
+                         (None, [], {}, [], []))
+        self.assertEqual(b.codec_sectors(), [])
+        self.assertEqual(b.merge_windows(), [])
+        self.assertFalse(b.keep_codec_supported)
+        # a build that reports no codec id reports None, which is this board's (missing) id: not a codec to keep
+        for reported in (None, "absent", b.id + "-049"):
+            self.assertFalse(b.codec_present(reported))
+        for other in boards.BOARDS.values():				# every other board says it has one
+            self.assertEqual(other.has_codec, other.codec_none is None)
+
+    def test_plans_and_manifests(self):
+        b = self.b
+        img = rom_image(150004)
+        p = plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
+        self.assertEqual(p.kept, [])
+        self.assertEqual(p.erase, b.sectors_for(b.app_base, b.app_base + len(img)))
+        text = "\n".join(p.describe())
+        self.assertIn("board %s, no codec" % b.name, text)
+        self.assertNotIn("codec mode", text)
+        if not b.protected:
+            self.assertNotIn("never erased", text)
+        with self.assertRaises(plan.PlanError):			# nothing to merge from
+            plan.make_plan(b, [(b.app_base, img)], plan.KEEP, [(b.app_base + 0x40000, b"x" * 16)])
+        m = mf.generate(b, img, "v0.0.1", "e" * 40)
+        self.assertEqual(m["codec"], {"included": False, "profile": None, "sectors": [], "windows": [],
+                                      "keep_supported": False})
+        self.assertIs(mf.verify(m, img, b.id), b)
+        self.assertIs(mf.verify(mf.for_dev_build(b, img), img), b)
+
+    def test_release_tool(self):
+        sys.path.insert(0, os.path.join(HERE, "..", ".."))
+        import release
+        b = self.b
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(30000))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = release.main(["--board", b.id, "--version", "v9.9.9", "--bin", bp, "--out", os.path.join(d, "dist"),
+                                   "--git", "d" * 40, "--features", "FM", "--toolchain", "test"])
+            self.assertEqual(rc, 0)
+            self.assertIn("no codec for this radio", out.getvalue())
+            m = mf.load(os.path.join(d, "dist", "rfoundry-%s-v9.9.9.json" % b.id))
+            self.assertIsNone(m["codec"]["profile"])
+            self.assertEqual(m["ranges"], [{"addr": "0x%08X" % b.app_base, "size": 30000}])
+
+    def test_after_the_flash_and_probe_say_nothing_about_a_codec(self):
+        b = self.b
+        p = {"board": b.debuglink_names[0], "port": "/dev/ttyACM0", "git": "abc", "codec": None}
+        out = io.StringIO()
+        with mock.patch.object(debuglink, "find_ports", return_value=["/dev/x"]), \
+                mock.patch.object(debuglink, "probe", return_value=p), mock.patch.object(cli, "hwopt_prompt"), \
+                mock.patch.object(state, "remember_probe"), mock.patch.object(cli.time, "sleep"), \
+                contextlib.redirect_stdout(out):
+            rc = cli.verify_after(mock.Mock(port=None), b, {}, None)
+            cli.cmd_probe(mock.Mock(port=None))
+        self.assertEqual(rc, 0)
+        self.assertIn("running RadioFoundry git abc", out.getvalue())
+        self.assertIn("note     " + b.codec_none, out.getvalue())
+        for wrong in ("DMR voice is ready", "--stock", "can be kept"):
+            self.assertNotIn(wrong, out.getvalue())
+
+
+class RomBootloader(unittest.TestCase):
+    """The plain DfuSe route to an MCU's ROM bootloader (family dfuse), against fakedfu.FakeRom: no key and no vendor
+    command, whole flash words, the read protection probe, a Read Unprotect only when asked for, and never the option
+    bytes' alternate setting."""
+
+    def setUp(self):
+        self.b = rom_board()
+        self.keyed = next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "usb-dfu")
+
+    def dfu(self, dev):
+        return dfumod.Dfu(dev, 0, log=lambda *a: None, sleep=lambda s: None)
+
+    def stock(self, **kw):
+        dev = fakedfu.FakeRomUsbDevice(self.b, fakedfu.rom_flash(self.b, random.Random(5)), **kw)
+        return dev, bytes(dev.flash)
+
+    def image_plan(self, n=150020):
+        img = rom_image(n)
+        return img, plan.make_plan(self.b, [(self.b.app_base, img)], plan.KEEP, vector_last=True)
+
+    def test_plain_run(self):
+        b = self.b
+        dev, before = self.stock()
+        img, p = self.image_plan()
+        self.assertEqual(len(img) % dfumod.FLASH_WORD, 4)		# the image ends on a 4-byte boundary only
+        log = []
+        dfumod.Dfu(dev, 0, log=log.append, sleep=lambda s: None).run(p)
+        secs = b.sectors_for(b.app_base, b.app_base + len(img))
+        self.assertEqual(dev.erased, [s.addr for s in secs])		# only the image's sectors
+        self.assertEqual(dev.read(b.app_base, len(img)), img)		# as they are: nothing XORed
+        end = b.app_base + len(img)
+        self.assertEqual(dev.read(end, secs[-1].end - end), b"\xFF" * (secs[-1].end - end))
+        off = secs[-1].end - b.rom_base
+        self.assertEqual(bytes(dev.flash[off:]), before[off:])		# every other sector as it was
+        self.assertEqual((dev.refused, dev.violations, dev.partial, dev.alt_selected), ([], [], [], []))
+        self.assertTrue(dev.exited)
+        self.assertEqual(dev.addr, b.app_base)				# left at the application base
+        self.assertIn("leave: start the image at 0x%08X" % b.app_base, log)
+        # no vendor command and nothing but DFU class requests on the one interface
+        cmds = [r[3] for r in dev.requests if r[1] == dfumod.DFU_DNLOAD and r[2] == 0 and r[3]]
+        self.assertEqual({c[0] for c in cmds}, {dfumod.CMD_ERASE, dfumod.CMD_SET_ADDRESS})
+        self.assertEqual({r[0] for r in dev.requests}, {0x21, 0xA1})
+
+    def test_every_block_is_block_2_after_its_own_set_address(self):
+        """As the web flasher writes: the bootloader places a block at (block number - 2) x wTransferSize + pointer, and
+        AN3156 5.1 leaves open whether that is the length of the block or the DFU functional descriptor's field. With
+        block 2 after a Set Address Pointer of the block's own address the product is zero either way"""
+        b = self.b
+        img, p = self.image_plan()
+        dev, _ = self.stock()
+        self.dfu(dev).run(p)
+        pointer, placed = None, []
+        for rtype, req, value, data in dev.requests:
+            if req != dfumod.DFU_DNLOAD or not data:
+                continue
+            if value == 0:
+                pointer = struct.unpack("<I", data[1:5])[0] if data[0] == dfumod.CMD_SET_ADDRESS else None
+            else:
+                self.assertEqual(value, plan.FIRST_BLOCK)
+                self.assertIsNotNone(pointer, "a block without a Set Address Pointer of its own")
+                placed.append(pointer)
+                pointer = None
+        want = [st.sector.addr + (n - plan.FIRST_BLOCK) * plan.BLOCK for st in p.write_order for n, _ in st.blocks]
+        self.assertEqual(sorted(placed), sorted(want))
+        self.assertEqual(len(placed), p.total_blocks)
+        # a bootloader that multiplies by another transfer size than the block's length places every block the same
+        for size in (2048, 256):
+            dev, _ = self.stock(transfer_size=size)
+            self.dfu(dev).run(p)
+            self.assertEqual(dev.read(b.app_base, len(img)), img, size)
+            self.assertEqual((dev.violations, dev.exited), ([], True), size)
+        # the fake itself: block 3 lands by the transfer size it was given
+        fake = fakedfu.FakeRom(b, transfer_size=2048)
+        fake.addr = b.app_base
+        fake.ctrl_transfer(0x21, dfumod.DFU_DNLOAD, plan.FIRST_BLOCK + 1, 0, b"\x00" * plan.BLOCK)
+        self.assertEqual(fake.read(b.app_base + 2048, 4), b"\x00" * 4)
+        self.assertEqual(fake.read(b.app_base + plan.BLOCK, 4), b"\xFF" * 4)
+
+    def test_blocks_are_whole_flash_words(self):
+        dev, _ = self.stock()
+        img, p = self.image_plan(70020)
+        self.dfu(dev).run(p)
+        self.assertTrue(dev.sent)
+        self.assertEqual({len(d) % dfumod.FLASH_WORD for d in dev.sent}, {0})
+        sent = dev.sent[-1:] + dev.sent[:-1]			# the vector table's block was sent last
+        self.assertTrue(sent[-1].endswith(b"\xFF" * (dfumod.FLASH_WORD - 4)))
+        self.assertEqual(b"".join(sent)[:len(img)], img)
+        self.assertEqual(dfumod.flash_words(b"abcde"), b"abcde" + b"\xFF" * 27)
+        self.assertEqual(dfumod.flash_words(b"x" * 64), b"x" * 64)
+        self.assertEqual(dfumod.flash_words(b""), b"")
+        # the fake shows what the fill is for: the last partial word of a short block stays unwritten
+        blank = fakedfu.FakeRom(self.b)
+        blank._program(self.b.app_base, b"\x00" * 36)
+        self.assertEqual(blank.read(self.b.app_base, 36), b"\x00" * 32 + b"\xFF" * 4)
+        self.assertEqual(blank.partial, [self.b.app_base + 32])
+
+    def test_the_route_follows_the_board(self):
+        """A key on a board without one, or none on a keyed board, is refused before any request"""
+        dev, _ = self.stock()
+        _, p = self.image_plan()
+        with self.assertRaises(dfumod.DfuError):
+            self.dfu(dev).run(p, KEY)
+        self.assertEqual(dev.requests, [])
+        keyed = fakedfu.FakeAnyRoad(DM1701, KEY)
+        with self.assertRaises(dfumod.DfuError):
+            self.dfu(keyed).run(plan.make_plan(DM1701, [(DM1701.app_base, app_image(3000))], plan.KEEP))
+        self.assertEqual((keyed.erased, keyed.vendor, keyed.blocks), ([], [], 0))
+
+    def test_probe(self):
+        dev, before = self.stock()
+        self.assertFalse(self.dfu(dev).probe_protected(self.b))
+        self.assertEqual(dev.state, dfumod.ST_IDLE)
+        for stall in (False, True):					# a refused read may come back empty or stall
+            dev, before = self.stock(protected=True, stall_upload=stall)
+            self.assertTrue(self.dfu(dev).probe_protected(self.b))
+            self.assertEqual(dev.state, dfumod.ST_IDLE)
+            self.assertEqual((bytes(dev.flash), dev.erased, dev.blocks, dev.unprotected), (before, [], 0, False))
+            # the only commands: set address, to the start of the program flash
+            cmds = [r[3] for r in dev.requests if r[1] == dfumod.DFU_DNLOAD]
+            self.assertEqual(cmds, [bytes([dfumod.CMD_SET_ADDRESS]) + struct.pack("<I", self.b.rom_base)])
+
+    def test_a_bootloader_left_in_another_state(self):
+        """A run that was interrupted leaves the bootloader where it was: in the middle of a download or an upload,
+        or in dfuERROR. The next command's first requests take it to dfuIDLE by the standard's own requests (to_idle),
+        as the web flasher's: a ROM bootloader stalls a CLRSTATUS outside dfuERROR and an ABORT inside it"""
+        b = self.b
+        img, p = self.image_plan(9000)
+        for state_ in (dfumod.ST_DNIDLE, dfumod.ST_UPIDLE, dfumod.ST_ERROR):
+            for first in ("probe", "run", "unprotect"):
+                dev, _ = self.stock(protected=first == "unprotect")
+                dev.state, dev.status = state_, 0x06 if state_ == dfumod.ST_ERROR else 0
+                what = (state_, first)
+                if first == "probe":
+                    self.assertFalse(self.dfu(dev).probe_protected(b), what)
+                elif first == "run":
+                    self.dfu(dev).run(p)
+                    self.assertEqual((dev.read(b.app_base, len(img)), dev.exited), (img, True), what)
+                else:
+                    self.dfu(dev).read_unprotect(b)
+                    self.assertTrue(dev.unprotected, what)
+                # nothing was stalled on the way: CLRSTATUS only out of the error, ABORT only out of a transfer
+                sent = [r[1] for r in dev.requests[:2]]
+                self.assertEqual(sent, [dfumod.DFU_GETSTATUS, dfumod.DFU_CLRSTATUS if state_ == dfumod.ST_ERROR
+                                        else dfumod.DFU_ABORT], what)
+                self.assertEqual(dev.status, 0, what)
+
+    def test_probe_never_guesses_protected(self):
+        """"Protected" leads to an erase of everything: an error the documents don't describe is not taken for it"""
+        class Odd(fakedfu.FakeRom):
+            def _error(self, status):
+                super()._error(0x08)					# errPROG, not errVENDOR
+
+        dev = Odd(self.b, protected=True)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).probe_protected(self.b)
+        self.assertIn("nothing was changed", str(cm.exception))
+
+        class Short(fakedfu.FakeRom):					# no error, but not the 4 bytes either
+            def ctrl_transfer(self, rtype, req, value, intf, data, timeout=None):
+                r = super().ctrl_transfer(rtype, req, value, intf, data, timeout)
+                return r[:2] if req == dfumod.DFU_UPLOAD else r
+
+        with self.assertRaises(dfumod.DfuError):
+            self.dfu(Short(self.b)).probe_protected(self.b)
+
+    def test_protected_refuses_and_changes_nothing(self):
+        dev, before = self.stock(protected=True)
+        _, p = self.image_plan()
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("erase", str(cm.exception))
+        self.assertEqual((bytes(dev.flash), dev.erased, dev.blocks, dev.exited), (before, [], 0, False))
+
+    def test_read_unprotect(self):
+        dev, before = self.stock(protected=True)
+        d = self.dfu(dev)
+        d.read_unprotect(self.b)
+        self.assertEqual(bytes(dev.flash), b"\xFF" * len(before))	# everything, the maker's bootloader included
+        self.assertTrue(dev.unprotected and dev.gone and not dev.protected)
+        self.assertEqual([r[3] for r in dev.requests if r[1] == dfumod.DFU_DNLOAD], [b"\x92"])
+        with self.assertRaises(fakedfu.Gone):				# off the bus until it is switched off and on
+            d.get_status()
+        self.assertEqual(fakedfu.FakeUsb([dev]).core.find(), [])
+        dev.power_cycle()
+        self.assertFalse(d.probe_protected(self.b))
+        _, p = self.image_plan()
+        d.run(p)
+        self.assertTrue(dev.exited)
+        self.assertEqual(dev.alt_selected, [])
+
+    def test_read_unprotect_refused_by_a_protected_region(self):
+        """Read Unprotect erases the whole program flash: a board that lists anything protected there never gets it"""
+        import copy
+        from rfoundry import protect
+        b = copy.copy(self.b)
+        sec = b.sectors[-1]
+        b.protect = [{"mem": "progmem", "start": sec.addr - b.rom_base, "end": sec.end - b.rom_base,
+                      "what": "test (x.md 1)"}]
+        dev = fakedfu.FakeRomUsbDevice(b, fakedfu.rom_flash(b, random.Random(5)), protected=True)
+        before = bytes(dev.flash)
+        with self.assertRaises(protect.ProtectedError) as cm:
+            self.dfu(dev).read_unprotect(b)
+        self.assertIn("test (x.md 1)", str(cm.exception))
+        self.assertEqual((dev.requests, bytes(dev.flash), dev.protected), ([], before, True))
+        # the command line stops at the same place, before its question
+        usb = fakedfu.FakeUsb([dev])
+        with mock.patch.object(fakedfu, "FakeRomUsbDevice", return_value=dev), \
+                mock.patch.object(boards, "get", return_value=b), mock.patch.object(fakedfu, "FakeUsb", return_value=usb):
+            rc, out, err = run_cli(["flash", "--board", b.id, "--simulate", "stock", "--unprotect"])
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("protected regions", err)
+        self.assertEqual((bytes(dev.flash), dev.protected, dev.unprotected), (before, True, False))
+
+    def test_read_unprotect_not_taken(self):
+        class Deaf(fakedfu.FakeRom):
+            def ctrl_transfer(self, rtype, req, value, intf, data, timeout=None):
+                if req == dfumod.DFU_DNLOAD and bytes(data or b"") == b"\x92":
+                    self._error(0x0F)
+                    return 1
+                return super().ctrl_transfer(rtype, req, value, intf, data, timeout)
+
+        dev = Deaf(self.b, protected=True)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).read_unprotect(self.b)
+        self.assertIn("did not take", str(cm.exception))
+
+    def test_option_bytes_are_never_selected(self):
+        """Alternate setting 1 of a ROM bootloader is the chip's option bytes. Nothing selects an alternate setting, on
+        any path; the fake fails every request that follows one"""
+        dev, _ = self.stock(protected=True)
+        usb = fakedfu.FakeUsb([dev])
+        cli.check_rom_loader(usb, dev, self.b, log=lambda s: None)
+        intf = dfumod.open_device(usb, dev)
+        self.assertEqual(intf, 0)
+        d = dfumod.Dfu(dev, intf, log=lambda *a: None, sleep=lambda s: None)
+        self.assertTrue(d.probe_protected(self.b))
+        d.read_unprotect(self.b)
+        dev.power_cycle()
+        self.assertFalse(d.probe_protected(self.b))
+        _, p = self.image_plan()
+        d.run(p)
+        dfumod.release(usb, dev)
+        self.assertEqual((dev.alt_selected, dev.alt), ([], 0))
+        # DFU class requests to the interface, nothing else (no standard SET_INTERFACE, bmRequestType 0x01)
+        self.assertLessEqual({(r[0], r[1]) for r in dev.requests},
+                             {(0x21, dfumod.DFU_DNLOAD), (0x21, dfumod.DFU_ABORT), (0x21, dfumod.DFU_CLRSTATUS),
+                              (0xA1, dfumod.DFU_GETSTATUS), (0xA1, dfumod.DFU_UPLOAD)})
+        # every address sent is in the program flash: the pointer also reaches the option bytes
+        for r in dev.requests:
+            if r[1] == dfumod.DFU_DNLOAD and r[2] == 0 and len(r[3] or b"") == 5:
+                a = struct.unpack("<I", r[3][1:])[0]
+                self.assertTrue(self.b.rom_base <= a < self.b.flash_end, hex(a))
+        # the fake itself: a selected alternate setting is recorded and fails the next request
+        dev, _ = self.stock()
+        dev.set_interface_altsetting(0, 1)
+        self.assertEqual(dev.alt_selected, [1])
+        with self.assertRaises(AssertionError):
+            dev.ctrl_transfer(0xA1, dfumod.DFU_GETSTATUS, 0, 0, 6)
+        dev, _ = self.stock()
+        dev.ctrl_transfer(0x01, 0x0B, 1, 0, None)			# the standard SET_INTERFACE request
+        self.assertEqual(dev.alt_selected, [1])
+        # and a sector outside the program flash never reaches the bootloader
+        dev, _ = self.stock()
+        _, p = self.image_plan(5000)
+        p.steps[0].sector = boards.Sector(0, 0x1FF00000, 0x20000)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("outside the program flash", str(cm.exception))
+        self.assertEqual(dev.requests, [])
+
+    def test_device_checks(self):
+        """The two bootloaders share their USB IDs: each route refuses the other's device before any DFU request"""
+        b = self.b
+        quiet = lambda s: None
+        rom, _ = self.stock()
+        rom.ctrl_transfer = mock.Mock(side_effect=AssertionError("a DFU request before the device check passed"))
+        cli.check_rom_loader(fakedfu.FakeUsb([rom]), rom, b, log=quiet)
+        # a radio maker's keyed bootloader on the plain route
+        keyed = fakedfu.FakeUsbDevice(self.keyed, KEY)
+        keyed.ctrl_transfer = rom.ctrl_transfer
+        with self.assertRaises(cli.UsageError) as cm:
+            cli.check_rom_loader(fakedfu.FakeUsb([keyed]), keyed, b, log=quiet)
+        self.assertIn("maker's own bootloader", str(cm.exception))
+        # a ROM bootloader on the keyed route
+        with self.assertRaises(cli.UsageError) as cm:
+            cli.check_bootloader(fakedfu.FakeUsb([rom]), rom, self.keyed, log=quiet)
+        self.assertIn("not the radio's own bootloader", str(cm.exception))
+        # a keyed board whose registry entry lost the string has nothing to tell the two apart by: refused as well
+        import copy
+        nameless = copy.copy(self.keyed)
+        nameless.dfu_string1 = ""
+        with self.assertRaises(cli.UsageError):
+            cli.check_bootloader(fakedfu.FakeUsb([rom]), rom, nameless, log=quiet)
+        # another chip's ROM bootloader: an STM32F405's flash layout, or no layout string at all
+        for names in (["@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg", "@Option Bytes  /0x1FFFC000/01*016 e"],
+                      ["@Internal Flash  /0x08000000/08*128Kg"], ["@Internal Flash  /0x08020000/15*128Kg"], [None, None]):
+            other, _ = self.stock()
+            other.strings = dict(other.strings, interfaces=names)
+            other.ctrl_transfer = rom.ctrl_transfer
+            with self.assertRaises(cli.UsageError) as cm:
+                cli.check_rom_loader(fakedfu.FakeUsb([other]), other, b, log=quiet)
+            self.assertIn("flash layout", str(cm.exception))
+        rom.ctrl_transfer.assert_not_called()
+        self.assertTrue(dfumod.rom_layout_ok(["@Internal  Flash /0x%08X/%d*128Kg" % (b.rom_base, len(b.sectors))], b))
+        declared = mock.Mock(dfu_layout="@Internal Flash  /0x08000000/16*128Kg", rom_base=0, flash_end=0)
+        self.assertTrue(dfumod.rom_layout_ok(["@Internal Flash /0x08000000/16*128Kg", "x"], declared))
+        self.assertFalse(dfumod.rom_layout_ok(["@Internal Flash /0x08000000/16*128Ka"], declared))
+
+    def cli_run(self, *argv):
+        """A simulated install, with the fake device it ran against"""
+        made = []
+        real = fakedfu.FakeRomUsbDevice
+
+        class Spy(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+        with mock.patch.object(fakedfu, "FakeRomUsbDevice", Spy):
+            rc, out, err = run_cli(["flash", "--board", self.b.id] + list(argv))
+        return rc, out, err, (made[0] if made else None)
+
+    def test_cli_stops_at_a_protected_radio(self):
+        rc, out, err, dev = self.cli_run("--simulate")			# stock: read protected
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("read protected", err)
+        self.assertIn("--unprotect", err)
+        self.assertIn("erases the whole program memory", err)
+        self.assertEqual((dev.erased, dev.blocks, dev.unprotected, dev.exited, dev.alt_selected), ([], 0, False, False, []))
+        self.assertTrue(dev.protected)
+        self.assertNotEqual(dev.read(self.b.app_base, 4096), b"\xFF" * 4096)	# the maker's firmware is still there
+        # the board's own install notice follows when the registry carries it
+        with mock.patch.object(self.b, "notice", "Back up first.", create=True):
+            rc, out, err, _ = self.cli_run("--simulate", "stock")
+        self.assertTrue(err.rstrip().endswith("--unprotect\nBack up first."), err)
+
+    def test_cli_unprotects_when_asked(self):
+        rc, out, err, dev = self.cli_run("--simulate", "--unprotect")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("board %s, no codec" % self.b.name, out)
+        self.assertIn("erases its program memory", out)
+        self.assertIn("leave: start the image at 0x%08X" % self.b.app_base, out)
+        self.assertIn("sim      PASS", out)
+        self.assertTrue(dev.unprotected and dev.exited)
+        self.assertEqual((dev.alt_selected, dev.refused, dev.partial, dev.violations), ([], [], [], []))
+        used = b"".join(d for d in dev.sent)
+        self.assertEqual(len(used) % dfumod.FLASH_WORD, 0)
+        # every sector the image didn't take is blank: nothing of the maker's firmware is left
+        for s in self.b.sectors:
+            if s.addr not in dev.erased:
+                self.assertEqual(dev.read(s.addr, s.size), b"\xFF" * s.size)
+
+    def test_cli_unprotected_radio(self):
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            img = rom_image(140000)
+            with open(bp, "wb") as f:
+                f.write(img)
+            for state_ in ("blank", "rfoundry-nocodec"):
+                rc, out, err, dev = self.cli_run(bp, "--simulate", state_)
+                self.assertEqual(rc, 0, out + err)
+                self.assertIn("sim      PASS", out)
+                self.assertEqual(dev.read(self.b.app_base, len(img)), img)
+                self.assertFalse(dev.unprotected)
+            rc, out, err, dev = self.cli_run(bp, "--simulate", "blank", "--unprotect")
+            self.assertEqual(rc, 0, out + err)
+            self.assertIn("not read protected: nothing to remove", out)
+            self.assertFalse(dev.unprotected)
+            rc, out, err, dev = self.cli_run(bp, "--simulate", "stock", "--dry-run")
+            self.assertEqual(rc, 0, out + err)
+            self.assertIn("dry run: nothing was erased or written", out)
+            self.assertIsNone(dev)
+            # what belongs to the keyed bootloaders and the codec doesn't apply
+            for extra in (["--stock", "synthetic"], ["--codec", "keep"], ["--key", bp], ["--stock-installed", "V1"]):
+                rc, out, err, dev = self.cli_run(bp, "--simulate", "blank", *extra)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("don't apply", err)
+                self.assertIsNone(dev)
+
+    def test_unprotect_is_for_this_route_only(self):
+        rc, out, err = run_cli(["flash", "--board", self.keyed.id, "--simulate", "rfoundry-codec", "--unprotect"])
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("--unprotect is for", err)
+        # without it a keyed board's simulation needs no image file either
+        rc, out, err = run_cli(["flash", "--board", self.keyed.id, "--simulate", "rfoundry-codec", "--yes"])
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("sim      PASS", out)
+
+    def test_real_run_asks_before_the_unprotect(self):
+        """Not simulated: the question is asked, "no" (or no terminal) changes nothing, and after a "yes" the radio is
+        waited for a second time"""
+        b = self.b
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            img = rom_image(9000)
+            with open(bp, "wb") as f:
+                f.write(img)
+            argv = ["flash", bp, "--board", b.id, "--unprotect", "--no-probe", "--no-verify", "--no-reporting"]
+            dev, before = self.stock(protected=True)
+            usb = fakedfu.FakeUsb([dev])
+
+            def left(u, board, was, sent):				# the radio leaves when the erase is over
+                self.assertEqual((was.bus, was.address), (dev.bus, dev.address))
+                self.assertTrue(dev.gone)
+                return True, None
+
+            def user(s):						# the user's part: off, the key, on
+                if dev.gone:
+                    dev.power_cycle()
+
+            with mock.patch.object(dfumod, "import_usb", return_value=usb), \
+                    mock.patch.object(cli.time, "sleep", side_effect=user), \
+                    mock.patch.object(cli, "wait_unprotect", side_effect=left) as gone:
+                with mock.patch.object(cli, "ask_yes", return_value=False) as ask:
+                    rc, out, err = run_cli(argv)
+                self.assertEqual(rc, 1, out + err)
+                ask.assert_called_once()
+                self.assertIn("Remove the read protection now?", ask.call_args[0][0])
+                self.assertEqual((bytes(dev.flash), dev.protected, dev.unprotected), (before, True, False))
+                gone.assert_not_called()
+                with mock.patch.object(cli, "ask_yes", return_value=True) as ask:
+                    rc, out, err = run_cli(argv)
+                self.assertEqual(rc, 0, out + err)
+                ask.assert_called_once()				# the one question covers the install
+                gone.assert_called_once()
+                self.assertIn("Now switch the radio off.", out)
+                # the last instruction before the write is to leave the radio on
+                off = out.index("Now switch the radio off.")
+                self.assertLess(off, out.index("leave it on and connected while it is written"))
+                self.assertLess(out.index("leave it on and connected while it is written"), out.index("erase sector"))
+                self.assertTrue(dev.unprotected and dev.exited)
+                self.assertEqual(dev.read(b.app_base, len(img)), img)
+                self.assertEqual(dev.alt_selected, [])
+
+    def test_detect(self):
+        ports = mock.patch.object(debuglink, "find_ports", return_value=None)	# the host's serial ports stay out of it
+        ports.start()
+        self.addCleanup(ports.stop)
+        dev, before = self.stock(protected=True)
+        with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])):
+            rc, out, err = run_cli(["detect", "--no-probe"])
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("the bootloader in a processor's ROM", out)
+        self.assertIn("%s (--board %s)" % (self.b.name, self.b.id), out)
+        self.assertIn("read protection: on", out)
+        self.assertEqual((bytes(dev.flash), dev.unprotected, dev.alt_selected), (before, False, []))
+        dev, _ = self.stock()
+        with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])):
+            rc, out, err = run_cli(["detect", "--no-probe", "--board", self.b.id])
+        self.assertIn("read protection: off", out)
+        # a keyed bootloader is still what it was, and gets no request
+        keyed = fakedfu.FakeUsbDevice(self.keyed, KEY)
+        keyed.ctrl_transfer = mock.Mock(side_effect=AssertionError("a DFU request from detect"))
+        with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([keyed])):
+            rc, out, err = run_cli(["detect", "--no-probe"])
+        self.assertIn("AnyRoad bootloader", out)
+        self.assertNotIn("read protection", out)
+
+    def test_no_key_to_get(self):
+        rc, out, err = run_cli(["key", "--board", self.b.id])
+        self.assertEqual(rc, 2)
+        self.assertIn("has no key", err)
+
+    def test_nothing_past_the_application_region(self):
+        """Flash past the linker script's application region is never erased or written (a ROM bootloader may not
+        survive an erase there): a file that reaches it is refused before any request, and before a Read Unprotect"""
+        b = self.b
+        lo, hi = b.app_region
+        if hi >= b.flash_end:
+            self.skipTest("the application region is the whole program flash")
+        img = rom_image(hi - lo + 5000)
+        p = plan.make_plan(b, [(b.app_base, img)], plan.KEEP)		# the planner takes the whole program flash
+        self.assertEqual(p.erase[-1].addr, hi)
+        dev, before = self.stock()
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("application flash", str(cm.exception))
+        self.assertEqual((dev.requests, bytes(dev.flash)), ([], before))
+        # an image that fills the region to its last byte is this radio's
+        dfumod.check_plain(plan.make_plan(b, [(b.app_base, rom_image(hi - lo))], plan.KEEP, vector_last=True))
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(img)
+            for extra in (["--unprotect"], ["--dry-run"]):
+                rc, out, err, dev = self.cli_run(bp, "--simulate", "stock", *extra)
+                self.assertEqual(rc, 2, out + err)
+                self.assertIn("application flash", err)
+                self.assertIsNone(dev)				# no device was looked for: nothing unprotected
+
+    def test_block_outside_its_sector(self):
+        """A plan whose block would land past its sector's end (in the next, unerased one), or below the first block
+        (block 0 is the DfuSe command channel: its first byte would be taken as Set Address, Erase or Read Unprotect,
+        AN3156 5), is refused before any request, as the web flasher's checkPlain refuses it"""
+        for num in (None, plan.FIRST_BLOCK - 1, 0):
+            _, p = self.image_plan()
+            st = p.writes[-1]
+            n = plan.FIRST_BLOCK + st.sector.size // plan.BLOCK if num is None else num
+            # for block 0, bytes that would be an erase of the sector if they reached the bootloader as a command
+            st.blocks.append((n, (bytes([dfumod.CMD_ERASE]) + struct.pack("<I", st.sector.addr)).ljust(plan.BLOCK,
+                                                                                                    b"\xFF")))
+            dev, before = self.stock()
+            with self.assertRaises(dfumod.DfuError, msg=n) as cm:
+                self.dfu(dev).run(p)
+            self.assertIn("block %d is outside sector %d" % (n, st.sector.index), str(cm.exception))
+            self.assertEqual((dev.requests, bytes(dev.flash)), ([], before), n)
+
+    def test_read_back_before_the_start(self):
+        """Every block is read back before the image is started: a ROM bootloader reports no error for a write it
+        didn't carry out (AN3156 5.1, 5.3). A block that reads back different, or can't be read, leaves the image
+        unstarted with the radio still in its bootloader"""
+        b = self.b
+        img, p = self.image_plan()
+        dev, _ = self.stock()
+        self.dfu(dev).run(p)
+        ups = [r for r in dev.requests if r[1] == dfumod.DFU_UPLOAD]
+        self.assertEqual(len(ups), p.total_blocks)
+        self.assertTrue(all(r[0] == 0xA1 and r[2] == plan.FIRST_BLOCK and r[3] == plan.BLOCK for r in ups), ups[:2])
+        self.assertTrue(dev.exited)
+        self.assertEqual((dev.refused, dev.violations, dev.alt_selected), ([], [], []))
+        # a sector that takes its blocks without an error and without programming them (write protected)
+        dev, _ = self.stock()
+        last = p.writes[-1].sector
+        real = dev._program
+        dev._program = lambda a, d: None if last.addr <= a < last.end else real(a, d)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("0x%08X does not read back" % last.addr, str(cm.exception))
+        self.assertIn("not started", str(cm.exception))
+        self.assertFalse(dev.exited)
+        self.assertEqual(dev.alt_selected, [])
+        # a read the bootloader stalls: not checked is not taken as checked
+        dev, _ = self.stock()
+        wire = dev.ctrl_transfer
+
+        def no_reads(rtype, req, *a):
+            if req == dfumod.DFU_UPLOAD:
+                raise fakedfu.Stall("Pipe error")
+            return wire(rtype, req, *a)
+        dev.ctrl_transfer = no_reads
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("could not be read back", str(cm.exception))
+        self.assertFalse(dev.exited)
+        # written, only not started, and the vector table not written: nothing to start at a normal power-on
+        self.assertEqual(dev.read(b.app_base + plan.BLOCK, len(img) - plan.BLOCK), img[plan.BLOCK:])
+        self.assertEqual(dev.read(b.app_base, plan.BLOCK), b"\xFF" * plan.BLOCK)
+
+    def test_waits_for_the_radio_to_leave(self):
+        b = self.b
+        dev, _ = self.stock(protected=True)
+        usb = fakedfu.FakeUsb([dev])
+        was = mock.Mock(bus=dev.bus, address=dev.address)
+        naps = []
+        self.assertFalse(cli.wait_gone(usb, b, was, 0, sleep=naps.append))	# still there when the time is up
+        self.assertEqual(naps, [])
+
+        def leave(s):
+            naps.append(s)
+            dev.gone = True
+
+        self.assertTrue(cli.wait_gone(usb, b, was, 60, sleep=leave))		# it leaves while rfoundry waits
+        self.assertEqual(naps, [1.0])
+        dev.power_cycle()							# back as another device: the old place is empty
+        self.assertTrue(cli.wait_gone(usb, b, was, 0, sleep=naps.append))
+
+    def test_radio_that_stays_on_usb_after_the_unprotect(self):
+        """The radio took the command and is still on USB when the wait ends: that device is passed over, and the
+        install goes on only with the one that appears after the radio was switched off and on"""
+        b = self.b
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            img = rom_image(9000)
+            with open(bp, "wb") as f:
+                f.write(img)
+            argv = ["flash", bp, "--board", b.id, "--unprotect", "--yes", "--wait", "0", "--no-probe", "--no-verify",
+                    "--no-reporting"]
+            for comes_back in (False, True):
+                dev, _ = self.stock(protected=True)
+
+                def stays(u, board, was, wait_s, sleep=None, dev=dev, comes_back=comes_back):
+                    dev.gone = False				# on the bus where it was
+                    if comes_back:
+                        dev.power_cycle()
+                    return False
+
+                with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])), \
+                        mock.patch.object(cli.time, "sleep"), mock.patch.object(cli, "wait_gone", side_effect=stays):
+                    rc, out, err = run_cli(argv)
+                self.assertIn("still on USB", err)
+                # past twice the longest erase: the words say it is over, not to wait longer, before "switch off"
+                self.assertIn("the erase is over, or the radio did not take the command", err)
+                self.assertNotIn("another minute", err)
+                self.assertTrue(dev.unprotected)
+                if comes_back:
+                    self.assertEqual(rc, 0, out + err)
+                    self.assertEqual(dev.read(b.app_base, len(img)), img)
+                    self.assertTrue(dev.exited)
+                else:
+                    self.assertEqual(rc, 2, out + err)
+                    self.assertIn("did not leave USB", err)
+                    self.assertNotIn("is empty", err)
+                    self.assertEqual((dev.erased, dev.blocks, dev.exited), ([], 0, False))
+                self.assertEqual(dev.alt_selected, [])
+
+    def test_wait_after_the_unprotect(self):
+        """The radio is told it may be switched off only once it has left USB and UNPROTECT_MIN_S have passed (past
+        twice the chip's longest mass erase), and is waited for up to UNPROTECT_WAIT_S; a bootloader back on the bus by
+        itself is found before anything says to switch off"""
+        b = self.b
+        least, most = cli.unprotect_wait(b)
+        self.assertGreater(b.mass_erase_max_s, 0)
+        self.assertGreaterEqual(least, max(cli.UNPROTECT_MIN_S, 2 * b.mass_erase_max_s))
+        self.assertGreaterEqual(most, max(cli.UNPROTECT_WAIT_S, 2 * least))
+        for leaves_at, comes_back in ((5, False), (90, False), (None, False), (5, True)):
+            dev, _ = self.stock(protected=True)
+            usb = fakedfu.FakeUsb([dev])
+            was = mock.Mock(bus=dev.bus, address=dev.address)
+            clock = [1000.0]
+
+            def nap(s, dev=dev, leaves_at=leaves_at, comes_back=comes_back):
+                clock[0] += s
+                if leaves_at is not None and clock[0] - 1000.0 >= leaves_at and not dev.unprotected:
+                    dev.gone = dev.unprotected = True
+                    if comes_back:
+                        dev.power_cycle()			# reset into its bootloader at once, a new device
+
+            with mock.patch.object(cli.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(cli.time, "sleep", side_effect=nap):
+                left, back = cli.wait_unprotect(usb, b, was, 1000.0)
+            what = (leaves_at, comes_back)
+            self.assertEqual(left, leaves_at is not None, what)
+            self.assertIs(back, dev if comes_back else None, what)
+            took = clock[0] - 1000.0
+            self.assertGreaterEqual(took, least, what)
+            self.assertLessEqual(took, most + 1, what)
+            if leaves_at == 90:
+                self.assertLess(took, 92, "on as soon as it left")
+            if leaves_at is None:
+                self.assertGreaterEqual(took, most)
+
+    def test_the_wait_follows_the_chip_s_mass_erase_time(self):
+        """Both waits come from the registry's mass erase time of the board's processor (platform.toml
+        mass_erase_max_s), never from a figure of the tool's own: twice the bound and at least UNPROTECT_MIN_S before
+        the switch-off, twice that and at least UNPROTECT_WAIT_S for the radio to leave USB"""
+        import copy
+        b = copy.copy(self.b)
+        for bound, want in ((1, (60, 120)), (26, (60, 120)), (30, (60, 120)), (31, (62, 124)), (100, (200, 400))):
+            b.mass_erase_max_s = bound
+            self.assertEqual(cli.unprotect_wait(b), want, bound)
+        # every board of the route has the figure, and the words quote the board's
+        for x in boards.BOARDS.values():
+            if x.family == "dfuse":
+                self.assertGreater(x.mass_erase_max_s, 0, x.id)
+        b.mass_erase_max_s = 45
+        dev, _ = self.stock(protected=True)
+        clock = [0.0]
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(9000))
+            argv = ["flash", bp, "--board", b.id, "--unprotect", "--yes", "--wait", "0", "--no-probe", "--no-verify",
+                    "--no-reporting"]
+            with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])), \
+                    mock.patch.object(boards, "get", return_value=b), \
+                    mock.patch.object(cli.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(cli.time, "sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)):
+                dev.ctrl_transfer = self.stays_on_usb(dev)
+                rc, out, err = run_cli(argv)
+            self.assertIn("(at least 90 s)", out)
+            self.assertIn("still on USB after 180 s, longer than its erase takes (at most 45 s)", err)
+            self.assertGreaterEqual(clock[0], 180)
+            # a board whose registry entry lost the figure: refused before the Read Unprotect, nothing erased
+            b.mass_erase_max_s = None
+            dev, before = self.stock(protected=True)
+            with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])), \
+                    mock.patch.object(boards, "get", return_value=b), mock.patch.object(cli.time, "sleep"):
+                rc, out, err = run_cli(argv)
+            self.assertEqual(rc, 2, out + err)
+            self.assertIn("no mass erase time", err)
+            self.assertEqual((dev.protected, dev.unprotected), (True, False))
+            self.assertTrue(bytes(dev.flash) == before, "nothing erased")
+
+    @staticmethod
+    def stays_on_usb(dev):
+        """dev's ctrl_transfer for a radio that takes the Read Unprotect and is still on USB afterwards"""
+        wire = dev.ctrl_transfer
+
+        def stays(rtype, req, value, intf, data, timeout=None):
+            r = wire(rtype, req, value, intf, data, timeout)
+            if dev.gone:
+                dev.gone = False
+                dev.state, dev.status, dev.busy, dev.pending = dfumod.ST_IDLE, 0, 0, None
+            return r
+        return stays
+
+    def test_bus_listing_error_during_the_wait(self):
+        """A USB bus that can't be listed while the radio may be erasing does not end the install: what an error
+        prints starts with switching the radio off. The listing is taken as nothing seen to leave, the wait runs to
+        its end, and only then is anything said about switching off"""
+        b = self.b
+        least, most = cli.unprotect_wait(b)
+        for broken_at, mends_at in ((0, None), (3, None), (0, 20)):
+            dev, _ = self.stock(protected=True)
+            usb = fakedfu.FakeUsb([dev])
+            was = mock.Mock(bus=dev.bus, address=dev.address)
+            dev.gone = dev.unprotected = True			# it took the command and left the bus
+            clock = [1000.0]
+
+            def listing(u, board, clock=clock, broken_at=broken_at, mends_at=mends_at):
+                t = clock[0] - 1000.0
+                if t >= broken_at and (mends_at is None or t < mends_at):
+                    raise OSError("Input/Output Error")
+                return usb.core.find()
+
+            with mock.patch.object(cli.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(cli.time, "sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)), \
+                    mock.patch.object(dfumod, "find", side_effect=listing):
+                left, back = cli.wait_unprotect(usb, b, was, 1000.0)
+            what = (broken_at, mends_at)
+            took = clock[0] - 1000.0
+            # seen to leave before the listing broke, or once it works again; never concluded from a failed listing
+            self.assertEqual(left, what != (0, None), what)
+            self.assertIsNone(back, what)
+            self.assertGreaterEqual(took, most if what == (0, None) else least, what)
+        # the whole command: the listing breaks once the Read Unprotect is sent and stays broken
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(9000))
+            dev, _ = self.stock(protected=True)
+            usb = fakedfu.FakeUsb([dev])
+            clock = [0.0]
+
+            def listing(u, board):
+                if dev.unprotected:
+                    raise OSError("Input/Output Error")
+                return usb.core.find()
+
+            with mock.patch.object(dfumod, "import_usb", return_value=usb), \
+                    mock.patch.object(cli.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(cli.time, "sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)), \
+                    mock.patch.object(dfumod, "find", side_effect=listing):
+                rc, out, err = run_cli(["flash", bp, "--board", b.id, "--unprotect", "--yes", "--wait", "0",
+                                        "--no-probe", "--no-verify", "--no-reporting"])
+            self.assertEqual(rc, 2, out + err)
+            self.assertTrue(dev.unprotected)
+            # the error comes, with the bootloader's steps, only after the wait and after "Now switch the radio off."
+            self.assertIn("Input/Output Error", err)
+            self.assertIn("Now switch the radio off.", out)
+            self.assertGreaterEqual(clock[0], most)
+
+    def test_radio_back_by_itself_after_the_unprotect(self):
+        """A radio that resets into its bootloader by itself after the erase (its key still held) is written without
+        being told to switch off first: nothing tells the user to cut the power while it is written"""
+        b = self.b
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            img = rom_image(9000)
+            with open(bp, "wb") as f:
+                f.write(img)
+            dev, _ = self.stock(protected=True)
+
+            def left(u, board, was, wait_s, sleep=None):
+                dev.power_cycle()					# gone from the old place, back at a new one
+                return True
+
+            with mock.patch.object(dfumod, "import_usb", return_value=fakedfu.FakeUsb([dev])), \
+                    mock.patch.object(cli.time, "sleep"), mock.patch.object(cli, "wait_gone", side_effect=left):
+                rc, out, err = run_cli(["flash", bp, "--board", b.id, "--unprotect", "--yes", "--wait", "0",
+                                        "--no-probe", "--no-verify", "--no-reporting"])
+            self.assertEqual(rc, 0, out + err)
+            self.assertNotIn("switch the radio off", out)
+            self.assertLess(out.index("back in its bootloader by itself"), out.index("erase sector"))
+            self.assertEqual(dev.read(b.app_base, len(img)), img)
+
+    def test_unprotect_reply_lost(self):
+        """The bootloader takes the Read Unprotect and its GETSTATUS reply is lost (it may leave the bus at once, AN3156
+        5.4): taken as the erase started, as the web flasher takes it, never as an error that says to switch off"""
+        class Lost(fakedfu.FakeRomUsbDevice):
+            def ctrl_transfer(self, rtype, req, value, intf, data, timeout=None):
+                was = self.pending
+                r = super().ctrl_transfer(rtype, req, value, intf, data, timeout)
+                if was == "unprotect" and req == dfumod.DFU_GETSTATUS:
+                    raise OSError("[Errno 110] Operation timed out")
+                return r
+
+        dev = Lost(self.b, fakedfu.rom_flash(self.b, random.Random(5)), protected=True)
+        log = []
+        dfumod.Dfu(dev, 0, log=log.append, sleep=lambda s: None).read_unprotect(self.b)
+        self.assertTrue(dev.unprotected)
+        self.assertTrue(any("left the bus" in m and "may be erasing" in m for m in log), log)
+        made = []
+
+        class Spy(Lost):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+        with mock.patch.object(fakedfu, "FakeRomUsbDevice", Spy):
+            rc, out, err = run_cli(["flash", "--board", self.b.id, "--simulate", "stock", "--unprotect"])
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("leave it on and connected", out)
+        self.assertNotIn("USB error while flashing", out + err)
+        self.assertNotIn("Turn the radio off", out + err)
+        self.assertTrue(made[0].unprotected and made[0].exited)
+
+    def test_read_unprotect_answered_in_another_state(self):
+        """AN3156 5.4: a GETSTATUS reply after the command that is not dfuDNBUSY is an error, status 0 or not. A loader
+        that answers dfuIDLE or dfuDNLOAD-IDLE did not take the command: nothing is said to be erasing. Nor did one
+        that answers dfuDNBUSY with an error status"""
+        for status_, state_ in ((0, dfumod.ST_IDLE), (0, dfumod.ST_DNIDLE), (0x0A, dfumod.ST_DNBUSY)):
+            with self.subTest(status=status_, state=state_):
+                class Idle(fakedfu.FakeRom):
+                    def ctrl_transfer(self, rtype, req, value, intf, data, timeout=None, st=state_, status=status_):
+                        if req == dfumod.DFU_DNLOAD and bytes(data or b"") == b"\x92":
+                            self.state, self.status, self.busy = st, status, 0
+                            return 1
+                        return super().ctrl_transfer(rtype, req, value, intf, data, timeout)
+
+                dev = Idle(self.b, fakedfu.rom_flash(self.b, random.Random(5)), protected=True)
+                before = bytes(dev.flash)
+                with self.assertRaises(dfumod.DfuError) as cm:
+                    self.dfu(dev).read_unprotect(self.b)
+                self.assertIn("did not take", str(cm.exception))
+                self.assertIn(dfumod.STATE_NAMES[state_], str(cm.exception))
+                self.assertEqual((dev.unprotected, dev.protected, bytes(dev.flash)), (False, True, before))
+
+    def test_vector_table_last(self):
+        """The application's first sector is erased first, and its first block (the vector table) is written after
+        every other block is written and read back: an install cut anywhere before it leaves no vector table, so
+        nothing starts at the next normal power-on. A check of the vector table that fails erases its sector again"""
+        b = self.b
+        img, p = self.image_plan()
+        self.assertGreater(len(p.writes), 1)
+        self.assertIn("order: sector %d erased first and written last (a cut install leaves no application to start)"
+                      % p.writes[0].sector.index, "\n".join(p.describe()))
+        events = []
+        dev, _ = self.stock()
+        prog, wire = dev._program, dev.ctrl_transfer
+        dev._program = lambda a, d: (events.append(("write", a)), prog(a, d))
+        dev.ctrl_transfer = lambda rtype, req, value, intf, data, timeout=None: (
+            events.append(("read", dev.addr)) if req == dfumod.DFU_UPLOAD else None,
+            wire(rtype, req, value, intf, data, timeout))[1]
+        self.dfu(dev).run(p)
+        self.assertEqual(dev.erased[0], b.app_base)
+        writes = [a for k, a in events if k == "write"]
+        self.assertEqual(writes[-1], b.app_base)
+        self.assertEqual(writes.count(b.app_base), 1)
+        at = events.index(("write", b.app_base))
+        self.assertEqual(len([e for e in events[:at] if e[0] == "read"]), p.total_blocks - 1,
+                         "the rest read back first")
+        self.assertEqual(events[at + 1:], [("read", b.app_base)])
+        self.assertEqual(dev.read(b.app_base, len(img)), img)
+        self.assertTrue(dev.exited)
+        # cut after any number of blocks before the last one: no vector table
+        for n in (0, 1, p.total_blocks // 2, p.total_blocks - 1):
+            dev, _ = self.stock()
+            real, count = dev._program, [0]
+
+            def cut(a, d, real=real, count=count, n=n, dev=dev):
+                if count[0] == n:
+                    dev.gone = True				# the cable: nothing reaches the radio after it
+                    raise fakedfu.Gone("No such device")
+                count[0] += 1
+                real(a, d)
+            dev._program = cut
+            if n < p.total_blocks - 1:
+                with self.assertRaises(fakedfu.Gone):
+                    self.dfu(dev).run(p)
+            else:
+                # cut at the vector table's own block: the erase is tried and can't reach the radio, and the words
+                # don't claim a radio that starts nothing
+                with self.assertRaises(dfumod.DfuError) as cm:
+                    self.dfu(dev).run(p)
+                self.assertIn("USB error at the vector table: No such device", str(cm.exception))
+                self.assertIn("could not be erased again", str(cm.exception))
+                self.assertNotIn("starts nothing", str(cm.exception))
+            self.assertEqual(dev.read(b.app_base, plan.BLOCK), b"\xFF" * plan.BLOCK, n)
+            self.assertFalse(dev.exited)
+        # a block of the rest that doesn't read back: the vector table is never written
+        dev, _ = self.stock()
+        last = p.writes[-1].sector
+        real = dev._program
+        dev._program = lambda a, d: None if last.addr <= a < last.end else real(a, d)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("vector table is not written yet", str(cm.exception))
+        self.assertEqual(dev.read(b.app_base, plan.BLOCK), b"\xFF" * plan.BLOCK)
+        # the vector table itself doesn't read back: its sector is erased again
+        dev, _ = self.stock()
+        real = dev._program
+        dev._program = lambda a, d: real(a, b"\x00" * len(d)) if a == b.app_base else real(a, d)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("does not read back", str(cm.exception))
+        self.assertIn("sector is erased again", str(cm.exception))
+        self.assertEqual(dev.erased.count(b.app_base), 2)
+        self.assertEqual(dev.read(b.app_base, p.writes[0].sector.size), b"\xFF" * p.writes[0].sector.size)
+        self.assertFalse(dev.exited)
+        # the vector table's write reported as failed with part of it in flash (the documents describe no such
+        # error; the tool is still connected, so nothing unchecked is left to start). The bootloader is in dfuERROR
+        # then, where it takes no ABORT: the erase goes after CLRSTATUS
+        dev, _ = self.stock()
+        real = dev._program
+
+        def half(a, d, real=real, dev=dev):
+            real(a, d[:len(d) // 2] if a == b.app_base else d)
+            if a == b.app_base:
+                dev._error(0x06)				# errPROG
+        dev._program = half
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("block at 0x%08X failed: status 6, state dfuERROR" % b.app_base, str(cm.exception))
+        self.assertIn("sector is erased again", str(cm.exception))
+        self.assertIn("run the same command", str(cm.exception))
+        self.assertEqual(dev.erased.count(b.app_base), 2)
+        self.assertEqual(dev.read(b.app_base, p.writes[0].sector.size), b"\xFF" * p.writes[0].sector.size)
+        self.assertEqual((dev.state, dev.exited), (dfumod.ST_DNIDLE, False))
+        # the vector table's read refused: a stalled UPLOAD leaves dfuERROR too
+        dev, _ = self.stock()
+        wire = dev.ctrl_transfer
+
+        def no_vectors(rtype, req, value, intf, data, timeout=None, wire=wire, dev=dev):
+            if req == dfumod.DFU_UPLOAD and dev.addr == b.app_base:
+                dev._error(0x0F)
+                raise fakedfu.Stall("Pipe error")
+            return wire(rtype, req, value, intf, data, timeout)
+        dev.ctrl_transfer = no_vectors
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("0x%08X could not be read back (Pipe error)" % b.app_base, str(cm.exception))
+        self.assertIn("sector is erased again", str(cm.exception))
+        self.assertEqual(dev.erased.count(b.app_base), 2)
+        self.assertEqual(dev.read(b.app_base, p.writes[0].sector.size), b"\xFF" * p.writes[0].sector.size)
+        self.assertFalse(dev.exited)
+        # an error that is not rfoundry's own at the vector table's block (pyusb's, when one transfer fails) with the
+        # bootloader still there: the sector is erased again all the same, and the words say where it happened
+        dev, _ = self.stock()
+        wire, sent = dev.ctrl_transfer, [0]
+
+        def once(rtype, req, value, intf, data, timeout=None, wire=wire, sent=sent):
+            if req == dfumod.DFU_DNLOAD and value == plan.FIRST_BLOCK:
+                sent[0] += 1
+                if sent[0] == p.total_blocks:
+                    raise OSError("Input/Output Error")
+            return wire(rtype, req, value, intf, data, timeout)
+        dev.ctrl_transfer = once
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(p)
+        self.assertIn("USB error at the vector table: Input/Output Error. The vector table's sector is erased again",
+                      str(cm.exception))
+        self.assertEqual(dev.erased.count(b.app_base), 2)
+        self.assertEqual(dev.read(b.app_base, p.writes[0].sector.size), b"\xFF" * p.writes[0].sector.size)
+        self.assertFalse(dev.exited)
+        # the fake as the standard has it: ABORT in dfuERROR is stalled and clears nothing (DFU 1.1 A.2.11)
+        dev, _ = self.stock()
+        dev._error(0x06)
+        with self.assertRaises(fakedfu.Stall):
+            dev.ctrl_transfer(0x21, dfumod.DFU_ABORT, 0, 0, None)
+        self.assertEqual((dev.state, dev.status), (dfumod.ST_ERROR, 0x06))
+        self.dfu(dev).to_idle()
+        self.assertEqual((dev.state, dev.status), (dfumod.ST_IDLE, 0))
+        # to_idle from the other states: ABORT out of an idle state of a transfer (CLRSTATUS there is no request of
+        # the standard's, and the fake stalls it), a busy bootloader waited out
+        with self.assertRaises(fakedfu.Stall):
+            dev.state = dfumod.ST_DNIDLE
+            dev.ctrl_transfer(0x21, dfumod.DFU_CLRSTATUS, 0, 0, None)
+        self.assertEqual(dev.state, dfumod.ST_ERROR)
+        for state_ in (dfumod.ST_DNIDLE, dfumod.ST_UPIDLE):
+            dev.state, dev.status = state_, 0
+            del dev.requests[:]
+            self.dfu(dev).to_idle()
+            self.assertEqual((dev.state, dev.status), (dfumod.ST_IDLE, 0))
+            self.assertEqual([r[1] for r in dev.requests], [dfumod.DFU_GETSTATUS, dfumod.DFU_ABORT,
+                                                            dfumod.DFU_GETSTATUS])
+        dev.state, dev.busy = dfumod.ST_IDLE, 1
+        naps = []
+        dfumod.Dfu(dev, 0, log=lambda *a: None, sleep=naps.append).to_idle()
+        self.assertEqual((dev.state, len(naps)), (dfumod.ST_IDLE, 1))
+        self.assertFalse([r for r in dev.requests[-2:] if r[1] != dfumod.DFU_GETSTATUS], "nothing sent while busy")
+        # a plain plan without that order is refused before any request
+        dev, before = self.stock()
+        q = plan.make_plan(b, [(b.app_base, img)], plan.KEEP)
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(q)
+        self.assertIn("first and write it last", str(cm.exception))
+        self.assertEqual((dev.requests, bytes(dev.flash)), ([], before))
+        # nor one whose last step has no block to be the vector table: a refusal, not a crash
+        _, q = self.image_plan()
+        q.write_order[-1].blocks.clear()
+        with self.assertRaises(dfumod.DfuError) as cm:
+            self.dfu(dev).run(q)
+        self.assertIn("first and write it last", str(cm.exception))
+        self.assertEqual((dev.requests, bytes(dev.flash)), ([], before))
+
+    def test_windows_driver_hint_names_the_board_s_bootloader(self):
+        """On Windows a ROM bootloader that can't be opened is found in Zadig by its USB ID, not by a keyed
+        bootloader's name; a keyed board's hint still names its bootloader"""
+        class Denied(fakedfu.FakeUsb):
+            def __init__(self, devices, errno_):
+                super().__init__(devices)
+                err = self.core.USBError("Access denied" if errno_ == 13 else "Resource busy")
+                err.errno = errno_
+
+                def claim(dev, intf):
+                    raise err
+                self.util.claim_interface = staticmethod(claim)
+
+        keyed = fakedfu.FakeUsbDevice(DM1701, KEY)
+        with mock.patch.object(dfumod.sys, "platform", "win32"):
+            for errno_ in (13, 16):
+                dev, _ = self.stock()
+                with self.assertRaises(dfumod.DfuError) as cm:
+                    dfumod.open_device(Denied([dev], errno_), dev, self.b)
+                self.assertIn("the device with USB ID %04X %04X" % tuple(self.b.dfu_ids), str(cm.exception))
+                self.assertNotIn("Digital Radio in USB mode", str(cm.exception))
+                with self.assertRaises(dfumod.DfuError) as cm:
+                    dfumod.open_device(Denied([keyed], errno_), keyed, DM1701)
+                self.assertIn('"%s"' % DM1701.dfu_product, str(cm.exception))
+
+        class NoStrings(fakedfu.FakeUsb):			# access denied already reading the strings
+            def __init__(self, devices):
+                super().__init__(devices)
+                err = self.core.USBError("Access denied")
+                err.errno = 13
+
+                def get_string(dev, index):
+                    raise err
+                self.util.get_string = staticmethod(get_string)
+
+        with mock.patch.object(dfumod.sys, "platform", "win32"):
+            dev, _ = self.stock()
+            with self.assertRaises(dfumod.DfuError) as cm:
+                dfumod.fingerprint(NoStrings([dev]), dev, self.b)
+            self.assertIn("the device with USB ID %04X %04X" % tuple(self.b.dfu_ids), str(cm.exception))
+        # and the install's own device check and claim pass the board on: nothing sent, the right device named
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(9000))
+            argv = ["flash", bp, "--board", self.b.id, "--yes", "--wait", "0", "--no-probe", "--no-verify",
+                    "--no-reporting"]
+            for usb_of in (NoStrings, lambda devs: Denied(devs, 13)):
+                dev, before = self.stock()
+                with mock.patch.object(dfumod, "import_usb", return_value=usb_of([dev])), \
+                        mock.patch.object(dfumod.sys, "platform", "win32"), mock.patch.object(cli.time, "sleep"):
+                    rc, out, err = run_cli(argv)
+                self.assertNotEqual(rc, 0, out + err)
+                self.assertIn("the device with USB ID %04X %04X" % tuple(self.b.dfu_ids), out + err)
+                self.assertNotIn("Digital Radio in USB mode", out + err)
+                self.assertEqual((dev.requests, bytes(dev.flash)), ([], before))
+            # detect knows the device only with --board
+            dev, _ = self.stock()
+            with mock.patch.object(dfumod, "import_usb", return_value=NoStrings([dev])), \
+                    mock.patch.object(dfumod.sys, "platform", "win32"):
+                rc, out, err = run_cli(["detect", "--no-probe", "--board", self.b.id])
+            self.assertIn("the device with USB ID %04X %04X" % tuple(self.b.dfu_ids), out + err)
+
+    def test_unreadable_layout_is_not_called_another_chip(self):
+        dev, _ = self.stock()
+        dev.strings = dict(dev.strings, interfaces=[None, None])
+        with self.assertRaises(cli.UsageError) as cm:
+            cli.check_rom_loader(fakedfu.FakeUsb([dev]), dev, self.b, log=lambda s: None)
+        self.assertIn("could not be read", str(cm.exception))
+        self.assertNotIn("another chip", str(cm.exception))
+        self.assertEqual(dev.requests, [])
+
+
+class RestartIntoBootloader(unittest.TestCase):
+    """A radio that runs RadioFoundry on a board whose firmware restarts into its processor's bootloader when the
+    debug link asks (the registry's bootloader_restart): rfoundry asks it instead of asking for the keys, against
+    fakedfu.FakeRunning. A refusal changes nothing and leads to the keys; only the radio that was probed is asked."""
+    HINT = "Turn the knob one step and try again."
+
+    def setUp(self):
+        self.b = rom_board()
+        # whatever the first board of the family says for itself: these tests are about a board that can
+        for k, v in (("bootloader_restart", True), ("bootloader_restart_hint", self.HINT)):
+            patch = mock.patch.object(self.b, k, v, create=True)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def radio(self, **kw):
+        """(the running radio, its bootloader's device, the bus)"""
+        dev = fakedfu.FakeRomUsbDevice(self.b, fakedfu.rom_flash(self.b, random.Random(5)))
+        return fakedfu.FakeRunning(self.b, dev, **kw), dev, fakedfu.FakeUsb([dev])
+
+    def restart(self, running, usb, probe=None, **kw):
+        log, naps = [], []
+        kw.setdefault("sleep", naps.append)
+        got = cli.restart_into_bootloader(usb, self.b, running.probe() if probe is None else probe, log=log.append, **kw)
+        return got, "\n".join(log), naps
+
+    def test_registry(self):
+        """Only a board installed through its processor's ROM bootloader says its firmware restarts into it, and a
+        hint stands only beside that"""
+        for b in boards.BOARDS.values():
+            with mock.patch.object(b, "bootloader_restart", b.__dict__["bootloader_restart"]), \
+                    mock.patch.object(b, "bootloader_restart_hint", b.__dict__["bootloader_restart_hint"]):
+                self.assertIsInstance(b.bootloader_restart, bool, b.id)
+                if b.bootloader_restart:
+                    self.assertEqual(b.family, "dfuse", b.id)
+                else:
+                    self.assertIsNone(b.bootloader_restart_hint, b.id)
+                self.assertTrue(b.bootloader_restart_hint is None or b.bootloader_restart_hint.strip(), b.id)
+
+    def test_what_the_radio_answered(self):
+        kinds = {(0, b""): "ok", (7, b"\x05"): "not-now", (7, b"\x03"): "transmitting", (7, b"\x02"): "protected",
+                 (7, b"\x01"): "token", (7, b"\x04"): "no-chip", (7, b"\x09"): "other", (7, b""): "other",
+                 (1, b""): "unsupported", (4, b""): "unsupported", (2, b""): "other", (3, b""): "other",
+                 (5, b"\x0D"): "other"}
+        for (status, data), kind in kinds.items():
+            self.assertEqual(debuglink.restart_outcome(status, data), kind, (status, data))
+        # every kind but the board's own "not now" and the unnamed one has its words
+        self.assertEqual(set(debuglink.RESTART_WHY), set(kinds.values()) - {"ok", "not-now", "other"})
+        self.assertEqual(debuglink.restart_request(0x12345678), bytes.fromhex("0178563412"))
+
+    def test_link(self):
+        running, dev, _ = self.radio()
+        link = debuglink.Link(running)
+        chip = link.chip()
+        self.assertEqual((chip["uid"], chip["token"], chip["family"], chip["rdp"]),
+                         (running.uid.hex(), struct.unpack_from("<I", running.uid)[0], debuglink.CHIP_STM32H7, 0))
+        self.assertEqual(link.chip_uid(), chip["uid"])
+        self.assertTrue(dev.gone)
+        for reason, kind in ((5, "not-now"), (3, "transmitting"), (4, "no-chip"), (2, "protected"), (77, "other")):
+            running.refuse = reason
+            self.assertEqual(link.restart_into_bootloader(chip), kind)
+            self.assertTrue(running.running and dev.gone, kind)		# a refusal changes nothing
+        self.assertEqual(running.requests, [debuglink.restart_request(chip["token"])] * 5)
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "token")
+        # the host's half of the gate: a read-protected chip, or a family without a ROM bootloader, is never asked
+        del running.requests[:]
+        for bad in (dict(chip, rdp=1), dict(chip, rdp=2), dict(chip, family=1, rdp=None), dict(chip, family=9, rdp=None)):
+            self.assertEqual(link.restart_into_bootloader(bad), "protected")
+        self.assertEqual(running.requests, [])
+        # and the radio's own half says the same when the host is wrong about it
+        running.refuse, running.rdp = None, 1
+        self.assertEqual(link.restart_into_bootloader(chip), "protected")
+        self.assertEqual(link.chip()["rdp"], 1)
+        running.rdp = 0
+        # a refusal's status and reason travel with the error; no reply at all is an error of the link
+        with self.assertRaises(debuglink.LinkError) as cm:
+            link.request(debuglink.CMD_REBOOT, b"\x01")
+        self.assertEqual((cm.exception.status, cm.exception.data), (2, b""))
+        self.assertEqual(link.restart_into_bootloader(chip), "ok")
+        self.assertFalse(running.running or dev.gone)
+        with self.assertRaises(OSError):
+            link.version()
+        # the simulated radio checks in the firmware's order (core/debuglink/dl_chip.c dl_reboot_check, then the
+        # platform's reboot_ok): the chip info, the token, transmitting, the protection, the board's rule last
+        running, dev, _ = self.radio(refuse=4)
+        link = debuglink.Link(running)
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "no-chip")
+        running.refuse, running.rdp = 3, 1
+        self.assertEqual(link.restart_into_bootloader(dict(chip, token=chip["token"] ^ 1)), "token")
+        self.assertEqual(link.restart_into_bootloader(chip), "transmitting")
+        running.refuse = 5
+        self.assertEqual(link.restart_into_bootloader(chip), "protected")
+        running.rdp = 0
+        self.assertEqual(link.restart_into_bootloader(chip), "not-now")
+        # a mode the firmware doesn't have is a bad argument; the board's rule is about the bootloader mode only, so
+        # a normal reset is taken: the status and reason 0, and the firmware starts again, not the bootloader
+        with self.assertRaises(debuglink.LinkError) as cm:
+            link.request(debuglink.CMD_REBOOT, struct.pack("<BI", 2, chip["token"]))
+        self.assertEqual((cm.exception.status, cm.exception.data), (2, b""))
+        self.assertTrue(running.running and dev.gone)
+        self.assertEqual(link.request(debuglink.CMD_REBOOT, struct.pack("<BI", 0, chip["token"])), b"\x00")
+        self.assertFalse(running.running)
+        self.assertTrue(dev.gone)
+        # a firmware that doesn't know the command, or was built without it
+        for status in (debuglink.ST_UNKNOWN, debuglink.ST_UNAVAILABLE):
+            old, dev2, _ = self.radio()
+            answer = old._answer
+            old._answer = lambda cmd, payload: bytes([status]) if cmd == debuglink.CMD_REBOOT else answer(cmd, payload)
+            self.assertEqual(debuglink.Link(old).restart_into_bootloader(chip), "unsupported")
+            self.assertTrue(old.running and dev2.gone)
+
+    def test_restarts_and_finds_the_bootloader(self):
+        running, dev, usb = self.radio()
+        got, log, naps = self.restart(running, usb)
+        self.assertIs(got, dev)
+        self.assertEqual(running.requests, [debuglink.restart_request(struct.unpack_from("<I", running.uid)[0])])
+        self.assertIn("restarting it into its bootloader over the debug link", log)
+        self.assertIn("in its bootloader: leave it on and connected", log)
+        self.assertNotIn(self.HINT, log)
+        self.assertEqual(naps, [])						# it was there at the first look
+
+    def test_bootloader_that_takes_a_moment(self):
+        running, dev, usb = self.radio()
+        real = dev.power_cycle
+        late = []
+
+        def slow():
+            late.append(real)
+
+        def nap(s):
+            if late and len(naps) == 3:
+                late.pop()()
+            naps.append(s)
+
+        naps = []
+        with mock.patch.object(dev, "power_cycle", slow):
+            got, log, _ = self.restart(running, usb, sleep=nap)
+        self.assertIs(got, dev)
+        self.assertEqual(naps, [0.5] * 4)
+
+    def test_refused_by_the_board(self):
+        """Reason 5: the board's hint, nothing changed, and the keys"""
+        running, dev, usb = self.radio(refuse=5)
+        got, log, naps = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("did not restart into its bootloader: it can't right now. Nothing was changed", log)
+        self.assertIn(self.HINT, log)
+        self.assertIn("run the same command", log)
+        self.assertTrue(log.rstrip().endswith("enter the bootloader with its keys:"))
+        self.assertTrue(running.running and dev.gone)
+        self.assertEqual((len(running.requests), naps), (1, []))
+        # a board without a hint of its own says the rest all the same
+        with mock.patch.object(self.b, "bootloader_restart_hint", None):
+            got, log, _ = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("it can't right now", log)
+        self.assertNotIn(self.HINT, log)
+
+    def test_refused_then_tried_again(self):
+        """With somebody to ask: the user does what the hint says and the next request is taken; "no" ends it"""
+        running, dev, usb = self.radio(refuse=5)
+        asked = []
+
+        def turn_the_knob(question, default=False):
+            asked.append((question, default))
+            if len(asked) == 2:
+                running.refuse = None
+            return True
+
+        got, log, _ = self.restart(running, usb, ask=turn_the_knob)
+        self.assertIs(got, dev)
+        self.assertEqual(asked, [("Try the restart again?", True)] * 2)
+        self.assertEqual(len(running.requests), 3)
+        self.assertEqual(log.count(self.HINT), 2)
+        self.assertNotIn("run the same command", log)
+        running, dev, usb = self.radio(refuse=5)
+        got, log, _ = self.restart(running, usb, ask=lambda q, default=False: False)
+        self.assertIsNone(got)
+        self.assertEqual(len(running.requests), 1)
+        self.assertIn("enter the bootloader with its keys", log)
+        self.assertTrue(running.running and dev.gone)
+
+    def test_other_refusals_are_said_as_what_they_are(self):
+        for kw, words in (({"refuse": 3}, "the radio is transmitting"), ({"rdp": 1}, "its processor is read protected"),
+                          ({"refuse": 4}, "the radio could not read its processor's identity"),
+                          ({"refuse": 77}, "it answered the request with an error")):
+            running, dev, usb = self.radio(**kw)
+            ask = mock.Mock(return_value=True)
+            got, log, _ = self.restart(running, usb, ask=ask)
+            self.assertIsNone(got, words)
+            self.assertIn("did not restart into its bootloader: " + words, log)
+            self.assertIn("Nothing was changed: enter the bootloader with its keys", log)
+            self.assertNotIn(self.HINT, log)					# the hint is for the board's rule only
+            ask.assert_not_called()
+            self.assertTrue(running.running and dev.gone, words)
+
+    def test_only_the_radio_that_was_probed(self):
+        running, dev, usb = self.radio()
+        probe = running.probe()
+        other = next(b for b in boards.BOARDS.values() if b.id != self.b.id)
+        for what, p, says in (("no probe", None, ""), ("a remembered probe", dict(probe, age_s=60), ""),
+                              ("another model", dict(probe, board=other.debuglink_names[0]), "it is not restarted"),
+                              ("a name no board has", dict(probe, board="NOSUCH"), "it is not restarted"),
+                              ("another radio of the model", dict(probe, uid="00" * 12), "another radio answers")):
+            if p is None:
+                got, log = cli.restart_into_bootloader(usb, self.b, None, log=self.fail), ""
+            else:
+                got, log, _ = self.restart(running, usb, probe=p)
+            self.assertIsNone(got, what)
+            self.assertIn(says, log, what)
+            self.assertEqual(running.requests, [], what)
+            self.assertTrue(running.running and dev.gone, what)
+        # the radio on the port now reports another board than the one probed
+        running.name = other.debuglink_names[0]
+        got, log, _ = self.restart(running, usb, probe=probe)
+        self.assertIsNone(got)
+        self.assertIn("another radio answers", log)
+        self.assertEqual(running.requests, [])
+        # a radio that is another model, or one no board knows, and says so at the probe and on the port: the board
+        # asked for is not the one connected (--board names the image's board, not the radio's)
+        for name in (other.debuglink_names[0], "NOSUCH"):
+            running, dev, usb = self.radio(name=name)
+            got, log, _ = self.restart(running, usb)
+            self.assertIsNone(got, name)
+            self.assertIn("reports board %r, not the %s: it is not restarted" % (name, self.b.name), log)
+            self.assertEqual(running.requests, [], name)
+            self.assertTrue(running.running and dev.gone, name)
+        # a board whose firmware does not do it is never asked, whatever answers
+        running, dev, usb = self.radio()
+        with mock.patch.object(self.b, "bootloader_restart", False):
+            self.assertIsNone(cli.restart_into_bootloader(usb, self.b, running.probe(), log=self.fail))
+        self.assertEqual(running.requests, [])
+        # nor is any radio while a bootloader is already on USB: the user put one there
+        dev.gone = False
+        self.assertIsNone(cli.restart_into_bootloader(usb, self.b, running.probe(), log=self.fail))
+        self.assertEqual(running.requests, [])
+        self.assertTrue(running.running)
+
+    def test_several_radios_on_the_debug_link(self):
+        """The probe takes the first radio that answers. With more than one connected that is rfoundry's pick, not
+        the user's: none is restarted unless the user named the port"""
+        running, dev, usb = self.radio()
+        got, log, _ = self.restart(running, usb, links=lambda: ["/dev/ttyA", "udp:12.0.0.2"])
+        self.assertIsNone(got)
+        self.assertIn("more than one radio that runs RadioFoundry is connected (/dev/ttyA, udp:12.0.0.2): none is "
+                      "restarted", log)
+        self.assertIn("--port", log)
+        self.assertTrue(log.rstrip().endswith("enter the bootloader with its keys:"))
+        self.assertEqual(running.requests, [])
+        self.assertTrue(running.running and dev.gone)
+        # one radio, or a host that lists none (the probe found it all the same): it is the one
+        for found in (["/dev/ttyA"], []):
+            running, dev, usb = self.radio()
+            got, log, _ = self.restart(running, usb, links=lambda found=found: found)
+            self.assertIs(got, dev, found)
+        # the list is the serial ports and the radios in USB network mode
+        with mock.patch.object(debuglink, "find_ports", return_value=["/dev/ttyA"]), \
+                mock.patch.object(debuglink, "find_network_radios", return_value=["udp:12.0.0.2"]):
+            self.assertEqual(cli.debug_links(), ["/dev/ttyA", "udp:12.0.0.2"])
+        with mock.patch.object(debuglink, "find_ports", return_value=None), \
+                mock.patch.object(debuglink, "find_network_radios", return_value=[]):
+            self.assertEqual(cli.debug_links(), [])		# no pyserial
+
+    def test_real_run_several_radios(self):
+        """rfoundry flash with two radios on the debug link: the keys, unless --port names the radio"""
+        running, dev, usb = self.radio()
+
+        def user(s):
+            if running.running:
+                running.enter_by_hand()
+
+        two = [self.PORT, "/dev/ttyFAKE1"]
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user, links=two)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(running.requests, [])
+        self.assertIn("more than one radio that runs RadioFoundry is connected (%s): none is restarted" % ", ".join(two),
+                      out)
+        self.assertLess(out.index("none is restarted"), out.index("Put the %s in its bootloader now" % self.b.name))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        running, dev, usb = self.radio()
+        with mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb, "--port", self.PORT, links=AssertionError("listed"))
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertNotIn("more than one", out)
+
+    def test_a_port_that_stopped_answering(self):
+        running, dev, usb = self.radio()
+        running.running = False							# the cable went since the probe
+        got, log, _ = self.restart(running, usb)
+        self.assertIsNone(got)
+        self.assertIn("could not ask it to restart into its bootloader", log)
+        self.assertIn("enter the bootloader with its keys", log)
+        self.assertTrue(dev.gone)
+
+    def test_took_the_restart_and_never_showed(self):
+        """The wait is bounded, and the words say what is known: the radio stayed up, or it left and nothing came"""
+        running, dev, usb = self.radio(stays=True)
+        got, log, naps = self.restart(running, usb, wait_s=7)
+        self.assertIsNone(got)
+        self.assertEqual(naps, [0.5] * 14)
+        self.assertIn("took the restart, but no bootloader came onto USB within 7 s", log)
+        self.assertIn("it still runs RadioFoundry", log)
+        self.assertIn("Now enter the bootloader with its keys:", log)
+        self.assertEqual(len(running.requests), 1)
+        self.assertEqual(cli.RESTART_WAIT_S, 20)
+        running, dev, usb = self.radio()
+        with mock.patch.object(dev, "power_cycle"):				# it left, and no device came
+            got, log, naps = self.restart(running, usb, wait_s=2)
+        self.assertIsNone(got)
+        self.assertEqual(len(naps), 4)
+        self.assertIn("no bootloader came onto USB within 2 s", log)
+        self.assertNotIn("still runs RadioFoundry", log)
+        self.assertNotIn("Zadig", log)
+        self.assertFalse(running.running)
+        # on Windows a bootloader without its driver is not listed: the radio left, so the driver's steps are said,
+        # by this board's device; a radio that stayed up needs no driver
+        for stays in (False, True):
+            running, dev, usb = self.radio(stays=stays)
+            with mock.patch.object(dev, "power_cycle"), mock.patch.object(cli.sys, "platform", "win32"):
+                got, log, _ = self.restart(running, usb, wait_s=1)
+            self.assertIsNone(got)
+            self.assertEqual(dfumod.windows_driver_steps(self.b) in log, not stays)
+
+    def cli_run(self, *argv):
+        made = []
+        real = fakedfu.FakeRunning
+
+        class Spy(real):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                made.append(self)
+
+        with mock.patch.object(fakedfu, "FakeRunning", Spy):
+            rc, out, err = run_cli(["flash", "--board", self.b.id] + list(argv))
+        return rc, out, err, (made[0] if made else None)
+
+    def test_simulation_shows_both(self):
+        rc, out, err, running = self.cli_run("--simulate", "rfoundry-nocodec")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("restarting it into its bootloader over the debug link", out)
+        self.assertIn("in its bootloader: leave it on and connected", out)
+        self.assertNotIn("with its keys", out)
+        self.assertIn("sim      PASS", out)
+        self.assertEqual(len(running.requests), 1)
+        rc, out, err, running = self.cli_run("--simulate", "rfoundry-refuses")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("it can't right now. Nothing was changed", out)
+        self.assertIn(self.HINT, out)
+        self.assertIn("(simulated) switched off and put in its bootloader with its keys", out)
+        self.assertLess(out.index(self.HINT), out.index("found    bootloader"))
+        self.assertIn("sim      PASS", out)
+        self.assertEqual(len(running.requests), 1)
+        # a radio that doesn't run RadioFoundry is not asked, and a dry run asks nobody
+        for argv in (("--simulate", "blank"), ("--simulate", "stock", "--unprotect"),
+                     ("--simulate", "rfoundry-nocodec", "--dry-run")):
+            rc, out, err, running = self.cli_run(*argv)
+            self.assertEqual(rc, 0, out + err)
+            self.assertIsNone(running, argv)
+            self.assertNotIn("restart", out, argv)
+
+    def test_simulation_without_the_restart(self):
+        """A board whose firmware does not restart into its bootloader installs as before, and has no refusal to show"""
+        keyed = next(b for _, b in sorted(boards.BOARDS.items()) if b.family == "usb-dfu")
+        with mock.patch.object(self.b, "bootloader_restart", False):
+            rc, out, err, running = self.cli_run("--simulate", "rfoundry-nocodec")
+            self.assertEqual(rc, 0, out + err)
+            self.assertIsNone(running)
+            self.assertNotIn("restart", out)
+            self.assertIn("sim      PASS", out)
+            rc, out, err, running = self.cli_run("--simulate", "rfoundry-refuses")
+            self.assertEqual(rc, 2, out + err)
+            self.assertIn("--simulate rfoundry-refuses is for a radio whose firmware restarts", err)
+        rc, out, err = run_cli(["flash", "--board", keyed.id, "--simulate", "rfoundry-refuses", "--yes"])
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("--simulate rfoundry-refuses is for", err)
+
+    PORT = "/dev/ttyFAKE0"
+
+    @classmethod
+    def PORT_PROBE(cls, running):
+        """The running radio's probe as debuglink.probe() gives it: the port by name"""
+        return dict(running.probe(), port=cls.PORT)
+
+    def on_port(self, running):
+        """The running radio behind the port's name: rfoundry opens the port it probed, no other"""
+        link = debuglink.Link
+
+        def open_(port, *a, **kw):
+            self.assertEqual(port, self.PORT)
+            return link(running, *a, **kw)
+
+        return mock.patch.object(debuglink, "Link", side_effect=open_)
+
+    def real_run(self, running, usb, *extra, probe="live", user=None, links=None):
+        """rfoundry flash against the fakes, not simulated: the probe is the running radio's. links: the debug links
+        the host lists (the probed port alone unless given; an exception when listing them is a failure)"""
+        listed = mock.patch.object(cli, "debug_links", side_effect=links if isinstance(links, Exception) else None,
+                                   return_value=[self.PORT] if links is None else links)
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            self.img = rom_image(9000)
+            with open(bp, "wb") as f:
+                f.write(self.img)
+            argv = ["flash", bp, "--board", self.b.id, "--yes", "--no-verify", "--no-reporting"] + list(extra)
+            with self.on_port(running), mock.patch.object(dfumod, "import_usb", return_value=usb), listed, \
+                    mock.patch.object(cli.time, "sleep", side_effect=user), \
+                    mock.patch.object(debuglink, "probe", return_value=self.PORT_PROBE(running) if probe == "live"
+                                      else probe) as probed:
+                rc, out, err = run_cli(argv)
+        return rc, out, err, probed
+
+    def test_real_run_restarts_the_radio(self):
+        running, dev, usb = self.radio()
+        with mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertLess(out.index("restarting it into its bootloader"), out.index("found    bootloader"))
+        self.assertNotIn("Put the", out)
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        self.assertTrue(dev.exited)
+        self.assertEqual((dev.unprotected, dev.alt_selected, dev.refused, dev.partial, dev.violations),
+                         (False, [], [], [], []))
+
+    def test_real_run_radio_in_usb_network_mode(self):
+        """A radio in USB network mode was probed over UDP: the restart is asked there, on the address probed"""
+        running, dev, usb = self.radio()
+        with mock.patch.object(type(self), "PORT", "udp:12.52.86.121"), \
+                mock.patch.object(cli, "wait_for_dfu", side_effect=AssertionError("the keys were asked for")):
+            rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("RadioFoundry running on udp:12.52.86.121", out)
+        self.assertEqual(len(running.requests), 1)
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_real_run_same_requests_as_by_hand(self):
+        """Nothing about the install changes: the bootloader gets the same requests after a restart as after the keys"""
+        running, dev, usb = self.radio()
+        rc, out, err, _ = self.real_run(running, usb)
+        self.assertEqual(rc, 0, out + err)
+        hand = fakedfu.FakeRomUsbDevice(self.b, fakedfu.rom_flash(self.b, random.Random(5)))
+        rc, out, err, probed = self.real_run(running, fakedfu.FakeUsb([hand]), "--no-probe")
+        self.assertEqual(rc, 0, out + err)
+        probed.assert_not_called()
+        self.assertEqual(dev.requests, hand.requests)
+        self.assertEqual(bytes(dev.flash), bytes(hand.flash))
+
+    def test_real_run_refused_goes_on_with_the_keys(self):
+        running, dev, usb = self.radio(refuse=5)
+
+        def user(s):								# off, the key, on
+            if running.running:
+                running.enter_by_hand()
+
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user)
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(running.requests), 1)
+        self.assertIn(self.HINT, out)
+        hint, steps = out.index(self.HINT), out.index("Put the %s in its bootloader now: %s" % (
+            self.b.name, cli.bootloader_steps(self.b)))
+        self.assertLess(hint, steps)
+        self.assertLess(steps, out.index("found    bootloader"))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+        self.assertTrue(dev.exited)
+
+    def test_real_run_without_a_radio_on_the_debug_link(self):
+        """--no-probe, no radio found, a remembered probe: exactly what it was, the keys"""
+        for extra, probe in ((["--no-probe"], "live"), ([], None)):
+            running, dev, usb = self.radio()
+
+            def user(s, running=running):
+                if running.running:
+                    running.enter_by_hand()
+
+            state.forget_probe()
+            rc, out, err, probed = self.real_run(running, usb, "--wait", "5", *extra, probe=probe, user=user)
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(running.requests, [], extra)
+            self.assertNotIn("restart", out, extra)
+            self.assertIn("Put the %s in its bootloader now" % self.b.name, out)
+            self.assertEqual(probed.called, not extra)
+            self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_real_run_no_show_goes_on_with_the_keys(self):
+        running, dev, usb = self.radio(stays=True)
+        naps = []
+
+        def user(s):
+            naps.append(s)
+            if len(naps) > 2 * cli.RESTART_WAIT_S and dev.gone:		# only once rfoundry asked for the keys
+                running.enter_by_hand()
+
+        rc, out, err, _ = self.real_run(running, usb, "--wait", "5", user=user)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("took the restart, but no bootloader came onto USB within %d s" % cli.RESTART_WAIT_S, out)
+        self.assertLess(out.index("took the restart"), out.index("Put the %s in its bootloader now" % self.b.name))
+        n = 2 * cli.RESTART_WAIT_S + 1						# the bounded wait, then one for the keys
+        self.assertEqual((naps[:n], 0.5 in naps[n:]), ([0.5] * n, False))
+        self.assertEqual(dev.read(self.b.app_base, len(self.img)), self.img)
+
+    def test_declined_install_says_where_the_radio_is(self):
+        running, dev, usb = self.radio()
+        with tempfile.TemporaryDirectory() as d:
+            bp = os.path.join(d, "image.bin")
+            with open(bp, "wb") as f:
+                f.write(rom_image(9000))
+            with self.on_port(running), mock.patch.object(dfumod, "import_usb", return_value=usb), \
+                    mock.patch.object(cli.time, "sleep"), mock.patch.object(cli, "debug_links", return_value=[self.PORT]), \
+                    mock.patch.object(debuglink, "probe", return_value=self.PORT_PROBE(running)), \
+                    mock.patch.object(cli, "ask_yes", return_value=False) as ask:
+                rc, out, err = run_cli(["flash", bp, "--board", self.b.id, "--no-verify", "--no-reporting"])
+        self.assertEqual(rc, 1, out + err)
+        ask.assert_called_once()						# the write's question; not a tty: no "again?"
+        self.assertIn("nothing done (the radio is in its bootloader: switch it off and on to start it normally)", out)
+        self.assertEqual((dev.erased, dev.blocks), ([], 0))
 
 
 class BootKeyFromRadio(unittest.TestCase):

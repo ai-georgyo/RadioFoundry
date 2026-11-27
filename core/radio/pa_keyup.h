@@ -130,6 +130,9 @@ void pa_keyup_select(const pa_keyup_cfg_t *defaults);
 const pa_keyup_cfg_t *pa_keyup_cfg(void);
 // New constants (NULL: the board's); false when invalid or no board keys this way. The next key-up takes them
 bool pa_keyup_set(const pa_keyup_cfg_t *c);
+// The constants now are the debug link's (pa_keyup_set with constants), not the board's: until pa_keyup_set(NULL) or a
+// restart. For a board that keys some transmissions only on its own constants
+bool pa_keyup_custom(void);
 // The key-up with the constants now, kept as the last one for the debug link view. ref: the calibration's anchor for
 // the dead zone at the transmit frequency (0: none). Without a board's constants: no boost and pa_us 0
 pa_keyup_t pa_keyup_plan(uint16_t d, uint16_t top, uint16_t ref);

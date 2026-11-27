@@ -145,12 +145,20 @@ ifeq ($(CONFIG_NAND_STORAGE),y)
 BOARD_DIRS += $(BOARD_NAND_DIRS)
 endif
 APP_DIRS := $(CORE_DIRS) $(PLATFORM_DIRS) $(BOARD_DIRS)
-# Sorted: the link order steers LTO's code, and $(wildcard)'s order depends on the make (gotchas 13.10)
-APP_SRC := $(foreach d,$(APP_DIRS),$(sort $(wildcard $(d)/*.c)))
+# Sorted: the link order steers LTO's code, and $(wildcard)'s order depends on the make (gotchas 13.10). A platform
+# whose source is in more than one directory may give its files in its own order (PLATFORM_SRC), else each directory
+# sorted as before
+APP_SRC := $(foreach d,$(CORE_DIRS),$(sort $(wildcard $(d)/*.c))) \
+	$(or $(PLATFORM_SRC),$(foreach d,$(PLATFORM_DIRS),$(sort $(wildcard $(d)/*.c)))) \
+	$(foreach d,$(BOARD_DIRS),$(sort $(wildcard $(d)/*.c)))
 APP_ASM := $(foreach d,$(APP_DIRS),$(sort $(wildcard $(d)/*.S)))
 # The stub entry without the debug link: its listener uses the debug link's framing (dl_frame.c, no RTOS or board)
 ifeq ($(CONFIG_STUB_ENTRY)$(CONFIG_DEBUGLINK),yn)
 APP_SRC += core/debuglink/dl_frame.c
+endif
+# The factory copy's sha256 (core/storage/factory_copy.c): core/support is globbed with the support info only
+ifeq ($(CONFIG_FACTORY_COPY)$(CONFIG_SUPPORT_INFO),yn)
+APP_SRC += core/support/sha256.c
 endif
 # Accept invalid CRC's repeat check, shared by the DMR call, Tier III and P25 trunking: core/fec is globbed with the air
 # interface only
@@ -312,19 +320,22 @@ CFLAGS_3P := $(COMMON) -std=gnu11 -w $(DEFS) $(INCLUDES)
 # The C library flavor and linker extras come from the platform (platform.mk); these are the arm-none-eabi ones
 LDSPECS ?= --specs=nano.specs --specs=nosys.specs -Wl,--no-warn-rwx-segments
 # The image address (board.mk APP_BASE) reaches the linker scripts as __app_base, and the application's first byte, after
-# a first stage when there is one, as __app_start. A board's memory.ld INCLUDEs the platform's common.ld (-L)
+# a first stage when there is one, as __app_start. A board's memory.ld INCLUDEs the platform's common.ld (-L: the
+# platform's directory, then the directories it shares linker scripts from, PLATFORM_LD_DIRS)
 APP_START := $(APP_BASE)$(if $(BOOT_STAGE),+$(BOOT_SIZE))
-LDFLAGS := $(CPUFLAGS) -T$(LDSCRIPT) -Lplatform/$(PLATFORM) -Wl,--defsym=__app_base=$(APP_BASE) \
+LDFLAGS := $(CPUFLAGS) -T$(LDSCRIPT) -Lplatform/$(PLATFORM) $(addprefix -L,$(PLATFORM_LD_DIRS)) \
+	-Wl,--defsym=__app_base=$(APP_BASE) \
 	-Wl,--defsym=__app_start=$(APP_START) -Wl,--gc-sections -Wl,-Map=$(TARGET).map -Wl,--print-memory-usage $(LDSPECS)
 # Link time optimization: LTO=1 compiles our sources to GCC's IR and optimizes them together at the link (inlining and
 # dead code across files: about 17 KB smaller on the STM32 radios, 20 KB with LTO_3P). A board's config.mk may default
 # it (some STM32 radios do: without it their images don't hold their features). LTO_3P=1 takes the
 # third-party code (HAL, CMSIS, FreeRTOS, TinyUSB) along: FreeRTOS marks what its port's inline assembly reaches portDONT_DISCARD, and the
 # vectors and SystemInit are referenced from the assembly start-up, which the linker sees. Files with file-scope
-# assembly are never in it (LTO_EXCLUDE). The optimization flags go to the link too, where the code is generated
+# assembly are never in it (LTO_EXCLUDE, the platform's list). The optimization flags go to the link too, where the
+# code is generated
 LTO ?= 0
 LTO_3P ?= 0
-LTO_EXCLUDE ?= platform/stm32f4/codec_call.c
+LTO_EXCLUDE ?=
 ifeq ($(LTO),1)
 CFLAGS_APP += -flto=auto
 LDFLAGS += $(OPT) -flto=auto $(STACK_INFO)
@@ -427,7 +438,7 @@ ifeq ($(LTO),1)
 $(patsubst %.c,$(BUILD)/%.o,$(filter $(LTO_EXCLUDE),$(APP_SRC))): CFLAGS_APP += -fno-lto
 endif
 
-$(TARGET).elf: $(OBJ) $(LDSCRIPT) $(wildcard platform/$(PLATFORM)/*.ld)
+$(TARGET).elf: $(OBJ) $(LDSCRIPT) $(wildcard $(addsuffix /*.ld,platform/$(PLATFORM) $(PLATFORM_LD_DIRS)))
 	@rm -f $@.ltrans*.ci	# LTO's call graphs, one per partition: none left from a link with more partitions
 	$(CC) $(LDFLAGS) -o $@ $(OBJ) -lm
 $(TARGET).bin: $(TARGET).elf

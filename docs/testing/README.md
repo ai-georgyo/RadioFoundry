@@ -16,6 +16,7 @@ repeatable and skips cleanly what it can't reach. What each level is for and whe
 | DM-32UV first hardware test | a DM-32UV on its programming cable, a dummy load | step by step | `docs/testing/dm32-bringup.md` |
 | MD-380 first hardware test | an MD-380 / MD-390 / RT3 on USB, a dummy load, an SDR or signal generator | step by step | `docs/testing/md380-bringup.md` |
 | MD-9600 first hardware test | an MD-9600 / RT90 on USB, DC supply, a dummy load, a signal source | step by step | `docs/testing/md9600-bringup.md` |
+| CS7000 M17 PLUS first hardware test | a CS7000 M17 PLUS on its programming cable, the maker's recovery files, a bench supply, a dummy load, a signal generator or SDR | step by step, nothing transmits before its last stage | `docs/testing/cs7000p-bringup.md` |
 
 ## 1. The release gate: `tools/ci.sh`
 

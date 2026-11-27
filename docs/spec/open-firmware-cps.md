@@ -138,13 +138,14 @@ Special cases the radio applies to sub commands 1-3 (and 4 on the MK22). An inte
 | Case | Behavior |
 | --- | --- |
 | Calibration window, flash image 0x10000..0x101FF (STM32 and HR_C7000 radios) | Preparing sector 0x10 succeeds without reading flash. Data inside the window goes to the radio's working calibration copy. The commit saves that copy. Reads of the window are served from the copy (2.1). On an HR_C7000 radio the copy is the UV380-format table: the radio's own factory calibration is not exposed, and the CPS has no calibration window of its own (the sector is plain data). The MK22 family has no window: its calibration is plain flash at 0xF000 (working copy) and 0x8F000 (factory) |
+| The maker's bytes inside the images (`hal_flash_map_t.factory`, a board's factory calibration or records; `settings-store.md` 4.1) | RadioFoundry only, on a board that lists them ([feature-matrix.md](../feature-matrix.md)). The sector is prepared, merged and committed as any other, and the commit keeps the stored bytes of each range: bytes sub command 2 sent for a range are dropped, the rest of the sector is the CPS's, and the commit is acknowledged. A sector the ranges cover whole is never erased; its commit is acknowledged too. A CPS that reads the sector back to verify its write sees the radio's bytes in the range, so one that compares with its own image reports a difference there. A tool should send no byte of a protected range in sub command 2 (`[[flash.protect]]`, [board-registry.md](../dev/board-registry.md)): sub command 1 loaded the stored bytes, so nothing differs |
 | Codeplug settings area, EEPROM image 0xE000..0xEFFF | RadioFoundry only. At the commit the radio keeps its own sector when its area is valid and the pending one isn't, or its area is of a newer version (`codeplug-settings.md` 6). The commit is acknowledged either way, so a CPS that writes 0xFF there doesn't erase the settings |
 | Quick-key slots, EEPROM image 0x7524..0x7537 (10 entries of 2 bytes) | Written like the rest of the codeplug. RadioFoundry keeps the key assignment there (`ui.md` 3.1); values another firmware left are ignored |
 | Channel bank 0 rewritten (a write that falls entirely inside EEPROM image 0x3780..0x538F) | Remembered. At "save and reboot" (`C` 6 0) the radio re-reads the zones and channels, selects the All Channels zone, and points it at its last used channel, or else the first channel in use |
 | LUCZ rewritten (a write inside 0x6000..0x6049) | Remembered. The radio then doesn't overwrite the LUCZ with its own copy at "save and reboot" |
 | Voice prompt header written | If a sub command 2 write starts at the voice prompt header address (new or old location, section 7.6) and its first 8 bytes carry a valid magic and version, the radio switches announcements to voice level 1 |
 | DMR ID database upload | Preparing the sector at image 0x30000 marks a DMR ID upload. On Close (`C` 5) the radio re-reads the database header. The check uses the address without the 128 KB offset, so on STM32 radios it doesn't match the real database location (0x50000). A new implementation should re-read the database after any write that touches it |
-| VFO overlay on read (STM32 and HR_C7000 radios) | When a flash read starts at or before 0x7590 and runs past the VFO pair, the radio replaces those 112 bytes in the reply with its live VFO settings in codeplug format. The check uses the radio's in-memory record size, so the read must extend somewhat beyond 0x75FF. A tool that reads 32-byte blocks never triggers it. A large-block CPS read does. The MK22 doesn't do this. The CPS sends `C` 6 2 first, so the VFOs are already saved |
+| VFO overlay on read (STM32 and HR_C7000 radios) | When a flash read starts at or before 0x7590 and runs past the VFO pair, the radio replaces those 112 bytes in the reply with its live VFO settings in codeplug format. The check uses the radio's in-memory record size, so the read must extend somewhat beyond 0x75FF. A tool that reads 32-byte blocks never triggers it. A large-block CPS read does. The MK22 doesn't do this. The CPS sends `C` 6 2 first, so the VFOs are already saved. RadioFoundry lays the live VFO over VFO A only while the storage region is its own: on a foreign or not yet claimed region, area 1 and area 2 return the chip's bytes as stored |
 
 ### 2.3 `C`: control
 
@@ -194,7 +195,7 @@ A typical session, as qdmr does it:
 
 | Area | Name | Address space | Notes |
 | --- | --- | --- | --- |
-| 1 | Flash | Image address in the external SPI flash (section 7) | STM32 and HR_C7000 radios: the calibration window is served from the working copy, and the VFO overlay applies (2.2). HR_C7000: image addresses are offset by +0x700000 physically (section 7.4). RadioFoundry serves it on a radio without a flash map too (a chip smaller than the board's map needs), up to the chip's end, so a backup can read it |
+| 1 | Flash | Image address in the external SPI flash (section 7) | STM32 and HR_C7000 radios: the calibration window is served from the working copy, and the VFO overlay applies while the region is ours (2.2). HR_C7000: image addresses are offset by +0x700000 physically (section 7.4). RadioFoundry serves it on a radio without a flash map too (a chip smaller than the board's map needs), up to the chip's end, so a backup can read it |
 | 2 | EEPROM | EEPROM image address, 0x0000..0xFFFF | MK22: the 64 KB I2C EEPROM. STM32 and HR_C7000: emulated in the external flash at flash image 0x00000 (same bytes as area 1 at the same address). Refused on a radio without a flash map |
 | 5 | MCU ROM | Offset into the MCU's program flash | STM32: offset from 0x08000000. MK22: absolute address from 0. HR_C7000: offset from 0x03000000, bounds-checked to 1 MB (other builds don't check bounds) |
 | 6 | Display buffer | Byte offset into the frame buffer | MK22: 128x64 mono, 1 bit per pixel (1024 bytes, 8-pixel pages). STM32 and HR_C7000: RGB565, 2 bytes per pixel (160x128 on the STM32 radios). Some panels have an 8-row top offset: the first 8 rows read 0xFF (white). Used for screenshots |
@@ -210,8 +211,10 @@ A client that reads a radio running the original firmware (the web flasher's bac
 - Area 5 has no bounds check on the STM32 builds. A read past the end of the MCU flash can fault the radio. Read
   exactly the MCU flash, from its base to its end, as the board data gives them.
 - Area 10 may not be answered at all: one STM32 build sent nothing, not even `-`. Don't ask it, or don't wait on it.
-- Area 1 at 0x7590-0x75FF is the live VFO overlay (2.2). Read that range in 32-byte requests to get the flash's own
-  bytes.
+- Area 1 at 0x7590-0x75FF is the live VFO overlay (2.2). On the other open firmware, read that range in 32-byte
+  requests to get the flash's own bytes. On RadioFoundry 32-byte requests do not avoid the overlay on a region that is
+  ours; on a foreign or unclaimed region there is no overlay, so a whole-chip backup taken before a claim holds the
+  chip's own bytes.
 - Send no `C` command when only reading. `C` 6 2 saves settings, and once left a radio's USB hung.
 - Long runs of reads hung one radio once. Reads change nothing, so a read that goes unanswered can be asked again, and
   a backup can stop and continue later.

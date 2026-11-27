@@ -26,12 +26,38 @@ void sim_flash_power_on(void);
 // Units used so far (programmed bytes + erases), and erases per sector so far
 uint32_t sim_flash_units(void);
 uint32_t sim_flash_erases(uint32_t addr);
+// Program calls that reached a sector so far (one per call per sector it touches, torn ones included)
+uint32_t sim_flash_programs(uint32_t addr);
 // Read calls so far, for a test of how much a reader reads
 uint32_t sim_flash_reads(void);
 // A worn range: programs there fail (nothing programmed); erases still work. len 0 clears it
 void sim_flash_bad_range(uint32_t addr, uint32_t len);
 // An unreadable range: reads that touch it fail. len 0 clears it
 void sim_flash_bad_read(uint32_t addr, uint32_t len);
+// A failing operation: the nth erase or program call from now (1 = the next) fails with nothing changed, once (0
+// clears it). And the erase and program calls so far, to count a run's
+void sim_flash_fail_op(uint32_t nth);
+uint32_t sim_flash_op_calls(void);
+// A marginal read: the nth read from now (1 = the next) that covers addr returns the byte there with bit 0 flipped,
+// once. nth 0 clears it
+void sim_flash_misread(uint32_t addr, uint32_t nth);
+// The backstop of a driver that keeps factory bytes (hal_flash_t.factory_grant, built with STORAGE_FACTORY_KEEP): an
+// erase or a program in an erase unit holding factory bytes of the map, outside the unit granted, fails with nothing
+// changed and is counted here. The grant in force (UINT32_MAX: none); a power cut closes it
+uint32_t sim_flash_granted(void);
+uint32_t sim_flash_ungranted(void);
+// An operation log, for a test that pins the exact flash operations of a run: fn (NULL: none) is called after every
+// read, program and erase with its kind ('r', 'w', 'e'), address, length (0 for an erase), the bytes read or asked to
+// be programmed (NULL for an erase and a failed read) and its result. Kept across sim_flash_create()
+typedef void (*sim_flash_log_fn)(char kind, uint32_t addr, uint32_t len, const void *data, bool ok);
+void sim_flash_set_log(sim_flash_log_fn fn);
+// A power cut at every erase and program of a run: sim_flash_ops_begin() starts recording a dry run (from the units
+// used so far), sim_flash_cut_points() stops it and fills pt with, for each erase and program that took, its first
+// unit, its second, its middle and its last, counted from the start (no duplicates, never 0). Give each to
+// sim_flash_cut_after() at the same point of the same run. Returns the count; 0 when the run took more than 1024
+// operations or gave more than max points, so a test that checks for its points fails rather than cuts fewer
+void sim_flash_ops_begin(void);
+uint32_t sim_flash_cut_points(uint32_t *pt, uint32_t max);
 // Count an operation that programs a 1 where the flash holds a 0 (a missing erase), as an error
 uint32_t sim_flash_violations(void);
 

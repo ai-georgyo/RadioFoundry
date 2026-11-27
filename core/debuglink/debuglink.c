@@ -13,6 +13,7 @@
 #include "debuglink/debuglink_air.h"
 #include "debuglink/dl_chip.h"
 #include "debuglink/dl_shot.h"
+#include "debuglink/dl_txarm.h"
 #include "debuglink/dlog.h"
 #include "hostlink/build_info.h"
 #include "hostlink/hostlink.h"
@@ -27,6 +28,9 @@
 #include "input/input.h"
 #include "radio/radio.h"
 #include "storage/storage.h"
+#if CONFIG_FACTORY_COPY
+#include "storage/factory_copy.h"
+#endif
 #include "settings/settings.h"
 #include "ui/gfx.h"
 
@@ -418,13 +422,13 @@ static size_t cmd_get_view(const uint8_t *req, uint16_t len, uint8_t *out, size_
 	uint8_t section = len >= 1 ? req[0] : 0;
 	dl_text_t t;
 
-	if (section >= DL_VIEW_COUNT) {
-		return status_only(out, DL_ST_BAD_ARG);
+	if (!debuglink_view_present(section)) {
+		return status_only(out, DL_ST_BAD_ARG);	// past the last, or one this radio doesn't have (board2)
 	}
 	radio_get_view(&hostlink_view);
 	out[0] = DL_ST_OK;
 	put32(out + 1, hal_millis());
-	out[5] = (uint8_t)(section + 1u < DL_VIEW_COUNT ? section + 1u : 0xFFu);
+	out[5] = debuglink_view_next(section);
 	dl_text_init(&t, (char *)out + 6, cap - 6 - 16);	// room kept for the truncation mark
 	debuglink_view_section(section, &hostlink_view, &t);
 	if (t.full) {
@@ -472,6 +476,10 @@ static size_t cmd_radio(const uint8_t *req, uint16_t len, uint8_t *out)
 	};
 	uint32_t now = hal_millis();
 
+	if (len >= 1 && req[0] == DL_OP_TX_ARM) {
+		// Queues no request (the board's hook asks its own receive set-up), so the info can be read at any time
+		return dl_tx_arm_op(board.radio, req + 1, (uint16_t)(len - 1u), out);
+	}
 	if (len >= 1 && debuglink_is_feature_op(req[0])) {
 		// The radio features' operations (debuglink_view_radio.c), under the same rate limit
 		if (radio_op_done && (now - last_radio_op_ms) < RADIO_OP_GAP_MS) {
@@ -629,15 +637,7 @@ static size_t cmd_info_chip(uint8_t *out)
 	put32(out + 11, c.uid[1]);
 	put32(out + 15, c.uid[2]);
 	put32(out + 19, c.optcr);
-	if (c.family == HAL_CHIP_STM32F4) {
-		out[23] = dl_rdp_level(c.optcr);
-		out[24] = dl_rdp_byte(c.optcr);
-		put16(out + 25, dl_wrp_mask(c.optcr));
-		out[27] = dl_bor_level(c.optcr);
-		out[28] = dl_user_bits(c.optcr);
-	} else {
-		memset(out + 23, 0xFF, 6);	// no option bytes: nothing to decode
-	}
+	dl_chip_optbytes(&c, out + 23);		// offsets 23..28: what the family's option word decodes to
 	out[29] = c.family;
 	return 30;
 }
@@ -681,11 +681,17 @@ bool debuglink_transmitting(void)
 	return false;
 }
 
+// The link's checks, then the platform's and the board's rule (hal_system_t.reboot_ok): a mode the board refuses is
+// refused here, not answered OK and then dropped by reboot(). Only called once board.system->reboot is known
 static uint8_t reboot_gate(uint8_t mode, uint32_t token)
 {
 	hal_chip_t c;
 	bool have = read_chip(&c);
-	return dl_reboot_check(mode, token, have ? &c : NULL, debuglink_transmitting());
+	uint8_t why = dl_reboot_check(mode, token, have ? &c : NULL, debuglink_transmitting());
+	if (why == DL_REBOOT_OK && !hal_reboot_possible(board.system, mode)) {
+		why = DL_REBOOT_ARM_FAILED;
+	}
+	return why;
 }
 
 static size_t cmd_reboot(const uint8_t *req, uint16_t len, uint8_t *out)
@@ -754,7 +760,8 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		put32(out + 15, 2u * STORAGE_SECTOR);
 		put32(out + 19, m->calibration_addr);
 		put32(out + 23, m->calibration_size);
-		return 27;
+		out[27] = STORAGE_CLAIM_FIRST ? DL_STORAGE_FLAG_CLAIM_FIRST : 0u;
+		return 28;
 	}
 	case DL_STORAGE_OP_READ: {
 		if (len != 7) {
@@ -797,6 +804,37 @@ static size_t cmd_storage(const uint8_t *req, uint16_t len, uint8_t *out, size_t
 		out[0] = DL_ST_OK;
 		out[1] = DL_REBOOT_OK;
 		return 2;
+	}
+	case DL_STORAGE_OP_FACTORY_INFO: {
+#if CONFIG_FACTORY_COPY
+		size_t n = 0;
+		if (len != 1) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		if (!factory_copy_info(board.factory_copy, out + 1, &n)) {
+			return status_only(out, DL_ST_BUSY);	// the load at start hasn't run yet
+		}
+		out[0] = DL_ST_OK;
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
+	}
+	case DL_STORAGE_OP_FACTORY_LOAD:
+	case DL_STORAGE_OP_FACTORY_RESTORE: {
+#if CONFIG_FACTORY_COPY
+		// The one path that writes the maker's range (settings-store.md 4.2): the checks and the job are the copy's
+		size_t n = 0;
+		if (cap < 1u + FACTORY_COPY_OP_OUT) {
+			return status_only(out, DL_ST_BAD_ARG);
+		}
+		out[0] = req[0] == DL_STORAGE_OP_FACTORY_LOAD ?
+			 factory_copy_load_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n) :
+			 factory_copy_restore_op(board.factory_copy, req + 1, (uint16_t)(len - 1u), out + 1, &n);
+		return 1u + n;
+#else
+		return status_only(out, DL_ST_UNAVAILABLE);
+#endif
 	}
 	default:
 		return status_only(out, DL_ST_BAD_ARG);

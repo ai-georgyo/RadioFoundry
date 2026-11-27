@@ -627,8 +627,10 @@ class Site:
 				     % (docsmod.site_path(p), html.escape(self.t(lang, "radio.doc." + k)))
 				     for k, p in sorted(b["docs"].items(), key=lambda kv: DOC_ORDER.index(kv[0])))
 		fl = b["flash"]
+		# what the page's backends take (static/js/flasher: app.js, c7000ui.js, dfuse.js "available")
 		can_flash = ((fl["backend"] == "anyroad-dfu" and bool(self.flash["boards"].get(fl["board"], {}).get("key_sha256")))
-			     or (fl["backend"] == "c7000-stub" and fl["board"] in self.flash["c7000"]["boards"]))
+			     or (fl["backend"] == "c7000-stub" and fl["board"] in self.flash["c7000"]["boards"])
+			     or (fl["backend"] == "dfuse" and bool(self.flash["boards"].get(fl["board"], {}).get("dfu_ids"))))
 		g = b["frame_geometry"]
 		pct = g["screen_pct"]
 		# the boot screen over the drawing's display, a note that a click on a shot shows it there, and the shots

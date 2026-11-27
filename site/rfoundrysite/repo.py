@@ -276,6 +276,10 @@ def flash_boards():
 	for b in ob.BOARDS.values():
 		out["boards"][b.id] = {
 			"id": b.id, "name": b.name, "family": b.family, "app_base": b.app_base, "flash_end": b.flash_end,
+			# the application's flash (the linker script's): the plain DfuSe route refuses a sector past it (dfu.js checkPlain)
+			"app_region": list(b.app_region),
+			# the SoC's longest mass erase in seconds, or null: the wait after a Read Unprotect (dfuse.js unprotectWait)
+			"mass_erase_max_s": b.mass_erase_max_s,
 			"sectors": [{"index": s.index, "addr": s.addr, "size": s.size} for s in b.sectors],
 			"codec": {"id": b.codec.id, "windows": [list(w) for w in b.codec.windows],
 				  "installed": list(b.codec.installed), "sources": list(b.codec.sources),

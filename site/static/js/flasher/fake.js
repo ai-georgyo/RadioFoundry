@@ -6,6 +6,11 @@
 // flash. A synthetic stock firmware file and key stand in for the real ones, which are never part of RadioFoundry. A radio
 // running RadioFoundry also hands over to the STM32F4 stub (debug link STUB, then the stub's protocol, its board record
 // (CONFIG) and its interlock as stub/f4stub.py's FakeF4 and docs/spec/stub-stm32f4.md 5.2 have them).
+//
+// A radio installed through its processor's own ROM bootloader (board family "dfuse") gets FakeRomRadio instead: the
+// loader as ST AN3156 describes it (plain DfuSe, read protection, Read Unprotect), a flash as big as the board's, no
+// key and no stock file. It is what #sim=cs7000p-stock (read protected, on its original firmware) and #sim=cs7000p
+// (running RadioFoundry) run against, and the model of rfoundry's fakedfu.py for the same family.
 
 import { BLOCK, FIRST_BLOCK } from "./plan.js";
 import { concat, crc32, equal, fromHex, le32, sha256, u16be, u32le } from "./bytes.js";
@@ -628,6 +633,13 @@ export class FakeRadio {
 		return refuse;
 	}
 
+	// INFO_CHIP (debuglink.md 3.9) of an STM32F405 at read protection level 1, from firmware before the family byte
+	chipInfo() {
+		const p = new Uint8Array(28);
+		p.set(le32(0x0009A413), 0); p[4] = this.flashKb & 0xFF; p[5] = this.flashKb >> 8; p.set(this.uid, 6); p.set(le32(0x0FFF55ED), 18); p[22] = 1; p[23] = 0x55;
+		return p;
+	}
+
 	serialAnswer(req) {
 		if (req[0] === 0xA5) {
 			const f = parseFrames(req)[0];
@@ -636,11 +648,7 @@ export class FakeRadio {
 				const text = `proto=1\ngit=${this.git}\nboard=${this.board.debuglink_names[0]}\nfeatures=FM,DMR\ncodec=${this.codecReport()}\ndisplay=160x120x16\npreset=full\noff=\n`;
 				return ok(new TextEncoder().encode(text));
 			}
-			if (f.cmd === 0x0B) {
-				const p = new Uint8Array(28);
-				p.set(le32(0x0009A413), 0); p[4] = this.flashKb & 0xFF; p[5] = this.flashKb >> 8; p.set(this.uid, 6); p.set(le32(0x0FFF55ED), 18); p[22] = 1; p[23] = 0x55;
-				return ok(p);
-			}
+			if (f.cmd === 0x0B) return ok(this.chipInfo());
 			if (f.cmd === 0x1A && this.stubEntry) {
 				const op = f.payload[0], q = f.payload;
 				if (op === 0) return ok(concat(le32(STUB_MAGIC), le32(0x2001E000), le32(8192), new Uint8Array([59, 0, 0]), le32(0)));
@@ -690,7 +698,7 @@ export class FakeRadio {
 			}
 			if (f.cmd === 0x0C) {
 				const addr = u32le(f.payload, 0), n = f.payload[4] | (f.payload[5] << 8);
-				if (n < 1 || n > 1000 || addr < FLASH_BASE || addr + n > FLASH_BASE + FLASH_SIZE) return frame(f.cmd | 0x80, f.seq, new Uint8Array([7]));
+				if (n < 1 || n > 1000 || addr < FLASH_BASE || addr + n > FLASH_BASE + this.flash.length) return frame(f.cmd | 0x80, f.seq, new Uint8Array([7]));
 				return ok(concat(le32(addr), this.flash.subarray(addr - FLASH_BASE, addr - FLASH_BASE + n)));
 			}
 			return frame(f.cmd | 0x80, f.seq, new Uint8Array([1]));
@@ -729,3 +737,251 @@ export class FakeRadio {
 	}
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// A radio installed through its processor's ROM bootloader
+
+// The simulation of such a board: its own data, no key, no stock file and no codec (FakeRadio's fields, empty)
+export function romSimulation(fbReal, boardId) {
+	const fb = structuredClone(fbReal);
+	return { fb, board: fb.boards[boardId], key: new Uint8Array(0), stock: null, codecSegments: [], stockSegments: [], formerSegments: null, profile: null };
+}
+
+// DFU states and status codes (DFU 1.1 6.1.2), as far as the ROM loader uses them
+const DFU = { IDLE: 2, DNBUSY: 4, DNIDLE: 5, MANIFEST: 7, UPIDLE: 9, ERROR: 10 };
+const ERR = { OK: 0, TARGET: 0x01, VENDOR: 0x0B, STALLEDPKT: 0x0F };
+const stall = () => new Error("USB transfer stall");
+
+// The alternate 0 name a ROM loader gives a flash of equal sectors: "@Internal Flash  /0x08000000/16*128Kg"
+export function romLayout(board) {
+	const size = board.sectors[0].size;
+	return `@Internal Flash  /0x${board.rom_base.toString(16).toUpperCase().padStart(8, "0")}/${String(board.sectors.length).padStart(2, "0")}*${size / 1024}Kg`;
+}
+
+export class FakeRomRadio extends FakeRadio {
+	// state: "stock" (the original firmware, read protected: no serial port, and the loader refuses every read, erase
+	// and write until a Read Unprotect), "rfoundry" (RadioFoundry, not protected), "blank" (erased, not protected).
+	// The loader (ST AN3156): a command sent with DNLOAD block 0 runs on the next GETSTATUS, which answers dfuDNBUSY,
+	// and the one after says how it went. A request the state doesn't allow is stalled. Set Address Pointer (21), Erase
+	// (41 with a sector's address), Read Unprotect (92) and Leave (a DNLOAD of no bytes) are the commands; anything
+	// else, the keyed bootloaders' 91 xx first, is an error. A block is placed at (block number - 2) x its length +
+	// the pointer. What a test may not see is counted: violations (a block that is not a whole number of flash words,
+	// an erase that is not a sector's, a mass erase, programming over bytes that weren't erased), vendor (91 xx
+	// bytes), writes ([address, length, block number]), erased, unprotects, leftAt (the pointer at Leave).
+	// layout, string1: what the device shows, for a test of the device check. stallUpload false: a read the protection
+	// refuses is answered with no bytes instead of a stall (the documents allow either; the status is the same)
+	// The restart into the loader from RadioFoundry (REBOOT, debuglink.md 3.11; rebootAnswer): taken unless
+	// restartRefusals, the number of requests the board's own rule still refuses (reason 5: each one counts it down, as
+	// a user who then does what the board's hint says), restartReason, a reason every request is refused with (3:
+	// transmitting), or restartStays, a radio that answers OK and stays up (a check failed again at the reset).
+	// reboots: every REBOOT payload that came in
+	constructor(sim, { state = "stock", spiSize = 0x2000000, layout = null, string1 = "STMicroelectronics", stallUpload = true,
+		restartRefusals = 0, restartReason = 0, restartStays = false } = {}) {
+		super(sim, { state: state === "rfoundry" ? "rfoundry" : "stock", spiSize, stubEntry: false });
+		const b = this.board, r = rng(743);
+		this.base = b.rom_base;
+		this.flash = new Uint8Array(b.flash_end - b.rom_base).fill(0xFF);
+		if (state !== "blank") for (let i = 0; i < 0x40000; i += 4096) this.flash.set(randomBytes(r, 64), i);	// "code"
+		if (state === "rfoundry") this.flash.set([0xFC, 0xFF, 0x01, 0x20, 0x01, 0x02, 0x00, 0x08], b.app_base - b.rom_base);
+		this.rdp = state === "stock" ? 1 : 0;
+		this.running = state;
+		this.flashKb = this.flash.length / 1024;
+		this.layout = layout || romLayout(b);
+		this.string1 = string1;
+		this.stallUpload = stallUpload;
+		this.unprotects = 0;
+		this.leaveWatchers = new Set();
+		Object.assign(this, { restartRefusals, restartReason, restartStays, reboots: [] });
+		this.resetDfu();
+	}
+
+	resetDfu() {
+		super.resetDfu();
+		Object.assign(this, { status: ERR.OK, queued: null, writes: [], leftAt: null });	// queued: FakeRadio's pending is the CPS sector
+		this.addr = this.base ?? null;	// no pointer set: the start of the internal flash (AN3156 4.1)
+	}
+
+	// Switched on with the loader's key held. Off first: a radio that left the bus after a Read Unprotect comes back
+	enterBootloader() { this.mode = "bootloader"; this.resetDfu(); }
+
+	codecReport() { return "none"; }	// a board without a vocoder (hal_vocoder_id)
+
+	// INFO_CHIP with the family byte (debuglink.md 3.9): family 2, the level and the RDP byte, no decoded option bits
+	chipInfo() {
+		const p = new Uint8Array(29).fill(0xFF, 24, 28);
+		p.set(le32(0x20036450), 0); p[4] = this.flashKb & 0xFF; p[5] = this.flashKb >> 8; p.set(this.uid, 6);
+		p.set(le32(this.rdp ? 0x0000BB00 : 0x0000AA00), 18); p[22] = this.rdp; p[23] = this.rdp ? 0xBB : 0xAA; p[28] = 2;
+		return p;
+	}
+
+	// REBOOT's reply payload (debuglink.md 3.11): the status and a reason byte. The radio's checks in the firmware's
+	// order (the chip info, the token, transmitting, the protection, and last the board's own rule, which is about the
+	// loader mode only), then the restart. Mode 1 puts the radio in its loader, mode 0 starts the firmware again;
+	// either way the serial port is a new one
+	rebootAnswer(p) {
+		this.reboots.push(p.slice());
+		if (p.length !== 5 || p[0] > 1) return [2];
+		if (this.restartReason === 4) return [7, 4];
+		if (u32le(p, 1) !== u32le(this.uid, 0)) return [7, 1];
+		if (this.restartReason === 3) return [7, 3];
+		if (p[0] === 1 && this.rdp) return [7, 2];
+		if (this.restartReason) return [7, this.restartReason];
+		if (p[0] === 1 && this.restartRefusals > 0) {
+			this.restartRefusals--;
+			return [7, 5];
+		}
+		if (!this.restartStays) {
+			this.port++;
+			if (p[0] === 1) {
+				this.enterBootloader();
+				this.events.push("restart into the loader");
+			}
+		}
+		return [0, 0];
+	}
+
+	serialAnswer(req) {
+		const f = req[0] === 0xA5 ? parseFrames(req)[0] : null;
+		if (f?.cmd === 0x0D) return frame(f.cmd | 0x80, f.seq, new Uint8Array(this.rebootAnswer(f.payload)));
+		return super.serialAnswer(req);
+	}
+
+	dfuTransport() {
+		const radio = this;
+		return {
+			async out(req, value, data) { return radio.dfuOut(req, value, data || new Uint8Array(0)); },
+			async in(req, length, value = 0) { return radio.dfuIn(req, length, value); },
+			async fingerprint() {
+				return { string1: radio.string1, manufacturer: "STMicroelectronics", product: "SIMULATED ROM LOADER", serial: "SIMULATED", version: "2.0.0",
+					interfaces: [radio.layout, "@Option Bytes  (simulated)"] };	// stand-ins: no radio's strings were read yet
+			},
+			async close() {},
+			// as WebUsbTransport's: left() when the loader leaves the bus (after a Read Unprotect)
+			watchLeave(left) {
+				radio.leaveWatchers.add(left);
+				return () => radio.leaveWatchers.delete(left);
+			},
+		};
+	}
+
+	gone() {
+		if (this.mode !== "bootloader") throw new Error("the device has been lost");
+	}
+
+	fail(status) {
+		this.state = DFU.ERROR;
+		this.status = status;
+	}
+
+	// The command a DNLOAD left, run on the GETSTATUS that follows it
+	execute(c) {
+		const off = (a) => a - this.base;
+		const inFlash = (a, n = 1) => a >= this.base && a + n <= this.base + this.flash.length;
+		if (c.kind === "address") {
+			if (!inFlash(c.addr)) return this.fail(ERR.TARGET);
+			this.addr = c.addr;
+		} else if (c.kind === "erase") {
+			if (this.rdp) return this.fail(ERR.VENDOR);
+			const sec = this.board.sectors.find((x) => x.addr <= c.addr && c.addr < x.addr + x.size);
+			if (!sec) return this.fail(ERR.TARGET);
+			if (sec.addr !== c.addr) this.violations.push(`erase of ${c.addr.toString(16)}, not a sector start`);
+			this.flash.fill(0xFF, off(sec.addr), off(sec.addr) + sec.size);
+			this.erased.push(sec.addr);
+		} else if (c.kind === "mass-erase") {
+			this.violations.push("mass erase");
+			if (this.rdp) return this.fail(ERR.VENDOR);
+			this.flash.fill(0xFF);
+		} else if (c.kind === "write") {
+			if (this.rdp) return this.fail(ERR.VENDOR);
+			const dest = this.addr + (c.num - FIRST_BLOCK) * c.data.length;
+			if (!inFlash(dest, c.data.length)) return this.fail(ERR.TARGET);
+			if (c.data.length % 32) this.violations.push(`a block of ${c.data.length} bytes at ${dest.toString(16)}: a partial flash word`);
+			for (let i = 0; i < c.data.length; i++) {
+				const o = off(dest) + i, old = this.flash[o];
+				if (old !== 0xFF && c.data[i] !== 0xFF && old !== c.data[i]) this.violations.push(dest + i);
+				this.flash[o] = old & c.data[i];
+			}
+			this.writes.push([dest, c.data.length, c.num]);
+			this.blocks++;
+		} else if (c.kind === "unprotect") {
+			// protected: the whole flash goes; not protected: only the RAM (AN3156 3). Then the device leaves the bus
+			if (this.rdp) this.flash.fill(0xFF);
+			this.rdp = 0;
+			this.unprotects++;
+			this.running = "blank";
+			this.events.push("read unprotect");
+			this.mode = "off";
+			for (const left of [...this.leaveWatchers]) left();
+			return;
+		} else if (c.kind === "leave") {
+			this.leftAt = this.addr;
+			this.exited = true;
+			// a vector table there: the application starts. None: the chip resets, and with the key released nothing runs
+			const sp = u32le(this.flash, off(this.addr)), pc = u32le(this.flash, off(this.addr) + 4);
+			this.running = sp !== 0xFFFFFFFF && pc !== 0xFFFFFFFF ? "rfoundry" : "blank";
+			this.mode = "normal";
+			this.port++;
+			return;
+		}
+		this.state = DFU.DNIDLE;
+	}
+
+	dfuIn(req, length, value = 0) {
+		this.gone();
+		if (req === 3) {
+			if (this.queued) {
+				const c = this.queued;
+				this.queued = null;
+				this.execute(c);
+				// the reply was already on its way: dfuMANIFEST for a Leave, dfuDNBUSY for every other command
+				return new Uint8Array([0, 1, 0, 0, c.kind === "leave" ? DFU.MANIFEST : DFU.DNBUSY, 0]);
+			}
+			return new Uint8Array([this.status, 1, 0, 0, this.state, 0]);
+		}
+		if (req !== 2) throw new Error(`unexpected IN request ${req}`);
+		if (this.queued || (this.state !== DFU.IDLE && this.state !== DFU.UPIDLE)) { this.fail(ERR.STALLEDPKT); throw stall(); }
+		if (value === 0) return new Uint8Array([0x00, 0x21, 0x41, 0x92]).slice(0, length);
+		if (value === 1) { this.fail(ERR.STALLEDPKT); throw stall(); }
+		if (this.rdp) {
+			this.fail(ERR.VENDOR);
+			if (this.stallUpload) throw stall();
+			return new Uint8Array(0);
+		}
+		const a = this.addr + (value - FIRST_BLOCK) * length - this.base;
+		if (a < 0 || a + length > this.flash.length) { this.fail(ERR.TARGET); throw stall(); }
+		this.state = DFU.UPIDLE;
+		return this.flash.slice(a, a + length);
+	}
+
+	dfuOut(req, value, data) {
+		this.gone();
+		if (req === 4) {	// CLRSTATUS: only out of dfuERROR (DFU 1.1 A.1)
+			if (this.state !== DFU.ERROR) { this.fail(ERR.STALLEDPKT); throw stall(); }
+			this.state = DFU.IDLE;
+			this.status = ERR.OK;
+			return 0;
+		}
+		if (req === 6) {	// ABORT: out of an idle state of a transfer
+			if (this.queued || ![DFU.IDLE, DFU.DNIDLE, DFU.UPIDLE].includes(this.state)) { this.fail(ERR.STALLEDPKT); throw stall(); }
+			this.state = DFU.IDLE;
+			return 0;
+		}
+		if (req !== 1) throw new Error(`unexpected request ${req}`);
+		if (this.queued || (this.state !== DFU.IDLE && this.state !== DFU.DNIDLE)) { this.fail(ERR.STALLEDPKT); throw stall(); }
+		if (value === 1) { this.fail(ERR.STALLEDPKT); throw stall(); }
+		if (value > 1) {
+			if (data.length < 2 || data.length > 2048) { this.fail(ERR.STALLEDPKT); throw stall(); }
+			this.queued = { kind: "write", num: value, data: data.slice() };
+		} else if (!data.length) this.queued = { kind: "leave" };
+		else if (data[0] === 0x21 && data.length === 5) this.queued = { kind: "address", addr: u32le(data, 1) };
+		else if (data[0] === 0x41 && data.length === 5) this.queued = { kind: "erase", addr: u32le(data, 1) };
+		else if (data[0] === 0x41 && data.length === 1) this.queued = { kind: "mass-erase" };
+		else if (data[0] === 0x92 && data.length === 1) this.queued = { kind: "unprotect" };
+		else {
+			// not a command of this loader (AN3156 figure 6): the keyed bootloaders' 91 xx among them
+			if (data[0] === 0x91) this.vendor.push(data[1]);
+			this.fail(ERR.STALLEDPKT);
+			throw stall();
+		}
+		return data.length;
+	}
+}

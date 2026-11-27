@@ -73,6 +73,8 @@ RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/opt/reuse/bin pipx install "reuse==${REUSE
 ARG SUBMODULE_URLS="\
 https://github.com/STMicroelectronics/stm32f4xx-hal-driver.git \
 https://github.com/STMicroelectronics/cmsis-device-f4.git \
+https://github.com/STMicroelectronics/stm32h7xx-hal-driver.git \
+https://github.com/STMicroelectronics/cmsis-device-h7.git \
 https://github.com/STMicroelectronics/cmsis-core.git \
 https://github.com/FreeRTOS/FreeRTOS-Kernel.git \
 https://github.com/hathach/tinyusb.git"

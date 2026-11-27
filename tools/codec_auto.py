@@ -5,10 +5,13 @@
 
 Looks through codecs/ for a stock firmware file the board's codec tool supports (checked by SHA-256, so file names
 don't matter) and runs that tool to write <image>_codec.bin next to the image. With no supported file it says so and
-does nothing: the plain image is still the build's output. See codecs/README.md.
+does nothing: the plain image is still the build's output. A board without a codec route (board.toml [codec] none)
+has no tool: it says the board's reason and does nothing. See codecs/README.md.
 """
 import argparse
+import contextlib
 import hashlib
+import io
 import os
 import subprocess
 import sys
@@ -21,9 +24,16 @@ from rfoundry import boards  # noqa: E402  (the board registry)
 from rfoundry import stockfw  # noqa: E402  (stock file profiles)
 
 # Board -> codec tool, the registry's [codec] tool (each takes --stock, --image, -o and keeps its supported stock files
-# in PROFILES)
+# in PROFILES); None for a board without a codec route
 CODEC_TOOLS = {b.id: b.codec_tool for b in boards.BOARDS.values()}
 SKIP = ("README.md", ".gitignore")
+
+
+def no_codec(board):
+    """Why the board gets no codec merge: the registry's reason ([codec] none), or None for a board with a codec route
+    (and for an id the registry doesn't know)."""
+    b = boards.BOARDS.get(board)
+    return b.codec_none if b is not None else None
 
 
 def sha256_file(path):
@@ -79,25 +89,42 @@ def self_test():
         profs = board_profiles(__import__(t).PROFILES, b)
         if profs and not all(stockfw.key_sha(h) in profile_shas(profs) for h in profs):
             fails.append("%s: a stock file is not found" % b)
+    for b, t in CODEC_TOOLS.items():	# a board has a codec tool or the reason it has none, never both or neither
+        why = no_codec(b)
+        if (t is None) != bool(why):
+            fails.append("%s: codec tool %r with the reason %r" % (b, t, why))
+        if not why:
+            continue
+        # the build's call for such a board: the reason and exit 0, before any file in the folder is looked at (the
+        # tools folder stands in for codecs/: it exists and holds large files)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = main(["--board", b, "--image", os.path.join(TOOLS, "no-such-image.bin"), "--dir", TOOLS])
+        if rc != 0 or "no codec for this radio" not in out.getvalue() or why not in out.getvalue():
+            fails.append("%s: a board without a codec route gave %r, exit %r" % (b, out.getvalue(), rc))
     for f in fails:
         print("FAIL:", f)
     print("codec_auto self-test %s" % ("PASSED" if not fails else "FAILED"))
     return 1 if fails else 0
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--board")
     ap.add_argument("--image", help="the built image")
     ap.add_argument("--self-test", action="store_true", help="check the profile matching, no files needed")
     ap.add_argument("--dir", default=os.path.join(ROOT, "codecs"), help="where to look (default: codecs/)")
     ap.add_argument("-o", "--output", help="merged image (default: <image>_codec.bin)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
     if not args.board or not args.image:
         ap.error("--board and --image are required")
 
+    why = no_codec(args.board)
+    if why:
+        print("codec: no codec for this radio (%s): %s" % (args.board, why))
+        return 0
     tool = CODEC_TOOLS.get(args.board)
     if tool is None or not os.path.isdir(args.dir):
         return 0

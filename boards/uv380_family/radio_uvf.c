@@ -3,7 +3,7 @@
 // UV380 family radio: AT1846S (I2C3) + HR_C6000 (bit-banged config SPI, voice SPI2) + RF path GPIOs + APC DAC +
 // calibration. FM receive and transmit (docs/spec/hardware-dm1701.md 4-8, 12; docs/spec/modem-hrc6000.md 3, 8), and the
 // RF side of DMR (modem-hrc6000.md 3.1, 4.3; hardware-dm1701.md 5.3, 6): set_mode(DMR) puts both chips in DMR and starts
-// the slot engine (platform/stm32f4/hrc/dmr_glue.c); tx() in DMR only arms the per-burst keying (TX frequency and PA drive) and the PA
+// the slot engine (platform/stm32/hrc/dmr_glue.c); tx() in DMR only arms the per-burst keying (TX frequency and PA drive) and the PA
 // then follows the bursts from the modem interrupts through uvf_rf_dmr_switch(), which writes AT1846S reg 0x30
 // directly over I2C3 (never through the task-level driver and its cache, which is resynced when DMR TX ends).
 // tx_off() in DMR belongs after DMR_EV_TX_DONE; called while a transmission runs it drops it.
@@ -265,7 +265,7 @@ static const at1846s_bus_t rf_bus = { .write = rf_write, .read = rf_read, .delay
 // --- HR_C6000 bus: bit-banged config SPI on PE2-PE5 (hardware-dm1701.md 4.2) ---
 
 // The configuration port on PE2-PE5 and the voice port on SPI2 (PB13-PB15, AF5, chip select PIN_C6000_VCS): mode 2,
-// PCLK1 / 8 = 4.5 MHz. The shared transfers (platform/stm32f4/hrc/hrc_bus.c) mask the modem interrupts around each
+// PCLK1 / 8 = 4.5 MHz. The shared transfers (platform/stm32/hrc/hrc_bus.c) mask the modem interrupts around each
 static const stm32_hrc_bus_cfg_t modem_cfg = {
 	.port = GPIOE,
 	.cs = PIN_MASK(PIN_C6000_CS), .clk = PIN_MASK(PIN_C6000_CLK), .mosi = PIN_MASK(PIN_C6000_MOSI),

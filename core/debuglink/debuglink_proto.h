@@ -22,7 +22,7 @@ enum {
 	DL_CMD_READ_MEM		= 0x0C,
 	DL_CMD_REBOOT		= 0x0D,
 	DL_CMD_DMR_DATA		= 0x0E,	// DMR data service requests (debuglink_dmr_data.c)
-	DL_CMD_STORAGE		= 0x0F,	// the settings / journal region: info, SPI flash read, claim (docs/spec/debuglink.md 3.13)
+	DL_CMD_STORAGE		= 0x0F,	// the settings / journal region: info, SPI flash read, claim, the factory copy (3.13)
 	DL_CMD_AUDIO_PROBE	= 0x10,	// audio chip registers and PCM levels, CONFIG_AUDIO_PROBE (docs/spec/debuglink.md 3.14)
 	DL_CMD_SPLIT		= 0x15,	// split duplex (CONFIG_HOTSPOT_SPLIT only; docs/spec/debuglink.md 3.15)
 	DL_CMD_APRS		= 0x11,	// APRS: send now, status, message, test call, settings, NMEA (debuglink_aprs.c, 3.16)
@@ -204,12 +204,25 @@ enum {
 // DL_CMD_STORAGE operations (first payload byte; docs/spec/debuglink.md 3.13)
 enum {
 	DL_STORAGE_OP_INFO = 0,		// -> region u8 (0 none, 1 ours, 2 foreign), claim pending u8, then u32 pairs (address,
-					// size): settings ring, journal, calibration copy
+					// size): settings ring, journal, calibration copy; then flags u8 (DL_STORAGE_FLAG_*)
 	DL_STORAGE_OP_READ,		// address u32, length u16 (<= DL_MEM_READ_MAX) -> address u32, the bytes. SPI flash, only
 					// inside the three ranges
 	DL_STORAGE_OP_CLAIM,		// token u32 (the chip UID's low word) -> reason u8 (as REBOOT's); the erase follows in
 					// the housekeeping task: poll the view's storage.region
+	DL_STORAGE_OP_FACTORY_INFO,	// -> present u8, then the factory copy's range, source, window and record states and
+					// CRCs (core/storage/factory_copy.h: 25 bytes with present); BUSY until its load ran,
+					// UNAVAILABLE without CONFIG_FACTORY_COPY
+	DL_STORAGE_OP_FACTORY_LOAD,	// offset u16, 1-56 bytes of the factory copy's range -> loaded u16 (offset 0 starts
+					// over, any other is the bytes loaded so far)
+	DL_STORAGE_OP_FACTORY_RESTORE,	// n u16, CRC-32 u32 of the loaded bytes, CRC-32 u32 of the window as the host read
+					// it -> reason u8, why u8, off u16; OK: the restore's job posted, REFUSED: the reason.
+					// Ops 4 and 5 answer BUSY until the load ran, while a job runs and until the board took
+					// its outcome; UNAVAILABLE without CONFIG_FACTORY_COPY or a factory copy
 };
+// INFO's flags byte, after the three ranges (older builds end before it, which a host reads as 0). Claim first: the
+// board's data flash holds another firmware's data of unknown layout until the claim (settings-store.md 5), so a
+// host backs up the whole chip before it claims, not just the ranges above
+#define DL_STORAGE_FLAG_CLAIM_FIRST	0x01u
 
 // DL_CMD_APRS operations (first payload byte; docs/spec/debuglink.md 3.16)
 enum {

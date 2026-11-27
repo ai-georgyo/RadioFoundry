@@ -358,13 +358,13 @@ test("font glyph bytes 0x80-0x85 round-trip, a name's 0xFF terminator stops read
 
 // --- Reaching the radio (transport.js) against a simulated radio ---
 
-import { CpsSerial, changes, writeRanges, TransportError, keepIdentity } from "../static/js/codeplug/transport.js";
-import { concat } from "../static/js/flasher/bytes.js";
+import { CpsSerial, changes, writeRanges, keepOut, idDbEnd, TransportError, keepIdentity } from "../static/js/codeplug/transport.js";
+import { concat, crc32 } from "../static/js/flasher/bytes.js";
 import { FakeCpsRadio } from "../static/js/codeplug/fakecps.js";
 import { makeBundle } from "../static/js/flasher/backup.js";
 import { CONVERTERS } from "../static/js/flasher/codeplug.js";
-import { FastLink, FastError } from "../static/js/codeplug/fastlink.js";
-import { Link, browserErrorKey } from "../static/js/flasher/link.js";
+import { FastLink, FastError, BLOCK, REASON } from "../static/js/codeplug/fastlink.js";
+import { Link, browserErrorKey, frame, parseFrames } from "../static/js/flasher/link.js";
 import { updateFor } from "../static/js/flasher/version.js";
 
 const RADIOS = [
@@ -661,6 +661,39 @@ test("a radio still holding another firmware's settings data is prepared, then w
 	await tr.verify(want, res.plan);
 });
 
+// A board whose memory chip holds another firmware's data where nobody knows until it is claimed (STORAGE INFO's
+// flags byte, debuglink.md 3.13): the editor tells the user to back up everything in the radio programming utility,
+// which claims after it read the whole chip, and claims nothing itself. app.js needs the DOM, so its source is checked
+test("on a board that claims first, the editor doesn't prepare the radio and sends the user to the full backup", async () => {
+	const radio = new FakeCpsRadio({ board: "DM-1701", foreign: true });
+	const answer = radio.answer.bind(radio);
+	radio.answer = (req) => {
+		const r = answer(req);
+		const f = req[0] === 0xA5 ? parseFrames(req)[0] : null;
+		if (f?.cmd !== 0x0F || f.payload[0] !== 0) return r;
+		const a = parseFrames(r)[0];
+		return frame(a.cmd, a.seq, Uint8Array.from([...a.payload, 1]));
+	};
+	const tr = new CpsSerial(radio.stream());
+	await tr.identify(RADIOS);
+	const st = await tr.storage();
+	assert.equal(st.region, "foreign");
+	assert.equal(st.claimFirst, true);
+	assert.equal((await new CpsSerial(new FakeCpsRadio({ board: "DM-1701", foreign: true }).stream()).storage()).claimFirst, false,
+		"firmware before the flags byte");
+	const src = readFileSync(new URL("../static/js/editor/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const fn = src.slice(src.indexOf("async function ensureStorage("), src.indexOf("\n}\n", src.indexOf("async function ensureStorage(")));
+	const branch = fn.slice(fn.indexOf("if (c.storage.claimFirst) {"), fn.indexOf("return false;", fn.indexOf("if (c.storage.claimFirst) {")));
+	assert.ok(fn.indexOf("if (c.storage.claimFirst) {") > fn.indexOf('if (c.storage?.region !== "foreign") return true;'), "only for a foreign region");
+	assert.ok(fn.indexOf("if (c.storage.claimFirst) {") < fn.indexOf("claimStorage("), "decided before the claim");
+	assert.doesNotMatch(branch, /claimStorage|editor\.storage\.prepare"/);
+	assert.match(branch, /window\.open\(`\$\{HOME\}flash\/index\.html`/);
+	const keys = [...branch.matchAll(/t\("([\w.]+)"/g)].map((m) => m[1]);
+	assert.deepEqual(keys, ["editor.storage.first_title", "editor.storage.first_text", "editor.storage.first_text2", "editor.storage.first_open", "editor.storage.first_said"]);
+	for (const k of keys) assert.ok(en[k], k);
+});
+
 test("a sector left pending by an interrupted write is retried; verify skips the live VFOs", async () => {
 	const radio = new FakeCpsRadio({ board: "DM-1701" });
 	const tr = new CpsSerial(radio.stream());
@@ -741,6 +774,135 @@ test("changed runs stay inside their ranges and sectors", () => {
 	const plan = changes(b, a, [[0, 0x2000]]);
 	assert.deepEqual(plan.map(([s, runs]) => [s, runs.map(([x, d]) => [x, d.length])]), [[0, [[0x0FFE, 1]]], [0x1000, [[0x1001, 16]]]]);
 	assert.ok(writeRanges().every(([x, y]) => y <= 0x604B || x >= 0x6060));
+});
+
+// A board's protected data inside a codeplug sector (an invented range, as a maker's table the firmware keeps): the
+// editor sends none of its bytes, by the CPS or the fast protocol, and the rest of the sector is written
+const KEPT = { mem: "data", start: 0x1100, end: 0x1300, what: "factory table (hardware-x.md 2.1)" };
+const keptRadio = (protect, base = 0) => ({ id: "x", codeplug: { base, end: 0xE00000, names: ["x"] }, flash: { protect } });
+const length = (ranges) => ranges.reduce((n, [a, b]) => n + b - a, 0);
+const cut = (ranges, [x, y]) => ranges.map(([a, b]) => [Math.max(a, x), Math.min(b, y)]).filter(([a, b]) => b > a);
+
+test("writeRanges(radio) leaves out the board's protected data as image addresses, in order, with the settings block", () => {
+	assert.deepEqual(writeRanges(keptRadio([])), writeRanges());
+	assert.deepEqual(keepOut(), [[0x604B, 0x6060]]);
+	// out of order, one touching another, one reaching into a region from before it, one in another memory
+	const list = [{ ...KEPT, start: 0x7400, end: 0x7600 }, KEPT, { ...KEPT, mem: "progmem", start: 0x2000, end: 0x3000 },
+		{ ...KEPT, start: 0x1300, end: 0x1310 }];
+	assert.deepEqual(keepOut(keptRadio(list)), [[0x1100, 0x1310], [0x604B, 0x6060], [0x7400, 0x7600]]);
+	assert.deepEqual(writeRanges(keptRadio(list)), [[0x80, 0x1100], [0x1310, 0x604B], [0x7600, 0xB000], [0xE000, 0xF000],
+		[0x20000, 0x211A0], [0x9B000, 0xAEE60]]);
+	// at a base: data addresses less the base; an entry below the base is no image address, one across it starts at 0
+	const based = [{ ...KEPT, start: 0x701100, end: 0x701300 }, { ...KEPT, start: 0x1000, end: 0x2000 }, { ...KEPT, start: 0x6FF000, end: 0x700100 }];
+	assert.deepEqual(keepOut(keptRadio(based, 0x700000)), [[0, 0x100], [0x1100, 0x1300], [0x604B, 0x6060]]);
+	assert.deepEqual(writeRanges(keptRadio(based, 0x700000)).slice(0, 2), [[0x100, 0x1100], [0x1300, 0x604B]]);
+	// every radio: its write ranges are the editor's less exactly its protected data, never a byte of it
+	for (const r of JSON.parse(readFileSync(join(DIR, "radios.json"), "utf8")).radios.filter((x) => x.codeplug)) {
+		const mine = writeRanges(r), prot = keepOut(r).filter(([a, b]) => !(a === 0x604B && b === 0x6060));
+		const inside = prot.flatMap((k) => writeRanges().flatMap((w) => cut([w], k)));
+		assert.equal(length(mine) + length(inside), length(writeRanges()), r.id);
+		assert.ok(mine.every((w) => prot.every((k) => !cut([w], k).length)), `${r.id}: no protected byte written`);
+	}
+});
+
+test("the editor sends no byte of a protected range over the CPS; a change only inside it writes nothing", async () => {
+	const radio = new FakeCpsRadio({ board: "x", image: encode(rich()).bytes });
+	radio.spi.fill(0x5A, KEPT.start, KEPT.end);	// the radio's own bytes
+	const tr = new CpsSerial(radio.stream());
+	await tr.identify([keptRadio([KEPT])]);
+	const have = await tr.read({ iddb: false });
+	const want = have.clone();
+	want.bytes.fill(0x00, 0x1000, 0x1400);	// over the range and on both sides of it, in one sector
+	const res = await tr.write(want, have);
+	assert.ok(radio.writes.length && radio.writes.every(([a, n]) => a + n <= KEPT.start || a >= KEPT.end), "no byte of the range sent");
+	assert.ok(radio.spi.subarray(KEPT.start, KEPT.end).every((x) => x === 0x5A), "the radio keeps its bytes");
+	assert.ok(radio.spi.subarray(0x1000, KEPT.start).every((x) => x === 0) && radio.spi.subarray(KEPT.end, 0x1400).every((x) => x === 0),
+		"the rest of the sector written");
+	await tr.verify(want, res.plan);
+	const again = await tr.read({ iddb: false });
+	const inside = again.clone();
+	inside.bytes.fill(0x11, KEPT.start, KEPT.end);
+	assert.equal((await tr.plan(inside, again)).bytes, 0);
+	assert.equal((await tr.plan(inside, null)).plan.flatMap(([, runs]) => runs).filter(([a, d]) => a < KEPT.end && a + d.length > KEPT.start).length, 0,
+		"a write of everything leaves the range out too");
+});
+
+test("the fast protocol sends a block holding a protected range with the radio's bytes there, never the image's", async () => {
+	const s = simRadio(["--populate"]);
+	let closed = false;	// a failed check still ends the simulated radio, so the run fails instead of hanging
+	try {
+		const tr = new CpsSerial(s);
+		await tr.identify(RADIOS);
+		const first = await tr.read({ iddb: false });
+		const own = first.clone();
+		own.bytes.fill(0x5A, KEPT.start, KEPT.end);	// the radio's own bytes, put there before the board keeps them
+		await tr.write(own, first);
+		await tr.identify([{ ...RADIOS[2], flash: { protect: [KEPT] } }]);
+		assert.ok(tr.fast, "the fast protocol");
+		const have = await tr.read({ iddb: false });
+		assert.ok(have.bytes.subarray(KEPT.start, KEPT.end).every((x) => x === 0x5A));
+		const want = have.clone();
+		want.bytes.fill(0x00, 0x1000, 0x1400);
+		// have trusted only where its block's CRC matches: a stale copy is read again from the radio
+		const stale = have.clone();
+		stale.bytes.fill(0x77, KEPT.start, KEPT.end);
+		for (const base of [have, stale, null]) {
+			const { plan } = await tr.plan(want, base);
+			assert.deepEqual(plan.map(([a]) => a), [0x1000]);
+			assert.ok(plan[0][1].subarray(KEPT.start - 0x1000, KEPT.end - 0x1000).every((x) => x === 0x5A), "the radio's bytes in the block");
+		}
+		const inside = have.clone();
+		inside.bytes.fill(0x11, KEPT.start, KEPT.end);
+		assert.equal((await tr.plan(inside, have)).blocks, 0, "a change only inside the range: no block");
+		const res = await tr.write(want, have);
+		await tr.verify(want, res.plan);
+		await tr.finish();
+		const flash = await s.close();
+		closed = true;
+		assert.ok(flash.subarray(KEPT.start, KEPT.end).every((x) => x === 0x5A), "the radio keeps its bytes");
+		assert.ok(flash.subarray(0x1000, KEPT.start).every((x) => x === 0) && flash.subarray(KEPT.end, 0x1400).every((x) => x === 0));
+	} finally {
+		if (!closed) await s.close();
+	}
+});
+
+test("a block holding a protected range that the fast protocol refuses goes through the CPS without the range's bytes", async () => {
+	const radio = new FakeCpsRadio({ board: "x", image: encode(rich()).bytes });
+	radio.spi.fill(0x5A, KEPT.start, KEPT.end);	// the radio's own bytes
+	const tr = new CpsSerial(radio.stream());
+	await tr.identify([keptRadio([KEPT])]);
+	const have = await tr.read({ iddb: false });
+	const want = have.clone();
+	want.bytes.fill(0x00, 0x1000, 0x1400);
+	// a fast protocol that serves sums and reads but refuses every block as outside what it serves
+	const block = (a) => radio.spi.subarray(a, a + BLOCK);
+	tr.fast = { staging: false };
+	tr.fl = {
+		sums: async (a, n) => Array.from({ length: n }, (_, i) => ({ addr: a + i * BLOCK, crc: crc32(block(a + i * BLOCK)), blank: false })),
+		read: async (a) => block(a).slice(),
+		begin: async () => {}, commit: async () => {}, abort: async () => {},
+		write: async () => { throw new FastError("WRITE", "refused", REASON.RANGE); },
+	};
+	radio.writes.length = 0;
+	const res = await tr.fastWrite(want, have, { iddb: false, progress: () => {} });
+	assert.deepEqual(res.plan.map(([a]) => a), [0x1000]);
+	assert.ok(radio.writes.length && radio.writes.every(([a, n]) => a + n <= KEPT.start || a >= KEPT.end), "no byte of the range sent");
+	assert.ok(radio.spi.subarray(KEPT.start, KEPT.end).every((x) => x === 0x5A), "the radio keeps its bytes");
+	assert.ok(radio.spi.subarray(0x1000, KEPT.start).every((x) => x === 0) && radio.spi.subarray(KEPT.end, 0x1400).every((x) => x === 0),
+		"the rest of the block written");
+});
+
+test("an ID database that would reach a sector holding protected data doesn't fit: nothing is written", async () => {
+	const radio = new FakeCpsRadio({ board: "x" });
+	const tr = new CpsSerial(radio.stream());
+	await tr.identify([keptRadio([{ ...KEPT, start: iddb.AREA1 + 0x1FF0, end: iddb.AREA1 + 0x2000 }])]);
+	const img = encode(rich());
+	iddb.write(img, Array.from({ length: 500 }, (_, i) => ({ id: 9900000 + i, text: `W${i}` })), { textLen: 16 });
+	assert.ok(idDbEnd(img.bytes) < iddb.AREA1 + 0x1FF0 && idDbEnd(img.bytes) > iddb.AREA1 + 0x1000, "ends before the range, in its sector");
+	await assert.rejects(tr.write(img, null, { iddb: true }), (e) => e instanceof TransportError && e.code === "iddb_too_big");
+	assert.deepEqual(radio.writes, []);
+	await tr.write(img, null, { iddb: false });	// the codeplug alone is written
+	assert.ok(radio.writes.length);
 });
 
 import { tftpBytes, datedName } from "../static/js/editor/files.js";

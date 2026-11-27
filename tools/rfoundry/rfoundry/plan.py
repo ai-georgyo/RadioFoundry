@@ -14,10 +14,18 @@ order (the bootloader's, board.toml). A plan that
 moves the codec out of a layout an earlier release used (vector_last, docs/spec/codec-placement.md "Moving to a new
 layout") erases the application's first sector (the vector table) first and writes it last instead (Plan.erase_order,
 Plan.write_order): a move stopped anywhere before that sector leaves it blank, so the bootloader stays in its update
-mode and the same install runs again, with no half application started in between.
+mode and the same install runs again, with no half application started in between. Every install through a ROM
+bootloader (the plain route, dfu.check_plain) has that order too: there a blank first sector starts nothing at a normal
+power-on, and the boot pin, not the vectors, enters the ROM bootloader.
 
 A written sector is always erased first and written from its start through its last data block (0xFF filling the
-gaps), as one run of 1024-byte blocks numbered from 2: the AnyRoad bootloader's region form (hardware-dm1701.md 15.2).
+gaps), as one run of 1024-byte blocks numbered from 2: the DfuSe block form, which the AnyRoad bootloader takes as its
+region form (hardware-dm1701.md 15.2) and an MCU's ROM bootloader as plain Write Memory requests (AN3156 5.1; the
+0xFF fill also ends the image on a whole flash word, dfu.FLASH_WORD).
+
+A board without a codec route (Board.has_codec False) has no codec sectors: its plans are "keep" plans with nothing
+to keep. A board whose bootloader is in the MCU's ROM has no protected range (Board.protected is empty) and its image
+starts at the first byte of the program flash.
 
 No plan erases a sector that holds a protected region of the board (board.toml [[flash.protect]], protect.py): the
 plan is refused instead.
@@ -94,7 +102,9 @@ class Plan:
 
     def describe(self):
         b = self.board
-        lines = ["board %s, codec mode: %s" % (b.name, self.mode)]
+        # a board without a codec route has no mode to speak of (a mock board in a test may lack the attribute)
+        lines = ["board %s, %s" % (b.name, "codec mode: %s" % self.mode if getattr(b, "has_codec", True)
+                                   else "no codec")]
         for st in self.steps:
             s = st.sector
             head = "  sector %2d  0x%08X..0x%08X  %4d KB  " % (s.index, s.addr, s.end - 1, s.size // 1024)
@@ -110,12 +120,12 @@ class Plan:
         if self.vector_last and self.writes:
             first = next((s.index for s in self.erase if s.addr == self.board.app_base), None)
             if first is not None:
-                lines.append("order: sector %d erased first and written last (a codec move: a cut leaves the radio "
-                             "in its bootloader)" % first)
+                lines.append("order: sector %d erased first and written last (a cut install leaves no application "
+                             "to start)" % first)
         lines.append("write %d blocks (%d bytes)" % (self.total_blocks, self.total_blocks * BLOCK))
         if self.kept:
             lines.append("never erased or written: codec sector(s) %s" % ", ".join("%d" % s.index for s in self.kept))
-        for lo, hi in b.protected:
+        for lo, hi in b.protected:		# empty when the bootloader is in the MCU's ROM: no line
             lines.append("never erased or written: the bootloader 0x%08X..0x%08X" % (lo, hi - 1))
         return lines
 
@@ -146,7 +156,8 @@ def make_plan(board, segments, mode, codec_segments=(), codec_windows=None, vect
     """segments: the firmware image as [(addr, bytes)]; codec_segments: the codec as [(addr, bytes)] (merge mode);
     codec_windows: the windows that codec fills, [(addr, length)] (board.merge_windows(profile)). A board with several
     stock files has several layouts, so the board's own windows (their union) are what the image must avoid, and the
-    merged file's are what the codec must cover. Default: the board's windows. vector_last: a codec move (Plan)."""
+    merged file's are what the codec must cover. Default: the board's windows. vector_last: a codec move, or any install
+    through a ROM bootloader (Plan)."""
     if mode not in MODES:
         raise PlanError("unknown codec mode %r" % mode)
     codec_secs = board.codec_sectors()

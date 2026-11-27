@@ -43,6 +43,7 @@ enum {
 	SKY72310_MUX_FREF = 2,		// divided reference
 	SKY72310_MUX_FPD = 4,		// divided VCO (phase detector input)
 	SKY72310_MUX_SERIAL = 5,	// serial data out (loop-back test)
+	SKY72310_MUX_OFF = 8,		// the pin tri-stated (SKY72310_MUX_TRISTATE): a board that leaves it open
 };
 
 // Register 14 (figure 13): bits 11-7 fixed 00001, bit 5 the signed mode
@@ -63,6 +64,21 @@ typedef struct {
 // Pure: the divide ratio for f_vco from an oscillator f_osc divided by ref_div (1..32). False when the ratio is out
 // of the fractional range or the phase detector frequency is over 50 MHz
 bool sky72310_ratio(uint32_t f_osc_hz, uint8_t ref_div, uint32_t f_vco_hz, sky72310_ratio_t *out);
+
+// Pure: the smallest reference divider that keeps the divide ratio in the fractional range (N 37.5..537.5) for f_vco,
+// which is the highest phase detector frequency the part takes there (the fastest loop). 0: none does.
+// boards/md380/radio_md380.c still has its own copy of this rule (pick_ref_div); it goes when that board moves to
+// this function
+static inline uint8_t sky72310_pick_ref_div(uint32_t f_osc_hz, uint32_t f_vco_hz)
+{
+	sky72310_ratio_t ratio;
+	for (uint8_t d = 1; d <= 32; d++) {
+		if (sky72310_ratio(f_osc_hz, d, f_vco_hz, &ratio)) {
+			return d;
+		}
+	}
+	return 0;
+}
 
 // Pure: the VCO frequency a ratio gives (Hz, rounded down), for tests and diagnostics
 uint32_t sky72310_vco_hz(uint32_t f_osc_hz, uint8_t ref_div, const sky72310_ratio_t *r);

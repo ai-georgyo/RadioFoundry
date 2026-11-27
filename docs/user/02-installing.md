@@ -20,7 +20,7 @@ firmware and has a migration chapter is covered in [Moving from the stock firmwa
 |---|---|
 | A computer with Windows, macOS or Linux, or an Android phone or tablet | Android: Chrome, and a USB OTG adapter for the cable ([FAQ](21-faq.md)) |
 | A Chromium-based browser | For the web installer |
-| Your radio's stock firmware file | The manufacturer's file, in a version the installer recognizes. Your radio's "Installing" section names it and where to find it |
+| Your radio's stock firmware file | The manufacturer's file, in a version the installer recognizes. Your radio's "Installing" section names it and where to find it. A radio installed through its processor's own bootloader needs none ([below](#radios-installed-through-the-processors-own-bootloader)) |
 | The radio's USB or programming cable | The cable that came with the radio |
 
 The release firmware has everything except the AMBE codec. The installer either keeps the codec already in your radio,
@@ -194,6 +194,90 @@ If the backup holds the original firmware's codeplug, open the file in the
 [Codeplug Editor](04-programming.md#the-codeplug-editor). It converts the channels, zones and contacts to the
 RadioFoundry layout.
 
+## Radios installed through the processor's own bootloader
+
+Most radios keep their maker's bootloader, and RadioFoundry is written through it. Some are installed through the
+loader built into the radio's processor instead. Your radio's "Installing" section in the
+[Radio reference](23-radios.md) says when this applies, and the web installer then shows the steps below. **Read this
+before the first installation: it erases the original firmware for good.**
+
+| | On such a radio |
+|---|---|
+| Stock firmware file | None. There is no bootloader key, and no codec is taken from a file |
+| Read protection | The processor of a radio on its original firmware is protected against reading. Its loader reads nothing and writes nothing until the protection is removed |
+| Removing the protection | Erases the processor's **whole program memory: the original firmware and the maker's bootloader**. Nothing of them can be backed up first, because nothing can be read |
+| Going back | The installer cannot put the original firmware back. Going back is the maker's own recovery procedure, with the maker's files and tools |
+| The loader itself | It is part of the processor and can't be erased. Whatever happens to the program memory, the radio's update mode keys still start it, and RadioFoundry or the maker's recovery can be written again |
+| The memory chip | The radio's separate memory chip (the original channels, settings and factory data) is not erased by any of this. The web installer offers its backup right after the installation |
+
+Before the first installation, in this order:
+
+1. Save your channels with the maker's programming software, and note the versions and serial number shown on the
+   radio's information screen, while the original firmware still runs.
+2. Get the maker's recovery files and instructions for your radio.
+3. Run that recovery once, and check that the radio works on its original firmware afterwards. It is the only way
+   back, and it shows that nothing the radio needs is lost with its program memory.
+4. The recovery may load the maker's default channels over yours: write your saved channels back with the
+   programming software.
+
+The first installation takes two passes through the update mode:
+
+1. Put the radio in update mode ([your radio's key](23-radios.md)) and connect. The installer checks that the device
+   is your radio's processor and whether it is read protected. Nothing has changed yet.
+2. Confirm the erase. The radio erases its program memory, and nothing shows on its screen. **Leave the radio
+   switched on and connected until the installer says to switch it off** (at least 60 s: the installer waits for the
+   radio to leave USB).
+3. Switch the radio off and put it in update mode again. If it does not go off, take the battery off for a few
+   seconds (your radio's section says whether this can happen).
+4. The installer writes RadioFoundry and starts it. If the radio shows nothing, switch it off and on.
+5. The web installer offers a backup of the whole memory chip right after. Take it and keep that file: nothing is
+   written to the chip until it is handed over after a full backup.
+
+From a terminal the same is `rfoundry flash IMAGE --unprotect`, with an image file (the web installer's build or its
+manual kit), or `--release latest` in place of the file for a radio that has release images (your radio's section
+says). Without `--unprotect`, rfoundry stops at a protected radio, changes nothing and says what the option does.
+`rfoundry detect` with the radio in update mode says whether it is protected. rfoundry writes the firmware only and
+takes no backup of the memory chip: take it afterwards with the web installer (**Back Up**, **Everything**) or with
+`rfoundry_debug.py storage claim --out DIR` ([below](#a-memory-chip-that-radiofoundry-must-be-given-first)).
+
+An update is one pass: the same update mode key, no erase and no question about it, because the protection is gone
+after the first installation.
+
+On some of these radios RadioFoundry can restart into the update mode by itself, so an update needs no key. Your
+radio's "Installing" section says whether it can, and whether this has been tried on a radio. Switch the radio on
+normally, with RadioFoundry running, and connect it:
+
+| Tool | What to do |
+|---|---|
+| Web installer | Choose **Update** and connect. At the installation step, select **Restart into Update Mode**, then **Connect**. The browser asks you to choose the radio a second time, because in update mode it is another USB device |
+| rfoundry | Run `rfoundry flash` as for any update. It finds the running radio, restarts it into the update mode and installs. With more than one radio connected it restarts none: name the radio's port with `--port`, or use the key |
+
+The radio may refuse the restart at that moment. That is not a fault, and nothing on the radio changes. The installer
+says so and shows what your radio asks for first. Do that and try again, or use the update mode key: its steps stay on
+the screen. If the radio accepts the restart and the installer still finds no radio in update mode, use the key too.
+
+Use the web installer or rfoundry on these radios. Both send the firmware in the block size the processor's loader
+needs; another DFU tool may leave the last bytes of the firmware unwritten.
+
+### A memory chip that RadioFoundry must be given first
+
+On most radios RadioFoundry knows where the original firmware keeps its data on the memory chip and stays clear of
+it. On a radio where that is not known, RadioFoundry writes nothing at all to the chip until you hand it over: until
+then the radio keeps its settings in memory only, loses them when it is switched off, and refuses to store a
+codeplug. Nothing on the radio's screen says so. Your radio's section in the [Radio reference](23-radios.md) says
+when this applies.
+
+The web installer offers the full backup of the chip right after the installation and, once you have taken it,
+prepares the chip, in that order. If you finish without the backup, the chip is not prepared. It prepares the chip
+only when the backup holds the whole chip: if the read stopped early, it says that the
+settings area was not prepared, and a complete backup from the start page prepares it. If you installed another way,
+take the full backup first: **Back Up** in the web installer, then **Everything**. The Codeplug Editor's **Write to
+Radio** doesn't prepare such a radio: it asks for this backup first and opens the installer. From the command line,
+`rfoundry_debug.py storage claim` saves the whole chip first
+([Troubleshooting](20-troubleshooting.md#settings-are-not-kept)). After the chip is prepared, RadioFoundry writes its
+settings and your codeplug to it, and whatever the original firmware kept in those places is gone from the radio. The
+backup file is then the only copy.
+
 ## Windows: the bootloader driver
 
 Windows has no driver for the USB bootloader of radios that flash over USB, so neither the web installer nor rfoundry
@@ -203,7 +287,8 @@ can open it until you install one. Do this once per computer, with Zadig:
 2. Put the radio in its bootloader (your radio's keys are in its [Radio reference](23-radios.md) section) and plug it
    in.
 3. In Zadig's list, pick **Digital Radio in USB mode**. The USB ID boxes show `0483` `DF11`. If it isn't listed,
-   choose **Options > List All Devices**.
+   choose **Options > List All Devices**. A radio installed through its processor's own bootloader has another name
+   in the list: pick the device whose USB ID boxes show `0483` `DF11`.
 4. Choose **WinUSB** as the driver (to the right of the green arrow) and click **Install Driver** (or **Replace
    Driver**). Wait until Zadig says it succeeded.
 5. Unplug the radio, put it back in its bootloader and connect again.
@@ -341,9 +426,13 @@ and only when you click. An automatic error report names the file (name, size an
 
 ## If something goes wrong
 
-The bootloader lives in a part of the flash the installer never erases, so you can always start over: put the radio in
-its bootloader and install again. If the radio stays dark after flashing, that's what to do. The web installer's help
+The bootloader lives in a part of the flash the installer never erases, or in the processor itself where nothing can
+erase it, so you can always start over: put the radio in its bootloader and install again. If the radio stays dark after flashing, that's what to do. The web installer's help
 page walks through the update mode. See also [Troubleshooting](20-troubleshooting.md#installing).
+
+On a radio installed through its processor's own bootloader, an install cut short leaves the radio starting nothing
+at a normal power-on: the installer writes the start of the firmware last, so no half-written firmware runs. Put it
+in update mode and install again ([above](#radios-installed-through-the-processors-own-bootloader)).
 
 **Report a Problem** sits under every failure, in the bar of buttons under every step and on the Verify step. Use it
 when the page seems stuck with no error, before reloading: a reload loses its log. It sends what the installer decided
@@ -407,5 +496,10 @@ Factory Update Mode"), and Restore uses it too.
 On a radio installed over its programming cable, a restore writes only the parts of the radio's memory that differ
 from the backup. When it finishes, it says how many parts it wrote and how many already matched. A codec the radio
 still holds as the backup has it is one of those: the installer says that the codec space was not written.
+
+A radio installed through its processor's own bootloader goes back by its maker's recovery procedure only
+([above](#radios-installed-through-the-processors-own-bootloader)): the first installation erased the original
+firmware together with its bootloader, and neither could be read out first. A backup of such a radio puts back the
+channels and settings on its memory chip, not the firmware.
 
 Your radio's section in the [Radio reference](23-radios.md) says which way applies.

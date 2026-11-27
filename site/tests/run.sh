@@ -3,7 +3,7 @@
 # Copyright (c) 2026 The RadioFoundry Authors
 # The web flasher's tests: fixtures from rfoundry (Python), every radio's picture (radio_images_test.py), the scaled screenshots (shots_test.py), the rfoundry
 # tool zip of the manual install kit (toolzip_test.py), the firmware download links (firmware_links_test.py; the network check only with RFOUNDRY_LINK_CHECK=1), then the
-# JavaScript modules against them (Node 20+).
+# JavaScript modules against them (Node 20.11+: the page tests run on node:test's mocked Date).
 #   site/tests/run.sh
 set -eu
 cd "$(dirname "$0")/../.."

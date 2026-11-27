@@ -3,10 +3,11 @@
 // Talking to a radio that runs RadioFoundry, over its USB serial port (WebSerial): the debug link (docs/spec/debuglink.md:
 // VERSION, INFO_CHIP, READ_MEM) and the open-firmware CPS reads (docs/spec/open-firmware-cps.md 2.1 and 3: area 1 the
 // SPI flash, 5 the MCU flash, 9 the radio info, 10 the flash security registers). Read only, apart from the CPS
-// codeplug writes restore uses (X 1-3), which the radio limits to the codeplug areas, and HWOPT SET for a hardware
-// option an install learned (origversion.js).
+// codeplug writes restore uses (X 1-3), which the radio limits to the codeplug areas, HWOPT SET for a hardware
+// option an install learned (origversion.js), REBOOT into the processor's own bootloader for an install through
+// it (dfuse.js), and the factory copy's restore (STORAGE ops 4 and 5, restore.js), which the radio checks itself.
 
-import { be32, concat, le32, sleep, u16be, u16le, u32le, toHex } from "./bytes.js";
+import { be32, concat, crc32, le32, sleep, u16be, u16le, u32le, toHex } from "./bytes.js";
 import { wire, note } from "../diag.js";
 import { serialApi, usbSerialNeeded, UsbSerialPort } from "./usbserial.js";
 import { usbSerialChip, CABLE_FILTERS } from "./adapter.js";
@@ -22,9 +23,47 @@ export const CABLES = CABLE_FILTERS;
 // it for the serial port (netmode.js)
 export const RFOUNDRY_NET = { vendorId: 0x1FC9, productId: 0x0096 };
 const SOF1 = 0xA5, SOF2 = 0x5A;
-export const CMD = { PING: 0x01, VERSION: 0x02, GET_VIEW: 0x09, INFO_CHIP: 0x0B, READ_MEM: 0x0C, STORAGE: 0x0F, HWOPT: 0x21, SUPPORT: 0x25, SATELLITE: 0x26 };
+export const CMD = { PING: 0x01, VERSION: 0x02, GET_VIEW: 0x09, INFO_CHIP: 0x0B, READ_MEM: 0x0C, REBOOT: 0x0D, STORAGE: 0x0F, HWOPT: 0x21, SUPPORT: 0x25, SATELLITE: 0x26 };
 // The status a command not built in, or with nothing to act on, answers (debuglink.md 2)
 const DL_UNAVAILABLE = 4;
+const DL_OK = 0, DL_UNKNOWN = 1, DL_REFUSED = 7;
+// REBOOT's mode 1 (debuglink.md 3.11): reset, then straight into the processor's ROM bootloader
+export const REBOOT_BOOTLOADER = 1;
+// INFO_CHIP's family bytes whose option word carries the RDP level, and so have a ROM bootloader to enter
+const CHIP_ROM_FAMILIES = [0, 2];
+// What a radio answered to the restart into its bootloader, by kind, as rfoundry reads it (debuglink.py
+// restart_outcome; a test compares the two): "ok" (taken: the reply goes out first, the radio resets 250 ms later),
+// "not-now" (reason 5: the board or its platform can't do it now), "transmitting" (3), "protected" (2: no ROM
+// bootloader on this chip, or RDP is not level 0), "token" (1), "no-chip" (4), "unsupported" (a firmware without the
+// command), "other" (anything else)
+const RESTART_REASONS = { 1: "token", 2: "protected", 3: "transmitting", 4: "no-chip", 5: "not-now" };
+// The kinds in words, for the ones that are not the board's "not now" (the page has the board's own hint for that)
+export const RESTART_WHY = {
+	transmitting: "the radio is transmitting",
+	protected: "its processor is read protected, or has no bootloader of its own to restart into",
+	token: "the radio did not accept the request's confirmation word",
+	"no-chip": "the radio could not read its processor's identity",
+	unsupported: "this firmware has no restart command",
+};
+
+// The kind of a REBOOT reply: its status byte and the bytes after it (the reason, when refused)
+export function restartOutcome(status, data = new Uint8Array(0)) {
+	if (status === DL_OK) return "ok";
+	if (status === DL_UNKNOWN || status === DL_UNAVAILABLE) return "unsupported";
+	if (status === DL_REFUSED && data.length) return RESTART_REASONS[data[0]] || "other";
+	return "other";
+}
+
+// REBOOT's payload for the restart into the bootloader: the mode, and the chip UID's low word as the token
+export const restartRequest = (token) => concat(new Uint8Array([REBOOT_BOOTLOADER]), le32(token));
+// STORAGE INFO's flags byte, after the three ranges (debuglink.md 3.13)
+const STORAGE_CLAIM_FIRST = 0x01;
+// FACTORY_INFO's states by number (debuglink.md 3.13), as rfoundry_debug.py names them; FACTORY_LOAD's bytes a request
+// (the op, its offset u16 and the bytes in the radio's 64-byte request)
+export const FACTORY_SOURCES = ["none", "window", "record"];
+export const FACTORY_WINDOW = ["unread", "blank", "zero", "refused", "ok"];
+export const FACTORY_RECORD = ["unread", "blank", "ok", "bad", "newer", "other"];
+export const FACTORY_CHUNK = 56;
 
 export class LinkError extends Error {}
 
@@ -360,8 +399,9 @@ export class Link {
 				` operation 0x${satelliteOperation.toString(16).padStart(2, "0")}` +
 				(satelliteOperation === 12 && payload.length >= 6 ?
 					` profiles ${payload[4] + 1}-${payload[4] + payload[5]} of ${payload[3]}` : "");
+			// data: what follows the status (a refusal's reason byte)
 			throw Object.assign(new LinkError(`command 0x${cmd.toString(16)}${operation}: status ${reply.payload[0]}`),
-				{ status: reply.payload[0], operation: cmd === CMD.SATELLITE ? payload[0] : undefined });
+				{ status: reply.payload[0], data: reply.payload.subarray(1), operation: cmd === CMD.SATELLITE ? payload[0] : undefined });
 		}
 		return reply.payload.subarray(1);
 	}
@@ -419,28 +459,48 @@ export class Link {
 	async chip() {
 		const r = await this.request(CMD.INFO_CHIP);
 		if (r.length < 28) return null;
-		// family: 0 STM32F4, 1 HR_C7000 (no option bytes: rdp to user read 0xFF); firmware before the byte was STM32F4 only
+		// family: 0 STM32F4, 1 HR_C7000 (no option bytes: rdp to user read 0xFF), 2 STM32H7 (rdp is its level; wrp, bor and
+		// user read 0xFF, not decoded there); firmware before the byte was STM32F4 only
 		return { idcode: u32le(r, 0), flashKb: u16le(r, 4), uid: toHex(r.subarray(6, 18)), token: u32le(r, 6), optcr: u32le(r, 18),
 			rdp: r[22], wrp: u16le(r, 24), bor: r[26], user: r[27], family: r.length > 28 ? r[28] : 0 };
+	}
+
+	// Ask the radio to restart into its processor's ROM bootloader (REBOOT mode 1, debuglink.md 3.11) and return what it
+	// said, a kind of restartOutcome(). chip: this radio's chip(). The host's half of the gate comes first, as
+	// rfoundry's (debuglink.py restart_into_bootloader): a chip family with a ROM bootloader, at RDP level 0, else
+	// nothing is sent. On "ok" the radio resets 250 ms after its reply, unless a check fails again by then (it then
+	// stays up). Throws only when no reply came
+	async restartIntoBootloader(chip) {
+		if (!chip || !CHIP_ROM_FAMILIES.includes(chip.family) || chip.rdp !== 0) return "protected";
+		try {
+			await this.request(CMD.REBOOT, restartRequest(chip.token));
+		} catch (e) {
+			if (!(e instanceof LinkError) || e.status === undefined) throw e;
+			return restartOutcome(e.status, e.data);
+		}
+		return "ok";
 	}
 
 	// STORAGE INFO (debuglink.md 3.13): whether the settings and journal region is ours, or still holds another
 	// firmware's data ("foreign": the radio then refuses every settings save and codeplug write). "none": the region
 	// didn't start (unusable flash). "nomap": the radio has no such region (a memory chip too small for the board's flash
-	// map: nothing is stored, no codeplug is there and every write is refused). null from a build without the command
+	// map: nothing is stored, no codeplug is there and every write is refused). null from a build without the command.
+	// claimFirst: the board's memory chip holds another firmware's data, where nobody knows, until it is claimed: a
+	// client claims only after a backup of the whole chip (the flags byte; false from builds before it)
 	async storageInfo() {
 		let r;
 		try {
 			r = await this.request(CMD.STORAGE, new Uint8Array([0]));
 		} catch (e) {
-			if (e instanceof LinkError && e.status === DL_UNAVAILABLE) return { region: "nomap", pending: false, settings: null, journal: null, calibration: null };
+			if (e instanceof LinkError && e.status === DL_UNAVAILABLE) return { region: "nomap", pending: false, claimFirst: false, settings: null, journal: null, calibration: null };
 			if (e instanceof LinkError && !/no answer/.test(e.message)) return null;
 			throw e;
 		}
 		if (r.length < 2) return null;
 		const region = ["none", "ours", "foreign"][r[0]] || String(r[0]);
 		const range = (o) => (r.length >= o + 8 ? { addr: u32le(r, o), size: u32le(r, o + 4) } : null);
-		return { region, pending: !!r[1], settings: range(2), journal: range(10), calibration: range(18) };
+		const claimFirst = r.length > 26 && !!(r[26] & STORAGE_CLAIM_FIRST);
+		return { region, pending: !!r[1], claimFirst, settings: range(2), journal: range(10), calibration: range(18) };
 	}
 
 	// STORAGE CLAIM: the radio erases a foreign region and takes it (some 10 sector erases), then the poll sees it
@@ -457,6 +517,50 @@ export class Link {
 			if (i?.region === "ours") return true;
 		}
 		return false;
+	}
+
+	// STORAGE READ (op 1): size bytes of the memory chip at addr, in 1000-byte pieces. The radio answers only inside the
+	// ranges INFO lists or a factory range of its flash map, else LinkError status 7
+	async storageRead(addr, size) {
+		const out = new Uint8Array(size);
+		for (let done = 0; done < size;) {
+			const n = Math.min(1000, size - done);
+			const r = await this.request(CMD.STORAGE, concat(new Uint8Array([1]), le32(addr + done), new Uint8Array([n & 0xFF, n >> 8])));
+			if (r.length !== 4 + n || u32le(r, 0) !== addr + done) throw new LinkError(`STORAGE READ answer does not match 0x${(addr + done).toString(16)}`);
+			out.set(r.subarray(4), done);
+			done += n;
+		}
+		return out;
+	}
+
+	// STORAGE FACTORY_INFO (op 3, debuglink.md 3.13): the board's factory copy ({addr, size, source, window, why, off,
+	// windowCrc, record, recordCrc, result, loaded, wrote}, the states by name, result by number), null when the board
+	// keeps none. Throws LinkError: status 3 until the copy's load ran at this start, 4 in a build without it, 2 or 1
+	// from a firmware older than the op
+	async factoryInfo() {
+		const r = await this.request(CMD.STORAGE, new Uint8Array([3]));
+		if (!r.length || r[0] === 0) return null;
+		if (r.length < 25) throw new LinkError(`FACTORY_INFO answer of ${r.length} bytes, 25 expected`);
+		const name = (names, v) => names[v] ?? String(v);
+		return { addr: u32le(r, 1), size: u16le(r, 5), source: name(FACTORY_SOURCES, r[7]), window: name(FACTORY_WINDOW, r[8]),
+			why: r[9], off: u16le(r, 10), windowCrc: u32le(r, 12), record: name(FACTORY_RECORD, r[16]), recordCrc: u32le(r, 17),
+			result: r[21], loaded: u16le(r, 22), wrote: r[24] };
+	}
+
+	// STORAGE FACTORY_LOAD (op 4) in FACTORY_CHUNK pieces, then FACTORY_RESTORE (op 5) with the bytes' CRC-32 and the
+	// CRC-32 of the window as this page read it (never the one FACTORY_INFO reports: the handshake says the host
+	// compared what it read, settings-store.md 4.2). {reason, why, off} when the radio posted the restore's job (poll
+	// factoryInfo's result); throws LinkError when it refused (status 7, data: reason u8, why u8, off u16) or was busy
+	// (status 3)
+	async factoryRestore(bytes, windowCrc) {
+		for (let at = 0; at < bytes.length; at += FACTORY_CHUNK) {
+			const part = bytes.subarray(at, at + FACTORY_CHUNK);
+			const r = await this.request(CMD.STORAGE, concat(new Uint8Array([4, at & 0xFF, at >> 8]), part));
+			if (r.length < 2 || u16le(r, 0) !== at + part.length) throw new LinkError(`FACTORY_LOAD: the radio holds ${r.length < 2 ? "?" : u16le(r, 0)} bytes after offset ${at}`);
+		}
+		const n = bytes.length;
+		const r = await this.request(CMD.STORAGE, concat(new Uint8Array([5, n & 0xFF, n >> 8]), le32(crc32(bytes)), le32(windowCrc)));
+		return { reason: r[0] ?? 0, why: r[1] ?? 0, off: r.length >= 4 ? u16le(r, 2) : 0 };
 	}
 
 	// READ_MEM (debuglink.md 3.10) in 1000-byte pieces: internal flash, the stock bootloader included

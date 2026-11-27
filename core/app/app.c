@@ -44,13 +44,23 @@
 #if CONFIG_CPS_FAST
 #include "cps/cps_fast.h"
 #endif
+#if CONFIG_FACTORY_COPY
+#include "storage/factory_copy.h"
+#endif
 #include "FreeRTOS.h"
 #include "task.h"
 
 #define START_TASK_PRIORITY	5
 // words: the radio core's set-up runs here at boot (radio_sm_init, 584 bytes of frame on an HR_C7000 radio, then the APRS
 // identity load or a DMR VFO's contact search down to the flash driver); 512 left that radio 88 bytes (make stack-check)
+#if STORAGE_FACTORY_KEEP
+// A board that keeps factory bytes in its data flash: a storage job here (the satellite channels' zone sync) can write a
+// channel whose tag goes to the key-value store, and that sector's write is the kept rewrite (held_patch > kept_patch >
+// patch_sector), 2384 bytes deep with the CI's toolchain; stack-check.md's overhead and margin come on top
+#define START_TASK_STACK	704
+#else
 #define START_TASK_STACK	640
+#endif
 #define HOUSEKEEPING_MS		100
 #define POWER_OFF_TX_MS		200	// after the PTT release, before the latch drops
 #define POWER_OFF_DEREG_MS	3000	// at most this long for the ARS deregistration (gotcha 7.4)
@@ -117,6 +127,13 @@ static void startup_task(void *arg)
 	board_rx_ext_set((cp->cp_flags & SETTINGS_CP_RX_EXT) != 0);	// before the radio core checks the stored VFO against the bands
 	settings_end(hal_millis());
 	codeplug_init();
+#if CONFIG_FACTORY_COPY
+	// The maker's data and our copy of it (settings-store.md 4.2): after every boot-time writer above (the journal's
+	// replay, the fast and TFTP resumes), before the radio, which takes the bytes in use
+	if (board.factory_copy != NULL) {
+		factory_copy_load(board.factory_copy);
+	}
+#endif
 	board.radio->init();
 	radio_core_start();
 	input_start();

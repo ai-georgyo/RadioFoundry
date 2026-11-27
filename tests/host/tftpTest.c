@@ -9,7 +9,11 @@
 // (the quick-key slots written too, the codeplug re-read), refused writes leaving the flash untouched, and power cuts all through a
 // commit, finished by tftp_codeplug_resume. Then the DMR ID database (core/net/tftp_iddb.c): iddb.bin written, looked up
 // and read back, refusals, transfers that stop or run long leaving no database, and a combined codeplug.bin that
-// carries one, or doesn't. The short transfers go to tftpTest.pcap for tshark.
+// carries one, or doesn't. The short transfers go to tftpTest.pcap for tshark. Built a second time as a board that
+// keeps the maker's bytes builds it (-DSTORAGE_FACTORY_KEEP=1, tftpKeepTest): the same tests, then a map with factory
+// ranges in codeplug sectors (settings-store.md 4.1), where the commit and tftp_codeplug_resume, each with a power cut
+// at every operation, keep the stored bytes there and write the rest, and a map with one in the ID database's area,
+// where a database that would reach it is refused before anything is erased.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,14 +25,22 @@
 #include "codeplug/codeplug.h"
 #include "codeplug/codeplug_kv.h"
 #include "storage/storage.h"
+#include "debuglink/dlog.h"
 #include "sim/sim_flash.h"
 #include "fuzz.h"
+
+#ifndef TFTP_PCAP
+#define TFTP_PCAP	"tftpTest.pcap"	// tftpKeepTest writes its own
+#endif
 
 static int failures, checks;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 
 void storage_lock(void) {}
 void storage_unlock(void) {}
+#if CONFIG_DEBUGLINK
+void dlog(const char *fmt, ...) { (void)fmt; }
+#endif
 
 #define RADIO_ID	10005u
 #define HOST_IP		(IPGW_PERIPHERAL_NET | RADIO_ID)
@@ -556,9 +568,9 @@ static const struct { uint32_t start, end; } regions[] = {
 	{ 0x9B000u, 0xAEE60u },
 };
 
-static void populate(void)
+static void populate_on(const hal_flash_map_t *m)
 {
-	sim_flash_create(FLASH_SIZE, &map);
+	sim_flash_create(FLASH_SIZE, m);
 	CHECK(storage_init());
 	codeplug_init();
 	for (uint16_t n = 1; n <= 300; n += 7) {
@@ -576,6 +588,11 @@ static void populate(void)
 	}
 	memset(sim_flash_data + 0x40000, 0x77, 0x1000);		// not in any region (the DMR ID database)
 	codeplug_init();
+}
+
+static void populate(void)
+{
+	populate_on(&map);
 }
 
 // The file as the stored flash says it should be: the regions, 0xFF elsewhere
@@ -1144,10 +1161,321 @@ static void test_fuzz(void)
 	capture = true;
 }
 
+#if STORAGE_FACTORY_KEEP
+// ---- The maker's bytes in codeplug sectors and in the ID database's area (settings-store.md 4.1) ----
+
+// The same areas with two factory ranges in the EEPROM image's regions: one inside a sector whose other bytes are the
+// codeplug's, one whole sector. Every byte here is invented
+#define KEEP_A		0x2100u
+#define KEEP_A_SIZE	0x200u
+#define KEEP_A_SECTOR	0x2000u
+#define KEEP_B		0xA000u
+#define KEEP_B_SIZE	0x1000u
+static const hal_flash_map_t keep_map = {
+	.settings_addr = 0x11000u, .settings_size = 0x8000u, .journal_addr = 0x19000u,
+	.openfw_eeprom = EE, .openfw_flash = FL, .openfw_end = 0x1C0000u,
+	.calibration_addr = 0x10000u, .calibration_size = 0x200u,
+	.native_addr = 0x1C0000u, .native_size = 0x40000u,
+	.staging_addr = STAGING, .staging_size = 0x40000u,
+	.factory = { { KEEP_A, KEEP_A_SIZE }, { KEEP_B, KEEP_B_SIZE } },
+};
+static uint8_t maker_a[KEEP_A_SIZE], maker_b[KEEP_B_SIZE];
+
+static void keep_fill(uint8_t *b, uint32_t len, uint8_t seed)
+{
+	for (uint32_t i = 0; i < len; i++) {
+		b[i] = (uint8_t)(seed + i * 29u + (i >> 6));
+	}
+}
+
+static void keep_populate(void)
+{
+	populate_on(&keep_map);
+	memcpy(&sim_flash_data[EE + KEEP_A], maker_a, KEEP_A_SIZE);
+	memcpy(&sim_flash_data[EE + KEEP_B], maker_b, KEEP_B_SIZE);
+	codeplug_init();
+}
+
+static bool keep_intact(void)
+{
+	return memcmp(&sim_flash_data[EE + KEEP_A], maker_a, KEEP_A_SIZE) == 0 &&
+	       memcmp(&sim_flash_data[EE + KEEP_B], maker_b, KEEP_B_SIZE) == 0;
+}
+
+// regions_equal outside the factory ranges
+static bool keep_regions_equal(const uint8_t *img)
+{
+	for (unsigned i = 0; i < sizeof(regions) / sizeof(regions[0]); i++) {
+		for (uint32_t a = regions[i].start; a < regions[i].end; a++) {
+			bool kept = (a >= KEEP_A && a < KEEP_A + KEEP_A_SIZE) || (a >= KEEP_B && a < KEEP_B + KEEP_B_SIZE);
+			if (!kept && img[a] != sim_flash_data[a < 0x10000u ? EE + a : FL + (a - 0x20000u)]) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// A codeplug.bin write up to its last block (TFTP_CODEPLUG_SIZE at blksize 512, no options): the transfer's port
+static uint16_t keep_put_but_last(const uint8_t *img)
+{
+	pkt_t k;
+	drain();
+	request(2, CPORT, "codeplug.bin", "octet", NULL);
+	CHECK(next_pkt(&k) && get16(k.p) == 4);
+	for (uint32_t b = 1; b < TFTP_CODEPLUG_SIZE / 512u + 1u; b++) {
+		send_data(k.sport, (uint16_t)b, img + (b - 1u) * 512u, 512);
+		drain();
+	}
+	return k.sport;
+}
+
+// The last block, which starts the commit, and the ticks it takes
+static void keep_put_last(uint16_t tid, const uint8_t *img)
+{
+	uint32_t blocks = TFTP_CODEPLUG_SIZE / 512u + 1u;
+	send_data(tid, (uint16_t)blocks, img + (blocks - 1u) * 512u, (int)(TFTP_CODEPLUG_SIZE % 512u));
+	tick(3000);
+	drain();
+}
+
+static void keep_restart(void)
+{
+	sim_flash_cut_after(0);
+	sim_flash_power_on();
+	tftpInit(&io, files, NFILES);
+	CHECK(storage_init());
+}
+
+// The flash right after the commit record is programmed, before the first sector is copied (the log's hook)
+static uint8_t keep_snap[FLASH_SIZE];
+static bool keep_snapped;
+static void keep_snap_log(char kind, uint32_t addr, uint32_t len, const void *data, bool ok)
+{
+	(void)len;
+	(void)data;
+	if (kind == 'w' && addr == STAGING && ok && !keep_snapped) {
+		memcpy(keep_snap, sim_flash_data, FLASH_SIZE);
+		keep_snapped = true;
+	}
+}
+
+// codeplug.bin from another radio's image (other bytes in both ranges) and with edits beside them: the commit keeps
+// the stored bytes and writes the rest; a power cut at every operation of the commit and of tftp_codeplug_resume
+static void test_keep_codeplug(void)
+{
+	static uint8_t img[TFTP_CODEPLUG_SIZE], old[TFTP_CODEPLUG_SIZE], back[TFTP_CODEPLUG_SIZE];
+	static uint32_t pt[1024];
+	storage_stats_t s0, s1;
+	channel_t ch;
+	capture = false;
+	keep_fill(maker_a, KEEP_A_SIZE, 0x61);
+	keep_fill(maker_b, KEEP_B_SIZE, 0x83);
+	keep_populate();
+
+	// A read shows the radio's bytes in the ranges
+	CHECK(get("codeplug.bin", NULL, back, sizeof(back), 512) == (long)TFTP_CODEPLUG_SIZE);
+	CHECK(memcmp(back + KEEP_A, maker_a, KEEP_A_SIZE) == 0 && memcmp(back + KEEP_B, maker_b, KEEP_B_SIZE) == 0);
+	expected_image(old);
+	memcpy(img, old, sizeof(img));
+	keep_fill(img + KEEP_A, KEEP_A_SIZE, 0x15);
+	keep_fill(img + KEEP_B, KEEP_B_SIZE, 0x27);
+	memset(img + KEEP_A_SECTOR + 0x400, 0x3C, 16);		// beside the range, in its sector
+	rename_channel(img, 8, "Kept");
+	storage_get_stats(&s0);
+	CHECK(put("codeplug.bin", NULL, img, TFTP_CODEPLUG_SIZE, 512) == 0);
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_regions_equal(img) && sim_flash_data[EE + KEEP_A_SECTOR + 0x400] == 0x3C);
+	CHECK(codeplug_channel(8, &ch) && strcmp(ch.name, "Kept") == 0);
+	CHECK(sim_flash_data[STAGING] == 0xFF);			// the record erased
+	CHECK(s1.factory_rewrites == s0.factory_rewrites + 1 && s1.factory_dropped == s0.factory_dropped + 2);
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+
+	// The same file again but for other bytes in the ranges: success, nothing rewritten (no erase), both dropped
+	static uint8_t img2[TFTP_CODEPLUG_SIZE];
+	memcpy(img2, img, sizeof(img2));
+	keep_fill(img2 + KEEP_A, KEEP_A_SIZE, 0x5A);
+	keep_fill(img2 + KEEP_B, KEEP_B_SIZE, 0x6B);
+	uint32_t erases = sim_flash_erases(EE + KEEP_A_SECTOR) + sim_flash_erases(EE + KEEP_B);
+	storage_get_stats(&s0);
+	CHECK(put("codeplug.bin", NULL, img2, TFTP_CODEPLUG_SIZE, 512) == 0);
+	storage_get_stats(&s1);
+	CHECK(keep_intact() && keep_regions_equal(img) && sim_flash_data[STAGING] == 0xFF);
+	CHECK(sim_flash_erases(EE + KEEP_A_SECTOR) + sim_flash_erases(EE + KEEP_B) == erases);
+	CHECK(s1.factory_rewrites == s0.factory_rewrites && s1.factory_dropped == s0.factory_dropped + 2);
+
+	// A power cut at every erase and program from the last block on (the staged bytes, the record, the copies, the
+	// record's erase), then a restart and the resume: old or new outside the ranges, the ranges the stored bytes
+	keep_populate();
+	uint16_t tid = keep_put_but_last(img);
+	sim_flash_ops_begin();
+	keep_snapped = false;
+	sim_flash_set_log(keep_snap_log);
+	keep_put_last(tid, img);
+	sim_flash_set_log(NULL);
+	uint32_t n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	CHECK(keep_snapped && keep_intact() && keep_regions_equal(img) && sim_flash_data[STAGING] == 0xFF);
+	int olds = 0, news = 0, bad = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		keep_populate();
+		tid = keep_put_but_last(img);
+		sim_flash_cut_after(pt[i]);
+		keep_put_last(tid, img);
+		bool was_cut = sim_flash_is_cut();
+		keep_restart();
+		tftp_codeplug_resume();
+		codeplug_init();
+		bool is_new = keep_regions_equal(img), is_old = keep_regions_equal(old);
+		if (!was_cut || !keep_intact() || !(is_new || is_old) || sim_flash_data[STAGING] != 0xFF ||
+		    sim_flash_violations() != 0 || sim_flash_ungranted() != 0) {
+			printf("FAIL %s:%d: commit cut after %u units\n", __FILE__, __LINE__, (unsigned)pt[i]);
+			bad++;
+		}
+		olds += is_old && !is_new;
+		news += is_new;
+	}
+	failures += bad;
+	CHECK(n > 40 && olds > 0 && news > 0);
+	printf("# %u power cuts through a TFTP commit on kept sectors: %d old, %d new, the ranges always kept\n",
+	       (unsigned)n, olds, news);
+
+	// The record as a cut right after it leaves it, then a cut at every operation of the resume and a second start:
+	// the new codeplug, the ranges kept, the record erased. Each resume that copies the sectors again drops the
+	// ranges' bytes again (counted per write)
+	memcpy(sim_flash_data, keep_snap, FLASH_SIZE);
+	keep_restart();
+	sim_flash_ops_begin();
+	CHECK(tftp_codeplug_resume());
+	n = sim_flash_cut_points(pt, sizeof(pt) / sizeof(pt[0]));
+	CHECK(keep_intact() && keep_regions_equal(img) && sim_flash_data[STAGING] == 0xFF);
+	int again = 0;
+	bad = 0;
+	for (uint32_t i = 0; i < n; i++) {
+		memcpy(sim_flash_data, keep_snap, FLASH_SIZE);
+		keep_restart();
+		sim_flash_cut_after(pt[i]);
+		bool first = tftp_codeplug_resume();
+		bool was_cut = sim_flash_is_cut();
+		keep_restart();
+		storage_get_stats(&s0);
+		bool second = tftp_codeplug_resume();
+		storage_get_stats(&s1);
+		codeplug_init();
+		// (the last cut tears the record's erase: the copy is done, the first bytes erased, nothing to resume)
+		if ((first && i + 1u != n) || !was_cut || !keep_intact() || !keep_regions_equal(img) ||
+		    sim_flash_data[STAGING] != 0xFF || (second && s1.factory_dropped < s0.factory_dropped + 2) ||
+		    sim_flash_violations() != 0 || sim_flash_ungranted() != 0) {
+			printf("FAIL %s:%d: tftp_codeplug_resume cut after %u units\n", __FILE__, __LINE__,
+			       (unsigned)pt[i]);
+			bad++;
+		}
+		again += second;
+	}
+	failures += bad;
+	CHECK(n > 20 && again > 0);
+	CHECK(codeplug_channel(8, &ch) && strcmp(ch.name, "Kept") == 0);
+	printf("# %u power cuts through tftp_codeplug_resume on kept sectors: the new codeplug, the ranges kept\n",
+	       (unsigned)n);
+	capture = true;
+}
+
+// A factory range in the ID database's area 2, nine sectors in: a database that would reach its sector is refused
+// before anything is erased (the stored one stays, the client gets an error, counted in tftp.errors); one that ends
+// before it is taken. A combined codeplug.bin carrying such a database fails as a whole. And one in the header's
+// sector: every database is refused
+#define IDDB_KEEP	(A2_PHYS + 0x8100u)
+#define IDDB_KEEP_HDR	(A1_PHYS + 0x800u)
+#define IDDB_KEEP_MAP(a)	{ \
+	.settings_addr = 0x11000u, .settings_size = 0x8000u, .journal_addr = 0x19000u, \
+	.openfw_eeprom = EE, .openfw_flash = FL, .openfw_end = 0x1C0000u, \
+	.calibration_addr = 0x10000u, .calibration_size = 0x200u, \
+	.native_addr = 0x1C0000u, .native_size = 0x40000u, \
+	.staging_addr = STAGING, .staging_size = 0x40000u, \
+	.factory = { { (a), 0x100u } }, \
+}
+static const hal_flash_map_t iddb_keep_map = IDDB_KEEP_MAP(IDDB_KEEP);
+static const hal_flash_map_t iddb_keep_hdr_map = IDDB_KEEP_MAP(IDDB_KEEP_HDR);
+
+// Erases of every sector of the database's areas so far
+static uint32_t iddb_erases(void)
+{
+	uint32_t e = 0;
+	for (uint32_t a = A1_PHYS; a < 0x1C0000u; a += 0x1000u) {
+		e += sim_flash_erases(a);
+	}
+	return e;
+}
+
+static void test_keep_iddb(void)
+{
+	static uint8_t db[12 + 30000 * 15], img[SPACE_END], maker[0x100];
+	char tsize[16];
+	channel_t ch;
+	tftp_stats_t t0, t1;
+	capture = false;
+	populate_on(&iddb_keep_map);
+	memset(sim_flash_data + A1_PHYS, 0xFF, 0x40000);
+	keep_fill(maker, sizeof(maker), 0x4D);
+	memcpy(&sim_flash_data[IDDB_KEEP], maker, sizeof(maker));
+	dmr_iddb_init();
+
+	// Area 2 up to the sector before the range's: taken
+	uint32_t fits = IDDB_PER1 + (IDDB_KEEP - 0x100u - A2_PHYS) / 15u;
+	uint32_t n = make_db(db, fits, 8);
+	CHECK(put("iddb.bin", NULL, db, n, 512) == 0 && dmr_iddb_count() == fits && iddb_has(fits - 1u, 8));
+
+	// One record more, its last bytes in the range's sector, and one more sector's worth: refused before any erase,
+	// the stored database stays
+	uint32_t erases = iddb_erases();
+	CHECK((A2_PHYS + (fits - IDDB_PER1) * 15u) % 0x1000u > 0x1000u - 15u);	// the last record ends in the sector before
+	uint32_t reach = fits + 1u;
+	n = make_db(db, reach, 9);
+	tftpStats(&t0);
+	CHECK(put("iddb.bin", NULL, db, n, 512) == -(TFTP_ERR_OTHER + 1));
+	tftpStats(&t1);
+	CHECK(t1.errors == t0.errors + 1 && iddb_erases() == erases);
+	reach = fits + 0x1000u / 15u;
+	n = make_db(db, reach, 9);
+	tftpStats(&t0);
+	CHECK(put("iddb.bin", NULL, db, n, 512) == -(TFTP_ERR_OTHER + 1));
+	tftpStats(&t1);
+	CHECK(t1.errors == t0.errors + 1 && iddb_erases() == erases);
+	CHECK(dmr_iddb_count() == fits && iddb_has(fits - 1u, 8) && !iddb_has(0, 9));
+	CHECK(memcmp(&sim_flash_data[IDDB_KEEP], maker, sizeof(maker)) == 0 && sim_flash_ungranted() == 0);
+
+	// The same database in a combined codeplug.bin: the transfer fails, codeplug and database as they were
+	expected_image(img);
+	memset(img + TFTP_CODEPLUG_SIZE, 0xFF, sizeof(img) - TFTP_CODEPLUG_SIZE);
+	rename_channel(img, 8, "Not taken");
+	uint32_t end = db_into_image(img, db, reach);
+	snprintf(tsize, sizeof(tsize), "%u", (unsigned)end);
+	const char *copts[] = { "blksize", "1428", "tsize", tsize, NULL };
+	CHECK(put("codeplug.bin", copts, img, end, 512) == -(TFTP_ERR_OTHER + 1));
+	CHECK(iddb_erases() == erases && dmr_iddb_count() == fits && iddb_has(fits - 1u, 8));
+	CHECK(codeplug_channel(8, &ch) && strcmp(ch.name, "Not taken") != 0);
+	CHECK(memcmp(&sim_flash_data[IDDB_KEEP], maker, sizeof(maker)) == 0);
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+
+	// The range in the header's sector: even a database of one record is refused, nothing erased
+	populate_on(&iddb_keep_hdr_map);
+	memset(sim_flash_data + A1_PHYS, 0xFF, 0x40000);
+	memcpy(&sim_flash_data[IDDB_KEEP_HDR], maker, sizeof(maker));
+	dmr_iddb_init();
+	erases = iddb_erases();
+	n = make_db(db, 1, 7);
+	CHECK(put("iddb.bin", NULL, db, n, 512) == -(TFTP_ERR_OTHER + 1));
+	CHECK(iddb_erases() == erases && dmr_iddb_count() == 0);
+	CHECK(memcmp(&sim_flash_data[IDDB_KEEP_HDR], maker, sizeof(maker)) == 0);
+	CHECK(sim_flash_violations() == 0 && sim_flash_ungranted() == 0);
+	printf("# the ID database refused before an erase where it would reach a kept sector; short of it, taken\n");
+	capture = true;
+}
+#endif
+
 int main(void)
 {
 	uint32_t header[6] = { 0xA1B2C3D4, 0x00040002, 0, 0, 65535, 1 };
-	pcap = fopen("tftpTest.pcap", "wb");
+	pcap = fopen(TFTP_PCAP, "wb");
 	fwrite(header, sizeof(header), 1, pcap);
 	sim_flash_create(FLASH_SIZE, &map);
 	ipGatewayInit(RADIO_MAC, HOST_MAC);
@@ -1163,6 +1491,10 @@ int main(void)
 	test_codeplug_edges();
 	test_iddb();
 	test_fuzz();
+#if STORAGE_FACTORY_KEEP
+	test_keep_codeplug();
+	test_keep_iddb();
+#endif
 
 	fclose(pcap);
 	sim_flash_free();

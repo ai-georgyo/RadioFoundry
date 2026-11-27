@@ -8,19 +8,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { fromHex, toHex, sha256, crc32, u32le, equal } from "../static/js/flasher/bytes.js";
+import { fromHex, toHex, sha256, crc32, u32le, equal, concat } from "../static/js/flasher/bytes.js";
 import * as stockfw from "../static/js/flasher/stockfw.js";
 import { makePlan, KEEP, MERGE, RESTORE, PlanError } from "../static/js/flasher/plan.js";
 import { verify, segments, ManifestError } from "../static/js/flasher/manifest.js";
 import { Dfu, NormalModeError, WebUsbTransport, dfuRegion, normalMode } from "../static/js/flasher/dfu.js";
-import { Link, LinkError, crc16, frame, parseFrames, probe } from "../static/js/flasher/link.js";
+import { Link, LinkError, crc16, frame, parseFrames, probe, FACTORY_SOURCES, FACTORY_WINDOW, FACTORY_RECORD, FACTORY_CHUNK } from "../static/js/flasher/link.js";
 import { FakeRadio, simulation } from "../static/js/flasher/fake.js";
 import { zip, unzip } from "../static/js/flasher/zip.js";
 import * as vendorfile from "../static/js/flasher/vendorfile.js";
 import * as explain from "../static/js/flasher/explain.js";
 import { pictureSrc } from "../static/js/flasher/radiotop.js";
 import { readRadio, makeBundle, openBundle, bundleFolder, notBundle, bundleName, CODEPLUG_SPAN } from "../static/js/flasher/backup.js";
-import { targets, planInternal, planStock, codeplugSectors, writeCodeplug } from "../static/js/flasher/restore.js";
+import { targets, planInternal, planStock, codeplugSectors, keptDiffering, writeCodeplug, factoryCheck, factoryWrite, factoryWhyKey, FACTORY_RESULTS, FACTORY_WHY_KEYS } from "../static/js/flasher/restore.js";
+import { FakeCpsRadio } from "../static/js/codeplug/fakecps.js";
 import { Selection } from "../static/js/flasher/select.js";
 import { codecPresent, decideCodec, DecisionError } from "../static/js/flasher/decide.js";
 import { findKey, readBootKey } from "../static/js/flasher/bootkey.js";
@@ -396,6 +397,308 @@ test("the bootloader route's Install asks before an install without a codec", ()
 	assert.match(body.slice(0, ask), /S\.requested = null; S\.step--/);
 });
 
+// app.js needs the DOM, so its source is checked: a codeplug restore that kept protected data where the backup's differs
+// says so on the page, with the way to write it back, not only in the diagnostics trail
+test("the codeplug restore shows the protected data it kept", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const at = src.indexOf("const kept = keptDiffering(");
+	const step = src.slice(at, src.indexOf("S.forward(go);", at));
+	assert.match(step, /if \(kept\.length\) status\.append\(factoryStep\(link, spi\.data\)\);/);
+	const fn = src.slice(src.indexOf("function keptNotice("));
+	const body = fn.slice(0, fn.indexOf(";\n\n", fn.indexOf("const troubleLink")));
+	assert.match(body, /t\("flash\.restore\.kept_differs"\), " ", troubleLink\(\)/);
+	assert.match(body, /20-troubleshooting\.html#the-factory-calibration-differs-from-the-backup/);
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	assert.match(en["flash.restore.kept_differs"], /rfoundry_debug\.py storage factory --backup/);
+	const md = readFileSync(new URL("../../docs/user/20-troubleshooting.md", import.meta.url), "utf8");
+	assert.match(md, /^## The factory calibration differs from the backup$/m, "the anchor the notice links");
+});
+
+// The factory copy's restore after a codeplug restore (settings-store.md 4.2, debuglink.md 3.13 ops 1 and 3-5), against a
+// radio that answers the debug link as core/debuglink and the factory copy do. Invented ranges and bytes: a "table" of
+// 512 bytes at 0x1000 and the maker's "records", whole sectors at 0x1E000, as a board's [[flash.protect]] lists them
+const F_TABLE = { mem: "data", start: 0x1000, end: 0x1200, what: "factory table (hardware-x.md 2.1)" };
+const F_RECORDS = { mem: "data", start: 0x1E000, end: 0x20000, what: "maker's records (hardware-x.md 2.4)" };
+const F_PROTECT = [F_RECORDS, F_TABLE];
+const fBytes = (seed, n) => Uint8Array.from({ length: n }, (_, i) => (i * 7 + seed * 31 + (i >> 5)) & 0xFF);
+
+class FakeFactoryRadio {
+	constructor({ window = new Uint8Array(512).fill(0xFF), records = fBytes(9, 0x2000), record = null } = {}) {
+		this.spi = new Uint8Array(0x20000).fill(0xFF);
+		this.spi.set(window, F_TABLE.start);
+		this.spi.set(records, F_RECORDS.start);
+		this.record = record;		// the record's bytes (state ok), or null (blank)
+		this.info = null;		// a status op 3 answers instead (1 unknown, 2 older firmware, 3 busy, 4 unavailable)
+		this.busyFor = 0;		// op 3 answers busy this many times first
+		this.present = true;
+		this.readable = [F_TABLE, F_RECORDS];
+		this.refuse = 0;		// op 5's reason (1-10), or 0: accepted
+		this.busy = false;		// op 5 answers busy
+		this.job = 0;			// the job's result once it ran (0 ok, 11-13 its failures, 1-10 its re-check)
+		this.pending = 1;		// op 3 polls the job stays pending
+		this.result = 0xFF;
+		this.loaded = new Uint8Array(0);
+		this.ops = [];
+		this.reads = 0;
+		this.infoCrc = null;		// the window CRC-32 op 3 reports instead of the window's (the radio's read at its start)
+		this.flipAt = null;		// an address the next READ covering it returns with bit 0 flipped (a marginal read)
+	}
+
+	windowState() {
+		const w = this.spi.subarray(F_TABLE.start, F_TABLE.end);
+		return w.every((x) => x === 0xFF) ? 1 : w.every((x) => x === 0) ? 2 : 4;
+	}
+
+	answer(req) {
+		const f = parseFrames(req)[0];
+		const reply = (st, p = []) => frame(f.cmd | 0x80, f.seq, Uint8Array.from([st, ...p]));
+		const le = (v, n) => Array.from({ length: n }, (_, i) => (v >>> (8 * i)) & 0xFF);
+		const q = f.payload;
+		if (f.cmd !== 0x0F) return reply(1);
+		this.ops.push(q[0]);
+		if (q[0] === 1) {
+			const addr = u32le(q, 1), n = q[5] | (q[6] << 8);
+			if (!this.readable.some((r) => addr >= r.start && addr + n <= r.end)) return reply(7);
+			this.reads++;
+			const got = this.spi.slice(addr, addr + n);
+			if (this.flipAt !== null && this.flipAt >= addr && this.flipAt < addr + n) {
+				got[this.flipAt - addr] ^= 0x01;
+				this.flipAt = null;
+			}
+			return reply(0, [...le(addr, 4), ...got]);
+		}
+		if (q[0] === 3) {
+			if (this.info !== null) return reply(this.info);
+			if (this.busyFor > 0) { this.busyFor--; return reply(3); }
+			if (!this.present) return reply(0, [0]);
+			if (this.result === 0xFE && --this.pending <= 0) this.runJob();
+			const w = this.spi.subarray(F_TABLE.start, F_TABLE.end);
+			return reply(0, [1, ...le(F_TABLE.start, 4), ...le(512, 2), this.windowState() === 4 ? 1 : this.record ? 2 : 0, this.windowState(), 0, 0, 0,
+				...le(this.infoCrc ?? crc32(w), 4), this.record ? 2 : 1, ...le(this.record ? crc32(this.record) : 0, 4), this.result, ...le(this.loaded.length, 2), 0]);
+		}
+		if (q[0] === 4) {
+			const at = q[1] | (q[2] << 8);
+			if (at !== (at ? this.loaded.length : 0)) return reply(2, le(this.loaded.length, 2));
+			this.loaded = concat(at ? this.loaded : new Uint8Array(0), q.subarray(3));
+			return reply(0, le(this.loaded.length, 2));
+		}
+		if (q[0] === 5) {
+			if (this.busy) return reply(3);
+			const n = q[1] | (q[2] << 8), crc = u32le(q, 3), wcrc = u32le(q, 7);
+			this.restoreRequest = { n, crc, wcrc };
+			if (this.refuse) return reply(7, [this.refuse, this.refuse === 5 ? 3 : 0, ...le(this.refuse === 5 ? 0x40 : 0, 2)]);
+			assert.equal(crc, crc32(this.loaded), "op 5 carries the loaded bytes' CRC-32");
+			assert.equal(wcrc, crc32(this.spi.subarray(F_TABLE.start, F_TABLE.end)), "op 5 carries the window's CRC-32 as the page read it");
+			this.result = 0xFE;
+			return reply(0, [0, 0, 0, 0]);
+		}
+		return reply(2);
+	}
+
+	runJob() {
+		this.result = this.job;
+		if (this.job === 0 || this.job === 12) this.spi.set(this.loaded, F_TABLE.start);
+		if (this.job === 0) this.record = this.loaded.slice();
+	}
+
+	stream() {
+		const radio = this;
+		const s = {
+			buf: new Uint8Array(0),
+			clear() { s.buf = new Uint8Array(0); },
+			take(n) { const o = s.buf.slice(0, n); s.buf = s.buf.slice(n); return o; },
+			async write(data) { s.buf = concat(s.buf, radio.answer(data)); },
+			async close() {},
+		};
+		return s;
+	}
+}
+
+// The backup's memory chip: the radio's, with the given table (the owner's backup of this radio)
+function factoryBackup(radio, table) {
+	const spi = radio.spi.slice();
+	spi.set(table, F_TABLE.start);
+	return spi;
+}
+
+test("STORAGE READ, FACTORY_INFO and the restore's ops on the wire: 1000-byte reads, 56-byte loads, the info decoded", async () => {
+	const radio = new FakeFactoryRadio({ record: fBytes(3, 512) });
+	const link = new Link(radio.stream());
+	assert.deepEqual(await link.storageRead(0x1E000, 0x2000), radio.spi.subarray(0x1E000, 0x20000));
+	assert.equal(radio.reads, 9, "8 KB in 1000-byte pieces");
+	await assert.rejects(link.storageRead(0x2000, 16), (e) => e instanceof LinkError && e.status === 7, "outside the ranges: refused");
+	const info = await link.factoryInfo();
+	assert.deepEqual(info, { addr: 0x1000, size: 512, source: "record", window: "blank", why: 0, off: 0,
+		windowCrc: crc32(new Uint8Array(512).fill(0xFF)), record: "ok", recordCrc: crc32(fBytes(3, 512)), result: 0xFF, loaded: 0, wrote: 0 });
+	const table = fBytes(3, 512);
+	assert.deepEqual(await link.factoryRestore(table, info.windowCrc), { reason: 0, why: 0, off: 0 });
+	assert.deepEqual(radio.loaded, table);
+	assert.deepEqual(radio.ops.filter((op) => op === 4).length, Math.ceil(512 / 56));
+	assert.deepEqual(radio.restoreRequest, { n: 512, crc: crc32(table), wcrc: info.windowCrc });
+	radio.present = false;
+	assert.equal(await link.factoryInfo(), null, "present 0: the board keeps no factory copy");
+});
+
+test("the factory step: a blank window, this radio's backup: one restore through ops 4 and 5, the result polled, the window read back", async () => {
+	const radio = new FakeFactoryRadio();
+	radio.infoCrc = 0;		// op 3's window CRC isn't the window's: the handshake carries the page's own read, never the radio's
+	const table = fBytes(1, 512);
+	const backup = factoryBackup(radio, table);
+	const link = new Link(radio.stream());
+	const chk = await factoryCheck(link, backup, F_PROTECT);
+	assert.equal(chk.kind, "offer");
+	assert.deepEqual(chk.crc, { radio: crc32(new Uint8Array(512).fill(0xFF)), record: null, backup: crc32(table) });
+	assert.deepEqual(chk.others.map((o) => [o.entry, o.same]), [[F_RECORDS, true]], "the identity compare: the records are the radio's");
+	assert.ok(!radio.ops.includes(4) && !radio.ops.includes(5), "the check writes nothing");
+	radio.pending = 3;
+	const r = await factoryWrite(link, chk, { pollMs: 0 });
+	assert.deepEqual([r.result, r.refused, r.same], ["ok", false, true]);
+	assert.deepEqual(radio.spi.subarray(F_TABLE.start, F_TABLE.end), table);
+	assert.deepEqual(radio.record, table, "and the radio's own copy");
+	assert.equal(radio.ops.filter((op) => op === 5).length, 1);
+	// done: compared again, it is the same, and nothing is offered
+	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "same");
+});
+
+test("the factory step: the same table, a blank backup, no copy, a range the page doesn't know, a short backup: nothing offered", async () => {
+	const table = fBytes(2, 512);
+	const radio = new FakeFactoryRadio({ window: table, record: table });
+	const link = new Link(radio.stream());
+	const same = await factoryCheck(link, factoryBackup(radio, table), F_PROTECT);
+	assert.equal(same.kind, "same");
+	assert.deepEqual(same.crc, { radio: crc32(table), record: crc32(table), backup: crc32(table) });
+	assert.deepEqual(radio.ops.filter((op) => op === 1).length, 2, "the window read twice, no identity read needed");
+	for (const fill of [0xFF, 0x00]) assert.equal((await factoryCheck(link, factoryBackup(radio, new Uint8Array(512).fill(fill)), F_PROTECT)).kind, "empty");
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)), [F_RECORDS, { ...F_TABLE, end: 0x1100 }])).kind, "disagree");
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)).subarray(0, 0x1100), F_PROTECT)).kind, "short");
+	radio.present = false;
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)), F_PROTECT)).kind, "none");
+	assert.ok(!radio.ops.includes(4) && !radio.ops.includes(5));
+});
+
+test("the factory step: another radio's backup, or one the page can't tie to this radio, gets no button", async () => {
+	const radio = new FakeFactoryRadio();
+	const link = new Link(radio.stream());
+	const other = factoryBackup(radio, fBytes(1, 512));
+	other[0x1E123] ^= 0x01;		// the maker's records: another radio's
+	const chk = await factoryCheck(link, other, F_PROTECT);
+	assert.equal(chk.kind, "other_radio");
+	assert.deepEqual(chk.others.map((o) => [o.radio, o.file, o.same]), [[crc32(radio.spi.subarray(0x1E000, 0x20000)), crc32(other.subarray(0x1E000, 0x20000)), false]]);
+	// the backup ends before the records, the radio doesn't open them to reads, or the board has no other range
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)).subarray(0, 0x10000), F_PROTECT)).kind, "unchecked");
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)), [F_TABLE])).kind, "unchecked");
+	radio.readable = [F_TABLE];
+	assert.equal((await factoryCheck(link, factoryBackup(radio, fBytes(1, 512)), F_PROTECT)).kind, "unchecked");
+	assert.ok(!radio.ops.includes(4) && !radio.ops.includes(5), "nothing loaded, nothing restored");
+});
+
+test("the factory step: an earlier firmware gets the tool command, a radio still starting is asked again", async () => {
+	const radio = new FakeFactoryRadio();
+	const link = new Link(radio.stream());
+	const backup = factoryBackup(radio, fBytes(1, 512));
+	for (const st of [1, 2]) {
+		radio.info = st;
+		assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "unavailable", `op 3 status ${st}`);
+	}
+	// A board (or a build) without the factory copy answers unavailable: no copy, the kept notice alone, never the
+	// advice to install the current firmware, which would change nothing; and nothing read or sent after op 3
+	radio.info = 4;
+	const ops = radio.ops.length;
+	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "none", "op 3 status 4");
+	assert.deepEqual(radio.ops.slice(ops), [3], "op 3 alone");
+	radio.info = null;
+	radio.readable = [F_RECORDS];		// a firmware before the factory range's read rule
+	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "unavailable");
+	radio.readable = [F_TABLE, F_RECORDS];
+	radio.busyFor = 2;
+	assert.equal((await factoryCheck(link, backup, F_PROTECT, { busyWaitMs: 0 })).kind, "offer", "busy twice, then loaded");
+	radio.busyFor = 10;
+	assert.equal((await factoryCheck(link, backup, F_PROTECT, { busyWaitMs: 0 })).kind, "busy");
+	// two reads of the window that differ: asked again; of the maker's records: not compared, so no button
+	radio.busyFor = 0;
+	radio.flipAt = F_TABLE.start + 5;
+	const flipped = await factoryCheck(link, backup, F_PROTECT);
+	assert.deepEqual([flipped.kind, flipped.info?.addr], ["busy", F_TABLE.start], "loaded, then the window read differently");
+	radio.flipAt = F_RECORDS.start + 0x1234;
+	assert.equal((await factoryCheck(link, backup, F_PROTECT)).kind, "unchecked");
+	assert.ok(!radio.ops.includes(4) && !radio.ops.includes(5));
+});
+
+test("the factory step: every refusal and failure by its reason, each with its words in every catalog", async () => {
+	const catalogs = ["en", "es", "it", "zh"].map((l) => JSON.parse(readFileSync(new URL(`../i18n/${l}.json`, import.meta.url), "utf8")));
+	for (const k of FACTORY_WHY_KEYS) for (const c of catalogs) assert.ok(c[k], k);
+	const table = fBytes(1, 512);
+	const run = async (set) => {
+		const radio = new FakeFactoryRadio();
+		const link = new Link(radio.stream());
+		const chk = await factoryCheck(link, factoryBackup(radio, table), F_PROTECT);
+		assert.equal(chk.kind, "offer");
+		set(radio);
+		return [await factoryWrite(link, chk, { pollMs: 0, waitMs: 50 }), radio];
+	};
+	// op 5's checks (1-10): refused, nothing written
+	for (let reason = 1; reason <= 10; reason++) {
+		const [r, radio] = await run((x) => { x.refuse = reason; });
+		assert.deepEqual([r.result, r.refused], [FACTORY_RESULTS[reason], true], `reason ${reason}`);
+		assert.ok(radio.spi.subarray(F_TABLE.start, F_TABLE.end).every((x) => x === 0xFF));
+		assert.ok(FACTORY_WHY_KEYS.includes(factoryWhyKey(r)[0]) && factoryWhyKey(r)[0] !== "flash.restore.factory_why_other", `words for ${r.result}`);
+		if (reason === 5) assert.deepEqual([r.why, r.off], [3, 0x40], "invalid: the checker's reason and offset");
+	}
+	// the job's re-check under the storage lock refuses too; its own failures are failures, the record one leaves the window back
+	assert.deepEqual((await run((x) => { x.job = 8; }))[0].refused, true);
+	for (const [job, same] of [[11, false], [12, true], [13, false]]) {
+		const [r] = await run((x) => { x.job = job; });
+		assert.deepEqual([r.result, r.refused, r.same], [FACTORY_RESULTS[job], false, same], `result ${job}`);
+		assert.notEqual(factoryWhyKey(r)[0], "flash.restore.factory_why_other");
+	}
+	const [busy] = await run((x) => { x.busy = true; });
+	assert.deepEqual([busy.result, busy.refused], ["busy", true]);
+	const [late] = await run((x) => { x.pending = 1e9; });
+	assert.deepEqual([late.result, late.refused], ["timeout", false]);
+	// the job said ok, but the window read back is not the backup's: a failure, by the read back's words
+	const [back] = await run((x) => { x.flipAt = F_TABLE.start + 7; });
+	assert.deepEqual([back.result, back.refused, back.same, factoryWhyKey(back)[0]], ["ok", false, false, "flash.restore.factory_why_readback"]);
+	assert.deepEqual(factoryWhyKey({ result: "other" }), ["flash.restore.factory_why_other", { name: "other" }]);
+});
+
+// The numbers on the wire are the firmware's: its names, in its order (core/storage/factory_copy.c)
+test("the factory copy's states and results by the firmware's names", () => {
+	const src = readFileSync(new URL("../../core/storage/factory_copy.c", import.meta.url), "utf8");
+	const names = (fn) => {
+		const at = src.indexOf(`const char *${fn}(`);
+		assert.ok(at > 0, fn);
+		const list = src.slice(at).match(/names\[\] = \{([^}]*)\}/)[1];
+		return [...list.matchAll(/"([a-z_?]+)"/g)].map((m) => m[1]);
+	};
+	assert.deepEqual(names("factory_copy_src_name"), FACTORY_SOURCES);
+	assert.deepEqual(names("factory_copy_win_name"), FACTORY_WINDOW);
+	assert.deepEqual(names("factory_copy_rec_name"), FACTORY_RECORD);
+	assert.deepEqual(names("factory_copy_result_name"), FACTORY_RESULTS);
+	const h = readFileSync(new URL("../../core/storage/factory_copy.h", import.meta.url), "utf8");
+	assert.equal(Number(h.match(/#define FACTORY_COPY_LOAD_CHUNK\s+(\d+)u/)[1]), FACTORY_CHUNK, "op 4's chunk");
+});
+
+// app.js needs the DOM, so its source is checked: the step's button exists only for an offer, its words are in every
+// catalog, and the radio's refusal is shown by its reason
+test("the factory step's page: the button only for an offer, every word in every catalog", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const fn = src.slice(src.indexOf("function factoryStep("));
+	const body = fn.slice(0, fn.indexOf("\n}\n"));
+	const offer = body.indexOf('if (c.kind !== "offer") return');
+	assert.ok(offer > 0 && body.indexOf('t("flash.restore.factory_go")') > offer, "the button after the offer test");
+	assert.match(body, /await factoryWrite\(link, c\)/);
+	assert.match(body, /unavailable: \(\) => \[notice\(t\("flash\.restore\.factory_old_fw"\), "info"\), keptNotice\(\)\]/);
+	const keys = new Set([...body.matchAll(/t\("(flash\.restore\.factory_[a-z_]+)"/g)].map((m) => m[1]));
+	for (const st of ["ok", "blank", "zero", "refused", "unread", "bad", "none", "other"]) keys.add(`flash.restore.factory_state_${st}`);
+	for (const k of ["flash.restore.factory_refused", "flash.restore.factory_failed"]) keys.add(k);
+	assert.ok(keys.size > 20);
+	for (const l of ["en", "es", "it", "zh"]) {
+		const c = JSON.parse(readFileSync(new URL(`../i18n/${l}.json`, import.meta.url), "utf8"));
+		for (const k of keys) assert.ok(c[k], `${l}: ${k}`);
+	}
+	assert.match(JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"))["flash.restore.factory_other_radio"], /--no-identity/);
+});
+
 // app.js needs the DOM, so its source is checked: the bar under every step but the last offers Report a Problem, since
 // a page stuck waiting on the radio shows no error and so no error's button (#446); the done steps have their own
 test("every step's nav bar offers Report a Problem", () => {
@@ -750,6 +1053,74 @@ test("after the backup, the stock data in RadioFoundry's settings area is claime
 	assert.ok(radio.events.includes("storage claimed"));
 });
 
+// STORAGE INFO's flags byte (debuglink.md 3.13) after the three ranges: bit 0 says the board's memory chip is claimed
+// only after a backup of all of it. Firmware before it ends after the ranges (the simulated radio's answer)
+test("STORAGE INFO says whether the board claims first; older firmware doesn't, and reads as not", async () => {
+	const { radio } = await simulated("rfoundry");
+	const link = new Link(radio.serialStream());
+	const old = await link.storageInfo();
+	assert.equal(old.claimFirst, false);
+	assert.deepEqual(old.calibration, { addr: 0x10000, size: 0x200 });
+	const answer = radio.serialAnswer.bind(radio);
+	let flags = 1;
+	radio.serialAnswer = (req) => {
+		const r = answer(req);
+		const f = parseFrames(req)[0];
+		if (f?.cmd !== 0x0F || f.payload[0] !== 0) return r;
+		const a = parseFrames(r)[0];
+		return frame(a.cmd, a.seq, Uint8Array.from([...a.payload, flags]));
+	};
+	const first = await link.storageInfo();
+	assert.equal(first.claimFirst, true);
+	assert.equal(first.region, "foreign");
+	assert.deepEqual(first.calibration, old.calibration, "the ranges read as before");
+	flags = 0xFE;	// the other bits are not the flag
+	assert.equal((await link.storageInfo()).claimFirst, false);
+	radio.noMap = true;
+	assert.equal((await link.storageInfo()).claimFirst, false, "no flash map: nothing to claim");
+});
+
+// app.js needs the DOM, so its source is checked: a restore of channels asks STORAGE INFO first, and on a claim-first
+// board whose memory chip isn't RadioFoundry's yet it neither reads, claims nor writes: the backup of everything does
+// the claim, after it read the whole chip
+test("a restore of channels doesn't claim a memory chip that is claimed only after a full backup", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const body = src.slice(src.indexOf("function afterRestore("), src.indexOf("\n}\n", src.indexOf("function afterRestore(")));
+	const check = body.indexOf('st?.region === "foreign" && st.claimFirst');
+	assert.ok(check > body.indexOf("await link.storageInfo()") && body.indexOf("await link.storageInfo()") > 0, "INFO read before the check");
+	for (const later of ["link.cpsDump(", "prepareStorage(", "writeCodeplug("]) assert.ok(check < body.indexOf(later), `checked before ${later}`);
+	assert.match(body.slice(check, body.indexOf("return;", check)), /t\("flash\.restore\.claim_first"\)/);
+	assert.ok(en["flash.restore.claim_first"]);
+	// the backup of everything claims only when its memory chip read is complete
+	assert.match(src, /const whole = pick === "all" && !!S\.backupParts\.find\(\(x\) => x\.what === "spi-flash"\)\?\.complete;/);
+	assert.match(src, /if \(whole\) await prepareStorage\(status, \{ whole \}\);/);
+});
+
+// The rule in one place: prepareStorage claims a claim-first board's memory chip only for a caller whose backup holds
+// all of it, and tells any other caller to write nothing; the install's channel step read the codeplug span alone
+test("the install's channel step doesn't claim a memory chip that is claimed only after a full backup", () => {
+	const src = readFileSync(new URL("../static/js/flasher/app.js", import.meta.url), "utf8");
+	const en = JSON.parse(readFileSync(new URL("../i18n/en.json", import.meta.url), "utf8"));
+	const fn = src.slice(src.indexOf("async function prepareStorage("), src.indexOf("\n}\n", src.indexOf("async function prepareStorage(")));
+	assert.match(fn, /^async function prepareStorage\(box, \{ whole = false \} = \{\}\)/);
+	const check = fn.indexOf("if (st.claimFirst && !whole) {");
+	assert.ok(check > fn.indexOf('if (st?.region !== "foreign") return true;') && check < fn.indexOf("storageClaim("), "decided before the claim");
+	const branch = fn.slice(check, fn.indexOf("return false;", check));
+	assert.match(branch, /t\("flash\.storage\.claim_first"\)/);
+	assert.doesNotMatch(branch, /storageClaim/);
+	assert.ok(en["flash.storage.claim_first"]);
+	// whole only where the backup of the whole chip was just taken: the backup of everything, a complete openfw read
+	assert.deepEqual([...src.matchAll(/await prepareStorage\([^)]*whole[^)]*\)/g)].map((m) => m[0].slice(6)),
+		["prepareStorage(status, { whole })", "prepareStorage(status, { whole: true })"]);
+	assert.match(src, /openfw\.complete\(S\.openfwRead\)\) await prepareStorage\(status, \{ whole: true \}\);/);
+	// the channel step writes nothing when it is refused
+	const bring = src.slice(src.indexOf("async function bringChannels("), src.indexOf("\n}\n", src.indexOf("async function bringChannels(")));
+	const call = bring.indexOf("if (!await prepareStorage(box)) {");
+	assert.ok(call > 0 && call < bring.indexOf("writeCodeplug("), "checked before the write");
+	assert.match(bring.slice(call, bring.indexOf("}", call)), /S\.forward\(finish\(\)\);\n\t\t\t\treturn;/);
+});
+
 test("a read whose reply lost its tail is asked again", async () => {
 	const { radio } = await simulated("rfoundry");
 	const answer = radio.serialAnswer.bind(radio);
@@ -976,6 +1347,35 @@ test("protected regions: keep and merge plans refuse a protected sector, a resto
 	const all = codeplugSectors(spi, now).map(([a]) => a);
 	const cut = codeplugSectors(spi, now, [{ mem: "data", start: 0x2000, end: 0x4000, what: "test (x.md 1)" }]).map(([a]) => a);
 	assert.deepEqual(all.filter((a) => a < 0x2000 || a >= 0x4000), cut);
+});
+
+test("the codeplug restore keeps a protected range inside a sector: compared and written around it, its bytes never sent", async () => {
+	// invented ranges: one inside sector 0x1000, one inside sector 0x4000, one covering sector 0x6000 whole
+	const T = { mem: "data", start: 0x1100, end: 0x1300, what: "factory table (hardware-x.md 2.1)" };
+	const T2 = { ...T, start: 0x4800, end: 0x4900 }, WHOLE = { ...T, start: 0x6000, end: 0x7000 }, SAME = { ...T, start: 0x8000, end: 0x8010 };
+	const protect = [WHOLE, T, SAME, T2];
+	const now = new Uint8Array(CODEPLUG_SPAN).fill(0x22);
+	now.fill(0x5A, T.start, T.end);
+	const spi = now.slice();
+	spi.fill(0x00, 0x1000, 0x1400);		// sector 0x1000 differs outside the range and inside it
+	spi.fill(0x33, 0x3100, 0x3200);		// sector 0x3000: no range
+	spi.fill(0x44, T2.start, T2.end);	// sector 0x4000 differs only inside its range
+	spi.fill(0x55, 0x6000, 0x7000);		// sector 0x6000: inside its range whole
+	const sectors = codeplugSectors(spi, now, protect);
+	assert.deepEqual(sectors.map(([a]) => a), [0x1000, 0x3000]);
+	const [, data, parts] = sectors[0];
+	assert.deepEqual(parts.map(([a, d]) => [a, d.length]), [[0x1000, 0x100], [0x1300, 0xD00]]);
+	assert.ok(data.subarray(0x100, 0x300).every((x) => x === 0x5A), "the sector as the radio will hold it: its own bytes in the range");
+	assert.deepEqual(sectors[1][2], [[0x3000, sectors[1][1]]], "a sector without a range: sent whole");
+	assert.deepEqual(keptDiffering(spi, now, protect), [WHOLE, T, T2], "the ranges whose backup bytes the radio doesn't take");
+	// through the CPS: no byte of a range sent, every written sector as the restore said it would be
+	const radio = new FakeCpsRadio({ board: "x" });
+	radio.spi.set(now);
+	assert.deepEqual(await writeCodeplug(new Link(radio.stream()), sectors), []);
+	assert.ok(radio.writes.every(([a, n]) => protect.every((p) => a + n <= p.start || a >= p.end)), "no byte of a range sent");
+	for (const [a, d] of sectors) assert.ok(equal(radio.spi.subarray(a, a + 4096), d), `sector 0x${a.toString(16)}`);
+	assert.ok(radio.spi.subarray(T.start, T.end).every((x) => x === 0x5A) && radio.spi.subarray(T2.start, T2.end).every((x) => x === 0x22));
+	assert.deepEqual(codeplugSectors(spi, radio.spi.subarray(0, CODEPLUG_SPAN), protect), [], "nothing left to write");
 });
 
 test("a backup unpacked and zipped again (one folder, macOS's __MACOSX/) still opens; a zip without backup.json does not", async () => {

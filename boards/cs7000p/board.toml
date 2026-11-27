@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 The RadioFoundry Authors
+# The CS7000 M17 PLUS's registry entry (tools/boards.py, docs/dev/adding-a-radio.md): everything the tools, CI, the docs
+# and the web site know about this radio. Build facts stay in board.mk and config.mk, the memory layout in
+# boards/cs7000p/memory.ld.
+
+id = "cs7000p"
+name = "Connect Systems CS7000 M17 PLUS"
+maker = "Connect Systems"
+# starts with the model code: tools/check_generic.py builds this radio's name pattern from it
+model = "CS7000 M17 PLUS"
+also = []
+kind = "handheld"
+debuglink_aliases = ["CS7000P", "CS7000 M17 PLUS"]
+# where the radio appears in the site's lists (the lowest: the home page's radio)
+order = 8
+# the sixth character of the APRS tocall, APRDFC (docs/spec/aprs.md 4.2): one per radio, never reused
+aprs_tocall = "C"
+
+[docs]
+hardware = "docs/spec/hardware-cs7000p.md"
+bringup = "docs/testing/cs7000p-bringup.md"
+
+# One-line summaries for the site and the generated tables; the facts are in docs.hardware. unconfirmed: a hardware
+# switch neither built nor listed in config.mk, because no source says whether the radio has the part
+[hardware]
+cpu = "STM32H743VI"
+bands = "400-527 MHz (transmit 400-512)"
+power = "1 / 4 W"
+display = "color, 160 x 128 (unverified)"
+gallery = "160x128"
+unconfirmed = { VIBRATE = "a motor driver and socket are on the board; whether this model has a motor is in no document" }
+clock = { rtc = "none", note = "no 32.768 kHz crystal and no backup supply (VBAT is on the 3.3 V rail): the time comes from GPS" }
+
+[status]
+level = "bring-up"
+summary = "Runs on a radio: the display, keys, channel selector, USB, the debug link and settings storage work, FM receive works with clear audio, and DMR calls are received and decoded. On that radio the maker's calibration was restored from the owner's backup, stayed through a codeplug write from the Codeplug Editor, and receive runs on it. Transmit on it is written but no key-up has been made on any radio, and it stays refused until the owner arms it over the debug link. No DMR voice: there is no codec route for this radio yet."
+release = "testing"
+
+# dfuse: ST's DfuSe download to the processor's own ROM bootloader, nothing encrypted and no loader of ours or the
+# maker's in program flash (docs/dev/board-registry.md). The maker's factory calibration table (data flash
+# 0x001000-0x0011FF) and its other records (0x000080-0x00021F, 0x01E000, 0x01E400, 0x01F000) are located in
+# docs/spec/calibration-cs7000p.md 2.1 and 2.4. The table and the records in the hole are the [[flash.protect]]
+# entries below, and the firmware keeps the same ranges through every rewrite of their sectors (store_cs7000p.c
+# .factory). The device information in sector 0 is not protected: it shares that sector with the open-firmware
+# callsign and DMR ID (hardware-cs7000p.md 10.3). The rest of the maker's data is not mapped, so the backup is the
+# whole 32 MB chip, and the firmware writes nothing there until the owner claims it (board.mk STORAGE_CLAIM_FIRST)
+[flash]
+family = "dfuse"
+keep_codec = false
+notice = "The first install needs a Read Unprotect, which erases the processor's whole program memory: the maker's bootloader and both of its programs. This tool can't undo it; going back is the maker's own recovery procedure with the maker's files. The install leaves the data flash as it is: back it up right after, before you let RadioFoundry write to it."
+stock_versions = []
+backup = { stock = "none", rfoundry = "full", spi_size = 0x2000000 }
+
+# hold: SK1 is the side key above PTT. The key pulls the processor's BOOT0 pin high, so holding it at power-on starts
+# the ROM bootloader (hardware-cs7000p.md, unverified on a radio)
+# restart: the firmware enters the same bootloader when the debug link asks (REBOOT, hardware-cs7000p.md 2.5), so the
+# tools restart a radio that runs RadioFoundry themselves. The board refuses it on a selector position that grounds a
+# pin the loader may drive (reason 5); restart_hint is what the tools tell the user then. Untested on a radio
+[flash.bootloader]
+hold = ["sk1"]
+restart = true
+restart_hint = "The radio refuses this restart on half of the channel selector's positions. Turn the channel selector four clicks either way and try again."
+steps = [
+	"Turn the radio off and connect the programming cable.",
+	"Hold SK1, the side key above PTT.",
+	"Turn the radio on with the volume knob while you hold the key. The screen lights up gray and stays blank.",
+	"Release the key.",
+]
+
+# The ROM bootloader's own USB identity; the maker's guides show this device. No key: a ROM DfuSe download has none.
+# string1, product and layout are added once they have been read on a radio
+[flash.dfu]
+vid = 0x0483
+pid = 0xDF11
+
+# Flash no tool changes (docs/dev/board-registry.md, "Protected regions"): mem, start and end (exclusive) as offsets
+# in that memory, what with the spec section that establishes it. Both are ranges of the board's flash map
+# (store_cs7000p.c .factory), so the table may sit inside a sector: the firmware keeps its bytes and writes the rest of
+# sector 1 (the open-firmware DTMF settings and APRS configurations). Tools writing through the firmware send no byte
+# of an entry; direct chip writers leave every 4 KB sector an entry touches as it is
+[[flash.protect]]
+mem = "data"
+start = 0x1000
+end = 0x1200
+what = "the maker's factory calibration table, 512 bytes, one copy, no checksum (calibration-cs7000p.md 2.1)"
+
+[[flash.protect]]
+mem = "data"
+start = 0x1E000
+end = 0x20000
+what = "the maker's records at 0x01E000, 0x01E400 and 0x01F000 (calibration-cs7000p.md 2.4)"
+
+# No codec route: the third shape of this table, a reason and nothing else (board.vocoder is NULL)
+[codec]
+none = "No AMBE codec route is known for this radio: DMR voice is off. DMR data, the hotspot and FM don't need one."
+
+# How the site draws the radio
+[frame]
+shape = "handheld"
+body = "#2b2b2e"
+accent = "#e07a1f"
+lens = [40, 32]
+
+# tests/hil: what the health checks expect (test_health.py). calibration: the generic check looks for a calibration the
+# radio uses; this one reads the maker's factory table and its copy, uses it in receive, and in transmit only behind
+# the owner's arm; its tests check them (boards/cs7000p/hil/test_cs7000p.py, view keys cal_table, cal_rec and tx_arm
+# in board2; tests/hil/test_tx_arm.py)
+[hil]
+display = "160x128x4"
+calibration = false
+battery_mv = [6000, 8400]
+
+# Bring-up features (tools/bringup.py, ids from tests/hil/features.toml) that are built and known not to work yet, or
+# that the radio rules out without a switch; without these lines the checklist would call them "built, not yet
+# recorded"
+[features]
+dmr_voice = { state = "unsupported", reason = "no codec route is known for this radio" }
+codec_check = { state = "n/a", reason = "no codec" }
+tone_burst_key = { state = "unsupported", reason = "the transmit tone path is not written for this radio" }
+
+# The open-firmware CPS radio type the radio reports (docs/spec/cps-protocol.md 2.2), as board.c's hal_cps_t has it:
+# the single-band 160x128 STM32 mapping
+[cps]
+radio_types = [7]

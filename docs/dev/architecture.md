@@ -18,10 +18,11 @@ reaches it at run time through the board descriptor, `board_t` in [hal/board.h](
  boards/<b>/  the radio: board_t, pins, key map, how its build differs from the platform's, codec hosting, chip glue;
               radios of one board design share it in a family directory (adding-a-radio.md)
    |  uses
- drivers/     chips shared by several radios: AT1846S, BK4819, FD6818, SKY72310, HR_C6000, HR_C7000, ST7735, ST7789,
-              RDA5807M, SPI NOR, key matrix, encoder, NMEA GPS, USB; and the math they share (mic level, battery)
+ drivers/     chips shared by several radios: AT1846S, BK4819, FD6818, SKY72310, AK2365A, HR_C6000, HR_C7000, ST7735,
+              ST7789, RDA5807M, SPI NOR, a 74HC595 output expander, key matrix, encoder, NMEA GPS, USB; the order
+              of a discrete RF chain's lines (chainseq); and the math they share (mic level, battery)
  platform/<p>/ the SoC: start-up, clocks, interrupts, time base, FreeRTOS port glue, and the build defaults its
-              boards share (stm32f4, hrc7000)
+              boards share (stm32f4, stm32h7, hrc7000); platform/stm32 is the code the STM32 platforms share
  third_party/ FreeRTOS, TinyUSB, ST HAL and CMSIS (submodules, permissive licenses)
 ```
 
@@ -31,7 +32,7 @@ reaches it at run time through the board descriptor, `board_t` in [hal/board.h](
 | `hal/` | Headers only: structs of function pointers and the data types between core and board |
 | `drivers/` | One chip each, no knowledge of the radio it sits in beyond what its init call is given. Also header-only helpers the boards share, such as `audio/miclevel` (the VOX level) and `power/battery` (the battery average and charge estimate) |
 | `boards/` | The only place that knows the radio. Fills in `board_t`; maps physical keys to logical actions |
-| `platform/` | The SoC, shared by every radio on it (the STM32F405 radios share `platform/stm32f4`), and in subdirectories the glue for a chip on that SoC that several radios share (`platform/stm32f4/hrc`, `gps_uart`, `spi_flash`, `fsmc_keypad`), built for the boards that list it in `BOARD_DIRS`. Also the build defaults: `platform.mk` (compiler, part defines, HAL modules), `config.mk` (feature defaults), `common.ld` (the memory layout), `FreeRTOSConfig.h`. A board's files list only how it differs |
+| `platform/` | The SoC, shared by every radio on it (`platform/stm32f4`, `platform/stm32h7`, `platform/hrc7000`). The two STM32 platforms build `platform/stm32` as well: everything that is the same on both families ([below](#the-stm32-family-contract)). In subdirectories, the glue for a chip or a circuit that several radios share (`platform/stm32/hrc`, `gps_uart`, `spi_flash`, `lcd8080_gpio`, `gpio_keypad`, `dmr_keyup`; `platform/stm32f4/fsmc_keypad`; `platform/stm32h7/periph`), built for the boards that list it in `BOARD_DIRS`. Also the build defaults: `platform.mk` (compiler, part defines, HAL modules), `config.mk` (feature defaults), `common.ld` (the memory layout), `FreeRTOSConfig.h`. A board's files list only how it differs |
 
 Besides `board_t`, every board provides three functions (`hal/board.h`): `board_early_init` (pins and clocks before
 the RTOS), `board_init` (from the first task) and `board_rf_safe` (transmitter off with register writes only). The
@@ -46,6 +47,38 @@ RF chip drivers share three interfaces in `drivers/rf`:
 | `rfbus` | A chip's register bus: write, read, a millisecond wait and a write count. `rfbus_3w_t` is the bit-banged 3-wire bus; a board fills its pin functions. A driver takes an `rfbus_t *` and never touches pins |
 | `subaudio` | The CTCSS, tone and DCS words every chip family uses, rounded or truncated as the caller needs |
 | `superhet` | The two roles of a superheterodyne: main transceiver and LO, as tables of ops. A driver that can fill a role exports its ops; the board detects its chips, binds each to its ops and calls only those. Steps that depend on the board (band pins, calibration lookups) stay in the board |
+
+## The STM32 family contract
+
+`platform/stm32` has no `platform.toml`: it is not a platform, and no board names it as `PLATFORM`. Each STM32
+platform lists it beside its own directory (`PLATFORM_DIRS`, `PLATFORM_SRC`, `PLATFORM_LD_DIRS` in `platform.mk`).
+Two things join the shared code to a family:
+
+| Seam | What it is |
+|---|---|
+| `stm32_family.h` | One per family, included only by `platform/stm32/platform.h`. It includes the family's ST HAL, defines `stm32_clock_t` (a board's clock table) and gives the `STM32_*` names the shared code uses wherever the families differ: a register, a bit, a reset flag, a RAM range, a hook that is empty on one family. Every name exists in each family's file |
+| Family halves | Three shared files include a header of the family once, at the place where the family's code sits: `sysboot_soc.h` in `sysboot.c` (the jump to the ROM bootloader), `hrc/i2s_pcm_soc.h` in `hrc/i2s_pcm.c` (the I2S block and its DMA), `gps_uart/gps_uart_soc.h` in `gps_uart/gps_uart.c` (the USART). A half defines a fixed set of `static` functions, listed at the include |
+
+Rules:
+
+- An opt-in directory `X` has its shared logic in `platform/stm32/X` and a family's part in `platform/<family>/X`.
+  A board lists both in `BOARD_DIRS` when the family directory has a `.c` file; a family directory with headers only
+  is found through the include path.
+- A file name exists in one of the two platform directories only.
+- A difference between two radios is never a family macro. Pins, interrupt lines and timings are board parameters
+  (a configuration struct, or a define in the board's `MCU_DEFS` with a default in the shared header).
+- Bit-banged bus timing uses `stm32_wait_ns()` (`platform.h`), which counts CPU cycles. A counted loop takes one to
+  three cycles a pass depending on the core.
+- A pin nobody configured differs: a floating input on the STM32F4, analog mode (it reads 0) on the STM32H7.
+- A change to a shared file is checked on every board of both platforms: an image built before and after, compared
+  byte for byte ([gotchas.md](../spec/gotchas.md) 13.13).
+
+The STM32H7 platform adds three weak board hooks for the time around a reset (`platform/stm32h7/soc.h`):
+`board_reset_safe()` runs from the reset handler before `.data` and `.bss` exist, for outputs that are undefined at
+reset; `board_reset_prepare()` runs before every software reset, for outputs that outlive one;
+`board_rom_entry_ok()` lets a board refuse the software entry to the ROM bootloader. The platform's
+`hal_system_t.reboot_ok` applies the same rule, so the debug link refuses such a REBOOT before it answers
+([debuglink.md](../spec/debuglink.md) 3.11).
 
 ## Tasks
 

@@ -6,7 +6,9 @@
 // costs names on the receive screen. So it is written in place, in an order that never shows a broken one: the
 // sector holding the header is erased first (the radio then has no database), the records are programmed as they
 // arrive, each read back, and the header is programmed last into its still erased bytes. Nothing here goes through
-// the sector journal: the areas hold nothing but the database.
+// the sector journal: the areas hold nothing but the database. So nothing here could carry the maker's bytes over
+// either (hal_flash_map_t.factory, settings-store.md 4.1): a database that would reach an erase unit holding some is
+// refused before anything is erased.
 #include <string.h>
 #include "net/tftp_iddb.h"
 #include "net/tftp_codeplug.h"
@@ -14,6 +16,7 @@
 #include "storage/storage.h"
 #include "codeplug/codeplug.h"
 #include "codeplug/dmr_iddb.h"
+#include "debuglink/dlog.h"
 
 #define SECTOR		STORAGE_SECTOR
 #define FL_IMAGE	0x20000u	// image address of the flash image's start
@@ -63,6 +66,38 @@ static bool fl_read(uint32_t addr, void *buf, uint32_t len)
 	bool ok = board.flash->read(addr, buf, len);
 	storage_unlock();
 	return ok;
+}
+
+// Whether [p, p + len) (physical) touches an erase unit holding factory bytes: the transfer is refused there (the
+// client's error counts in tftp.errors), the first address logged. Constant false without STORAGE_FACTORY_KEEP
+static bool kept(uint32_t p, uint32_t len, const char **msg)
+{
+#if STORAGE_FACTORY_KEEP
+	if (hal_flash_factory_unit(map(), SECTOR, p, len)) {
+		dlog("tftp: ID database refused: 0x%06x-0x%06x reaches the maker's bytes", (unsigned)p,
+		     (unsigned)(p + len - 1u));
+		*msg = "the ID database would reach the maker's data on this flash";
+		return true;
+	}
+#else
+	(void)p;
+	(void)len;
+	(void)msg;
+#endif
+	return false;
+}
+
+// Whether the database d describes would reach a unit holding factory bytes: its header and area 1, and area 2
+static bool reaches_kept(const char **msg)
+{
+#if STORAGE_FACTORY_KEEP
+	uint32_t in1 = d.count < d.per1 ? d.count : d.per1;
+	return kept(phys(TFTP_IDDB_AREA1), TFTP_IDDB_HEADER + in1 * d.rec, msg) ||
+	       (d.count > in1 && kept(phys(TFTP_IDDB_AREA2), (d.count - in1) * d.rec, msg));
+#else
+	(void)msg;
+	return false;
+#endif
 }
 
 static bool fl_erase(uint32_t addr)
@@ -132,6 +167,9 @@ int tftp_iddb_begin(const uint8_t *h, const char **msg)
 	memcpy(d.h, h, sizeof(d.h));
 	parse(h, false, &d.rec, &d.count);
 	d.per1 = (TFTP_IDDB_AREA1_SIZE - TFTP_IDDB_HEADER) / d.rec;
+	if (reaches_kept(msg)) {	// before the first erase: the stored database stays
+		return TFTP_FAIL(TFTP_ERR_OTHER);
+	}
 	if (!fl_erase(phys(TFTP_IDDB_AREA1))) {
 		*msg = "flash erase failed";
 		return TFTP_FAIL(TFTP_ERR_OTHER);
@@ -149,6 +187,9 @@ static int put_at(uint32_t img, const uint8_t *buf, uint32_t len, const char **m
 	while (d.erased < p + len) {	// erase the sectors as the data reaches them; the jump to area 2 skips the gap
 		if (d.erased < (p & ~(SECTOR - 1u))) {
 			d.erased = p & ~(SECTOR - 1u);
+		}
+		if (kept(d.erased, SECTOR, msg)) {	// tftp_iddb_begin refused these already: each erase again
+			return TFTP_FAIL(TFTP_ERR_OTHER);
 		}
 		if (!fl_erase(d.erased)) {
 			*msg = "flash erase failed";

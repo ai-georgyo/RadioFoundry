@@ -62,7 +62,9 @@ static bool wr(sky72310_t *dev, uint8_t reg, uint16_t data)
 
 static uint16_t power_word(const sky72310_t *dev, bool down)
 {
-	return (uint16_t)(((uint16_t)(dev->mux & 7u) << SKY72310_MUX_SHIFT) | (down ? SKY72310_PWR_FULL_DOWN : 0u));
+	// Four bits: the source, and above it the tri-state bit (SKY72310_MUX_OFF). Full power-down leaves the pin as
+	// this says (data sheet, register 7), so an unwired one is off in both
+	return (uint16_t)(((uint16_t)(dev->mux & 0xFu) << SKY72310_MUX_SHIFT) | (down ? SKY72310_PWR_FULL_DOWN : 0u));
 }
 
 void sky72310_attach(sky72310_t *dev, const sky72310_bus_t *bus, uint32_t f_osc_hz, uint8_t pd_gain)

@@ -54,7 +54,7 @@ without a reason, or on a switch in both). Either one turns the switch off by de
 `CONFIG_X ?= n` needed), keeps it out of ci's maximal configuration, and satisfies a hardware switch's check. A platform's `config.mk` can
 list switches for all of its radios, and `config/features.mk` lists the ones a build rules out by itself: `FONT_BIG` on a
 panel under 220 px wide, the width taken from the `hardware.gallery` class in `board.toml`, so a new small-panel board
-needs no line for it. The feature matrix and the web site show the mark. Say "untested" in bring-up
+needs no line for it, and `FACTORY_COPY` on a board that keeps no factory ranges (no `STORAGE_FACTORY_KEEP`). The feature matrix and the web site show the mark. Say "untested" in bring-up
 records and pull requests, never in `config.mk`.
 
 ## Variants
@@ -176,6 +176,7 @@ below are for an STM32F4 radio.
 | `CONFIG_SUPPORT_INFO` | y | the support info (`docs/spec/support-info.md`): About shows the build's source, the firmware image's hash and the radio's chips, and debug link command 0x25 gives the same to the web site's support download. Worked out only when About opens or a host asks, never at start-up. Needs no other feature. About 2.5-3 KB flash and 515 bytes RAM. Off: VERSION keeps source= and repo=, command 0x25 answers status 4 |
 | `CONFIG_FAULT_TRACE` | y (n where the one UART is not free) | the fault trace: a CPU fault prints its registers on the host UART, three framed lines a second apart, then the record and the restart (`docs/spec/crash-log.md` 2.3, `tools/rfoundry_fault_trace.py`); without the crash log the radio restarts too. Needs a host port on a UART: the HR_C7000 radios. About 600 B flash. Off: straight to the record and the restart |
 | `CONFIG_NAND_STORAGE` | n (y on a radio with SPI NAND) | the core's storage (settings, sector journal, codeplug areas) on SPI NAND: the NOR-like 4 KB sector layer over the board's own block range (`drivers/flash/nand_sectors`, `docs/spec/nand-sectors.md`) and the NAND driver's write side. Off, a NAND radio runs on the default settings and stores nothing. Radios with SPI NOR don't use it. About 6.6 KB flash and 1.5 KB RAM where used (no page buffer) |
+| `CONFIG_FACTORY_COPY` | n (y on a radio that keeps factory ranges) | the factory copy: a verified copy of the maker's data the board keeps in a factory range of the data flash (a factory calibration), written once into a record sector of the board's and used when the range no longer holds it; the debug link's STORAGE op 3 shows it, ops 4 and 5 restore the range from a backup (`core/storage/factory_copy.c`, `docs/spec/settings-store.md` 4.2). Needs a board that lists factory ranges (`STORAGE_FACTORY_KEEP`): unsupported on every other board, by `config/features.mk`, with no line in its `config.mk`. About 4 KB flash (more without `CONFIG_SUPPORT_INFO`, whose sha256 it shares) and 1 KB RAM (the restore's loaded bytes), plus the board's copy of the range. Off: the board reads the range only, ops 3-5 answer status 4 |
 | `CONFIG_CHANNEL_LIST` | y | the hub's Channels list: every codeplug channel by number, and a channel's settings (`docs/spec/ui.md` 2) |
 | `CONFIG_CHANNEL_EDIT` | = `CHANNEL_LIST` | editing a channel on the radio, New channel from current settings, keypad text entry (`docs/spec/ui.md` 2.1). Needs `CONFIG_CHANNEL_LIST`; without it the channel's settings are read only |
 | `CONFIG_VOLUME_BAR` | y | the volume bar over the screen for 3 s when a knob the MCU reads turns (`docs/spec/radio-features.md` 4.2). About 0.5 KB flash. Off, turning the knob shows nothing |
@@ -228,8 +229,8 @@ Not feature switches: they pick the hardware variant or set bench knobs, and `pr
 |---|---|---|
 | `BAND` | boards with a band option | A build option (`board.toml` `[[build_options]]`, `board.mk` `BUILD_OPTIONS`): a band such as `uhf` (the default) or `vhf`, which picks the band table, the frequency plan and the board name. Given on the command line, it adds its value to the build directory (`build/<id>-vhf`) |
 | bench defines | a board's `board.mk` | A board may take extra `-D` defines for the bench (panel type, switch polarity, battery divider, keeping the debug pins); they are listed in its bring-up page under [docs/testing](testing/README.md) |
-| `LTO` | 0 (STM32F4 platform: 1) | link time optimization (`-flto=auto` at compile and link): about 17 KB smaller (20 KB with `LTO_3P=1`). The STM32F4 boards needed it while their application areas were small; since the codec moved ([codec-placement.md](spec/codec-placement.md)) they have 464 KB or more, and it stays on for the smaller image. The csky builds don't use it |
-| `LTO_3P` | 0 (a board turns it on to fit) | with `LTO=1`, the third-party code too (HAL, CMSIS, FreeRTOS, TinyUSB): about 3 KB more. FreeRTOS marks what its port's assembly reaches `portDONT_DISCARD`; the vectors are referenced from the assembly start-up. `LTO_EXCLUDE` lists files kept out (file-scope assembly: `platform/stm32f4/codec_call.c`) |
+| `LTO` | 0 (the STM32 platforms: 1) | link time optimization (`-flto=auto` at compile and link): about 17 KB smaller (20 KB with `LTO_3P=1`). The STM32F4 boards needed it while their application areas were small; since the codec moved ([codec-placement.md](spec/codec-placement.md)) they have 464 KB or more, and it stays on for the smaller image. The STM32H7 platform has it on so the code the two platforms share is built the way it was verified. The csky builds don't use it |
+| `LTO_3P` | 0 (a board turns it on to fit) | with `LTO=1`, the third-party code too (HAL, CMSIS, FreeRTOS, TinyUSB): about 3 KB more. FreeRTOS marks what its port's assembly reaches `portDONT_DISCARD`; the vectors are referenced from the assembly start-up. `LTO_EXCLUDE` lists files kept out (file-scope assembly: `platform/stm32f4/codec_call.c`); the list is the platform's ([below](#platform-build-variables)) |
 | `TCP_CONNS` | HR_C7000 platform | TCP connections in all states (`core/net/tcp.h`, 4 elsewhere): 3 by default on the HR_C7000 platform, about 1.5 KB RAM each across TCP, HTTP and rigctld |
 | `MAXIMAL_VARS` | a board's own | set in a board's `config.mk`: make variables `tools/ci.sh` adds to that board's maximal build (`make print-maximal-vars`) |
 | `BOARD_UNSUPPORTED` | a board's own | set in a board's or platform's `config.mk`, one switch a line with the reason in its comment: switches the radio's hardware can't do ([above](#unsupported-not-written-unconfirmed)); the maximal build leaves them off (`make print-unsupported`) |
@@ -237,6 +238,49 @@ Not feature switches: they pick the hardware variant or set bench knobs, and `pr
 | `BOARD_DEFAULT_OFF` | a board's own | the same form: switches that work but carry a risk on this radio. The switch stays off by default (`CONFIG_X ?= n` next to it) and stays selectable in a custom build; the web flasher shows the comment by its checkbox, so write it for users |
 | `BOARD_REQUIRED` | a board's own | set in a board's `config.mk`: switches the board can't build without; ci.sh builds no `no-` configuration for them (`make print-required`) |
 | `MAXIMAL_SKIP` | a board's own | set in a board's `config.mk`: switches that work on the radio but that it doesn't need, which the maximal build leaves off too (`make print-maximal-skip`). `NET_PPP` stands in for the USB network adapter on UART-only radios. The maximal build also leaves `CONFIG_AUDIO_PROBE` off on every board (`MAXIMAL_SKIP` in `tools/ci.sh`); one board's `audio-probe` build covers it |
+
+### Board defines
+
+Properties of a radio's parts that shared code must know at compile time. A board passes them in `MCU_DEFS`
+(`board.mk`). Each has a default in the header that reads it, so a board that doesn't set one builds the code it built
+before. They are not `CONFIG_` switches: nobody would turn one off for a radio that needs it, they cost nothing where
+they are unset, and `print-config` doesn't list them. Name a new one by the property, never by a radio.
+
+| Define | Default | Read by | Set it when |
+|---|---|---|---|
+| `SPI_NOR_ADDR4` | 0 | `drivers/flash/spi_nor`, `platform/stm32/spi_flash` | The data flash is larger than 16 MB (below). `tools/boards.py check` requires it when `[flash] backup.spi_size` is over 16 MB ([board-registry.md](dev/board-registry.md)) |
+| `STORAGE_CLAIM_FIRST` | 0 | `core/storage` | The data flash held another firmware's data in a layout nobody knows. The settings region is then foreign on every unit, blank or not, until the owner claims it after a backup of the whole chip, and nothing in the flash map is written before that ([settings-store.md](spec/settings-store.md) section 5). The radio's hardware page says the board sets it |
+| `STORAGE_FACTORY_KEEP` | 0 | `hal/hal_flash.h`, `core/storage`, `core/satellite`, `platform/stm32/spi_flash` | The maker keeps data of its own inside the flash map (a factory calibration, its records) and the board lists those bytes in `hal_flash_map_t.factory`: no writer of ours changes them, and the list is checked at start ([settings-store.md](spec/settings-store.md) section 4.1). Without it none of that is compiled |
+| `STM32_HRC_LINE_TS`, `STM32_HRC_LINE_SYS`, `STM32_HRC_LINE_RFTX` | 0, 1, 2 | `platform/stm32/hrc/hrc_lines.h` | The DMR modem's timeslot, system and RF TX interrupt pins are not pins 0, 1 and 2 of their port. Each is an EXTI line 0 to 4, as plain digits (`-DSTM32_HRC_LINE_SYS=3`) |
+| `STM32_I2S_TX_ON_SDI` | 0 | the STM32H7 half of `platform/stm32/hrc/i2s_pcm.c` | The modem's I2S data input is wired to the pad that is the block's SDI by default (a crossed pair). The half proves the direction before it drives a pad either way ([gotchas.md](spec/gotchas.md) 18.9) |
+| `GFX_FB_BYTES`, `GFX_MAX_ROWS`, `GFX_INDEXED` | 40960 (160 x 128 at 16 bits a pixel), 160, 0 | `core/ui/gfx.h` | The panel's frame buffer is another size, or holds 4 bits a pixel (`GFX_INDEXED=1`) ([adding-a-radio.md](dev/adding-a-radio.md)) |
+| `CODEPLUG_OPENFW_EEPROM_BASE`, `CODEPLUG_OPENFW_FLASH_BASE` | 0, 0x20000 | `core/codeplug` | The open-firmware codeplug areas sit elsewhere in the radio's data flash ([open-firmware-cps.md](spec/open-firmware-cps.md)) |
+
+`SPI_NOR_ADDR4`, as the driver behaves with it (without it the driver's preprocessed text and its object are what
+they were):
+
+| Step | What it does |
+|---|---|
+| Probe | Reads status registers 1 and 2, sends the software reset (`66h`, `99h`), waits 100 us, reads the JEDEC ID. A busy chip is waited for up to 1 s first. A chip with a suspended operation, or still busy after the wait, gets no reset and is not used (size 0) |
+| Size | Capacity codes 0x19 to 0x1C and 0x20 to 0x22 give the real size, up to 256 MB |
+| Array commands | A part over 16 MB gets only `13h`, `12h`, `21h` (four address bytes in either address mode). A part of 16 MB or less gets `03h`, `02h`, `20h` as without the define |
+| Extended address register | Written to 0 (`06h`, `C5h 00h`, `04h`) after every program and erase and after a read that reached past 16 MB |
+| Security registers, unique ID | In the form of the address mode the chip powers up in |
+| Never sent | A status register write, the address mode commands (`B7h`, `E9h`), a security register program or erase |
+
+Why: [gotchas.md](spec/gotchas.md) 10.7 and 10.8. Host test: `spiNorAddr4Test`.
+
+### Platform build variables
+
+Set in `platform/<p>/platform.mk`, for a platform whose source is in more than one directory:
+
+| Variable | Meaning |
+|---|---|
+| `PLATFORM_DIRS` | The platform's source directories. The STM32 platforms: `platform/stm32` (shared) and the family's own |
+| `PLATFORM_SRC` | The platform's `.c` files in the order they are built and linked. Unset: each `PLATFORM_DIRS` directory, sorted. The STM32 platforms set it to one list in file-name order across both directories, because the link order steers LTO ([gotchas.md](spec/gotchas.md) 13.10). A file name must not exist in both |
+| `PLATFORM_LD_DIRS` | Further linker search directories after `platform/<p>`, whose `*.ld` files the image also depends on. The STM32 platforms: `platform/stm32` (`common.ld`) |
+| `LTO_EXCLUDE` | Files kept out of LTO (file-scope assembly). Empty unless the platform sets it |
+| `STACK_OVERHEAD` | What the RTOS port keeps on a task's stack ([stack-check.md](dev/stack-check.md)) |
 
 ### Board defaults
 

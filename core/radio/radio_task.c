@@ -575,6 +575,20 @@ radio_state_t radio_get_state(void)
 	return st;
 }
 
+bool radio_on_air(void)
+{
+	if (view_lock == NULL) {
+		return false;
+	}
+	xSemaphoreTake(view_lock, portMAX_DELAY);
+	bool on = shared_view.state == RS_TX;
+#if CONFIG_DMR
+	on = on || shared_view.dmr.sfr_keyed;
+#endif
+	xSemaphoreGive(view_lock);
+	return on;
+}
+
 bool radio_get_zone_pos(uint16_t *zone, uint16_t *pos, uint16_t *size)
 {
 	if (view_lock == NULL) {

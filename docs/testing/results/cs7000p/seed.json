@@ -1,0 +1,9 @@
+{
+ "format": 1,
+ "kind": "seed",
+ "board": "cs7000p",
+ "source": "docs/spec/hardware-cs7000p.md",
+ "date": "2026-11-21",
+ "note": "One radio has run the image (from 2026-11-22; its maker's table restored and in use for receive on 2026-11-24; docs/testing/cs7000p-bringup.md, First radio), read by hand through the debug link. No HIL run is recorded: no feature has a row until one gives it",
+ "features": {}
+}

@@ -13,6 +13,10 @@
 #define INPUT_KEYS_MAX		32	// key map entries handled (key bits are 0..31)
 #define INPUT_HOLD_MS		1500	// hold-to-activate: a key whose long action is EMERGENCY gives it only after this
 					// (or the long press time, if longer; docs/ux/principles.md P7)
+// Start-up keys: every key reported in the first this many samples counts as held at power-on. A board's own
+// debounce (two scans that agree, from a zeroed start) and scans skipped for a bus the keys share delay a held
+// key's first report by a few scans, so the first sample alone missed it
+#define INPUT_START_GUARD_SCANS	10
 
 // The hold time that gives a key's long action
 static inline uint32_t input_long_threshold(uint8_t long_action, uint32_t long_ms)
@@ -50,6 +54,7 @@ typedef struct {
 	const keymap_entry_t *keymap;
 	uint8_t keymap_len;
 	bool started;
+	uint8_t start_scans;	// samples taken, up to INPUT_START_GUARD_SCANS
 	uint32_t raw_prev;	// last raw sample (debounce: a bit counts once two samples agree)
 	uint32_t held;		// debounced mask
 	uint32_t ignore;	// keys held at start-up, ignored until released (no TX from a PTT held at power-on)

@@ -12,8 +12,8 @@ radio until a power cycle, as before.
 
 | Kind | `kind` | From | `cause` | `pc` |
 |---|---|---|---|---|
-| Fault | 1 | a CPU exception: the platform's fault entry (2) | the exception number (CM4: 3 HardFault; CK803: the vector, 1 misaligned access, 2 access error, 3 divide by zero, 4 illegal instruction, 7 breakpoint, 8 unrecoverable error) | the faulting instruction |
-| Stack overflow | 2 | FreeRTOS's stack check (`configCHECK_FOR_STACK_OVERFLOW` 2), at a context switch. Also the interrupt stack's canary, at every tick: its lowest 4 words no longer hold the fill (HR_C7000: its own interrupt stack, `platform/hrc7000/irq_stack.h`; STM32F4: the main stack, the handlers' once the scheduler runs, down to the end of `.bss`, `platform/stm32f4/irq_stack.c`) | 0 | in the kernel or the tick; `task` names the task, `irq` for the interrupt stack |
+| Fault | 1 | a CPU exception: the platform's fault entry (2) | the exception number (Cortex-M: 2 NMI (the clock security system), 3 HardFault, 4 MemManage, 5 BusFault, 6 UsageFault; CK803: the vector, 1 misaligned access, 2 access error, 3 divide by zero, 4 illegal instruction, 7 breakpoint, 8 unrecoverable error) | the faulting instruction |
+| Stack overflow | 2 | FreeRTOS's stack check (`configCHECK_FOR_STACK_OVERFLOW` 2), at a context switch. Also the interrupt stack's canary, at every tick: its lowest 4 words no longer hold the fill (HR_C7000: its own interrupt stack, `platform/hrc7000/irq_stack.h`; STM32: the main stack, the handlers' once the scheduler runs, down to the end of `.bss`, `platform/stm32/irq_stack.c`) | 0 | in the kernel or the tick; `task` names the task, `irq` for the interrupt stack |
 | Out of heap | 3 | FreeRTOS's malloc-failed hook | 0 | in the kernel |
 | Assert | 4 | `configASSERT` (the platforms' `FreeRTOSConfig.h`) | the line | the caller of the assertion |
 | Hang | 5 | the hang check in the tick interrupt (1.1), with `CONFIG_WATCHDOG` | ms since the last watchdog feed | where the interrupted task was |
@@ -26,8 +26,8 @@ points into RAM (`CRASH_F_STACK`), the other tasks (1.2), the commit, then seals
 and restarts the radio.
 
 Not caught: a hang with interrupts off (the tick can't run, so the hardware watchdog resets the radio with no record,
-[watchdog.md](watchdog.md)), a fault while the fault entry pushes its frame (2.2), and an unhandled interrupt on the STM32F4 (the start-up's default
-handler spins until the watchdog resets the radio; no interrupt is enabled without a handler). The NMI on the STM32F4
+[watchdog.md](watchdog.md)), a fault while the fault entry pushes its frame (2.2), and an unhandled interrupt on the STM32 (the start-up's default
+handler spins until the watchdog resets the radio; no interrupt is enabled without a handler). The NMI on the STM32
 takes the HardFault entry (`cause` 2).
 
 ### 1.1 The hang check
@@ -38,23 +38,23 @@ platforms' `hal_crash_hang`.
 
 | Item | Value |
 |---|---|
-| Where | the RTOS tick interrupt, before the kernel's tick: `vPortTickHandler` (HR_C7000), `SysTick_Handler` (STM32F4). Not the tick hook: `xTaskResumeAll` also calls the hook from a task, for ticks that came while the scheduler was suspended |
+| Where | the RTOS tick interrupt, before the kernel's tick: `vPortTickHandler` (HR_C7000), `SysTick_Handler` (STM32). Not the tick hook: `xTaskResumeAll` also calls the hook from a task, for ticks that came while the scheduler was suspended |
 | Counts from | the last feed: the idle task's, or a long job's `watchdog_kick` (a board's long SPI NAND loops) |
-| Fires | three quarters of the watchdog's timeout after it: 3 s on the HR_C7000 (4 s timeout), 3.75 s on the STM32F4 (5 s) |
+| Fires | three quarters of the watchdog's timeout after it: 3 s on the HR_C7000 (4 s timeout), 3.75 s on the STM32 (5 s) |
 | Never | before the idle task's first pass, with the watchdog stopped, or while a bench test starves it on purpose (the test times the hardware reset, [watchdog.md](watchdog.md) 5) |
 | Record | kind 5, `cause` the ms since the last feed, the registers of the task the tick interrupted, its name in `task` |
 | Then | as every capture: the transmitter off, the fault trace on the HR_C7000 (2.3, vector 0), the store, the restart |
 
 What the record shows is the task that ran when the tick came, which on a hang is the one that kept the idle task out.
-The tick runs at the kernel's priority, the lowest on the STM32F4, and HR_C7000 interrupts don't nest, so the tick
+The tick runs at the kernel's priority, the lowest on the STM32, and HR_C7000 interrupts don't nest, so the tick
 never interrupts another handler.
 
 | Platform | Registers |
 |---|---|
 | HR_C7000 | `hrc_irq_entry` saved the task's frame (r0-r13, r15, EPSR, EPC, as the fault entry's) and wrote its address to the TCB's first word, `pxTopOfStack`. `hal_crash_hang` (`irq.c`) hands that frame to the same capture as a fault (`hrc_crash_frame`) |
-| STM32F4 | the CPU's frame on the PSP: r0-r3, r12, LR, PC, xPSR. r4-r11 belong to the handler's callers by then and stay 0. Without EXC_RETURN the frame's size (FPU or not) isn't known, so `sp` is the frame's address and `stack[]` starts with the frame |
+| STM32 | the CPU's frame on the PSP: r0-r3, r12, LR, PC, xPSR. r4-r11 belong to the handler's callers by then and stay 0. Without EXC_RETURN the frame's size (FPU or not) isn't known, so `sp` is the frame's address and `stack[]` starts with the frame |
 
-Not caught this way: a hang with interrupts off or in a critical section (the STM32F4 masks the tick there too), and
+Not caught this way: a hang with interrupts off or in a critical section (the STM32 masks the tick there too), and
 an interrupt storm that keeps the tick out. Those still end in the plain watchdog reset.
 
 The debug link's CRASH TEST kind 3 ([debuglink.md](debuglink.md) 3.19) spins in the host link's task with interrupts
@@ -97,7 +97,7 @@ Each task's TCB starts with the stack pointer its last switch saved (`pxTopOfSta
 | Platform | Waiting or ready |
 |---|---|
 | HR_C7000 | the 17-word frame (2.2). `vPortYield` stores its return address as both r15 and PC; the interrupt entry stores EPC as PC, which equals r15 only right after a call returns. r15 equal to PC counts as waiting |
-| STM32F4 | r4-r11 and EXC_RETURN, s16-s31 when EXC_RETURN bit 4 is clear, then the CPU's frame (2.1). The instruction before the stacked pc is the yield's `ISB` (`portYIELD`) or the `MSR BASEPRI` of a critical section's exit, where a held-back yield is taken: waiting. Anything else: ready |
+| STM32 | r4-r11 and EXC_RETURN, s16-s31 when EXC_RETURN bit 4 is clear, then the CPU's frame (2.1). The instruction before the stacked pc is the yield's `ISB` (`portYIELD`) or the `MSR BASEPRI` of a critical section's exit, where a held-back yield is taken: waiting. Anything else: ready |
 
 The return address is a candidate, as the stack words are (4): a code address left above the context by an earlier
 call looks the same. A kernel task's own wait (the timer task's) can resolve to a kernel function. The packed report
@@ -131,6 +131,7 @@ The chip's own reset flags come first where they say what happened. A chip witho
 | Platform | Chip flags | Words |
 |---|---|---|
 | STM32F4 | `RCC_CSR` (RM0090 7.3.21), read and cleared at start-up. Every reset also sets the pin flag, and a power-on sets the brown-out flag too, so the order is watchdog, software, power-on, brown-out, pin | the backup SRAM, after the record |
+| STM32H7 | `RCC_RSR` (RM0433 8.7.39), read and cleared the same way, in the same order (one function, `hal_crash_reset_flags` in `platform/stm32/crash_stm32.c`; the register and the flag names are the family's) | the backup SRAM, after the record |
 | HR_C7000 | none: the POR, the reset pin and the watchdog drive one global reset (manual 2, 4.1) | `HRC_CRASH_BOOT`, the 16 bytes below the record. `hrc_restart` runs from RAM and writes `soft` by address |
 
 The boot stubs mark their own reset, not their entry, so a stub that hangs and is reset by the watchdog reads as the
@@ -144,19 +145,46 @@ register as read, 0 without one), `reset.uptime_ms`, `reset.warm`.
 
 ## 2. Platforms
 
-### 2.1 STM32F4
+### 2.1 STM32
 
-`platform/stm32f4/crash_stm32.c`. `HardFault_Handler` reads EXC_RETURN bit 2 to find the stack the CPU pushed the
+`platform/stm32/crash_stm32.c`, one file for the STM32 families. The record's `arch` is 1 on each of them: the
+Cortex-M4 and the Cortex-M7 are ARMv7-M cores, with the same exception frame, fault status registers and Thumb return
+addresses, and both run the same RTOS port. `HardFault_Handler` reads EXC_RETURN bit 2 to find the stack the CPU pushed the
 frame on (MSP, or a task's PSP), moves to its own stack, pushes r4-r11 and fills the record: r0-r3, r12, LR, PC and
 xPSR from the frame, the stack pointer before it (bit 4 of EXC_RETURN says whether the frame has the FPU registers,
 bit 9 of the stacked xPSR whether the CPU padded it), CFSR, HFSR, MMFAR and BFAR. MemManage, BusFault and UsageFault
 are not enabled, so they escalate to HardFault; CFSR still says which. If they are enabled later they take the same
 entry. A frame the CPU couldn't push (a stacking error) leaves the registers 0 and `sp` the address it tried.
 
-The store is the 4 KB backup SRAM at 0x40024000 (`PWR_CR.DBP`, `RCC_AHB1ENR.BKPSRAMEN`). A system reset leaves the
-backup domain alone and the vendor bootloader, which runs in main RAM before the application, doesn't look at it
-(the ROM DFU entry's RTC backup register survives the same way). The record is lost when
-the supply goes. Restart: `NVIC_SystemReset`, then the vendor bootloader and RadioFoundry as at power-on.
+The store is the 4 KB backup SRAM. A system reset leaves the backup domain alone, and a vendor bootloader that runs in
+main RAM before the application doesn't look at it (the ROM DFU entry's RTC backup register survives the same way).
+The record is lost when the supply goes. Restart: `NVIC_SystemReset`, then the start-up as at power-on, through the
+vendor bootloader on a board that has one in flash.
+
+What differs between the families is named in each one's `stm32_family.h` (`STM32_BKPSRAM_*`, `STM32_BACKUP_*`,
+`STM32_RESET_FLAGS`, `STM32_RSTF_*`, `STM32_IS_RAM`, `STM32_FLASH_HI`, `STM32_KEPT_RAM_FLUSH`):
+
+| | STM32F4 | STM32H7 |
+|---|---|---|
+| Backup SRAM | 0x40024000 | 0x38800000 |
+| Its access | `PWR_CR.DBP`, `RCC_AHB1ENR.BKPSRAMEN`, after the PWR clock (`RCC_APB1ENR.PWREN`) | `PWR_CR1.DBP`, `RCC_AHB4ENR.BKPRAMEN` |
+| Reset flags (1.3) | `RCC_CSR` | `RCC_RSR` |
+| RAM the capture reads (`stack[]`, the task snapshot) | SRAM 0x20000000-0x2001FFFF, CCM 0x10000000-0x1000FFFF | DTCM 0x20000000-0x2001FFFF, AXI SRAM 0x24000000-0x2407FFFF |
+| Code addresses (the return address candidates) | 0x08000000-0x080FFFFF | 0x08000000-0x081FFFFF |
+| Last-word flush | not needed | needed: see below |
+
+On the STM32H7 a read-unprotect (RDP level 1 to 0) erases the backup SRAM and the RTC backup registers with the flash
+(RM0433 4.5.3): the record goes with them.
+
+The last-word flush. The STM32H7's RAMs have ECC, and an incomplete word written just before a reset is not kept
+unless another incomplete word is written to the same RAM at another address first (RM0433 2.4). The record is copied
+into the store with a `memcpy` that may end in byte writes, and its last word is the CRC: without the flush a record
+could arrive with a CRC that never reached the RAM and read as no record. `reboot()` (`platform/stm32/sysboot.c`)
+therefore ends with `STM32_KEPT_RAM_FLUSH()`, its last statement before `NVIC_SystemReset`: one byte written to the
+last byte of the backup SRAM, which neither the record nor the restart cause's words use. Every crash restart and every
+reset software asks for passes there, so the soft mark (1.3) is covered too. The flush turns on the backup SRAM's
+clock and lifts the backup domain's write protection itself, so it is the same in a build without the crash log,
+where nothing before it has done either. The macro is empty on the STM32F4.
 
 ### 2.2 HR_C7000
 
@@ -208,7 +236,7 @@ the task snapshot) reads as no record.
 |---|---|---|
 | 0 | magic u32 | `0x48535243` (`"CRSH"`) |
 | 4 | version u16, size u16 | 2, 256 |
-| 8 | arch u8 | 1 Cortex-M4, 2 CK803S |
+| 8 | arch u8 | 1 ARMv7-M (Cortex-M4 and Cortex-M7; `CRASH_ARCH_CM4`, "CM4" in this table), 2 CK803S |
 | 9 | kind u8 | section 1 |
 | 10 | flags u8 | bit 0 in an interrupt handler, 1 the build had local changes, 2 `stack` is valid, 3 seen (shown or dismissed), 4 sent |
 | 11 | count u8 | crashes in a row of this build nobody looked at: 1 the first; counts up while the record before is unseen and from the same build, saturates at 255 |
@@ -253,6 +281,8 @@ valid record at start-up, before the tasks start; `crash_mark()` sets the seen a
 76 to 124 bytes. `tools/crash_decode.py` reads it (as received, as hex, or the debug link's crash view) and, with
 the build's ELF, names the functions at `pc`, `lr` and the return addresses through addr2line. The stack words are
 only candidates: a code address left on the stack by an earlier call looks the same as a live return address.
+From the crash view the tool picks the candidates itself: the stack words inside program flash, which for
+architecture 1 is `0x08000000` up to the largest flash end an STM32 board has in the board registry.
 
 ## 5. Sending the report
 
@@ -312,7 +342,8 @@ Checked with `tests/hil/test_crash.py` and `tests/hil/test_watchdog.py` under `-
 
 Each radio's result is in its hardware spec and in `docs/testing/results/`. Not checked: the report on the air (no
 receiver for port 4090 exists yet) and, on a radio that has not run `test_crash.py`, that its store survives the
-restart. Check: `rfoundry_debug.py crash test trap`, then `rfoundry_debug.py crash` after the restart.
+restart. No STM32H7 radio has run it yet: that family's store, its reset flags and the last-word flush (2.1) are
+unverified. Check: `rfoundry_debug.py crash test trap`, then `rfoundry_debug.py crash` after the restart.
 
 ## 7. Tests
 
@@ -359,14 +390,14 @@ PA selects off their output reaches no keyed PA. The next start sets them up aga
 
 Where it is called:
 
-| Path | STM32F4 | HR_C7000 |
+| Path | STM32 | HR_C7000 |
 |---|---|---|
 | CPU fault | `stm32_fault` first (HardFault, MemManage, BusFault, UsageFault, NMI); without the crash log, `HardFault_Handler` and the NMI | `hrc_fault`, right after interrupts go off, with or without the crash log |
 | Crash capture | `crash_commit` and the soft capture (assert, stack overflow, out of heap), with interrupts off, before the store; `hal_crash_restart` | the same; `hal_crash_restart` is `hrc_restart` |
 | Hooks without the crash log | stack overflow and malloc-failed hooks (`main.c`) | the same |
-| Software reset | `reboot()` (normal and ROM DFU) before `NVIC_SystemReset`; the ROM DFU entry at start-up (`stm32_sysboot_check`) | `hrc_restart`, before the loader's clocks and the flash controller are put back |
+| Software reset | `reboot()` (normal and ROM DFU), before `NVIC_SystemReset`. Right after it, still before the reset, comes the family's `STM32_RESET_PREPARE()` (STM32H7: `board_reset_prepare()`, where a board whose outputs outlive an MCU reset puts them in their reset state; empty on the STM32F4). Also the ROM DFU entry at start-up (`stm32_sysboot_check`) | `hrc_restart`, before the loader's clocks and the flash controller are put back |
 | Stub entry | `stm32_enter_stub` (replaces `board_stub_prepare`) | `enter_stub`, before the PIC, watchdog and flash controller changes |
-| Start-up | first thing in `main()`, before the ROM DFU check and the clocks | first thing in `main()`, before `hrc_clock_init` |
+| Start-up | first thing in `main()`, before the ROM DFU check and the clocks. On the STM32H7 a board can set its outputs earlier still, from the reset handler before `.data` and `.bss` exist (`board_reset_safe()`) | first thing in `main()`, before `hrc_clock_init` |
 | First stage (a board that has one) | | `boot/<id>/boot.c` drives the TX supplies and PA selects low and the RX supply high right after the power latch, before it offers the handshake (it may wait there for a host) |
 
 Every reboot request (the debug link's REBOOT, the CPS's reset, the storage UI) goes through `board.system->reboot`, so

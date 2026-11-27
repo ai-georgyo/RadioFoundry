@@ -142,9 +142,9 @@ export class Plan {
 
 	get erase() { return this.steps.filter((s) => s.action === "write" || s.action === "erase").map((s) => s.sector); }
 	get writes() { return this.steps.filter((s) => s.action === "write"); }
-	// The erases and the writes in the order they run: the board's sector order, or for a codec move (vectorLast) the
-	// sector with the application's start (its vector table) erased first and written last, so a move stopped anywhere
-	// leaves no application the bootloader would start (plan.py)
+	// The erases and the writes in the order they run: the board's sector order, or for a codec move and every install
+	// through a ROM loader (vectorLast) the sector with the application's start (its vector table) erased first and
+	// written last, so an install stopped anywhere leaves no application to start (plan.py)
 	get eraseOrder() {
 		const a = this.board.app_base;
 		return this.vectorLast ? [...this.erase].sort((x, y) => (x.addr !== a) - (y.addr !== a)) : this.erase;
@@ -160,7 +160,8 @@ export class Plan {
 	// The same lines as plan.py's describe() for keep and merge (the tests compare them)
 	describe() {
 		const b = this.board;
-		const lines = [`board ${b.name}, codec mode: ${this.mode}`];
+		// a board without a codec route has no mode to speak of (plan.py)
+		const lines = [`board ${b.name}, ${b.codec.id === null && !b.codec.windows.length ? "no codec" : `codec mode: ${this.mode}`}`];
 		for (const st of this.steps) {
 			const s = st.sector;
 			const head = `  sector ${String(s.index).padStart(2)}  ${hex(s.addr)}..${hex(end(s) - 1)}  ${String(s.size / 1024).padStart(4)} KB  `;
@@ -177,7 +178,7 @@ export class Plan {
 		}
 		lines.push(`erase ${this.erase.length} sector(s): ${this.erase.map((s) => s.index).join(", ")}`);
 		const first = this.vectorLast && this.writes.length ? this.erase.find((s) => s.addr === b.app_base) : null;
-		if (first) lines.push(`order: sector ${first.index} erased first and written last (a codec move: a cut leaves the radio in its bootloader)`);
+		if (first) lines.push(`order: sector ${first.index} erased first and written last (a cut install leaves no application to start)`);
 		lines.push(`write ${this.totalBlocks} blocks (${this.totalBlocks * BLOCK} bytes)`);
 		if (this.kept.length) lines.push(`never erased or written: codec sector(s) ${this.kept.map((s) => s.index).join(", ")}`);
 		for (const [lo, hi] of b.protected) lines.push(`never erased or written: the bootloader ${hex(lo)}..${hex(hi - 1)}`);

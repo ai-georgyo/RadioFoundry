@@ -8,7 +8,7 @@ docs/spec/cps-protocol.md 2), the way qdmr's open-firmware UV380 driver does it.
   cps_client.py read image.bin [--regions all]       read into a flat image (file offset = flash address)
   cps_client.py write image.bin [--no-reboot]        write the regions back (prepare / data / commit per sector)
                                                      (the settings area only when the file's is valid, see below)
-  cps_client.py verify image.bin                     read back and compare
+  cps_client.py verify image.bin                     read back and compare (the protected regions left out)
   cps_client.py test-channels image.bin              put an FM and a DMR test channel (and a zone) into an image
 
 Transport: the radio's USB serial port (--port, $RFOUNDRY_PORT, or the only 1FC9:0094 device), a radio in USB network
@@ -31,9 +31,13 @@ Regions (wire addresses = flash addresses on the STM32 radios):
 Writes never touch bytes outside the regions; the radio refuses its own areas. The codeplug settings area
 (docs/spec/codeplug-settings.md) is written only when the file holds a valid one and the radio's isn't of a newer
 version, in every region set: a file from a tool that doesn't carry it (0xFF there) leaves the radio's keys. Area 1 addresses on the wire are the
-data flash's physical ones, so a write is also checked against the board's protected regions (board.toml
-[[flash.protect]], mem "data") before anything is sent: the board comes from --board, or from the radio type info
-reports.
+data flash's physical ones, so a write keeps the board's protected regions (board.toml [[flash.protect]], mem "data";
+docs/dev/board-registry.md): a sector holding one is written, but no byte of the region is sent, and the radio keeps
+its own bytes there (the shim's prepare read them from the flash). When the file holds bytes for a region that are not
+blank, one line on stderr names it and the command that compares the radio's bytes there with a backup and writes the
+backup's back (tools/rfoundry_debug.py storage factory --backup FILE, docs/spec/settings-store.md 4.2). The board comes from --board, else from the
+debug link VERSION's board= on the same port, else (a radio on another firmware) from the radio type info reports:
+when several boards report that type, the protected regions of each are kept.
 """
 import argparse
 import os
@@ -69,6 +73,12 @@ RADIO_TYPES = {0: "GD-77", 1: "GD-77S", 2: "DM-1801", 3: "RD-5R", 4: "DM-1801A",
 
 class CpsError(Exception):
     pass
+
+
+def rfoundry_debug_module():
+    """tools/rfoundry_debug.py (the debug link's framing), imported when first needed: it imports this module too"""
+    import rfoundry_debug
+    return rfoundry_debug
 
 
 def rfoundry_package():
@@ -219,6 +229,32 @@ class Cps:
         while self.t.read(4096, 0.1):
             pass
 
+    def version_board(self, timeout=0.5):
+        """The board= value of the radio's debug link VERSION (a debug link frame on this port is answered between CPS
+        requests, cps-protocol.md 1), or None: no answer in time (a radio on another firmware), or no board line. Asked
+        once, before any CPS request, and what else came is thrown away"""
+        dbg = rfoundry_debug_module()
+        seq = 0x5C
+        self.t.write(dbg.frame(dbg.VERSION, seq))
+        buf, end = bytearray(), time.monotonic() + timeout
+        while time.monotonic() < end:
+            buf += self.t.read(1, max(end - time.monotonic(), 0))
+            i = buf.find(bytes([dbg.SOF1, dbg.SOF2]))
+            if i < 0 or len(buf) < i + 8:
+                continue
+            n = buf[i + 4] | (buf[i + 5] << 8)
+            if n > 1024:
+                del buf[:i + 1]
+                continue
+            if len(buf) < i + 8 + n:
+                continue
+            f = bytes(buf[i:i + 8 + n])
+            del buf[:i + 8 + n]
+            if (dbg.crc16(f[2:6 + n]) == (f[6 + n] | (f[7 + n] << 8)) and f[2] == (dbg.VERSION | 0x80)
+                    and f[3] == seq and n >= 1 and f[6] == 0):
+                return dbg.parse_kv(f[7:6 + n].decode("ascii", "replace")).get("board") or None
+        return None
+
     def info(self):
         d = self.read(9, 0, 0x20)
         v = {"struct": int.from_bytes(d[0:4], "little"), "radio_type": int.from_bytes(d[4:8], "little"),
@@ -253,15 +289,17 @@ class Cps:
         if r != bytes([0x58, sub]):
             raise CpsError(f"{what}: reply {r!r}")
 
-    def write_sector(self, img, sector, start, end, block=BLOCK, retries=2):
+    def write_sector(self, img, sector, start, end, block=BLOCK, retries=2, protect=None):
         """Write one sector's part of img, read it back and compare; on a bad reply or a difference the whole sector
         is drained and done again (a burst of line noise on the DM-1801 Pro's cable spoils a request now and then, and
-        noise inside a data block can change its bytes without an error)"""
+        noise inside a data block can change its bytes without an error). protect: the board's protected regions,
+        whose bytes are neither sent nor compared"""
+        keep = kept_ranges(protect, self.offset)
         for attempt in range(retries + 1):
             try:
-                self._write_sector_once(img, sector, start, end, block)
+                self._write_sector_once(img, sector, start, end, block, protect)
                 a, b = max(sector * SECTOR, start), min((sector + 1) * SECTOR, end)
-                if same_but_vfo(self.read(1, a + self.offset, b - a), img[a:b], a):
+                if same_but_vfo(self.read(1, a + self.offset, b - a), img[a:b], a, keep):
                     return
                 err = CpsError(f"sector {sector:#x}: read back differs")
             except CpsError as e:
@@ -270,7 +308,7 @@ class Cps:
                 raise err
             self._drain()
 
-    def _write_sector_once(self, img, sector, start, end, block):
+    def _write_sector_once(self, img, sector, start, end, block, protect=None):
         base = sector * SECTOR
         wire = sector + self.offset // SECTOR
         prepare = bytes([0x58, 1]) + wire.to_bytes(3, "big")
@@ -281,35 +319,38 @@ class Cps:
             r = self.t.read(2, self.timeout)
         if r != bytes([0x58, 1]):
             raise CpsError(f"prepare sector {wire:#x}: reply {r!r}")
-        a = max(base, start)
-        while a < min(base + SECTOR, end):
-            n = min(block, min(base + SECTOR, end) - a)
-            self.t.write(bytes([0x58, 2]) + (a + self.offset).to_bytes(4, "big") + n.to_bytes(2, "big") +
-                         bytes(img[a:a + n]))
-            self._ack(f"data {a:#x}", 2)
-            a += n
+        # The pieces outside the protected regions, by wire address (the data flash's): sub command 2 merges only the
+        # bytes it is sent into the sector sub command 1 read, so the radio's own bytes stay in the gaps
+        lo, hi = max(base, start) + self.offset, min(base + SECTOR, end) + self.offset
+        for p0, p1 in rfprotect.carve_bytes(protect, "data", lo, hi):
+            a = p0
+            while a < p1:
+                n = min(block, p1 - a)
+                self.t.write(bytes([0x58, 2]) + a.to_bytes(4, "big") + n.to_bytes(2, "big") +
+                             bytes(img[a - self.offset:a - self.offset + n]))
+                self._ack(f"data {a - self.offset:#x}", 2)
+                a += n
         self.t.write(bytes([0x58, 3]))
         self._ack(f"commit sector {sector:#x}", 3)
 
     def write_image(self, img, regions, reboot=True, block=BLOCK, progress=None, base=None, protect=None):
-        """Write the regions of img; with base (what the radio holds now) only the sectors that differ. protect: the
-        board's protected regions; a sector on the wire that overlaps one refuses the whole write before anything is
-        sent."""
-        jobs = plan_write(img, regions, base)
+        """Write the regions of img; with base (what the radio holds now) only the sectors that differ outside the
+        protected regions. protect: the board's protected regions (a board, a registry entry or the entry list): a
+        sector holding one is written without a byte of it, so the radio keeps its own there; a sector they cover
+        whole is not written. When img holds bytes for a region that are not blank (and, with base, differ from it),
+        one line on stderr names the region."""
+        keep = kept_ranges(protect, self.offset)
+        jobs = [j for j in plan_write(img, regions, base, keep) if job_sends(j, keep)]
         area = SETTINGS_AREA[0] // SECTOR
         lo, hi = SETTINGS_AREA
         if any(s == area for s, _, _ in jobs) and (
                 area_state(img[lo:hi]) != "valid" or area_kept(img[lo:hi], self.read_image([SETTINGS_AREA])[lo:hi])):
             jobs = [j for j in jobs if j[0] != area]     # the radio keeps its settings area
-        for sector, _, _ in jobs:
-            wire = sector * SECTOR + self.offset
-            try:
-                rfprotect.check(protect, "data", wire, wire + SECTOR)
-            except rfprotect.ProtectedError as e:
-                raise CpsError(str(e))
+        for line in kept_notes(protect, img, regions, self.offset, base):
+            print(line, file=sys.stderr)
         self.opening(True)
         for i, (sector, start, end) in enumerate(jobs):
-            self.write_sector(img, sector, start, end, block)
+            self.write_sector(img, sector, start, end, block, protect=protect)
             if progress:
                 progress(i + 1, len(jobs))
         self.control(5)
@@ -339,28 +380,110 @@ def area_state(b):
 VFO_A = (0x7590, 0x7590 + 56)   # the VFO A record: a read shows the live VFO there (cps-protocol.md 2.2)
 
 
-def same_but_vfo(got, want, at):
-    """got == want for the bytes at image address at.., the VFO A record aside"""
-    return all(got[i] == want[i] for i in range(len(want)) if not VFO_A[0] <= at + i < VFO_A[1])
+def same_but_vfo(got, want, at, skip=()):
+    """got == want for the bytes at image address at.., the VFO A record and the ranges in skip (image addresses: the
+    protected regions, kept_ranges) aside"""
+    return all(got[i] == want[i] for i in range(len(want))
+               if not VFO_A[0] <= at + i < VFO_A[1] and not any(s <= at + i < e for s, e in skip))
 
 
-def plan_write(img, regions, base=None):
+def kept_ranges(protect, offset=0):
+    """[(start, end)] image addresses of the board's protected data flash regions (the wire address is the image
+    address plus offset): the bytes a CPS write never sends, in order, overlapping or touching ones joined (the entries
+    of several boards, protect_for). protect: a board, a registry entry, a list"""
+    out = []
+    for s, e in sorted((max(p["start"] - offset, 0), p["end"] - offset) for p in rfprotect.entries(protect)
+                       if p["mem"] == "data" and p["end"] > offset):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def protect_for(info, board_id=None):
+    """(the protected regions a write keeps on the radio the CPS radio info describes, a note or None). board_id
+    (--board): that board's. Else the board info["board"] names (the debug link VERSION's board=, version_board), as
+    cps_fast.py and the site find it. Else, for a radio whose VERSION names no board the registry knows (another or an
+    older firmware), every board that reports the info's radio type (board.toml [cps] radio_types): radios of
+    different makers can report the same type, so a byte any of them keeps is a byte no write sends, and the note
+    says so when their data flash entries differ. A type no board lists: the board the model name means, or none."""
+    if board_id:
+        return rfprotect.entries(rfoundryboards.get(board_id)), None
+    known = rfoundryboards.from_debuglink_name(info["board"]) if info.get("board") else None
+    if known is not None:
+        return rfprotect.entries(known), None
+    boards = [b for _, b in sorted(rfoundryboards.BOARDS.items())
+              if info.get("radio_type") in (getattr(b, "cps_radio_types", None) or ())]
+    if not boards:
+        b = rfoundryboards.from_debuglink_name(info.get("model"))
+        boards = [b] if b else []
+    out = []
+    for b in boards:
+        out += [p for p in rfprotect.entries(b) if p not in out]
+    data = {tuple(sorted((p["start"], p["end"]) for p in rfprotect.entries(b) if p["mem"] == "data")) for b in boards}
+    note = None
+    if len(data) > 1:
+        note = ("radio type %s is reported by %s: keeping the protected regions of each (--board names the radio)"
+                % (info.get("radio_type"), " and ".join(b.id for b in boards)))
+    return out, note
+
+
+def outside(lo, hi, keep):
+    """The pieces of [lo, hi) outside the ranges in keep (sorted, apart: kept_ranges), in order"""
+    out, at = [], lo
+    for s, e in keep:
+        if s < hi and at < e:
+            if s > at:
+                out.append((at, s))
+            at = max(at, e)
+    return out + [(at, hi)] if at < hi else out
+
+
+def job_sends(job, keep):
+    """A write_image job has bytes outside the protected regions to send (a sector they cover whole has none)"""
+    sector, start, end = job
+    return bool(outside(max(start, sector * SECTOR), min(end, (sector + 1) * SECTOR), keep))
+
+
+def kept_notes(protect, img, regions, offset=0, base=None):
+    """One line for each protected data region whose bytes img holds inside the regions and which aren't blank (with
+    base, what the radio holds: only where they differ from it). A CPS write sends none of them: the radio keeps its
+    own, and the line says so and names the one way to put a backup's bytes back there (settings-store.md 4.2), so a
+    restore of a codeplug never carves around them silently"""
+    lines = []
+    for p in sorted(rfprotect.entries(protect), key=lambda p: p["start"]):
+        if p["mem"] != "data":
+            continue
+        lo, hi = p["start"] - offset, p["end"] - offset
+        spans = [(max(lo, s), min(hi, e)) for s, e in regions if max(lo, s) < min(hi, e)]
+        held = any(bytes(img[a:b]) != b"\xff" * (b - a) and (base is None or bytes(img[a:b]) != bytes(base[a:b]))
+                   for a, b in spans)
+        if held:
+            lines.append("%s: kept, the image's bytes there not sent (the radio keeps its own; to compare them with a "
+                         "backup and write the backup's back: tools/rfoundry_debug.py storage factory --backup FILE)"
+                         % rfprotect.describe(p))
+    return lines
+
+
+def plan_write(img, regions, base=None, keep=()):
     """The (sector, region start, region end) jobs write_image sends for img: every sector part of a region, or with
-    base only those whose bytes differ from it. Each job writes img's bytes of that sector inside the region."""
+    base only those whose bytes differ from it outside keep (image addresses: kept_ranges, whose bytes are never sent).
+    Each job writes img's bytes of that sector inside the region."""
     jobs = []
     for start, end in regions:
         for sector in range(start // SECTOR, (end + SECTOR - 1) // SECTOR):
             lo, hi = max(start, sector * SECTOR), min(end, (sector + 1) * SECTOR)
-            if base is None or bytes(img[lo:hi]) != bytes(base[lo:hi]):
+            if base is None or any(bytes(img[a:b]) != bytes(base[a:b]) for a, b in outside(lo, hi, keep)):
                 jobs.append((sector, start, end))
     return jobs
 
 
-def apply_plan(target, img, jobs):
-    """What the radio would hold after write_image's jobs: img's bytes copied into target (a dry run)."""
+def apply_plan(target, img, jobs, keep=()):
+    """What the radio would hold after write_image's jobs: img's bytes copied into target outside keep (a dry run)."""
     for sector, start, end in jobs:
-        lo, hi = max(start, sector * SECTOR), min(end, (sector + 1) * SECTOR)
-        target[lo:hi] = img[lo:hi]
+        for lo, hi in outside(max(start, sector * SECTOR), min(end, (sector + 1) * SECTOR), keep):
+            target[lo:hi] = img[lo:hi]
     return target
 
 
@@ -591,6 +714,20 @@ def bar(done, total):
         sys.stderr.write("\n")
 
 
+def radio_info(cps):
+    """cps.info() with the board the radio's debug link VERSION names (version_board), asked first, for protect_for"""
+    board = cps.version_board()
+    return dict(cps.info(), board=board)
+
+
+def board_protect(cps, board_id=None):
+    """protect_for the radio on cps (its info and VERSION read unless board_id names the board), the note on stderr"""
+    protect, note = protect_for({} if board_id else radio_info(cps), board_id)
+    if note:
+        print(note, file=sys.stderr)
+    return protect
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port")
@@ -646,16 +783,23 @@ def main(argv=None):
             print(f"read {sum(e - s for s, e in regions)} bytes into {a.image}")
         elif a.cmd == "write":
             img = load_image(a.image)
-            board = rfoundryboards.get(a.board) if a.board else rfoundryboards.from_debuglink_name(cps.info()["model"])
-            cps.write_image(img, regions, reboot=not a.no_reboot, block=a.block, progress=progress, protect=board)
+            protect = board_protect(cps, a.board)
+            cps.write_image(img, regions, reboot=not a.no_reboot, block=a.block, progress=progress, protect=protect)
             print(f"wrote {a.image}" + ("" if a.no_reboot else "; the radio restarts"))
         elif a.cmd == "verify":
             img = load_image(a.image)
+            protect = board_protect(cps, a.board)
             back = cps.read_image(regions, block=a.block, progress=progress)
             lo, hi = SETTINGS_AREA
-            d = compare(img, back, regions, skip=[SETTINGS_AREA] if area_kept(img[lo:hi], back[lo:hi]) else ())
+            keep = kept_ranges(protect, a.offset)		# a write leaves them as the radio has them, so verify does too
+            skip = ([SETTINGS_AREA] if area_kept(img[lo:hi], back[lo:hi]) else []) + keep
+            d = compare(img, back, regions, skip=skip)
             for addr, x, y in d[:20]:
                 print(f"{addr:#08x}: file {x:#04x} radio {y:#04x}")
+            inside = [(max(s, r0), min(e, r1)) for s, e in keep for r0, r1 in regions if max(s, r0) < min(e, r1)]
+            kd = len(compare(img, back, inside))
+            if kd:
+                print(f"{kd} bytes of the protected regions differ (the radio keeps its own there; not compared)")
             print("match" if not d else f"{len(d)} bytes differ")
             return 0 if not d else 1
     except CpsError as e:

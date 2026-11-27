@@ -63,7 +63,10 @@ tuned channel or frequency is the core view's as usual.
   channel as a channel change would (P25, NXDN: the engine starts there). Left out: parked channels, P25 trunked
   channels, and NXDN channels at a rate the board can't receive ([p25.md](p25.md) 7.1, [nxdn.md](nxdn.md) 6.4).
 - **VFO scan** steps the VFO frequency by its step from `lo` to `hi` and wraps. Without a range it sweeps the board
-  band the VFO frequency is in. Both ends must be in one band, at least one step apart.
+  band the VFO frequency is in. The sweep's low end is then the band's first frequency on the step's raster, counted
+  from the whole MHz at or below the band's low edge: a band that starts on a whole MHz is swept from its edge, and
+  one whose edge is off the raster from the first step point inside it, so the scan is on the raster after every
+  wrap. A range that was asked for keeps its own `lo`. Both ends must be in one band, at least one step apart.
 - **Dual watch** alternates between two channels, skip flags ignored (2.1). `radio_req_scan_dual(pos)` (the debug
   link's) watches the current channel and position `pos` of the current zone. The UI on top of it (A and B, the
   screens, the keys) is in [dual-watch.md](../ux/dual-watch.md).
@@ -834,6 +837,30 @@ A board may list receive-only ranges past its rated bands: the last `board_t.rx_
 A board's ranges come from its receiver chip's documents. Nothing past the rated bands is
 measured: front-end filters may cut sensitivity well inside the chip's range, and spurs aren't specified.
 A radio's ranges are on its hardware page.
+
+### 6.3 The owner's transmit arm
+
+A board whose transmit path on a calibration it found (its maker's factory table) has not run on air may refuse every
+transmission on that calibration until the owner arms it (`hal_radio_t.tx_arm_info`, `tx_arm`; debug link RADIO op
+44, [debuglink.md](debuglink.md) 3.8). Nothing in the radio arms it by itself, and the UI has no control for it.
+
+| Rule | Detail |
+|---|---|
+| Stages | 0 off, 1 FM at the lowest power level, 2 FM at every level, 3 every mode (`HAL_TX_ARM_*`); each covers the ones below it. The board names its highest (`max` in the info) |
+| Handshake | a stage over 0 needs the CRC-32 (IEEE, as Python's `zlib.crc32`) of the calibration in use, which the info names by its flash range. The host computes it from its own backup of that range and never takes it from the radio's reply: the id says the host compared the radio's bytes with its backup |
+| Refusals | 1 no calibration in use, 2 another CRC, 3 a stage over the highest, 4 a state forbids it now (the radio not started yet, a bench state, the bench's PA (below), a raw SoC register write since the start where the board asks it (below), a stored reference trim, the power's off state, the calibration about to change, as during a restore of it) |
+| Always taken | off, and a stage below the one armed (the id it was armed with kept). A transmission the new stage no longer covers ends at once, by the board's safe request (`board_rf_safe`) |
+| RAM only | off at every start and at every safe request; never stored |
+| Live | a transmission on that calibration also needs the test TX limit (3.1) as a list naming its frequency, so the frequencies the owner named hold on the radio, not only in the tool; a block, no limit or a cleared one refuses again |
+| The bench's PA | the arm and the bench's PA drive exclude each other, so an armed radio puts nothing on the air but what its stage covers, on the calibration's values. While the arm is not off, or a transmission on it is up, the board takes no drive (`tx_drive` false, op 36 BAD_ARG), keeps the bench's drive now (`tx_drive_now`, the PA sweep) at or under the armed transmission's drive, and keys no bench carrier. The arm is refused (4) while a drive is set or a bench carrier is up, and while the DMR key-up constants are the debug link's (op 37, or a key run's: `pa_keyup_custom`), under which an armed DMR key-up is refused too. From one route to the other: `radio tx-arm off` (or a restart), and `radio tx-drive off`, `radio pa-keyup default` |
+| Bench writes | while the arm is not off, CHIP_REG refuses raw SoC register writes ([debuglink.md](debuglink.md) 3.24), and notes one tried otherwise until the next start (`dl_soc_written`): a board whose arm cares refuses to raise it after one, since no board check sees what it wrote. The board refuses its own bench writes that would reach an armed carrier (its hardware page) |
+| Elsewhere | a transmission the arm doesn't concern (a calibration of the tree's own) follows its own rules unchanged |
+| The owner's tool | `tools/rfoundry_debug.py radio tx-arm fm-low\|fm\|dmr --backup FILE --mhz MHZ[,MHZ...] --allow-rf`: says what the stage lets out before it asks for the three options, compares the calibration in use with the backup's bytes, sets the test TX limit to those frequencies, then arms with the backup's CRC-32 and reads the stage back. `radio tx-arm off` disarms, `radio tx-arm` shows the info |
+| HIL | no test arms by itself: an arm with the calibration's CRC goes only with `--allow-rf` and the test TX limit at block; a transmit test whose key-up the arm doesn't cover skips (`state`) instead of meeting the refusal ([tests/hil/README.md](../../tests/hil/README.md), "Transmit frequencies") |
+
+What the board answers for a refused key-up, and which values the arm makes available when, is on its hardware page;
+[feature-matrix.md](../feature-matrix.md) lists each radio's features. Tools and tests transmit only with
+`--allow-rf` ([tests/hil/README.md](../../tests/hil/README.md)), and arming is no exception.
 
 ## 7. Verification status
 

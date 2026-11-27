@@ -8,7 +8,8 @@
 //
 // Addresses here are image addresses (image.js); a transport adds the radio's base (its flash map's openfw_eeprom:
 // 0x700000 on the DM-32UV) on the wire. Writes send only changed bytes inside the codeplug's regions, never whole
-// sectors: a sector the codeplug shares with the radio's own settings (0x6000) keeps them.
+// sectors: a sector the codeplug shares with the radio's own settings (0x6000) keeps them, and so does one that holds a
+// board's protected data (keepOut).
 
 import { CodeplugImage, EDITOR_REGIONS, IDDB_HEADER, CODEPLUG_SPAN } from "./image.js";
 import { readHeader, extent, AREA1, AREA1_SIZE, AREA2 } from "./iddb.js";
@@ -29,7 +30,7 @@ export class TransportError extends Error {
 }
 
 // The radio's settings block starts inside the first region (open-firmware-cps.md 7.1): never written
-const KEEP_OUT = [[0x604B, 0x6060]];
+const SETTINGS_BLOCK = [0x604B, 0x6060];
 // The VFO pair: a read shows the radio's live VFOs there, not the bytes written (open-firmware-cps.md 2.2, "VFO
 // overlay"), so a verify doesn't compare it
 export const VFOS = [0x7590, 0x7600];
@@ -48,16 +49,39 @@ export function keepIdentity(want, have) {
 	return out;
 }
 
-// Regions of the codeplug a write may change
-export function writeRanges() {
+// The image ranges no write sends, in order, overlapping or touching ones joined: the radio's settings block, and the
+// board's protected data regions (radio: its radios.json entry, flash.protect from board.toml [[flash.protect]]) as
+// image addresses (data address minus codeplug.base), those that reach into the image. The radio keeps its own bytes
+// there: the CPS merges only the bytes sent into the sector it read (cps-protocol.md 2.3), and a fast-protocol block
+// holding one is read from the radio first. The same ranges as tools/cps_client.py kept_ranges
+export function keepOut(radio) {
+	const ranges = [SETTINGS_BLOCK, ...protectedData(radio)].sort((x, y) => x[0] - y[0]);
+	const out = [];
+	for (const [a, b] of ranges) {
+		if (out.length && a <= out.at(-1)[1]) out.at(-1)[1] = Math.max(out.at(-1)[1], b);
+		else out.push([a, b]);
+	}
+	return out;
+}
+
+// The board's protected data regions as image ranges [[a, b]], those that reach into the image
+function protectedData(radio) {
+	const base = radio?.codeplug?.base ?? 0;
+	return (radio?.flash?.protect || []).filter((p) => p.mem === "data" && p.end > base)
+		.map((p) => [Math.max(p.start - base, 0), p.end - base]);
+}
+
+// Regions of the codeplug a write may change: the editor's regions without keepOut(radio), in order. Without a radio,
+// only the settings block is left out
+export function writeRanges(radio) {
+	const keep = keepOut(radio);
 	const out = [];
 	for (const [a, b] of EDITOR_REGIONS) {
 		let s = a;
-		for (const [ka, kb] of KEEP_OUT) {
-			if (ka >= s && ka < b) {
-				if (ka > s) out.push([s, ka]);
-				s = Math.max(s, kb);
-			}
+		for (const [ka, kb] of keep) {
+			if (kb <= s || ka >= b) continue;	// keep is in order and apart: one that starts before s may still reach past it
+			if (ka > s) out.push([s, ka]);
+			s = kb;
 		}
 		if (s < b) out.push([s, b]);
 	}
@@ -265,7 +289,7 @@ export class CpsSerial {
 	}
 
 	cpsPlan(want, have, { iddb = false } = {}) {
-		const plan = changes(want.bytes, have?.bytes ?? null, writeRanges());
+		const plan = changes(want.bytes, have?.bytes ?? null, writeRanges(this.radio));
 		if (iddb) plan.push(...changes(want.bytes, null, iddbRanges(want)));
 		plan.sort((x, y) => x[0] - y[0]);
 		const bytes = plan.reduce((n, [, runs]) => n + runs.reduce((m, [, d]) => m + d.length, 0), 0);
@@ -305,9 +329,13 @@ export class CpsSerial {
 		throw new TransportError("write_refused", { addr: sector, step: fail.what });
 	}
 
-	// Write the plan; throws when the radio refuses a sector
+	// Write the plan; throws when the radio refuses a sector. An ID database that would reach a 4 KB sector holding
+	// protected data doesn't fit either: the radio keeps its own bytes there, and its TFTP server refuses such a database
+	// the same way (tftp.md)
 	async write(want, have, { iddb = false, progress = () => {}, signal } = {}) {
-		if (iddb && idDbEnd(want.bytes) > this.end) throw new TransportError("iddb_too_big");
+		const kept = protectedData(this.radio).map(([x, y]) => [x - (x % BLOCK), Math.ceil(y / BLOCK) * BLOCK]);
+		if (iddb && (idDbEnd(want.bytes) > this.end || iddbRanges(want).some(([a, b]) => kept.some(([x, y]) => x < b && a < y))))
+			throw new TransportError("iddb_too_big");
 		return this.fastOr(() => this.fastWrite(want, have, { iddb, progress, signal }), () => this.cpsWrite(want, have, { iddb, progress, signal }));
 	}
 
@@ -399,7 +427,7 @@ export class CpsSerial {
 	}
 
 	// [[addr, bytes]] for every block of ranges whose bytes on the radio differ from want's within the ranges: the
-	// radio's own bytes stay outside them (KEEP_OUT, a sector's other contents). A block the ranges fill isn't read
+	// radio's own bytes stay outside them (keepOut, a sector's other contents). A block the ranges fill isn't read
 	async fastChanged(want, have, ranges, sums) {
 		const out = [];
 		for (const [a, parts] of blocksOf(ranges)) {
@@ -417,7 +445,7 @@ export class CpsSerial {
 	}
 
 	async fastPlan(want, have, { iddb = false } = {}) {
-		const cp = writeRanges(), db = iddb ? iddbRanges(want) : [];
+		const cp = writeRanges(this.radio), db = iddb ? iddbRanges(want) : [];
 		want.ensure(Math.max(...[...cp, ...db].map(([, b]) => b)));
 		const sums = await this.fastSums(blocksOf([...cp, ...db]).map(([a]) => a));
 		const codeplug = await this.fastChanged(want, have, cp, sums);
@@ -452,7 +480,7 @@ export class CpsSerial {
 		}
 		// a block the fast protocol refuses (outside what it serves on this radio) goes through the CPS
 		for (const a of refused) {
-			const runs = changes(want.bytes, null, writeRanges().filter(([x, y]) => x < a + BLOCK && y > a)
+			const runs = changes(want.bytes, null, writeRanges(this.radio).filter(([x, y]) => x < a + BLOCK && y > a)
 				.map(([x, y]) => [Math.max(x, a), Math.min(y, a + BLOCK)]));
 			for (const [sector, r] of runs) await this.writeSector(sector, r);
 		}

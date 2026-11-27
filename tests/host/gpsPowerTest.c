@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // When a GPS module is powered (drivers/gps/gps_rx/gps_power.c), stepped the way the platform GPS tasks
-// (platform/stm32f4/gps_uart, platform/hrc7000/gps_hrc.c) step it: the start-up probe whatever the setting, then
+// (platform/stm32/gps_uart, platform/hrc7000/gps_hrc.c) step it: the start-up probe whatever the setting, then
 // Settings > Location > GPS once a module was heard, and never again once none was
 #include <stdio.h>
 #include "gps/gps_rx/gps_power.h"

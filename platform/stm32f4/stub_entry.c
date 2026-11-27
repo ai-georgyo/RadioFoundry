@@ -10,6 +10,7 @@
 // stub polls the same OTG_FS core and adopts the configured CDC-ACM device when it can (handoff flag in r0).
 #include "config.h"
 #if CONFIG_STUB_ENTRY
+#include <stddef.h>
 #include <stdint.h>
 #include "platform.h"
 #include "board.h"
@@ -17,6 +18,13 @@
 #include "../../stub/stm32f4/f4stub_header.h"	// the stub's image header: one definition, shared with the stub
 #if CONFIG_USB
 #include "usb/usb_device.h"
+#endif
+#if CONFIG_CRASH_LOG
+#include "crash/crash.h"
+// The stub's RESET leaves the "asked for" mark where the crash log's boot record has it (platform/stm32/crash_stm32.c:
+// the backup SRAM, after the record), so the next start doesn't count the reset as a crash
+_Static_assert(F4STUB_SOFT_MARK_ADDR == BKPSRAM_BASE + sizeof(crash_record_t) + offsetof(crash_boot_t, soft) &&
+	       F4STUB_SOFT_MARK == CRASH_BOOT_SOFT, "the stub's RESET mark (f4stub_header.h)");
 #endif
 
 #define STUB_RUN_ADDR		0x20000000u	// SRAM1 base: the stub's link address (stub/stm32f4/f4stub.ld)

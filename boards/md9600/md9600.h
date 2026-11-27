@@ -48,7 +48,7 @@ _Static_assert(KEY_COUNT <= 32, "key bits are a 32-bit mask");
 // The raw matrix (columns low per row, bits 0-2 = K4-K6), for the diagnostics page
 void md9600_input_raw(uint8_t rows[4]);
 
-// Data flash (flash_md9600.c, on platform/stm32f4/spi_flash's stm32_spi_flash): probe it from board_init, and its
+// Data flash (flash_md9600.c, on platform/stm32/spi_flash's stm32_spi_flash): probe it from board_init, and its
 // security registers 1..3, 256 bytes each (calibration in 1-2, options in 3)
 bool md9600_flash_init(void);
 bool md9600_flash_read_security(uint8_t reg, uint32_t offset, void *buf, uint32_t len);

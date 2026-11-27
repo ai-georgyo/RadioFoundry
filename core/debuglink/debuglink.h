@@ -58,6 +58,7 @@ enum {
 	DL_VIEW_P25,		// P25 on the channel: the call, settings, engine and voice counters (debuglink_view_p25.c)
 	DL_VIEW_P25_TRUNK,	// a trunked P25 channel's follower: system, channels, call followed, counters (the same file)
 	DL_VIEW_NXDN,		// NXDN on the channel: the call, settings, the provider's fit, engine counters (debuglink_view_nxdn.c)
+	DL_VIEW_BOARD2,		// the board's keys from board.view_split on (debuglink_view_board.c); only where it splits them
 	// New sections go above: dmrip, only in builds with the switch, stays last so no other section's number moves
 #if CONFIG_DEBUGLINK_DMRIP
 	DL_VIEW_DMRIP,		// the debug link over the air: its counters and the detour (debuglink_dmrip.c)
@@ -68,8 +69,15 @@ enum {
 
 // Render one section of v into t. Every section starts with "section=<name>"
 void debuglink_view_section(uint8_t section, const radio_view_t *v, dl_text_t *t);
-// A section's name ("core", ...), NULL past the last
+// A section's name ("core", ...), NULL past the last and for a section this radio doesn't have
 const char *debuglink_view_name(uint8_t section);
+
+// The board's own keys (debuglink_view_board.c): part 0 the `board` section's, 1 the `board2` section's (the board's
+// lines from board.view_split on, still "board.<key>"). A section is present on every board but `board2`, which only a
+// board that sets view_split has; next is the present section after it, 0xFF after the last
+void debuglink_view_board(uint8_t part, dl_text_t *t);
+bool debuglink_view_present(uint8_t section);
+uint8_t debuglink_view_next(uint8_t section);
 
 // The DMR sections (part 0: DL_VIEW_DMR, 1: DL_VIEW_DMR_CALL, 2: DL_VIEW_DMR_STATS), in their own file so the DMR
 // integration can change them without touching the rest; built without DMR they say "dmr.built=0"
@@ -95,8 +103,8 @@ void debuglink_p25_reset(void);
 void debuglink_view_nxdn(const radio_view_t *v, dl_text_t *t);
 void debuglink_nxdn_reset(void);
 void debuglink_view_keys(dl_text_t *t);
-// RADIO operations (DL_CMD_RADIO, first payload byte; docs/spec/debuglink.md 3.6): 1-19, 25, 27, 28 in debuglink.c,
-// the rest in debuglink_view_radio.c
+// RADIO operations (DL_CMD_RADIO, first payload byte; docs/spec/debuglink.md 3.6): 1-19, 25, 27, 28 and 44 in
+// debuglink.c (44 through dl_txarm.c), the rest in debuglink_view_radio.c
 enum {
 	DL_OP_CHANNEL_STEP = 1, DL_OP_ZONE_POS, DL_OP_ZONE, DL_OP_VFO, DL_OP_VFO_SET, DL_OP_VFO_STEP, DL_OP_POWER,
 	DL_OP_SQUELCH, DL_OP_BANDWIDTH, DL_OP_TONE, DL_OP_MONITOR, DL_OP_CLEAR_TEMP, DL_OP_REPLY_CANCEL, DL_OP_HOTSPOT_EXIT,
@@ -126,11 +134,14 @@ enum {
 	DL_OP_VOICE_CAPTURE = 41,
 	DL_OP_P25 = 42,
 	DL_OP_NXDN = 43,
+	// The owner's transmit arm (hal_radio_t.tx_arm, dl_txarm.h): debuglink.c answers it itself, with a reply of its
+	// own, outside the radio requests' rate limit
+	DL_OP_TX_ARM = 44,
 };
 uint8_t debuglink_radio_feature_op(uint8_t op, const uint8_t *args, uint16_t len);
 // After a reply: the host port's reattach a PA key run asked for (PA_KEYRUN_FLAG_REATTACH); else a no-op
 void debuglink_keyrun_service(void);
-// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too
+// RADIO ops the dispatcher hands to debuglink_radio_feature_op: a new DL_OP_* goes here too, but for DL_OP_TX_ARM
 static inline bool debuglink_is_feature_op(uint8_t op)
 {
 	return (op >= DL_OP_SCAN && op <= DL_OP_SETTING) || op == DL_OP_ROAM || op == DL_OP_VIBRATE || op == DL_OP_VOLUME ||

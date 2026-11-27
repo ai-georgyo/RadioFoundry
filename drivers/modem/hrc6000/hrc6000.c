@@ -271,7 +271,7 @@ bool hrc6000_set_mode_fm_tx(hrc_t *dev, const hrc6000_fm_tx_t *cfg)
 	ok &= hrc_write(dev, 4, 0x83, 0xFF);	// clear interrupts
 	ok &= hrc_write(dev, 4, 0x87, 0x00);
 	ok &= hrc_set_mod_gain(dev, cfg->mod2, cfg->mod1);
-	ok &= hrc6000_set_ref_offset(dev, cfg->ref_offset, true);
+	ok &= hrc6000_set_ref_offset(dev, cfg->ref_offset, !cfg->ref_ten_bits);
 	ok &= hrc_write(dev, 4, 0x49, 0xFF);	// modulation limits
 	ok &= hrc_write(dev, 4, 0x4A, 0xFF);
 	ok &= hrc_write(dev, 4, 0x35, dev_coef.voice);

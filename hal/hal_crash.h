@@ -16,6 +16,8 @@
 #define CRASH_TASKS		8	// other tasks in the snapshot: the record then fills the HR_C7000's 256-byte store
 #define CRASH_TAG_LEN		4	// the first letters of each one's name
 
+// CM4: Cortex-M4 and M7 (ARMv7-M). The exception frame, the fault status registers and the Thumb return addresses are
+// the same on both, so one number serves them and the name stays
 enum { CRASH_ARCH_CM4 = 1, CRASH_ARCH_CK803 = 2 };
 
 enum {
@@ -99,7 +101,7 @@ enum {
 
 // Provided by the platform:
 
-// The record's home, in memory a reset doesn't clear and the bootloader doesn't use (STM32F4: backup SRAM; HR_C7000:
+// The record's home, in memory a reset doesn't clear and the bootloader doesn't use (STM32: backup SRAM; HR_C7000:
 // the top of the modem's SRAM). The first call turns on its access. NULL: the platform has none
 crash_record_t *hal_crash_store(void);
 // CRASH_ARCH_*

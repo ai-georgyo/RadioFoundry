@@ -123,8 +123,12 @@ uint32_t dl_dmrip_reply_ip(uint32_t id, uint32_t src_ip);
 
 // An item a detour may run: the changes the return undoes (the list in 7.4)
 bool dl_detour_item_allowed(uint8_t cmd, const uint8_t *p, uint8_t len);
-// A RUN's items, checked whole: DL_ST_OK, DL_ST_BAD_ARG (malformed), DL_ST_REFUSED (an item not allowed)
-uint8_t dl_detour_items_check(const uint8_t *items, uint16_t n);
+// A CHIP_REG write to a chip in kept (bit n: chip n, board_t.chip_reg_kept): the board's own value, which no return
+// undoes, so no detour runs it
+bool dl_detour_item_kept(uint8_t cmd, const uint8_t *p, uint8_t len, uint8_t kept);
+// A RUN's items, checked whole: DL_ST_OK, DL_ST_BAD_ARG (malformed), DL_ST_REFUSED (an item not allowed, or a write
+// to a chip in kept)
+uint8_t dl_detour_items_check(const uint8_t *items, uint16_t n, uint8_t kept);
 
 enum {
 	DL_DETOUR_IDLE,
@@ -142,6 +146,7 @@ typedef struct {
 	bool (*armed)(void);			// the core holds a home state
 	void (*release)(void);			// an injected PTT up
 	bool (*clear)(void);			// the RUN reply is out (NULL: no wait)
+	uint8_t (*chip_kept)(void);		// board_t.chip_reg_kept (NULL: none)
 } dl_detour_ops_t;
 
 typedef struct {

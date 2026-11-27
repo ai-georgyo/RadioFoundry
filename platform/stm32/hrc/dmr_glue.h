@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 The RadioFoundry Authors
+// DMR modem glue shared by the STM32 radios with an HR_C6000 or HR_C5000: the slot engine
+// (drivers/modem/hrc_common/hrc6000_dmr.c) on the chip's three interrupt lines, the deferred event task that calls the
+// DMR stack, the hal_dmr_modem_t over them and the bring-up counters (docs/spec/dmr-modem.md 6). The three lines are
+// pins 0, 1 and 2 of one port unless the board says otherwise (hrc_lines.h). A board supplies what differs: how its RF
+// side switches for each burst (stm32_hrc_dmr_board_t). A board adds platform/stm32/hrc to BOARD_DIRS to use it.
+#ifndef STM32_HRC_DMR_GLUE_H
+#define STM32_HRC_DMR_GLUE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "config.h"
+#include "platform.h"
+#include "hal_dmr_modem.h"
+#include "hal_air.h"
+#include "hal_baseband.h"
+#include "modem/hrc_common/hrc6000_dmr.h"
+
+typedef struct {
+	// The port whose pins (0, 1, 2 by default: hrc_lines.h) carry the timeslot, system and RF TX interrupts (falling edge)
+	GPIO_TypeDef *int_port;
+	// Per-burst RF switch, from the modem interrupts (never blocks): tx = key the PA for our burst, else the PA off and
+	// the RF side back to receive. False when it could not be done now; the engine counts it
+	bool (*rf_switch)(bool tx);
+	// Optional: at each timeslot interrupt, before the engine (a board retries a skipped back-to-RX switch here)
+	void (*ts_service)(void);
+	// Optional: the board's RF switch counters (bursts it could not switch, RF TX interrupts with nothing armed, and
+	// its back-to-RX count: switches retried, or returns to receive after a split channel transmission, as the board
+	// counts them). Any pointer may be ignored
+	void (*rf_counters)(uint32_t *skipped, uint32_t *unarmed, uint32_t *rx);
+	// Optional (a board with one synthesizer, so the receiver can't stay on while an aligned start waits for its slot):
+	// the transmit side ready ahead of the first burst. tx_prepare (under the modem lock or in the timeslot ISR, never
+	// blocks) switches RF to TX: at tx_begin for own timing, at the engine's tx_slot_found for an aligned start, and
+	// from stm32_hrc_dmr_tx_prepare. tx_wait_lock (task level, optional) waits for the synthesizer after it. tx_done
+	// (under the lock, optional) at TX done: the receiver back on the RX frequency, true when it is
+	// (stm32_hrc_dmr_tx_end). Without tx_prepare an aligned start switches at its first burst and the other two are
+	// not called
+	void (*tx_prepare)(void);
+	void (*tx_wait_lock)(void);
+	bool (*tx_done)(void);
+	// Optional (task level, stm32_hrc_dmr_tx_end): the end of our DMR transmission with the RF back on receive. End it
+	// as tx_off() does, but leave the RF receiving as it is when it is on the last rx() settings; else set receive up
+	// again as tx_off() does. NULL: the glue leaves it to tx_off()
+	void (*tx_end)(void);
+	// The RF side retunes to the receive frequency between our bursts when the transmission listens, on a split
+	// channel too (stm32_hrc_dmr_tx_listening; the modem's tx_listen_split)
+	bool listen_split;
+#if CONFIG_AIR
+	// The physical layer pipe (stm32_hrc_air) has been checked on air on this board: its fit loses AIR_FIT_UNTESTED
+	bool air_verified;
+	// The RF chip gives the HR_C6000 the flat discriminator in its DMR set-up, so the chip's FM copy carries it
+	// (modem-hrc6000.md 10.6): the provider receives the profiles the correlator can't through the soft modem, and
+	// stm32_hrc_baseband is the board's receive tap
+	bool air_tap;
+#endif
+} stm32_hrc_dmr_board_t;
+
+typedef struct {
+	bool active;			// the chip is in DMR and its interrupts are on
+	bool stack_attached;		// start() has given a callback
+	hrc6000_dmr_stats_t modem;	// slot engine counters (hrc6000_dmr.h)
+	uint32_t rf_skipped;		// the board's RF switch counters (rf_counters), since the last reset
+	uint32_t rf_unarmed;
+	uint32_t rf_rx;			// the board's back-to-RX count
+} stm32_hrc_dmr_stats_t;
+
+// Lines stm32_hrc_dmr_stats_line formats (at most about 26 characters each, the diagnostics page)
+#define STM32_HRC_DMR_DIAG_LINES	24
+
+#if CONFIG_DMR
+// Once, from the radio init, after the chip is attached: interrupt lines (left off), task
+void stm32_hrc_dmr_init(hrc_t *modem, const stm32_hrc_dmr_board_t *b);
+void stm32_hrc_dmr_enter(void);		// the chip has just been put in DMR (hrc6000_dmr_enter): engine on, interrupts on
+void stm32_hrc_dmr_leave(void);		// leaving DMR: transmission dropped, interrupts off, engine off
+void stm32_hrc_dmr_rx_restart(void);	// new channel in DMR
+// hal_radio_t.dmr_tx_end: when the RF is back to receive after our transmission (the last burst switch put it back,
+// the rf_switch result, or tx_done did on a board with tx_prepare; no burst, tx_prepare, new channel or DMR entered or
+// left since), the board's tx_end ends the transmission and true; else false (the core calls tx_off())
+bool stm32_hrc_dmr_tx_end(void);
+bool stm32_hrc_dmr_tx_active(void);	// the engine's slot state says a transmission is in progress
+bool stm32_hrc_dmr_tx_listening(void);	// that transmission receives between its bursts (an SFR, tx_listen)
+bool stm32_hrc_dmr_tx_last_out(void);	// its last burst is set up: the next PA drop ends it (hrc6000_dmr_tx_last_out)
+// The air interface's physical layer mode has the chip (stm32_hrc_air): a transmission keys the PA once and holds it
+// until the RF switch back, with no burst to end it. Interrupt context: a board's per-burst PA drop must not run
+bool stm32_hrc_dmr_tx_continuous(void);
+// The split duplex BS outbound has the chip (hrc6000_bs.c): µs to its next slot boundary (the slot clock). False
+// otherwise. Interrupt context: a board times the outbound's one PA key-up with it
+bool stm32_hrc_dmr_bs_boundary_us(uint32_t *us);
+void stm32_hrc_dmr_tx_drop(void);	// abort a transmission now (radio retune or tx_off while one runs)
+// The transmit side ready ahead of the first burst (a board with tx_prepare): from radio tx() when it arms DMR, from
+// the modem's tx_begin (own timing) and from the engine's tx_slot_found (aligned); the last of them does it
+void stm32_hrc_dmr_tx_prepare(void);
+
+extern const hal_dmr_modem_t stm32_hrc_dmr;
+#if CONFIG_AIR
+// The chip's physical layer mode as the board's air interface (hal_air.h, hrc6000_air.h): a session halts the slot
+// engine and takes the three interrupt lines and this task; close starts the engine again. The HR_C6000 and the
+// HR_C5000 (the chip description gives what differs)
+extern const hal_air_t stm32_hrc_air;
+// The FM copy as a receive tap (hal_baseband.h): a board with air_tap points board.baseband at it
+extern const hal_baseband_t stm32_hrc_baseband;
+// The chip while the FM copy holds it (a session receiving through the copy, or the tap), else NULL. Its line out
+// carries no I2S PCM then (modem-hrc6000.md 8), so i2s_pcm.c sends the speaker's audio through the prompt FIFO
+hrc_t *stm32_hrc_copy_chip(void);
+#else
+static inline hrc_t *stm32_hrc_copy_chip(void) { return NULL; }
+#endif
+
+// Counters (no bus traffic). Usable without the DMR stack: entering DMR mode (radio set_mode + rx) starts the receiver
+void stm32_hrc_dmr_stats(stm32_hrc_dmr_stats_t *out);
+// The counters as text for the diagnostics page: line i (0..), false past the last
+bool stm32_hrc_dmr_stats_line(uint8_t i, char *buf, uint8_t len);
+// Zero the counters (slot engine and RF switch); the last_* values and the engine state are kept
+void stm32_hrc_dmr_stats_reset(void);
+// RX trace into the debug link's log ("drx" lines: every burst event the engine delivered; CONFIG_DEBUGLINK builds).
+// On by default
+void stm32_hrc_dmr_set_trace(bool on);
+#else	// built without DMR (CONFIG_DMR): the radio never enters DMR
+static inline void stm32_hrc_dmr_init(hrc_t *modem, const stm32_hrc_dmr_board_t *b) { (void)modem; (void)b; }
+static inline void stm32_hrc_dmr_enter(void) {}
+static inline void stm32_hrc_dmr_leave(void) {}
+static inline void stm32_hrc_dmr_rx_restart(void) {}
+static inline bool stm32_hrc_dmr_tx_end(void) { return false; }
+static inline bool stm32_hrc_dmr_tx_active(void) { return false; }
+static inline bool stm32_hrc_dmr_tx_listening(void) { return false; }
+static inline bool stm32_hrc_dmr_tx_last_out(void) { return false; }
+static inline bool stm32_hrc_dmr_tx_continuous(void) { return false; }
+static inline bool stm32_hrc_dmr_bs_boundary_us(uint32_t *us) { (void)us; return false; }
+static inline void stm32_hrc_dmr_tx_drop(void) {}
+static inline void stm32_hrc_dmr_tx_prepare(void) {}
+static inline hrc_t *stm32_hrc_copy_chip(void) { return NULL; }
+#endif
+
+#endif
