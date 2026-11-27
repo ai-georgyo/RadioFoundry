@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include "cs7000p.h"
 #include "radio/power_switch.h"
+#include "radio/volume_pot.h"
 
 // Vbat in mV = (gain x POW_DET in mV) / 1000 - offset: the model above turned round (bench knobs,
 // docs/testing/cs7000p-bringup.md)
@@ -63,11 +64,15 @@ static inline uint32_t cs7000p_battery_mv(uint32_t pow_det_mv)
 	return scaled > offset ? (scaled - offset) / 1000u : 0u;
 }
 
-// The volume knob's position, 0..100
+// The volume knob's position, 1..100, as the core's pot mapping gives it (core/radio/volume_pot.h): one straight line
+// from 0 to the full-volume reading (no reading at mid-rotation was taken, so the middle point is on that line), and
+// never 0, which the volume bar shows only for a bottom of the knob known to be silent: no one has checked this one's
+// (VOLUME_POT_NO_MUTE). The pot is in the analog audio path: the position is all the core gets
 static inline uint8_t cs7000p_volume_pct(uint32_t raw)
 {
-	const uint32_t pct = raw * 100u / (uint32_t)(CS7000P_VOL_FULL_RAW);
-	return (uint8_t)(pct > 100u ? 100u : pct);
+	static const volume_pot_cal_t cal = { 0, (CS7000P_VOL_FULL_RAW) / 2, CS7000P_VOL_FULL_RAW, VOLUME_POT_NO_MUTE };
+	volume_pot_t s = { .turned_up = false };	// the mute zone's state: none here
+	return (uint8_t)volume_pot_percent(&s, &cal, raw > 0xFFFFu ? 0xFFFF : (int32_t)raw);
 }
 
 // The hold rule. The expander keeps the hold through an MCU reset and the ROM bootloader never writes it, so the

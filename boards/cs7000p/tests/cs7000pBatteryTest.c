@@ -50,13 +50,17 @@ static void test_scales(void)
 	CHECK(cs7000p_adc_to_mv(0, 3240) == 0 && cs7000p_adc_to_mv(4095, 3240) == 3240);
 	CHECK(near(cs7000p_adc_to_mv(2048, 3240), 1620, 1) && cs7000p_adc_to_mv(4095, 3700) == 3700);
 	CHECK(CS7000P_VDDA_NOMINAL_MV == 3240u);
-	// The volume position: 0 at the bottom, 100 at the full-volume reading and above it, never past 100
-	CHECK(cs7000p_volume_pct(0) == 0 && cs7000p_volume_pct(CS7000P_VOL_FULL_RAW) == 100);
-	CHECK(cs7000p_volume_pct(4095) == 100 && cs7000p_volume_pct(0xFFFF) == 100);
-	uint8_t last = 0;
+	// The volume position: 1 at the bottom (never 0: the volume bar shows 0 only for a bottom known to be silent,
+	// core/radio/volume_pot.h), 100 at the full-volume reading and above it, never past 100
+	CHECK(cs7000p_volume_pct(0) == 1 && cs7000p_volume_pct(7) == 1 && cs7000p_volume_pct(CS7000P_VOL_FULL_RAW) == 100);
+	CHECK(cs7000p_volume_pct(4095) == 100 && cs7000p_volume_pct(0xFFFF) == 100 && cs7000p_volume_pct(UINT32_MAX) == 100);
+	// A straight line from 0 to the full-volume reading, as before the core's mapping took it: half way is 50 %
+	CHECK(cs7000p_volume_pct(CS7000P_VOL_FULL_RAW / 2) == 50 && cs7000p_volume_pct(CS7000P_VOL_FULL_RAW / 2 - 1) == 49);
+	uint8_t last = 1;
 	for (uint32_t raw = 0; raw <= 4095; raw++) {
 		uint8_t p = cs7000p_volume_pct(raw);
-		CHECK(p >= last && p <= 100);
+		CHECK(p >= last && p >= 1 && p <= 100);
+		CHECK(raw < 100u || p == (raw * 100u / CS7000P_VOL_FULL_RAW > 100u ? 100u : raw * 100u / CS7000P_VOL_FULL_RAW));
 		last = p;
 	}
 }

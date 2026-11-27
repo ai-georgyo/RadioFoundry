@@ -33,9 +33,9 @@ run-boards:: cs7000pPinsTest
 	./cs7000pPinsTest
 
 # The battery model, the rule for holding the supply and the knob watch after a power-off (battery_cs7000p.h)
-CS7000P_BATTERY := $(CS7000P_T)/cs7000pBatteryTest.c $(CORE)/radio/power_switch.c
+CS7000P_BATTERY := $(CS7000P_T)/cs7000pBatteryTest.c $(CORE)/radio/power_switch.c $(CORE)/radio/volume_pot.c
 TESTS   += cs7000pBatteryTest
-cs7000pBatteryTest: $(CS7000P_BATTERY) $(CS7000P_H) $(CORE)/radio/power_switch.h
+cs7000pBatteryTest: $(CS7000P_BATTERY) $(CS7000P_H) $(CORE)/radio/power_switch.h $(CORE)/radio/volume_pot.h
 	$(CC) $(CFLAGS) $(CS7000P_INC) -Wshadow -o $@ $(CS7000P_BATTERY)
 run-boards:: cs7000pBatteryTest
 	./cs7000pBatteryTest
@@ -43,9 +43,9 @@ run-boards:: cs7000pBatteryTest
 # The power file itself (power_cs7000p.c, included by the test) on a fake scan, expander, timer and clock: the hold
 # only on a knob read on, the order of a power-off, the scan that stops, a sagging pack, the off state's LEDs (the
 # interrupt mask the test's own: a power-off can come just before it)
-CS7000P_POWER := $(CS7000P_T)/cs7000pPowerTest.c $(CORE)/radio/power_switch.c
+CS7000P_POWER := $(CS7000P_T)/cs7000pPowerTest.c $(CORE)/radio/power_switch.c $(CORE)/radio/volume_pot.c
 TESTS   += cs7000pPowerTest
-cs7000pPowerTest: $(CS7000P_POWER) $(CS7000P)/power_cs7000p.c $(CS7000P_H) $(CORE)/radio/power_switch.h
+cs7000pPowerTest: $(CS7000P_POWER) $(CS7000P)/power_cs7000p.c $(CS7000P_H) $(CORE)/radio/power_switch.h $(CORE)/radio/volume_pot.h
 	$(CC) $(CFLAGS) $(CS7000P_INC) -I$(ROOT)/platform/stm32 -Wshadow -DCS7000P_STUB_MASK_HOOK -o $@ $(CS7000P_POWER)
 run-boards:: cs7000pPowerTest
 	./cs7000pPowerTest

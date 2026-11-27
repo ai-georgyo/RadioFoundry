@@ -396,6 +396,7 @@ the maker's software, return to RadioFoundry, back up again and compare the two 
 | `board.vbat_mv` against a meter at 6.0, 7.4 and 8.4 V, within 2 % | the battery model (question 13). Expected `board.pow_det_mv`: 1,560, 1,910, 2,160 | `CS7000P_BAT_GAIN_PPK`, `CS7000P_BAT_OFFSET_MV` |
 | `board.vdda_mv` near 3,240 | VREFINT and the factory value | |
 | `board.vol_raw` follows the knob; note its value at full volume | `VOL-DET` | `CS7000P_VOL_FULL_RAW` |
+| Turning the knob shows the volume bar, 16 at full volume and 1 at the bottom; `volume.knob` (features view) follows it. Untested | the position through the core's pot mapping (hardware-cs7000p.md 5.6) | `CS7000P_VOL_FULL_RAW` |
 | `board.vox_raw` moves with speech into the microphone **only while keyed** (FM or DMR, into the dummy load, stage 11): the level detector's amplifier (`EXP_MIC_POWER`) and the microphone switch (`EXP_MIC_INT`) are on only during a transmission. While receiving it reads near 0. VOX itself is not written for this radio (`BOARD_NOT_WRITTEN`, `CONFIG_VOX` off) | the level detector on PC4 | |
 | The LEDs: green, red, both for orange | `EXP_LED_GREEN`, `EXP_LED_RED` | |
 

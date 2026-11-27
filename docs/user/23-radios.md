@@ -905,7 +905,8 @@ measured, and can be off by 4 % from radio to radio.
 ### CS7000 M17 PLUS power switch
 
 The power switch is on the volume knob. RadioFoundry sees the knob turn off, saves and switches the radio off. The
-volume is the knob's alone, and RadioFoundry shows no volume bar on this radio.
+volume is the knob's alone: RadioFoundry only reads where it is, for the [volume bar](#the-volume-bar), whose lowest
+step is 1 here.
 
 **If the radio stays on with a lit, blank screen after you turned the knob off, take the battery off for a few
 seconds.** This can happen when RadioFoundry has not run since the radio was switched on: after you switched it on
@@ -944,7 +945,6 @@ has no zone line. It has not been tried on a radio.
 - DMR voice, both ways: no codec. Received calls are shown, not played.
 - M17. RadioFoundry has no M17 mode.
 - Bluetooth, the man-down sensor and the vibrator: not used.
-- A volume bar: the knob sets the volume in the audio path.
 - Beeps while the radio transmits or sleeps between receive checks, and all beeps in a build without DMR.
 - Roger beep, 1750 Hz burst and DTMF on FM; APRS on FM and APRS receive. APRS positions go over DMR only.
 - Single frequency repeating, the split duplex repeater, P25 and NXDN: not written for this radio.
