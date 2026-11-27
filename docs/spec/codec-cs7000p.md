@@ -702,7 +702,7 @@ set_options, encode, decode, through `stm32_codec_call`) ran from that image's E
 * Stack: 4272 bytes below the host's encode entry (224 to the codec's entry, then 4048) and 2352 below its decode
   entry (2192 below the codec's). With the audio task's static frames (audio_task 16, block 24, ambeVoiceAudioBlock
   128) the audio task reaches 4440 of its 5120 bytes; the port's 208 bytes of exception and context overhead leave
-  472, 344 beyond the 128-byte margin. The static stack check says 4456 (its veneer entry assumes 8 stack
+  472, 344 beyond the 128-byte margin. The static stack check says 4448 (its veneer entry assumes 8 stack
   arguments). `AUDIO_TASK_STACK` stays as it is.
 * Instructions per frame, the codec alone: the same as on the stock image after a session's first frame (encode
   0.471 to 0.634 million, median 0.58; decode 81 to 230 thousand, median about 175). A session's first frame adds the
