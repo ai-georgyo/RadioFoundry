@@ -154,12 +154,12 @@ is `tools/bringup.py list --radio <id>`.
 | `lang_es` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | off | not recorded | ✕ |
 | `lang_it` | off | off | off | off | off | off | off | off | ✕ |
 | `lang_fr` | off | off | off | off | off | off | off | off | off |
-| `lang_zh` | off | off | ✕ | ✕ | ✕ | off | off | ✕ | ✕ |
+| `lang_zh` | off | off | ✕ | ✕ | ✕ | off | off | off | ✕ |
 | `cjk_glyphs` | off | off | off | off | off | off | off | off | off |
 | `lang_default_es` | off | off | off | off | off | off | off | off | ✕ |
 | `lang_default_it` | off | off | off | off | off | off | off | off | ✕ |
 | `lang_default_fr` | off | off | off | off | off | off | off | off | off |
-| `lang_default_zh` | off | off | ✕ | ✕ | ✕ | off | off | ✕ | ✕ |
+| `lang_default_zh` | off | off | ✕ | ✕ | ✕ | off | off | off | ✕ |
 | `radio_controls` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | partial, needs re-run |
 | `settings_store` | not recorded | not recorded | not recorded | pass (seed) | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
 | `codeplug_foreign` | not recorded | not recorded | not recorded | not recorded | not recorded | not recorded | pass, needs re-run | not recorded | pass, needs re-run |
@@ -261,12 +261,12 @@ clock`; ? = not known yet). No driver reads the clock yet ([radio-features.md](s
 | `LANG_ES` | ● | ● | ● | ● | ● | ● | ○ | ● | ✕ |
 | `LANG_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
 | `LANG_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| `LANG_ZH` | ○ | ○ | ✕ | ✕ | ✕ | ○ | ○ | ✕ | ✕ |
+| `LANG_ZH` | ○ | ○ | ✕ | ✕ | ✕ | ○ | ○ | ○ | ✕ |
 | `CJK_GLYPHS` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
 | `LANG_DEFAULT_ES` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
 | `LANG_DEFAULT_IT` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ✕ |
 | `LANG_DEFAULT_FR` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ | ○ |
-| `LANG_DEFAULT_ZH` | ○ | ○ | ✕ | ✕ | ✕ | ○ | ○ | ✕ | ✕ |
+| `LANG_DEFAULT_ZH` | ○ | ○ | ✕ | ✕ | ✕ | ○ | ○ | ○ | ✕ |
 | `UI_COLOR` | ● | ● | ✕ | ● | ● | ● | ✕ | ● | ✕ |
 | `UI_SETTINGS` | ● | ● | ● | ● | ● | ● | ● | ● | ✕ |
 | `SCAN` | ● | ● | ● | ● | ● | ● | ● | ● | ● |

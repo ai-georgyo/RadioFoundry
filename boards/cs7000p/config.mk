@@ -11,8 +11,6 @@
 # docs/build-config.md, "Unsupported, not written, unconfirmed"): ci's maximal configuration leaves these off
 BOARD_UNSUPPORTED += FONT_XL	# the 160x128 panel is too small for the large font (it is for 240 px and wider)
 BOARD_UNSUPPORTED += FONT_BIG	# drawn only on panels 220 px and wider
-BOARD_UNSUPPORTED += LANG_ZH	# a Chinese line needs 16 px; this layout draws its words in a smaller font
-BOARD_UNSUPPORTED += LANG_DEFAULT_ZH	# needs LANG_ZH
 BOARD_UNSUPPORTED += AM_RX	# no AM receiver: an FM IF chain
 BOARD_UNSUPPORTED += BCAST_FM	# no broadcast receiver
 BOARD_UNSUPPORTED += NAND_STORAGE	# the data flash is a SPI NOR
@@ -43,6 +41,13 @@ BOARD_NOT_WRITTEN += VOX	# the level detector's amplifier and microphone switch 
 ifeq ($(origin CONFIG_APRS),undefined)
 CONFIG_APRS := $(if $(filter n,$(CONFIG_DMR) $(CONFIG_APRS_DMR)),n,y)
 endif
+# Chinese (CONFIG_LANG_ZH, docs/build-config.md): a 160x128 panel is the 160 px class, whose layout moves its words up to
+# the 8x16 font while a wide language is in use (core/ui/ui_screens.c, docs/spec/ui.md 2.5), so a 16 px CJK glyph fits;
+# Home then has no zone line and a list shows 5 rows instead of 7. Off by default like on every radio; the 1 MB region
+# has room for its glyph table, so ci's maximal configuration builds it
+#
+#	make BOARD=cs7000p CONFIG_LANG_ZH=y CONFIG_LANG_DEFAULT_ZH=y
+#
 # Without a codec route FM is this radio's only voice mode and the path its receiver is brought up on: the matrix has
 # no FM-less configuration
 BOARD_REQUIRED := FM

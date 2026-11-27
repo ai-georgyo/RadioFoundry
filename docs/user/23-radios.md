@@ -928,6 +928,15 @@ The display and the keypad are on a board of their own that RadioFoundry checks 
 not the one RadioFoundry expects, the screen stays dark and the keypad does nothing; the side keys, PTT and USB
 still work. Report it.
 
+Chinese is off in the default image. A build with it fits:
+
+```
+make BOARD=cs7000p CONFIG_LANG_ZH=y CONFIG_LANG_DEFAULT_ZH=y
+```
+
+A Chinese line is 16 pixels high, so while the radio is in Chinese the screen shows 5 list rows instead of 7 and Home
+has no zone line. It has not been tried on a radio.
+
 ### What the CS7000 M17 PLUS lacks
 
 - Transmitting without the arm: until you arm it after each start, nothing transmits, the hotspot included.
@@ -940,7 +949,6 @@ still work. Report it.
 - Roger beep, 1750 Hz burst and DTMF on FM; APRS on FM and APRS receive. APRS positions go over DMR only.
 - Single frequency repeating, the split duplex repeater, P25 and NXDN: not written for this radio.
 - The air band and broadcast receivers: the radio has neither.
-- Chinese as the radio's language: the screen is too small for its font.
 
 ## Planned radios
 
