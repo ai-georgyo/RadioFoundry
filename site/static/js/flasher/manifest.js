@@ -3,8 +3,9 @@
 // Release manifests (rfoundry-release/1): checking one against its image and the radio. A port of verify() in
 // tools/rfoundry/rfoundry/manifest.py; the format is described in docs/dev/release.md.
 
-import { hex, sha256, startsWith } from "./bytes.js";
+import { hex, sha256 } from "./bytes.js";
 import { codecSectors } from "./plan.js";
+import { containerKind } from "./stockfw.js";
 
 export class ManifestError extends Error {}
 
@@ -38,7 +39,8 @@ export async function verify(m, image, fb, boardId = null) {
 	if (!board) throw new ManifestError(`unknown radio ${m.board}`);
 	if (boardId && boardId !== board.id)
 		throw new ManifestError(`this image is for the ${board.name}, but the radio is a ${fb.boards[boardId]?.name || boardId}: refusing`);
-	if (startsWith(image, fb.magic)) throw new ManifestError("this is a stock firmware file, not a RadioFoundry image");
+	// a maker's file in either container, whole or not, and a maker's bootloader file: never written as an image
+	if (containerKind(image, fb)) throw new ManifestError("this is a stock firmware file, not a RadioFoundry image");
 	const img = m.image || {};
 	if (num(img.size) !== image.length) throw new ManifestError(`the image is ${image.length} bytes, the manifest says ${img.size}`);
 	const got = await sha256(image);

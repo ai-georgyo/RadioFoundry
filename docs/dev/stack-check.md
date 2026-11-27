@@ -67,9 +67,11 @@ hide a deeper chain: add it to the table.
 | `extern NAME BYTES` | Code outside the build, a target written `@NAME` (the codec) |
 | `recursion FUNCTION...` | Recursion known to be bounded |
 
-The AMBE+2 codec runs on the audio task's stack: 4046 bytes measured on an STM32F4 radio (`codec-<id>.md`), so
-`stm32_codec_call` counts 4104 with the veneer. The HR_C7000 builds call the same library by address with 4096 bytes
-assumed (not measured on C-SKY).
+The AMBE+2 codec runs on the audio task's stack: 4048 bytes below its entry at the deepest (`codec-<id>.md`; the
+lowest byte touched is 4046 down), so `stm32_codec_call` counts 4104 with the veneer's registers (20 bytes), eight
+stack arguments (32) and the alignment (4). Encode itself takes four stack arguments and needs 4088. The check does
+not see into the codec: on a radio the measure is the `tasks` view's least free stack of `audio`. The HR_C7000
+builds call the same library by address with 4096 bytes assumed (not measured on C-SKY).
 
 A few C library paths need arguments RadioFoundry never passes and are cut with `lib` lines: newlib's `strstr` for needles of
 32 characters or more, and the floating point conversions of `printf`. Check the comment in the table before adding a

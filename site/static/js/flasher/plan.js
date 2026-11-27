@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// Sector planning: which flash sectors to erase and write. A port of tools/rfoundry/rfoundry/plan.py (keep, merge),
-// plus one mode rfoundry doesn't have yet:
+// Sector planning: which flash sectors to erase and write. A port of tools/rfoundry/rfoundry/plan.py (keep, merge,
+// and blank: the image's sectors are written and every codec sector is erased and left blank, an install without a
+// codec where a codec sector can't be left as it is, dfu.js checkPlain), plus one mode rfoundry doesn't have yet:
 //
 //   restore  put back a whole flash image exactly (a backup's internal flash, or a stock application): every
 //            sector the image spans is erased, and written where the image has data. Codec windows may be inside
@@ -10,12 +11,12 @@
 // No mode erases a sector that holds a protected region of the board (board.protect, board.toml [[flash.protect]]):
 // keep and merge refuse the plan, as plan.py does; restore leaves those sectors as the radio has them (carved out).
 //
-// The tests (site/tests) check keep and merge against plan.py's output for the same inputs.
+// The tests (site/tests) check keep, merge and blank against plan.py's output for the same inputs.
 
 import { hex } from "./bytes.js";
 import * as protect from "./protect.js";
 
-export const KEEP = "keep", MERGE = "merge", RESTORE = "restore";
+export const KEEP = "keep", MERGE = "merge", BLANK = "blank", RESTORE = "restore";
 export const BLOCK = 1024, FIRST_BLOCK = 2;
 
 export class PlanError extends Error {}
@@ -50,7 +51,7 @@ function checkSegments(board, segments) {
 // segments: the firmware as [[addr, Uint8Array]]; codecSegments: the codec (merge mode); codecWindows: the windows that
 // codec fills (stockfw.layoutWindows of the merged file), default the board's windows (the union over its stock files)
 export function makePlan(board, segments, mode, codecSegments = [], codecWindows = board.codec.windows, { vectorLast = false } = {}) {
-	if (![KEEP, MERGE, RESTORE].includes(mode)) throw new PlanError(`unknown codec mode ${mode}`);
+	if (![KEEP, MERGE, BLANK, RESTORE].includes(mode)) throw new PlanError(`unknown codec mode ${mode}`);
 	const codecSecs = codecSectors(board);
 	const codecIdx = new Set(codecSecs.map((s) => s.index));
 	if (mode !== RESTORE) {
@@ -65,6 +66,8 @@ export function makePlan(board, segments, mode, codecSegments = [], codecWindows
 				throw new PlanError(`firmware data at ${hex(addr)}: the firmware is one image from ${hex(board.app_base)}`);
 		}
 	}
+	// its firmware shares a sector with the codec (or it has no codec route): no codec sector to erase by itself
+	if (mode === BLANK && !board.keep_codec_supported) throw new PlanError(`the ${board.name} has no codec sector that can be erased and left blank`);
 	if (mode !== MERGE && codecSegments.length) throw new PlanError(`codec data given in ${mode} mode`);
 	if (mode === MERGE) {
 		for (const [wlo, wlen] of codecWindows)
@@ -107,6 +110,7 @@ export function makePlan(board, segments, mode, codecSegments = [], codecWindows
 		if (!buf || (mode === RESTORE && last === 0)) {
 			if (mode === RESTORE && overlaps(s, spanLo, spanHi)) steps.push(step(s, "erase", [], "", "empty in the image"));
 			else if (codecIdx.has(s.index) && mode === KEEP) steps.push(step(s, "keep", [], "", windowsNote[s.index]));
+			else if (codecIdx.has(s.index) && mode === BLANK) steps.push(step(s, "erase", [], "", windowsNote[s.index]));
 			else steps.push(step(s, "skip", [], "", codecIdx.has(s.index) ? "" : "free"));
 			continue;
 		}
@@ -157,7 +161,7 @@ export class Plan {
 	get kept() { return this.steps.filter((s) => s.action === "keep").map((s) => s.sector); }
 	get totalBlocks() { return this.writes.reduce((a, s) => a + s.blocks.length, 0); }
 
-	// The same lines as plan.py's describe() for keep and merge (the tests compare them)
+	// The same lines as plan.py's describe() for keep, merge and blank (the tests compare them)
 	describe() {
 		const b = this.board;
 		// a board without a codec route has no mode to speak of (plan.py)
@@ -169,7 +173,7 @@ export class Plan {
 				const first = st.blocks[0][0], lastB = st.blocks[st.blocks.length - 1][0];
 				lines.push(head + `ERASE + WRITE ${st.content}: blocks ${first}..${lastB} (${st.blocks.length} x ${BLOCK} bytes, up to ${hex(s.addr + st.blocks.length * BLOCK - 1)})`);
 			} else if (st.action === "erase") {
-				lines.push(head + `ERASE (${st.note})`);
+				lines.push(head + (this.mode === BLANK ? `ERASE, left blank (${st.note})` : `ERASE (${st.note})`));
 			} else if (st.action === "keep") {
 				lines.push(head + `keep (codec in the radio stays: ${st.note})`);
 			} else {

@@ -5,12 +5,12 @@
 //
 // The merge on the user's machine (rfoundry, tools/codec_extract.py, the web flasher) puts the whole codec in sector 11
 // (docs/spec/codec-placement.md, "Layouts"): its code from 0x080E0000, then its main table window, then its small
-// table windows, each moved as one block, and the descriptor at the end of the sector (platform/stm32f4/codec_desc.h).
+// table windows, each moved as one block, and the descriptor at the end of the sector (platform/stm32/codec_desc.h).
 // The merge rewrites every address in the codec that points into a moved window (the codec map): the code's references
 // to itself and to its tables, and the calls from the code that stock keeps in the table window back into the code.
 // None of it is part of this repository or a release. The 35.14 builds (MD-380 D35.14, MD-390 S35.14) and the 13.xx
 // and 14.xx builds carry the UV380 family's codec instead (their entry offsets), with three or four table windows.
-// The calls and the checks are the shared ones (platform/stm32f4/hrc/vocoder.c); this file says which build and where.
+// The calls and the checks are the shared ones (platform/stm32/hrc/vocoder.c); this file says which build and where.
 // Without a valid descriptor and codec, present() is false and the radio is FM only ("No codec: voice off"). That is
 // also what a codec where an earlier release put it gives: its windows lie below CODEC_FLASH_LO, so the descriptor
 // is refused before any byte of it is read as code, and the flashing tools move it on the next install.

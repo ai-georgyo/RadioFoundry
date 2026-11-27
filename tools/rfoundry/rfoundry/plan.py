@@ -8,6 +8,10 @@ Codec modes (docs/dev/release.md "Codec handling"):
   merge   the image plus the codec taken from the user's stock file: the codec sectors are erased and rewritten with
           the codec at its stock addresses (0xFF around it). Refused unless every codec window is covered. The image
           may share a sector with a codec window (never the window itself); that sector is written with both.
+  blank   the image's sectors are written and every codec sector is erased and left blank: an install without a codec,
+          where a codec sector can't be left as it is (dfu.check_plain: a radio installed through its processor's ROM
+          bootloader whose last install did not finish, or whose read protection is removed with everything erased).
+          Refused for a board whose image shares a sector with the codec.
 
 Every sector of the plan is erased before any is written, then the sectors are written, both in the board's sector
 order (the bootloader's, board.toml). A plan that
@@ -34,7 +38,8 @@ from . import protect
 
 KEEP = "keep"
 MERGE = "merge"
-MODES = (KEEP, MERGE)
+BLANK = "blank"
+MODES = (KEEP, MERGE, BLANK)
 
 BLOCK = 1024
 FIRST_BLOCK = 2
@@ -45,7 +50,8 @@ class PlanError(Exception):
 
 
 class Step:
-    """What happens to one sector. action: "write", "keep" (codec sector left alone) or "skip" (nothing to write)."""
+    """What happens to one sector. action: "write", "keep" (codec sector left alone), "erase" (codec sector erased and
+    left blank: no blocks) or "skip" (nothing to write)."""
 
     def __init__(self, sector, action, blocks=(), content="", note=""):
         self.sector = sector
@@ -68,7 +74,7 @@ class Plan:
 
     @property
     def erase(self):
-        return [s.sector for s in self.steps if s.action == "write"]
+        return [s.sector for s in self.steps if s.action in ("write", "erase")]
 
     @property
     def writes(self):
@@ -114,6 +120,8 @@ class Plan:
                              % (st.content, first, last, len(st.blocks), BLOCK, s.addr + len(st.blocks) * BLOCK - 1))
             elif st.action == "keep":
                 lines.append(head + "keep (codec in the radio stays: %s)" % st.note)
+            elif st.action == "erase":
+                lines.append(head + "ERASE, left blank (%s)" % st.note)
             else:
                 lines.append(head + "not touched" + (" (%s)" % st.note if st.note else ""))
         lines.append("erase %d sector(s): %s" % (len(self.erase), ", ".join("%d" % s.index for s in self.erase)))
@@ -180,8 +188,11 @@ def make_plan(board, segments, mode, codec_segments=(), codec_windows=None, vect
         if addr != board.app_base:
             raise PlanError("firmware data at 0x%08X..0x%08X is not the application (from 0x%08X) of the %s"
                             % (addr, addr + len(data), board.app_base, board.name))
-    if mode == KEEP and codec_segments:
-        raise PlanError("codec data given in keep mode")
+    if mode == BLANK and not board.keep_codec_supported:
+        # its firmware shares a sector with the codec (or it has no codec route): no codec sector to erase by itself
+        raise PlanError("the %s has no codec sector that can be erased and left blank" % board.name)
+    if mode in (KEEP, BLANK) and codec_segments:
+        raise PlanError("codec data given in %s mode" % mode)
     if mode == MERGE:
         for wlo, wlen in (board.codec.windows if codec_windows is None else codec_windows):
             covered = any(a <= wlo and wlo + wlen <= a + len(d) for a, d in codec_segments)
@@ -214,6 +225,8 @@ def make_plan(board, segments, mode, codec_segments=(), codec_windows=None, vect
         if buf is None:
             if s.index in codec_idx and mode == KEEP:
                 steps.append(Step(s, "keep", note=windows_note[s.index]))
+            elif s.index in codec_idx and mode == BLANK:
+                steps.append(Step(s, "erase", note=windows_note[s.index]))
             else:
                 steps.append(Step(s, "skip", note="free" if s.index not in codec_idx else ""))
             continue

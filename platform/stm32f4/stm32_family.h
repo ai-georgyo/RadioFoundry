@@ -78,6 +78,8 @@ typedef struct {
 #define STM32_FLASH_HI			0x08100000u
 #define STM32_IS_RAM(a) \
 	(((a) >= 0x20000000u && (a) < 0x20020000u) || ((a) >= 0x10000000u && (a) < 0x10010000u))
+// hrc/vocoder.c: the program flash has no error correction, so a read of it never faults
+#define STM32_FLASH_ECC			0
 // The reset cause: RCC_CSR (RM0090 7.3.21)
 #define STM32_RESET_FLAGS		RCC->CSR
 #define STM32_RESET_FLAGS_CLEAR()	(RCC->CSR |= RCC_CSR_RMVF)

@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The STM32 codec descriptor (platform/stm32f4/codec_desc.h): a sound one passes, every malformed one is refused, the
+// The STM32 codec descriptor (platform/stm32/codec_desc.h): a sound one passes, every malformed one is refused, the
 // window CRCs are checked against the bytes. Synthetic flash, no codec. With file arguments, also checks the codec
 // sectors as tools/codec_extract.py merges them for its synthetic codecs (--test-desc: the DM-1701's sectors 10 and
 // 11, then the MD-380's sector 11 with five table windows, then the DM-1701's from an MD-9600 file, then the MD-9600's
 // sectors 10 and 11, its tables moved), so the writer and the firmware agree on the format, and a codec where an
-// earlier release put it is refused.
+// earlier release put it is refused. Also the processor state the codec needs (platform/stm32/codec_cpu.h), on a
+// variable as the register.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../platform/stm32f4/codec_desc.h"
+#include "../../platform/stm32/codec_desc.h"
+#include "../../platform/stm32/codec_cpu.h"
 
 static int failures;
 
@@ -215,10 +217,32 @@ static void test_tool_md9600(const char *path)
 	CHECK(d->table[0].addr == 0x080D02BCu && d->table[0].len == 0x11036u);
 }
 
+// The two traps the codec can't run with (codec_cpu.h): nothing is written while both are off; a set one is cleared,
+// with every other bit of the register as it was
+static void test_cpu(void)
+{
+	static const uint32_t other[] = { 0u, 0x00000200u, 0x00070307u, ~CODEC_CCR_TRAPS };	// none, STKALIGN, more, all
+	static const uint32_t traps[] = { CODEC_CCR_UNALIGN_TRP, CODEC_CCR_DIV_0_TRP, CODEC_CCR_TRAPS };
+	CHECK(CODEC_CCR_UNALIGN_TRP == 0x08u && CODEC_CCR_DIV_0_TRP == 0x10u && CODEC_CCR_TRAPS == 0x18u);
+	for (size_t i = 0; i < sizeof other / sizeof other[0]; i++) {
+		volatile uint32_t ccr = other[i];
+		CHECK(!codec_cpu_traps_off(&ccr));		// both off: left alone
+		CHECK(ccr == other[i]);
+		for (size_t t = 0; t < sizeof traps / sizeof traps[0]; t++) {
+			ccr = other[i] | traps[t];
+			CHECK(codec_cpu_traps_off(&ccr));	// written: the caller issues the barriers
+			CHECK(ccr == other[i]);
+			CHECK(!codec_cpu_traps_off(&ccr));	// nothing left to do
+			CHECK(ccr == other[i]);
+		}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	test_sound();
 	test_refused();
+	test_cpu();
 	if (argc > 1) {
 		test_tool(argv[1]);
 	}

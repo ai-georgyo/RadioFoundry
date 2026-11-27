@@ -7,6 +7,11 @@ Python it was ported from (site/tests/flasher.test.mjs):
   - a synthetic DM-1701 stock file and its key (rfoundry's stockfw.build_synthetic_stock), with its profile
   - one synthetic stock file per codec layout of every placed profile, with what stockfw.extract and plan.py make of
     it (site/tests/stocklayouts.test.mjs), and every profile's readout name (stockfw.layout_name)
+  - for the stock container that holds its image twice (rfoundry's twinfw.py): the key it derives from a synthetic
+    file, what its header test says of a row of files, and its refusal for each damaged or mismatched file
+    (site/tests/twinfw.test.mjs)
+  - for every board installed through its processor's ROM bootloader: its install plans in keep, merge and blank mode
+    as plan.describe() prints them, and the same board without a codec route (site/tests/dfuse.test.mjs)
   - a plain image standing in for a file known to hold no codec, and rfoundry's message for it
   - a synthetic MD-UV380 stock file and a read of the internal flash of a radio running it, with the codec rfoundry's
     stockfw.from_flash finds in the read
@@ -43,7 +48,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "rfoundry"))
 
 sys.path.insert(0, os.path.join(ROOT, "site"))
 
-from rfoundry import boards, codecmap, manifest, plan, stockfw  # noqa: E402
+from rfoundry import boards, codecmap, dfu, manifest, plan, stockfw, twinfw  # noqa: E402
 from rfoundrysite import repo  # noqa: E402
 from rfoundry.fakedfu import synthetic_key  # noqa: E402
 
@@ -61,6 +66,11 @@ def codec_map_vectors(out):
 	w = v["window"]
 	w["map"] = codecmap.normalize(w["map"])
 	w["code_run"], w["tables_run"] = int(w["code_run"], 0), int(w["tables_run"], 0)
+	j = v["joined"]
+	j["map"] = codecmap.normalize(j["map"])
+	j["windows"] = [[int(a, 0), d] for a, d in j["windows"]]
+	j["layout"] = [int(a, 0) for a in j["layout"]]
+	j["block_at"] = int(j["block_at"], 0)
 	with open(os.path.join(out, "codecmap.json"), "w") as f:
 		json.dump(v, f, indent=1)
 
@@ -133,8 +143,9 @@ def js_profile(prof):
 def stock_layouts(out, image):
 	"""One synthetic stock file per codec layout of every placed profile (stockfw.same_layout: the files that put the
 	same codec at the same addresses count once), and what rfoundry makes of it: the codec placed, the descriptor's
-	fields and the merge plan, for stocklayouts.test.mjs. Also every real profile's readout name (layout_name)."""
-	seen, docs = set(), []
+	fields and the merge plan, for stocklayouts.test.mjs. Also every real profile's readout name (layout_name).
+	Returns the fixture entry, and {file name: (stock bytes, its profile, key)} for the fixtures built on these files."""
+	seen, docs, made = set(), [], {}
 	for i, (sha, real) in enumerate(stockfw.PROFILES.items()):
 		group = stockfw.same_layout(real)
 		if not real.get("placement") or id(group[0]) in seen:
@@ -152,6 +163,7 @@ def stock_layouts(out, image):
 		name = "layout-%s%s.bin" % (sha[:8], sha[64:].replace("@", "-"))	# "<sha>@<board>" too
 		with open(os.path.join(out, name), "wb") as f:
 			f.write(stock)
+		made[name] = (stock, prof, key)
 		docs.append({"file": name, "real_sha256": sha, "stock_sha256": ssha, "key": key.hex(), "profile": js_profile(prof),
 			     "versions": [p["version"] for p in group],
 			     "placed": [[a, stockfw.sha256(d), len(d)] for a, d in segs],
@@ -160,7 +172,249 @@ def stock_layouts(out, image):
 			     "merge_windows": [list(x) for x in board.merge_windows(prof)],
 			     "merge": merge.describe()})
 	names = {sha: stockfw.layout_name(p) for sha, p in stockfw.PROFILES.items()}
-	return {"files": docs, "names": names}
+	return {"files": docs, "names": names}, made
+
+
+def message(fn, *args):
+	"""The text of the StockError a call raises"""
+	try:
+		fn(*args)
+	except stockfw.StockError as e:
+		return str(e)
+	raise AssertionError("no StockError")
+
+
+def changed(data, cut=None, append=0, flips=(), words=()):
+	"""A file with a change the JavaScript test makes the same way: cut to a length, zero bytes appended, bytes XORed
+	([offset, mask]) and 32-bit little-endian words set ([offset, value])"""
+	b = bytearray(data[:cut] if cut is not None else data) + bytes(append)
+	for at, mask in flips:
+		b[at] ^= mask
+	for at, value in words:
+		struct.pack_into("<I", b, at, value)
+	return bytes(b)
+
+
+def tied_vote(rng):
+	"""A file of the second container whose key vote ties, and the key twinfw.derive_key gives for it: an image of the
+	bytes 0 and 1 only, with as many of each in every chain as the length words (of 0x10000: bytes 0 and 1 too) and the
+	zero words leave even, so in every chain the file's key and that key with bit 0 of each byte flipped score the
+	same. The lower first byte wins: where that is the flipped one, the key the vote gives is not the file's, and the
+	page must give that same key. Returns (file, that key)"""
+	n, chains = 0x10000, 4		# step (n + 4) mod 256 = 4: four chains, a payload position's chain its offset mod 4
+	key = bytearray(stockfw.random_bytes(rng, twinfw.KEY_LEN))
+	key[1] |= 1			# one chain at least whose flipped first byte is the lower
+	word = struct.pack("<I", n)
+	fixed = list(enumerate(word)) + [(4 + n + p, b) for p, b in enumerate(word)] + [(8 + 2 * n + p, 0) for p in range(twinfw.TAIL)]
+	image = bytearray(n)
+	for j in range(chains):
+		at = [i for i in range(n) if (4 + i) % chains == j]	# each image byte is in the payload twice, in chain j both times
+		mine = [b for p, b in fixed if p % chains == j]
+		zero = (2 * len(at) + mine.count(1) - mine.count(0)) // 4
+		bits = [0] * zero + [1] * (len(at) - zero)
+		rng.shuffle(bits)
+		for i, b in zip(at, bits):
+			image[i] = b
+	tied = bytearray(key)
+	for j in range(chains):
+		if key[j] & 1:
+			for c in range(j, twinfw.KEY_LEN, chains):
+				tied[c] ^= 1
+	assert tied != key
+	return twinfw.pack(bytes(key), bytes(image), b"\x01\x02"), bytes(tied)
+
+
+def twin(out, layouts, made):
+	"""The stock container that holds its image twice (rfoundry twinfw.py), for twinfw.test.mjs, on the synthetic file
+	stock_layouts made for the first profile in it: the key twinfw.derive_key finds, three small files whose two
+	copies lie other distances apart with theirs and one whose key vote ties (tied_vote), what header_kind and
+	stockfw.container_kind say of a row of files, and rfoundry's refusal for every change the test makes to the file
+	or to its profile. None where no profile names the container. Returns the fixture entry"""
+	doc = next((d for d in layouts["files"] if d["profile"].get("container") == stockfw.TWIN), None)
+	if doc is None:
+		return None
+	stock, prof, key = made[doc["file"]]
+	key = key[:twinfw.KEY_LEN]
+	sha = doc["stock_sha256"]
+	real = stockfw.PROFILES[doc["real_sha256"]]
+	m, wins = prof["map"], stockfw.windows(prof)
+	link, n = prof["image"]
+	want = prof["key_sha256"]
+
+	def write(name, data):
+		with open(os.path.join(out, name), "wb") as f:
+			f.write(data)
+		return name
+
+	rng = random.Random(11)
+	zeros = bytes(b if b < 100 else 0 for b in range(256))
+	keys = []
+	for what, size in (("an odd step, one chain", 70001), ("step 0, every column its own chain", 70140),
+			   ("step 128, 128 chains of two", 70012)):
+		k = stockfw.random_bytes(rng, twinfw.KEY_LEN)
+		data = twinfw.pack(k, stockfw.random_bytes(rng, size).translate(zeros), b"\x01\x02")
+		keys.append({"what": what, "file": write("twin-key-%d.bin" % size, data), "step": (size + 4) % twinfw.KEY_LEN,
+			     "key_sha256": stockfw.sha256(k), "derived_key": twinfw.derive_key(data, stockfw.sha256(k)).hex()})
+	data, tied = tied_vote(rng)
+	keys.append({"what": "a vote that ties in every chain: the lower first byte", "file": write("twin-key-tie.bin", data),
+		     "step": (0x10000 + 4) % twinfw.KEY_LEN, "key_sha256": stockfw.sha256(tied),
+		     "derived_key": twinfw.derive_key(data, stockfw.sha256(tied)).hex()})
+
+	# (above the size the page's opener sets a file aside at as too small to be firmware, so that it reads the header)
+	boot = write("twin-boot.bin", twinfw.build_synthetic_boot(random.Random(3), 0x12000))
+	small = write("twin-small.bin", twinfw.pack(key, bytes(1000)))
+	vectors = write("twin-vectors.bin", struct.pack("<I", 0x24080000) + b"".join(struct.pack("<I", 0x08000401 + 4 * i) for i in range(63))
+			+ stockfw.random_bytes(random.Random(4), 4096))
+	blank = write("twin-blank.bin", b"\xFF" * 65536)
+	kinds = []
+	for what, name, change in (("the firmware file", doc["file"], {}), ("cut to 0x100 bytes", doc["file"], {"cut": 0x100}),
+				   ("with 4 KB appended", doc["file"], {"append": 4096}), ("a bootloader file", boot, {}),
+				   ("the offset in both places", boot, {"words": [[twinfw.OFF_AT, twinfw.HEADER_LEN]]}),
+				   ("a file of the first kind", "stock.bin", {}), ("an application image", vectors, {}),
+				   ("64 KB of 0xFF", blank, {}), ("0x40 bytes", doc["file"], {"cut": 0x40})):
+		with open(os.path.join(out, name), "rb") as f:
+			data = changed(f.read(), **change)
+		kinds.append(dict(change, what=what, file=name, kind=twinfw.header_kind(data), container=stockfw.container_kind(data),
+				  boot=stockfw.boot_file(data)))
+
+	length = 2 * n + 16
+	t5 = wins[7][0]
+	both = [[twinfw.offset(prof, t5 + 3), 1], [twinfw.offset(prof, t5 + 3, 1), 1]]
+	refusals = []
+
+	def refuse(what, call, change=None, **over):
+		"""call: "parse", "derive_key" (want: the SHA-256 asked for), "carve" (profile: keys of the profile replaced;
+		wins, key and map: the arguments replaced). The message is rfoundry's for the same change"""
+		data = changed(stock if "file" not in over else open(os.path.join(out, over["file"]), "rb").read(), **(change or {}))
+		p = dict(prof, **over.get("profile", {}))
+		if call == "parse":
+			text = message(twinfw.parse, data)
+		elif call == "derive_key":
+			text = message(twinfw.derive_key, data, over.get("want", want))
+		else:
+			k = bytes.fromhex(over["key"]) if "key" in over else key
+			text = message(twinfw.carve, data, p, over.get("wins", wins), k, over.get("map", m))
+		refusals.append(dict(over, what=what, call=call, change=change or {}, message=text))
+
+	refuse("short", "parse", {"cut": 0x8F})
+	refuse("the offset is not 0x80", "parse", {"words": [[twinfw.OFF_AT, 0x100]]})
+	refuse("an odd image length", "parse", {"words": [[twinfw.LEN_AT, length + 1]]})
+	refuse("no room for the two length words", "parse", {"words": [[twinfw.LEN_AT, 14]]})
+	refuse("a length past the file", "parse", {"words": [[twinfw.LEN_AT, length + 4]]})
+	refuse("17 bytes after the payload", "parse", {"append": 15})
+	refuse("a byte of the second copy", "derive_key", {"flips": [[twinfw.offset(prof, link + 0x1234, 1), 0x40]]})
+	refuse("another key's hash", "derive_key", want="00" * 32)
+	refuse("an image too short for the vote", "derive_key", file=small)
+	refuse("a cut file", "derive_key", {"cut": 0x100})
+	refuse("a byte of a window in the second copy", "carve", {"flips": both[1:]})
+	refuse("a byte of a window in both copies", "carve", {"flips": both})
+	refuse("the first length word", "carve", {"flips": [[0x80, 1]]})
+	refuse("the second length word", "carve", {"flips": [[0x80 + 4 + n + 1, 1]]})
+	refuse("a nonzero byte in the tail words", "carve", {"flips": [[0x80 + 8 + 2 * n + 5, 1]]})
+	refuse("another size", "carve", {"append": 1})
+	refuse("another image length in the profile", "carve", profile={"image": [link, n - 2]})
+	refuse("another payload in the profile", "carve", profile={"payload": [0x80, 2 * n]})
+	refuse("a window outside the image", "carve", wins=[[link + n - 8, 16, "00" * 32]])
+	refuse("another key", "carve", key=(bytes([key[0] ^ 1]) + key[1:]).hex())
+	for what, change in (("a range's SHA-256", {"sha256": "00" * 32}), ("a range's first word", {"first_word": 0x12345678})):
+		m2 = json.loads(json.dumps(m))
+		m2["code"]["ranges"][1].update(change)
+		refuse(what, "carve", map=m2)
+
+	# the join: rfoundry's refusal for a placement or a map that does not hold together (stockfw.placed_parts on the
+	# file's own windows). "placement": keys of the placement replaced; "map": the map in the profile's place
+	segs = twinfw.carve(stock, prof, wins, key, m)
+	pl = prof["placement"]
+	extra = list(pl["extra"])
+	up = stockfw.DESC_ADDR - (pl["tables"] + pl["tables_len"]) + 16
+	up -= up % 16
+	no_holes = json.loads(json.dumps(m))
+	no_holes["code"].pop("holes")
+	no_holes["code"]["ranges"] = [{"off": 0, "len": no_holes["code"]["len"]}]
+	for w in no_holes["table_windows"]:
+		w.pop("holes", None)
+	stray = json.loads(json.dumps(m))
+	stray["table_windows"].append({"flash": wins[-1][0] + 0x1000, "run": wins[-1][0] + 0x1000, "len": 16,
+				       "holes": [{"off": 4, "len": 2}]})
+	joins = []
+	for what, change, cmap in (
+			("the code overlaps the block", {"code": pl["code"] + 16}, None),
+			("a piece inside the one before", {"extra": [extra[0] - 16] + extra[1:]}, None),
+			("a piece below the block", {"tables": pl["tables"] + 16}, None),
+			("the last piece ends before the block does", {"tables_len": pl["tables_len"] + 1}, None),
+			("the last piece ends past the block", {"tables_len": pl["tables_len"] - 1}, None),
+			("the block reaches the descriptor", {"tables": pl["tables"] + up, "extra": [a + up for a in extra]}, None),
+			("nothing to blank", {}, no_holes), ("a hole in a window the profile does not carve", {}, stray)):
+		p = dict(prof, placement=dict(pl, gates=None, **change), **({"map": cmap} if cmap else {}))
+		joins.append({"what": what, "placement": change, "map": cmap, "message": message(stockfw.placed_parts, p, segs)})
+
+	# the two files of this container that are named and refused: a version nobody has mapped (a stand-in registered
+	# under its own SHA-256 with the first entry's text) and the bootloader stand-in
+	from unittest import mock
+	entry = next((e for e in stockfw.UNMAPPED_FILES.values() if e["board"] == real["board"]), None)
+	other = None
+	if entry:
+		data = changed(stock, flips=[[len(stock) - 1, 1]])
+		with mock.patch.dict(stockfw.UNMAPPED_FILES, {stockfw.sha256(data): entry}):
+			other = {"change": {"flips": [[len(stock) - 1, 1]]}, "sha256": stockfw.sha256(data), "entry": entry,
+				 "message": message(stockfw.find_profile, data)}
+	with open(os.path.join(out, boot), "rb") as f:
+		boot_message = message(stockfw.find_profile, f.read())
+	return {"file": doc["file"], "stock_sha256": sha, "key": key.hex(), "derived_key": twinfw.derive_key(stock, want).hex(),
+		"parse": list(twinfw.parse(stock)), "keys": keys, "kinds": kinds, "refusals": refusals, "joins": joins,
+		"unmapped": other, "boot": {"file": boot, "message": boot_message}}
+
+
+def rom_board_without_codec(real):
+	"""A board of the ROM bootloader route as one without a codec route, as rfoundry's own tests build it
+	(tools/rfoundry/tests/test_rfoundry.py rom_board_without_codec): [codec] none with its reason, no codec tool, no
+	stock file, nothing to keep, and the application region reaching to the end of the flash a codec route keeps free.
+	So the tests of the route itself don't depend on which radios have a codec route"""
+	with open(boards.REGISTRY, encoding="utf-8") as f:
+		e = json.load(f)["boards"][real.id]
+	end = max([real.app_region[1]] + [s.end for s in real.codec_sectors()])
+	return boards.Board(dict(e, codec_none="No codec route in this test: DMR voice is off.", codec_tool=None, codec_stock=[],
+				 keep_codec_supported=False, stock_download=None, app_region=[e["app_region"][0], end],
+				 codec={"id": None, "windows": None, "installed": [], "sources": None}))
+
+
+def rom_boards(image, layouts, made):
+	"""Every board installed through its processor's ROM bootloader (family "dfuse"), for dfuse.test.mjs: its install
+	plans as plan.py makes them with the vector table last and dfu.check_plain takes them: keep, and with a codec
+	route merge (the codec of the synthetic stock file stock_layouts made for its first profile) and blank. Under
+	"plain" the same board without a codec route, as data/flash-boards.json would carry it, with its keep plan, the
+	reason it gives for having no codec and rfoundry's refusal of the blank mode. Returns {board id: entry}"""
+	from unittest import mock
+	docs = {}
+	for b in boards.BOARDS.values():
+		if b.family != "dfuse":
+			continue
+		segs = [(b.app_base, image)]
+
+		def lines(p):
+			dfu.check_plain(p)
+			return p.describe()
+
+		doc = {"codec": b.has_codec, "keep": lines(plan.make_plan(b, segs, plan.KEEP, vector_last=True))}
+		lay = next((d for d in layouts["files"] if d["profile"]["board"] == b.id), None)
+		if b.has_codec and lay:
+			stock, prof, key = made[lay["file"]]
+			_, codec = stockfw.extract(stock, key, {lay["stock_sha256"]: prof})
+			doc.update(layout=lay["file"],
+				   merge=lines(plan.make_plan(b, segs, plan.MERGE, stockfw.codec_segments(prof, codec), b.merge_windows(prof), vector_last=True)),
+				   blank=lines(plan.make_plan(b, segs, plan.BLANK, vector_last=True)))
+		nc = rom_board_without_codec(b)
+		with mock.patch.dict(boards.BOARDS, {nc.id: nc}):
+			js = repo.flash_boards()["boards"][nc.id]
+		try:
+			plan.make_plan(nc, segs, plan.BLANK, vector_last=True)
+			raise AssertionError("a board without a codec route took the blank mode")
+		except plan.PlanError as e:
+			refusal = str(e)
+		doc["plain"] = {"board": js, "codec_none": nc.codec_none, "keep": lines(plan.make_plan(nc, segs, plan.KEEP, vector_last=True)),
+				"blank_refusal": refusal}
+		docs[b.id] = doc
+	return docs
 
 
 def flash_readout(out, rng, sha=None, name="mduv380"):
@@ -283,8 +537,10 @@ def main(out):
 		"readout_v21960": flash_readout(out, random.Random(21960),
 						"447ed4e09482c45661cd6e4c83d1e9f777463993ab7dd48b0e0597bb14f519ee", "rt3s-v21960"),
 		"no_codec": no_codec(out, random.Random(1702)),
-		"layouts": stock_layouts(out, image),
 	}
+	doc["layouts"], made = stock_layouts(out, image)
+	doc["twin"] = twin(out, doc["layouts"], made)
+	doc["rom"] = rom_boards(image, doc["layouts"], made)
 	for k in ("code", "tables", "extra"):
 		doc["profile"].pop(k, None)
 	with open(os.path.join(out, "fixtures.json"), "w") as f:

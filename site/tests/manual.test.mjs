@@ -58,8 +58,17 @@ const DFU = pick((r) => family(r) === "usb-dfu" && r.flash.backend === "anyroad-
 const SERIAL = pick((r) => family(r) === "serial-loader" && r.flash.backend === "c7000-stub" && files(r.id).length && r.flash.bootloader.length, "a cable radio with stock files");
 const READOUT = pick((r) => family(r) === "serial-loader" && !files(r.id).length, "a cable radio whose codec comes from a program flash read");
 const NONE = pick((r) => !["usb-dfu", "serial-loader"].includes(family(r)) && r.flash.backend === "c7000-stub", "a radio rfoundry doesn't install");
-const PLAIN = pick((r) => family(r) === "dfuse" && r.flash.backend === "dfuse" && r.flash.bootloader.length, "a radio installed through its processor's ROM bootloader");
-const brd = (id) => fb.boards[radios[id].flash.board];
+// a radio installed through its processor's ROM bootloader, as the registry has it; ROUTED where it has a codec route
+// (the tests of that route's stock file are skipped where it has none), and PLAIN, the same radio without a codec
+// route (site/tests/fixtures.py rom_board_without_codec, as rfoundry's own tests build it): the tests of a radio
+// that needs no stock file run on it, so they don't depend on which radios have a codec route
+const ROM = pick((r) => family(r) === "dfuse" && r.flash.backend === "dfuse" && r.flash.bootloader.length, "a radio installed through its processor's ROM bootloader");
+const rom = json("fixtures.json").rom[radios[ROM].flash.board];
+const PLAIN = "plainrom";
+radios[PLAIN] = { ...radios[ROM], id: PLAIN, flash: { ...radios[ROM].flash, codec_none: rom.plain.codec_none, stock_download: null } };
+const ROUTED = radios[ROM].flash.codec_none ? null : ROM;
+const routed = { skip: ROUTED ? false : "the fixture's ROM bootloader radio has no codec route" };
+const brd = (id) => (id === PLAIN ? rom.plain.board : fb.boards[radios[id].flash.board]);
 const readme = (id, stock) => kit.kitReadme({ radio: radios[id], board: brd(id), base: `rfoundry-${id}-v0.2.0`,
 	manifest: manifest(id), stock, site: SITE, repo: REPO, community: COMMUNITY, git: "abcd1234", date: "2026-10-26" });
 
@@ -71,6 +80,7 @@ test("kit: a route for each radio rfoundry installs, none for the RAM stub radio
 	assert.equal(kit.kitRoute(radios[DFU]), "dfu");
 	assert.equal(kit.kitRoute(radios[SERIAL]), "serial");
 	assert.equal(kit.kitRoute(radios[PLAIN]), "dfuse");
+	assert.equal(kit.kitRoute(radios[ROM]), "dfuse");
 	assert.equal(kit.kitRoute(radios[NONE]), null);
 });
 
@@ -237,6 +247,60 @@ test("kit README: a radio whose firmware restarts into its bootloader is updated
 	assert.equal(yes.replace(/A radio that already runs RadioFoundry needs no keys[^]*?as above\.\n\n/, ""), no);
 });
 
+test("kit README: with a codec route the radio is asked about its codec first, then restarted into its bootloader", routed, () => {
+	const make = (restart) => kit.kitReadme({ radio: { ...radios[ROUTED], flash: { ...radios[ROUTED].flash, bootloader_restart: restart } },
+		board: brd(ROUTED), base: `rfoundry-${ROUTED}-v0.2.0`, manifest: manifest(ROUTED), stock: null, site: SITE, repo: REPO, community: COMMUNITY,
+		git: "abcd1234", date: "2026-10-26" });
+	const yes = make(true), no = make(false);
+	assert.ok(yes.indexOf("rfoundry asks it about its codec first") < yes.indexOf("needs no keys"));
+	assert.ok(yes.split("\n").every((l) => l.length <= 110 || l.startsWith("  ")));
+	assert.equal(yes.replace(/A radio that already runs RadioFoundry needs no keys[^]*?as above\.\n\n/, ""), no);
+});
+
+test("kit README: a ROM bootloader radio with a codec route takes the codec from the stock file, and needs no key", routed, () => {
+	const name = files(ROUTED)[0];
+	assert.ok(name, "a stock file among the board's codec sources");
+	const r = readme(ROUTED, name);
+	const cmd = `rfoundry.py flash "firmware/rfoundry-${ROUTED}-v0.2.0.bin" --stock "stock/${name}"`;
+	for (const py of ["venv/bin/python", "venv\\Scripts\\python"]) for (const tail of [" --dry-run", "", " --unprotect"]) assert.ok(r.includes(`${py} ${cmd}${tail}\n`), `${py}${tail}\n${r}`);
+	assert.ok(!r.includes("--codec none") && !r.includes("--key") && !r.includes("--port"));
+	assert.ok(r.includes(`  ${`stock/${name}`.padEnd(40)} your stock firmware file: the codec\n`));
+	const flat = r.replace(/\n/g, " ");
+	assert.ok(flat.includes("Its update mode needs no key.") && flat.includes("rfoundry takes it from your stock firmware file"));
+	assert.ok(!/bootloader key|the codec and the/.test(r) && !r.includes("No stock firmware file is needed"));
+	// what a first install erases names the codec too, before any command; and the codec step of an update
+	assert.ok(flat.includes("The voice codec is erased with the original firmware."));
+	assert.ok(r.indexOf("The voice codec is erased") < r.indexOf("1. SET UP") && r.indexOf("THE STOCK FILE") < r.indexOf("1. SET UP"));
+	// rfoundry keeps a working codec with --stock given too (decide_codec): the command needs no edit for it
+	assert.ok(flat.includes("A radio that runs RadioFoundry with working DMR voice keeps its codec; the stock file is then not used."));
+	assert.ok(!flat.includes("leave out --stock"));
+	assert.ok(flat.includes("if it runs RadioFoundry, rfoundry asks it about its codec first. Then rfoundry asks you to put the radio in its bootloader:"));
+	// the rest is the route's: the unprotect explained first, the processor's own bootloader, the board's notice
+	assert.ok(r.indexOf("erases the radio's whole program memory") < r.indexOf("--unprotect"));
+	assert.ok(flat.includes("its processor's own bootloader, which is part of the chip and can't be erased"));
+	assert.ok(flat.includes(radios[ROUTED].flash.notice));
+	for (const s of radios[ROUTED].flash.bootloader) assert.ok(r.includes(s), s);
+	assert.ok(r.split("\n").every((l) => l.length <= 110 || l.startsWith("  ")), "no line of prose runs away");
+	assert.ok(!/\bodr\b|colour|behaviour/i.test(r));
+});
+
+test("kit README: without the stock file a ROM bootloader radio with a codec route is installed without the codec, and told so first", routed, () => {
+	const r = readme(ROUTED, null);
+	const cmd = `rfoundry.py flash "firmware/rfoundry-${ROUTED}-v0.2.0.bin" --codec none`;
+	for (const py of ["venv/bin/python", "venv\\Scripts\\python"]) for (const tail of [" --dry-run", "", " --unprotect"]) assert.ok(r.includes(`${py} ${cmd}${tail}\n`), `${py}${tail}\n${r}`);
+	// no command line carries --stock: it is named once, as what to put in place of --codec none
+	assert.ok(!r.split("\n").some((l) => l.includes("rfoundry.py flash") && l.includes("--stock")));
+	assert.ok(!r.includes("your stock firmware file: the codec\n"));
+	const flat = r.replace(/\n/g, " ");
+	assert.ok(flat.includes("install without the DMR voice codec (--codec none): FM works, DMR voice does not."), r);
+	assert.ok(flat.includes('put --stock "stock/NAME" in place of --codec none'));
+	for (const f of files(ROUTED).slice(0, 3)) assert.ok(flat.includes(f), f);
+	// an update of a radio that has its codec must not carry the option that erases it
+	assert.ok(flat.includes("keeps its codec only if you leave out --codec none: with it rfoundry erases the codec."));
+	assert.ok(r.indexOf("THE STOCK FILE") > 0 && r.indexOf("THE STOCK FILE") < r.indexOf("1. SET UP"));
+	assert.ok(r.split("\n").every((l) => l.length <= 110 || l.startsWith("  ")), "no line of prose runs away");
+});
+
 test("kit README: a ROM bootloader radio's setup is the USB one, its device found by USB ID while its name is unknown", () => {
 	const b = brd(PLAIN);
 	const [vid, pid] = b.dfu_ids;
@@ -310,6 +374,21 @@ test("kit: a ROM bootloader radio's zip has no stock folder at all", async () =>
 	}
 });
 
+test("kit: a ROM bootloader radio with a codec route carries its stock file, or the folder for it", routed, async () => {
+	const { site, fetchFn } = await toolSite();
+	const fw = `firmware/rfoundry-${ROUTED}-v0.2.0`;
+	const o = { radio: radios[ROUTED], board: brd(ROUTED), firmware: { manifest: manifest(ROUTED), image: new Uint8Array(4) }, site, root: "", url: SITE };
+	const stock = { name: files(ROUTED)[0], data: new Uint8Array(300).fill(9) };
+	const withFile = await unzip((await kit.makeKit({ ...o, stock }, fetchFn)).bytes);
+	assert.deepEqual([...withFile.keys()], ["README.txt", `${fw}.bin`, `${fw}.json`, `stock/${stock.name}`, "rfoundry.py", "tools/rfoundry/rfoundry/cli.py"]);
+	assert.deepEqual(withFile.get(`stock/${stock.name}`), stock.data);
+	assert.ok(new TextDecoder().decode(withFile.get("README.txt")).includes(`--stock "stock/${stock.name}"`));
+	const without = await unzip((await kit.makeKit({ ...o, stock: null }, fetchFn)).bytes);
+	assert.deepEqual([...without.keys()], ["README.txt", `${fw}.bin`, `${fw}.json`, "stock/PUT-YOUR-STOCK-FILE-HERE.txt", "rfoundry.py", "tools/rfoundry/rfoundry/cli.py"]);
+	const text = new TextDecoder().decode(without.get("README.txt"));
+	assert.ok(text.includes("--codec none") && text.includes("--unprotect"));
+});
+
 test("kit: a tool zip that doesn't match site.json is refused", async () => {
 	const { site, fetchFn } = await toolSite();
 	const o = { radio: radios[DFU], board: brd(DFU), firmware: { manifest: manifest(DFU), image: new Uint8Array(4) }, stock: null, root: "", url: SITE };
@@ -320,7 +399,7 @@ test("kit: a tool zip that doesn't match site.json is refused", async () => {
 	await assert.rejects(kit.makeKit({ ...o, firmware: null, site }, fetchFn), kit.KitError);
 });
 
-const args = (id, extra = {}) => () => ({ radio: radios[id], board: fb.boards[radios[id].flash.board], site: {}, root: "", url: SITE,
+const args = (id, extra = {}) => () => ({ radio: radios[id], board: brd(id), site: {}, root: "", url: SITE,
 	firmware: { manifest: manifest(id), image: new Uint8Array(4) }, stock: null, ...extra });
 
 test("kit panel: in place of a step the browser can't run", () => {
@@ -349,6 +428,20 @@ test("kit panel: a ROM bootloader radio is told it needs no stock file, and is o
 	assert.equal(action.textContent, en["flash.kit.download"]);
 	const line = kit.kitLine(args(PLAIN));
 	assert.ok(line.textContent.includes(en["flash.kit.line_title"]));
+});
+
+test("kit panel: a ROM bootloader radio with a codec route says what the stock file gives, or what the install lacks without it", routed, () => {
+	const names = files(ROUTED).slice(0, 3).join(", ");
+	const none = kit.kitPanel(args(ROUTED), "usb", { pickStock: () => {} }).el;
+	assert.ok(none.textContent.includes(en["flash.dfuse.kit_no_stock"].replace("{files}", names)), none.textContent);
+	assert.ok(all(none).some((e) => e.tagName === "INPUT" && e.attrs.type === "file"), "the file can be added here");
+	assert.ok(!none.textContent.includes(en["flash.dfuse.kit_plain"]) && !none.textContent.includes(en["flash.kit.no_stock"].split("{files}")[0]));
+	const { el, action } = kit.kitPanel(args(ROUTED, { stock: { name: "S.bin", data: new Uint8Array(1) } }), "usb", { pickStock: () => {} });
+	assert.ok(el.textContent.includes(en["flash.dfuse.kit_stock"].replace("{name}", "S.bin")));
+	assert.ok(!all(el).some((e) => e.tagName === "INPUT"));
+	assert.ok(!el.textContent.includes(en["flash.kit.has_stock"].replace("{name}", "S.bin")), "no word of a key the route doesn't have");
+	assert.equal(action.textContent, en["flash.kit.download"]);
+	for (const k of ["flash.dfuse.kit_stock", "flash.dfuse.kit_no_stock"]) assert.ok(/key|codec/.test(en[k]), k);
 });
 
 test("kit panel: a radio rfoundry can't install gets the browser advice, no download", () => {

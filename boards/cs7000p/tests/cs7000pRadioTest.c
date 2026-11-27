@@ -2644,6 +2644,65 @@ static void test_tx_arm_dmr(void)
 	static const uint32_t one[1] = { 446u * MHZ };
 	CHECK(tx_limit_set(false, one, 1));
 }
+
+// A DMR voice key-up as the core asks it once the radio's codec is in place (dmr.codec=1, the codec merged into
+// sector 7): core/radio/radio_sm.c's dmr_ptt_down passes its codec check, then key_tx() checks the core's test TX limit
+// and calls tx() with the channel's f_tx, the level and no tone, the same call as for DMR data. Without the codec the
+// core refuses first (no_codec) and never asks the board (radioCoreTest)
+static bool core_dmr_voice_keyup(uint32_t hz, uint8_t level)
+{
+	static const subtone_t none = { TONE_NONE, 0 };
+	return tx_limit_allows(hz) && cs7000p_radio.tx(hz, RADIO_BW_12K5, level, &none);
+}
+
+// Nothing in the board tells voice from data, so the owner's arm decides alone: at both levels refused unarmed and at
+// both FM stages (13), refused at the top stage without a list (15), admitted only at the top stage with a list naming
+// f_tx, on the table's drive. A list that names another frequency: the core refuses before the board is asked
+static void test_dmr_voice_keyup(void)
+{
+	radio_status_t st;
+	const uint32_t a = crc(table_a);
+	static const uint32_t one[1] = { 446u * MHZ }, other[1] = { 447u * MHZ };
+	chip(table_a, NULL);
+	boot(true, 0);
+	cs7000p_radio.set_mode(RADIO_MODE_DMR);
+	CHECK(cs7000p_radio.rx(446u * MHZ, RADIO_BW_12K5, NULL));
+	runner.answer = runner.plan = true;
+	for (uint8_t stage = HAL_TX_ARM_OFF; stage <= HAL_TX_ARM_ALL; stage++) {
+		CHECK(cs7000p_radio.tx_arm(stage, stage != HAL_TX_ARM_OFF ? a : 0u) == HAL_TX_ARM_OK);
+		cs7000p_radio.status(&st);
+		for (int listed = 0; listed < 2; listed++) {
+			CHECK(tx_limit_set(false, listed ? one : NULL, listed ? 1u : 0u));
+			for (uint8_t level = 0; level < 2; level++) {
+				const int txs = modem.dmr_txs, writes = mic_writes;
+				cs7000p_rf.tx_refused_why = 0;
+				const bool keyed = core_dmr_voice_keyup(446u * MHZ, level);
+				if (stage == HAL_TX_ARM_ALL && listed) {
+					CHECK(keyed && runner.armed && cs7000p_rf.admit && cs7000p_rf.admit_arm && cs7000p_rf.admit_dmr);
+					CHECK(cs7000p_rf.admit_drive == table_dmr_drive(446u * MHZ, level) && mic_on());
+					CHECK(modem.dmr_txs == txs + 1);
+					cs7000p_radio.tx_off();
+					CHECK(!runner.armed && mic_off() && !cs7000p_rf.admit);
+				} else {
+					CHECK(!keyed && !runner.armed && !cs7000p_rf.admit && modem.dmr_txs == txs);
+					CHECK(cs7000p_rf.tx_refused_why ==
+					      (stage != HAL_TX_ARM_ALL ? CS7000P_TX_UNARMED : CS7000P_TX_ARM_NO_LIST));
+					CHECK(mic_writes == writes && (shadow & EXP_TX_BITS) == 0u);
+				}
+			}
+		}
+	}
+	CHECK(tx_limit_set(false, other, 1));
+	const uint32_t refused = cs7000p_rf.tx_refused;
+	const int txs = modem.dmr_txs;
+	CHECK(!core_dmr_voice_keyup(446u * MHZ, 0) && cs7000p_rf.tx_refused == refused && modem.dmr_txs == txs);
+	CHECK(!runner.armed && !cs7000p_rf.admit);
+	CHECK(cs7000p_radio.tx_arm(HAL_TX_ARM_OFF, 0) == HAL_TX_ARM_OK);
+	cs7000p_radio.status(&st);
+	runner.answer = runner.plan = false;
+	cs7000p_radio.set_mode(RADIO_MODE_FM);
+	CHECK(tx_limit_set(false, one, 1));
+}
 #endif
 
 #if CONFIG_FACTORY_COPY
@@ -3272,6 +3331,7 @@ int main(void)
 	test_bench_writes();
 #if CONFIG_DMR
 	test_tx_arm_dmr();
+	test_dmr_voice_keyup();
 #endif
 	test_arm_bench_keyup();
 	test_tx_maker();

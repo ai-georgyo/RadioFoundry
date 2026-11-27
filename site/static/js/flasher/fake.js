@@ -8,17 +8,20 @@
 // (CONFIG) and its interlock as stub/f4stub.py's FakeF4 and docs/spec/stub-stm32f4.md 5.2 have them).
 //
 // A radio installed through its processor's own ROM bootloader (board family "dfuse") gets FakeRomRadio instead: the
-// loader as ST AN3156 describes it (plain DfuSe, read protection, Read Unprotect), a flash as big as the board's, no
-// key and no stock file. It is what #sim=cs7000p-stock (read protected, on its original firmware) and #sim=cs7000p
-// (running RadioFoundry) run against, and the model of rfoundry's fakedfu.py for the same family.
+// loader as ST AN3156 describes it (plain DfuSe, read protection, Read Unprotect), a flash as big as the board's and
+// no key. Where its board has a codec route it gets a synthetic stock file too, in the container that holds its image
+// twice (romSimulation), and RadioFoundry on it holds that file's codec as the merge places it. It is what
+// #sim=<board>-stock (read protected, on its original firmware) and #sim=<board> (running RadioFoundry) run against
+// for a board of that family, and the model of rfoundry's fakedfu.py for the same family.
 
 import { BLOCK, FIRST_BLOCK } from "./plan.js";
 import { concat, crc32, equal, fromHex, le32, sha256, u16be, u32le } from "./bytes.js";
 import { frame, parseFrames } from "./link.js";
 import { STUB_MAGIC } from "./stub.js";
 import { APP_BASE, F4_MAGIC, f405Sectors } from "./f4stub.js";
-import { moveCode, moveBranches, putBl, relocate } from "./codecmap.js";
-import { carve, descriptor, forms, place, placedWindows } from "./stockfw.js";
+import { moveCode, moveBranches, putBl, relocate, byCodeSha, layoutSites, plantSite } from "./codecmap.js";
+import { carve, descriptor, forms, place, placedParts, placedWindows, TWIN } from "./stockfw.js";
+import { HEADER_LEN as TWIN_HEADER, KEY_LEN as TWIN_KEY } from "./twinfw.js";
 
 const FLASH_BASE = 0x08000000, FLASH_SIZE = 0x100000;
 const sum8 = (b) => b.reduce((a, x) => (a + x) & 0xFF, 0);
@@ -740,10 +743,64 @@ export class FakeRadio {
 // ---------------------------------------------------------------------------------------------------------------
 // A radio installed through its processor's ROM bootloader
 
-// The simulation of such a board: its own data, no key, no stock file and no codec (FakeRadio's fields, empty)
-export function romSimulation(fbReal, boardId) {
+// The simulation of such a board: its own data and no key (FakeRadio's fields). A board without a codec route has no
+// stock file and no codec either. One with a codec route, its stock profile in the container that holds its image
+// twice (twinfw.js), gets a synthetic file of that container shaped like the real profile, as simulation() gives a
+// keyed radio one. It is made as rfoundry's twinfw.build_synthetic makes its own: an image of the real length with a
+// firmware's statistics (mostly zero bytes: the key recovery relies on them), random bytes in every codec window at
+// its stock address, the code's first word the signature, and every site of the real codec map holding what the stock
+// layout implies, so the merge moves it as it moves the real one. Its profile carries its own map (the real one with
+// every hash, CRC-32 and first word of the synthetic bytes) and "placed" values from the merge's own code; the gates
+// are rfoundry's alone and are left out. No stock byte and no key byte is in it. Returns FakeRadio's fields:
+// codecSegments as the merge places the codec, stockSegments where the stock image keeps it
+export async function romSimulation(fbReal, boardId, seed = 743) {
 	const fb = structuredClone(fbReal);
-	return { fb, board: fb.boards[boardId], key: new Uint8Array(0), stock: null, codecSegments: [], stockSegments: [], formerSegments: null, profile: null };
+	const board = fb.boards[boardId];
+	const none = { fb, board, key: new Uint8Array(0), stock: null, codecSegments: [], stockSegments: [], formerSegments: null, profile: null };
+	const realSha = Object.keys(fb.profiles).find((h) => fb.profiles[h].board === boardId && fb.profiles[h].container === TWIN);
+	const real = fb.profiles[realSha];
+	const realMap = real && byCodeSha(fb.codec_maps, real.windows[0][2])[0];
+	if (!board.codec.windows.length || !realMap) return none;
+	const r = rng(seed);
+	const key = randomBytes(r, TWIN_KEY);
+	const [link, n] = real.image;
+	const image = randomBytes(r, n).map((b) => (b < 100 ? b : 0));
+	const wins = real.windows.map(([a, len]) => [a, len]), src = wins.map(([a]) => a);
+	const data = wins.map(([, len]) => randomBytes(r, len));
+	data[0].set(le32(fb.codec_sig), 0);
+	for (const [w, off, ref, have] of layoutSites(realMap, wins, src, src)) plantSite(data[w], off, ref, have);
+	wins.forEach(([a], i) => image.set(data[i], a - link));
+	const sums = async (d) => ({ sha256: await sha256(d), crc32: crc32(d) });
+	const byAddr = new Map(src.map((a, i) => [a, data[i]]));
+	const m = structuredClone(realMap);
+	m.profile = "sim-" + boardId;
+	Object.assign(m.code, await sums(data[0]));
+	for (const x of m.code.ranges || []) {
+		const part = data[0].subarray(x.off, x.off + x.len);
+		Object.assign(x, await sums(part), { first_word: u32le(part, 0) });
+	}
+	for (const i of m.islands || []) if (byAddr.has(i.start)) Object.assign(i, await sums(byAddr.get(i.start)));
+	for (const t of m.table_windows || []) if (byAddr.has(t.flash)) Object.assign(t, await sums(byAddr.get(t.flash)), { min_sha256: await sha256(byAddr.get(t.flash)) });
+	// the file: the header (its length and offset words, and the three other bytes the profiled files have there),
+	// the payload under the key (the length, the image, the length, the image, two zero words), two trailing bytes
+	const plain = concat(le32(n), image, le32(n), image, new Uint8Array(8));
+	const header = new Uint8Array(TWIN_HEADER);
+	header.set(le32(plain.length), 0x14);
+	header.set(le32(TWIN_HEADER), 0x44);
+	header[0x02] = 0x0D; header[0x6D] = 0x01; header[0x6F] = 0x18;
+	const stock = concat(header, plain.map((b, i) => b ^ key[i % TWIN_KEY]), randomBytes(r, 2));
+	const sha = await sha256(stock);
+	const windows = await Promise.all(wins.map(async ([a, len], i) => [a, len, await sha256(data[i])]));
+	const { gates, ...placement } = real.placement;
+	const prof = { ...real, map: m, windows, size: stock.length, payload: [TWIN_HEADER, plain.length], key_sha256: await sha256(key), placement,
+		name: real.name + " (simulated)" };
+	const stockSegments = wins.map(([a], i) => [a, data[i]]);
+	const [[, code], [, block]] = await placedParts(prof, stockSegments, fb);
+	prof.placed = { code: [crc32(code), await sha256(code)], tables: [crc32(block), await sha256(block)] };
+	delete fb.profiles[realSha];
+	fb.profiles[sha] = prof;
+	fb.known_files[sha] = real.version + " (simulated)";
+	return { ...none, stock, stockSegments, codecSegments: await place(prof, stockSegments, fb), profile: prof };
 }
 
 // DFU states and status codes (DFU 1.1 6.1.2), as far as the ROM loader uses them
@@ -759,7 +816,10 @@ export function romLayout(board) {
 
 export class FakeRomRadio extends FakeRadio {
 	// state: "stock" (the original firmware, read protected: no serial port, and the loader refuses every read, erase
-	// and write until a Read Unprotect), "rfoundry" (RadioFoundry, not protected), "blank" (erased, not protected).
+	// and write until a Read Unprotect), "rfoundry" (RadioFoundry, not protected, with the codec as the merge places it
+	// where the simulation has one: sim.codecSegments), "rfoundry-nocodec" (RadioFoundry without it), "blank" (erased,
+	// not protected). The loader answers a read from this flash, so one of 4 bytes at the application base tells a
+	// radio with a vector table from one whose last install did not finish.
 	// The loader (ST AN3156): a command sent with DNLOAD block 0 runs on the next GETSTATUS, which answers dfuDNBUSY,
 	// and the one after says how it went. A request the state doesn't allow is stalled. Set Address Pointer (21), Erase
 	// (41 with a sector's address), Read Unprotect (92) and Leave (a DNLOAD of no bytes) are the commands; anything
@@ -776,12 +836,14 @@ export class FakeRomRadio extends FakeRadio {
 	// reboots: every REBOOT payload that came in
 	constructor(sim, { state = "stock", spiSize = 0x2000000, layout = null, string1 = "STMicroelectronics", stallUpload = true,
 		restartRefusals = 0, restartReason = 0, restartStays = false } = {}) {
-		super(sim, { state: state === "rfoundry" ? "rfoundry" : "stock", spiSize, stubEntry: false });
+		const runs = state.startsWith("rfoundry");
+		super(sim, { state: runs ? "rfoundry" : "stock", spiSize, stubEntry: false });
 		const b = this.board, r = rng(743);
 		this.base = b.rom_base;
 		this.flash = new Uint8Array(b.flash_end - b.rom_base).fill(0xFF);
 		if (state !== "blank") for (let i = 0; i < 0x40000; i += 4096) this.flash.set(randomBytes(r, 64), i);	// "code"
-		if (state === "rfoundry") this.flash.set([0xFC, 0xFF, 0x01, 0x20, 0x01, 0x02, 0x00, 0x08], b.app_base - b.rom_base);
+		if (runs) this.flash.set([0xFC, 0xFF, 0x01, 0x20, 0x01, 0x02, 0x00, 0x08], b.app_base - b.rom_base);
+		if (state === "rfoundry") for (const [a, d] of sim.codecSegments) this.flash.set(d, a - this.base);
 		this.rdp = state === "stock" ? 1 : 0;
 		this.running = state;
 		this.flashKb = this.flash.length / 1024;
@@ -803,7 +865,13 @@ export class FakeRomRadio extends FakeRadio {
 	// Switched on with the loader's key held. Off first: a radio that left the bus after a Read Unprotect comes back
 	enterBootloader() { this.mode = "bootloader"; this.resetDfu(); }
 
-	codecReport() { return "none"; }	// a board without a vocoder (hal_vocoder_id)
+	// What RadioFoundry reports: "none" on a board without a vocoder (hal_vocoder_id); on one with a codec route the
+	// board's codec id while the flash holds the codec whole where the merge puts it, else "absent"
+	codecReport() {
+		if (!this.sim.codecSegments.length) return "none";
+		const holds = this.sim.codecSegments.every(([a, d]) => equal(this.flash.subarray(a - this.base, a - this.base + d.length), d));
+		return holds ? this.board.codec.id : "absent";
+	}
 
 	// INFO_CHIP with the family byte (debuglink.md 3.9): family 2, the level and the RDP byte, no decoded option bits
 	chipInfo() {
@@ -917,7 +985,7 @@ export class FakeRomRadio extends FakeRadio {
 			this.exited = true;
 			// a vector table there: the application starts. None: the chip resets, and with the key released nothing runs
 			const sp = u32le(this.flash, off(this.addr)), pc = u32le(this.flash, off(this.addr) + 4);
-			this.running = sp !== 0xFFFFFFFF && pc !== 0xFFFFFFFF ? "rfoundry" : "blank";
+			this.running = sp !== 0xFFFFFFFF && pc !== 0xFFFFFFFF ? (this.codecReport() === "absent" ? "rfoundry-nocodec" : "rfoundry") : "blank";
 			this.mode = "normal";
 			this.port++;
 			return;

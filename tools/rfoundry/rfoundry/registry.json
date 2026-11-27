@@ -22,7 +22,7 @@
    "flash_end": 136314880,
    "app_region": [
     134217728,
-    135266304
+    135135232
    ],
    "sectors": [
     [
@@ -122,11 +122,13 @@
      "what": "the maker's records at 0x01E000, 0x01E400 and 0x01F000 (calibration-cs7000p.md 2.4)"
     }
    ],
-   "keep_codec_supported": false,
+   "keep_codec_supported": true,
    "first_stage": null,
-   "codec_tool": null,
-   "codec_none": "No AMBE codec route is known for this radio: DMR voice is off. DMR data, the hotspot and FM don't need one.",
-   "codec_stock": [],
+   "codec_tool": "codec_extract",
+   "codec_none": null,
+   "codec_stock": [
+    "1a4bdf38fed52dc50c738a85f8ce54f6384c070c6a08af21ca919a547b7e5a59"
+   ],
    "codec": {
     "id": null,
     "windows": null,
@@ -146,8 +148,8 @@
     "Turn the radio on with the volume knob while you hold the key. The screen lights up gray and stays blank.",
     "Release the key."
    ],
-   "stock_download": null,
-   "notice": "The first install needs a Read Unprotect, which erases the processor's whole program memory: the maker's bootloader and both of its programs. This tool can't undo it; going back is the maker's own recovery procedure with the maker's files. The install leaves the data flash as it is: back it up right after, before you let RadioFoundry write to it.",
+   "stock_download": "https://www.connectsystems.com/amateur-files/software/CS7000%20M17%20PLUS/M17_PLUS_HOST_V9.00.96_20260303_1.bin",
+   "notice": "The first install needs a Read Unprotect, which erases the processor's whole program memory: the maker's bootloader and both of its programs. This tool can't undo it; going back is the maker's own recovery procedure with the maker's files. The install leaves the data flash as it is: back it up right after, before you let RadioFoundry write to it. For DMR voice, give the installer the maker's firmware file V9.00.96 at that first install: the voice codec is taken from it.",
    "bootloader_restart": true,
    "bootloader_restart_hint": "The radio refuses this restart on half of the channel selector's positions. Turn the channel selector four clicks either way and try again.",
    "key_sha256": null,

@@ -14,7 +14,7 @@ APP_BASE   := 0x0800C000
 # Bench knobs (docs/testing/mduv380-bringup.md): extra defines, MDUV380_DEFS="-DNAME=VALUE"
 MDUV380_DEFS ?=
 MCU_DEFS   += $(MDUV380_DEFS)
-BOARD_DIRS := boards/mduv380 boards/uv380_family platform/stm32/hrc platform/stm32f4/hrc platform/stm32/spi_flash platform/stm32f4/fsmc_keypad \
+BOARD_DIRS := boards/mduv380 boards/uv380_family platform/stm32/hrc platform/stm32/spi_flash platform/stm32f4/fsmc_keypad \
 	drivers/rf/at1846s drivers/rf/subaudio drivers/modem/hrc6000 drivers/modem/hrc_common drivers/display/st7735 \
 	drivers/flash/spi_nor drivers/input/quadrature drivers/gps/nmea_line drivers/gps/gps_rx platform/stm32/gps_uart
 # The HAL's I2C driver besides the platform's modules

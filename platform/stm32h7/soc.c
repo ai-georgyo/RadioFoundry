@@ -76,6 +76,7 @@ void stm32h7_soc_init(void)
 	// A tick or a context switch left pending would run the RTOS's handlers before the scheduler exists
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk | SCB_ICSR_PENDSVCLR_Msk;
 	SCB->VTOR = (uint32_t)(uintptr_t)g_pfnVectors;	// SystemInit set it too (USER_VECT_TAB_ADDRESS, platform.mk)
+	// CCR's two traps: main.c cleared them before this, for every family
 	__DSB();
 	__ISB();
 	__enable_irq();

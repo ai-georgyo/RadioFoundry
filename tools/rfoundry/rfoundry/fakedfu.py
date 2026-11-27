@@ -10,10 +10,11 @@ in flash, which sectors were erased, and that the codec sectors kept their bytes
 FakeRom: the bootloader in an MCU's ROM, plain DfuSe as AN3156 describes it, over the whole program flash of a board
 on that route (family dfuse). No key and no vendor command; a read protection state in which it refuses to read, erase
 and write until a Read Unprotect, which erases everything and takes the device off the bus; a second alternate setting
-for the option bytes, which nothing may select.
+for the option bytes, which nothing may select. A test can give it the flash an earlier install left (rom_installed) and
+have it leave the bus at a block of its choice (fail_at), as a cable or the power cut in the middle of an install.
 
-FakeRunning: the same radio while it runs RadioFoundry, as its debug link answers: who it is, and the restart into
-its processor's bootloader, which it takes or refuses.
+FakeRunning: the same radio while it runs RadioFoundry, as its debug link answers: who it is, the codec it reports,
+and the restart into its processor's bootloader, which it takes or refuses.
 """
 import random
 import struct
@@ -124,11 +125,17 @@ class FakeRom:
     the idle states (dfuERROR among them, DFU 1.1 A.2.11), CLRSTATUS outside dfuERROR. What rfoundry must never send
     fails the test at once: a vendor command is recorded and answered with an error (refused), a mass erase, an address
     outside the program flash, a request after another alternate setting was selected (alt_selected) and a write to
-    it are assertions."""
+    it are assertions.
 
-    def __init__(self, board, flash=None, protected=False, strings=None, stall_upload=False, transfer_size=None):
+    fail_at: the install is cut at the block with this number, counted from 0 in the order the blocks come: that
+    block is not written (torn: its first half is, as a cut in the middle of a block leaves it) and the device is
+    gone from the bus until power_cycle(). Every block before it is in flash."""
+
+    def __init__(self, board, flash=None, protected=False, strings=None, stall_upload=False, transfer_size=None,
+                 fail_at=None, torn=False):
         self.board = board
         self.transfer_size = transfer_size
+        self.fail_at, self.torn = fail_at, torn
         self.base = board.rom_base
         self.size = board.flash_end - board.rom_base
         self.flash = bytearray(flash if flash is not None else b"\xFF" * self.size)
@@ -146,6 +153,7 @@ class FakeRom:
         self.refused = []		# commands a ROM bootloader doesn't have (the keyed route's 91 xx)
         self.requests = []		# (bmRequestType, bRequest, wValue, data or length)
         self.sent = []			# the data of every block written, as it came
+        self.placed = []		# and the address each of them went to
         self.blocks = 0
         self.partial = []		# addresses of flash words a short block left unwritten
         self.violations = []
@@ -167,6 +175,9 @@ class FakeRom:
         whole = len(data) - len(data) % dfumod.FLASH_WORD
         if whole != len(data):
             self.partial.append(addr + whole)
+        if self.flash[off:off + whole] == b"\xFF" * whole:	# erased flash, the usual case: the bytes as they come
+            self.flash[off:off + whole] = data[:whole]
+            return
         for i, b in enumerate(data[:whole]):
             old = self.flash[off + i]
             if old != 0xFF and b != 0xFF and old != b:
@@ -282,8 +293,14 @@ class FakeRom:
             assert dest + len(data) <= sec.end, "block past the end of its sector"
             if self.protected:
                 self._error(dfumod.ERR_VENDOR)
+            elif self.fail_at is not None and self.blocks == self.fail_at:
+                if self.torn:
+                    self._program(dest, data[:len(data) // 2 - len(data) // 2 % dfumod.FLASH_WORD])
+                self.gone = True
+                raise Gone("No such device")
             else:
                 self.sent.append(data)
+                self.placed.append(dest)
                 self._program(dest, data)
                 self.blocks += 1
         return len(data)
@@ -307,6 +324,25 @@ def rom_flash(board, rng):
     earlier install)."""
     size = board.flash_end - board.rom_base
     return bytearray(rng.getrandbits(8 * size).to_bytes(size, "little"))
+
+
+def rom_installed(board, rng, codec_segments=(), vectors=True):
+    """A ROM-route chip's program flash as an install of RadioFoundry left it: an image over the whole application
+    region (random bytes), every codec sector erased but for codec_segments ([(addr, bytes)]: the codec as a merge
+    places it, with its descriptor), and the flash past them erased, as the Read Unprotect of the first install left
+    it. vectors False: no vector table, the image's first block erased, as an install that did not finish leaves the
+    radio (dfu.check_plain: the vector table is written last)."""
+    size = board.flash_end - board.rom_base
+    flash = bytearray(b"\xFF" * size)
+    lo, hi = board.app_region
+    image = bytearray(rng.getrandbits(8 * (hi - lo)).to_bytes(hi - lo, "little"))
+    image[0:4] = struct.pack("<I", 0x20020000)		# an initial stack pointer: never the erased word
+    if not vectors:
+        image[0:BLOCK] = b"\xFF" * BLOCK
+    flash[lo - board.rom_base:hi - board.rom_base] = image
+    for addr, data in codec_segments:
+        flash[addr - board.rom_base:addr - board.rom_base + len(data)] = data
+    return flash
 
 
 def stock_flash(board, rng, codec_segments):
@@ -414,13 +450,15 @@ class FakeRunning:
     refuse: the reason the restart is refused with, before anything happens (5: the board's rule says not now, 3:
     transmitting), or None: taken. A test changes it between two requests, as a user who does what the board's hint
     says. stays: the radio answers OK and stays up (a check failed again at the reset, debuglink.md 3.11). rdp: the
-    read protection level INFO_CHIP reports. requests: the payload of every REBOOT that came in. After a restart
-    that was taken the port is gone: a write fails as on a device that left."""
+    read protection level INFO_CHIP reports. codec: what it reports for the codec in flash (debuglink.md 3.1: a
+    profile id, absent, or none for a build without DMR). requests: the payload of every REBOOT that came in. After a
+    restart that was taken the port is gone: a write fails as on a device that left."""
     port = "sim"
 
     def __init__(self, board, loader, refuse=None, stays=False, rdp=0, family=debuglink.CHIP_STM32H7, name=None,
-                 uid=bytes(range(0x21, 0x2D))):
+                 uid=bytes(range(0x21, 0x2D)), codec="none"):
         self.board, self.loader = board, loader
+        self.codec = codec
         self.refuse, self.stays, self.rdp, self.family = refuse, stays, rdp, family
         self.name = name or board.debuglink_names[0]
         self.uid = uid
@@ -431,7 +469,7 @@ class FakeRunning:
 
     def probe(self):
         """What debuglink.probe() returns for this radio, its port the stream itself"""
-        return {"port": self, "board": self.name, "git": "00000000", "codec": "none", "features": "",
+        return {"port": self, "board": self.name, "git": "00000000", "codec": self.codec, "features": "",
                 "uid": self.uid.hex()}
 
     def enter_by_hand(self):
@@ -451,7 +489,7 @@ class FakeRunning:
     def _answer(self, cmd, payload):
         ok = bytes([debuglink.ST_OK])
         if cmd == debuglink.CMD_VERSION:
-            return ok + ("proto=1\ngit=00000000\nboard=%s\nfeatures=FM\ncodec=none\n" % self.name).encode()
+            return ok + ("proto=1\ngit=00000000\nboard=%s\nfeatures=FM\ncodec=%s\n" % (self.name, self.codec)).encode()
         if cmd == debuglink.CMD_INFO_CHIP:
             return ok + self._chip()
         if cmd != debuglink.CMD_REBOOT:

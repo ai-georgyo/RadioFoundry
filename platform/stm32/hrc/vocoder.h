@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
-// The stock AMBE+2 codec run in place from flash, shared by the STM32F4 radios (docs/spec/codec-placement.md, "STM32
-// radios"; docs/spec/codec-dm1701.md, codec-md380.md, codec-md9600.md). It is one library in every TYT / Baofeng
-// STM32 image, linked at other addresses: the init sequence, the arguments and the state sizes are the same, only the
+// The stock AMBE+2 codec run in place from flash, shared by the STM32 radios (docs/spec/codec-placement.md, "STM32
+// radios"; each radio's docs/spec/codec-<id>.md). It is one library in every stock image these radios come with,
+// linked at other addresses: the init sequence, the arguments and the state sizes are the same, only the
 // entry offsets and the placement differ. A board describes the builds it accepts (stm32_codec_profile_t) and defines
 // stm32_codec_profiles; vocoder.c gives the hal_vocoder_t. The merge on the user's machine writes the codec and its
 // descriptor (codec_desc.h); none of it is part of this repository or a release.
@@ -45,7 +45,7 @@ typedef struct {
 	uint8_t count;
 } stm32_codec_profiles_t;
 
-// Defined by each board that builds platform/stm32f4/hrc
+// Defined by each board that builds platform/stm32/hrc with a codec route
 extern const stm32_codec_profiles_t stm32_codec_profiles;
 
 #if CONFIG_DMR

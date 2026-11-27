@@ -27,6 +27,28 @@ export const islandOf = (m, addr) => {
 	return i ? i.start : null;
 };
 
+// The address a table ref's value moves with (codecmap.held): its anchor where it has one (a value that lies just
+// outside the object it belongs to, as a pointer its reader steps before the first load), else the value itself
+export const held = (r) => r.anchor ?? r.target;
+
+const spans = (list) => (list || []).map((x) => [x.off, x.len]).sort((a, b) => a[0] - b[0]);
+
+// [[offset, length]] of the code window's spans that are not the codec's (codecmap.holes: the maker's code or data
+// that stock keeps between or inside the codec's ranges), in order; [] for a code window that is all codec
+export const holes = (m) => spans(m.code.holes);
+
+// Map of {table window's stock address: [[offset, length]]} for the table windows that hold bytes that are not the
+// codec's (codecmap.table_holes); a window without any is not in it
+export const tableHoles = (m) => new Map((m.table_windows || []).filter((w) => w.holes?.length).map((w) => [w.flash, spans(w.holes)]));
+
+// A window with the given spans (holes(), tableHoles()) filled with 0xFF (codecmap.blank): what a merge writes, so
+// that nothing of the stock image that is not the codec goes into the merged one
+export function blank(data, list) {
+	const out = data.slice();
+	for (const [off, n] of list) out.fill(0xFF, off, off + n);
+	return out;
+}
+
 const u16 = (b, off) => b[off] | (b[off + 1] << 8);
 const put16 = (b, off, v) => { b[off] = v & 0xFF; b[off + 1] = (v >>> 8) & 0xFF; };
 
@@ -279,8 +301,9 @@ const windowOf = (wins, addr) => wins.findIndex(([a, n]) => a <= addr && addr < 
 // Every site a layout change rewrites (codecmap._layout_sites): [window index, offset in it, ref, value at src, value
 // at dst]. wins: the stock windows [[addr, length]], the code first, as the profile carves them; src, dst: the address
 // of each window in the two layouts. A "bl" site's values are [address of the bl, target]. Throws MapError when a site
-// or a value lies in no window: such a codec can't be moved window by window
-function layoutSites(m, wins, src, dst) {
+// or a value lies in no window: such a codec can't be moved window by window. A table ref with an anchor moves with
+// the window its anchor lies in (held) and keeps its distance to it
+export function layoutSites(m, wins, src, dst) {
 	const p = m.profile;
 	if (src.length !== wins.length || dst.length !== wins.length) throw new MapError(`${p}: a layout names ${src.length} windows, the profile has ${wins.length}`);
 	if (wins[0][0] !== m.code.run || wins[0][1] !== m.code.len) throw new MapError(`${p}: the first window is not the map's code`);
@@ -288,14 +311,15 @@ function layoutSites(m, wins, src, dst) {
 	for (const [i, [a]] of wins.entries()) {
 		for (const lay of [src, dst]) if ((lay[i] - a) % (i === 0 ? align : 4)) throw new MapError(`${p}: window ${i} moved by ${lay[i] - a} breaks its alignment`);
 	}
-	const moved = (v, lay, what) => {
-		const w = windowOf(wins, v);
+	const moved = (v, lay, what, anchor = undefined) => {
+		const w = windowOf(wins, anchor ?? v);
 		if (w < 0) throw new MapError(`${p}: ${what} ${hex(v)} lies in no codec window`);
 		return (v + lay[w] - wins[w][0]) >>> 0;
 	};
 	const out = [];
 	for (const r of m.self_refs || []) out.push([0, r.off, r, moved(r.value, src, "self ref"), moved(r.value, dst, "self ref")]);
-	for (const r of [...(m.island_ptrs || []), ...(m.table_refs || [])]) out.push([0, r.off, r, moved(r.target, src, "table ref"), moved(r.target, dst, "table ref")]);
+	for (const r of [...(m.island_ptrs || []), ...(m.table_refs || [])])
+		out.push([0, r.off, r, moved(r.target, src, "table ref", r.anchor), moved(r.target, dst, "table ref", r.anchor)]);
 	for (const r of m.island_refs || []) {
 		const w = windowOf(wins, r.at);
 		if (w <= 0) throw new MapError(`${p}: island ref at ${hex(r.at)} lies in no table window`);
@@ -312,6 +336,16 @@ function layoutSites(m, wins, src, dst) {
 
 // A site's ref with its offsets at off (a movw/movt pair keeps its gap)
 const at = (r, off) => ({ ...r, off, off2: off + (r.off2 ?? r.off) - r.off });
+
+// What a layout implies at one site of layoutSites() (its ref r, at offset off of its window), written into a
+// synthetic window (twinfw.py _plant): the word, the two instructions of a movw/movt pair with the value's halves, or
+// the bl (v: [address of the bl, target]). For the simulated stock files (fake.js); a merge never plants anything
+export function plantSite(b, off, r, v) {
+	if (kind(r) === "bl") return putBl(b, off, v[0], v[1]);
+	const ref = at(r, off);
+	if (kind(r) !== "word") { put16(b, ref.off, MOVW); put16(b, ref.off + 2, 0); put16(b, ref.off2, MOVT); put16(b, ref.off2 + 2, 0); }
+	write(b, ref, v);
+}
 
 // The codec's windows moved from layout src to layout dst, each window as one block (codecmap.relocate): every address in
 // the code and the table windows rewritten for where its target window goes. parts: the bytes of each window as they

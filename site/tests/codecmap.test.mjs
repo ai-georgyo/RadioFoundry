@@ -113,3 +113,55 @@ test("relocating window by window gives the two-block move's bytes, both ways, a
 	assert.throws(() => cm.relocate(W.map, wins, [code, tables], stock, [W.code_run, W.tables_run + 2]), cm.MapError);
 	assert.throws(() => cm.relocate(W.map, wins, [code, tables.subarray(1)], stock, stock), cm.MapError);
 });
+
+// A code window that names its ranges and holes, a table ref anchored to a window it points just below, every window
+// moved as its own block and the windows after the code joined into one, 0xFF between them and in the holes (the
+// "joined" vector, shared with rfoundry's test_codecmap.py)
+test("anchored refs, holes and a joined block: relocate, blank and join give rfoundry's bytes", () => {
+	const J = V.joined;
+	const wins = J.windows.map(([a, d]) => [a, d.length / 2]), parts = J.windows.map(([, d]) => fromHex(d));
+	const src = wins.map(([a]) => a), dst = J.layout;
+	const out = cm.relocate(J.map, wins, parts, src, dst);
+	assert.deepEqual(out.map(toHex), J.relocated);
+	assert.deepEqual(cm.relocate(J.map, wins, out, dst, src).map(toHex), J.windows.map(([, d]) => d), "and back to stock");
+	// the anchored value lies two bytes below its window and moves with it
+	const ref = J.map.table_refs.find((r) => r.anchor !== undefined);
+	assert.equal(cm.held(ref), ref.anchor);
+	assert.equal(cm.held(J.map.table_refs[0]), J.map.table_refs[0].target);
+	const w = src.indexOf(ref.anchor);
+	assert.ok(w > 0 && ref.target < src[w], "the value itself lies in no window");
+	assert.equal(u32le(out[0], ref.off), dst[w] - (ref.anchor - ref.target));
+	// the holes: the code's in order, a table window's by its stock address
+	assert.deepEqual(cm.holes(J.map), [[0x100, 0x80], [0x1C0, 0x10]]);
+	const th = cm.tableHoles(J.map);
+	assert.deepEqual([...th], [[src[3], [[0x20, 4]]]]);
+	assert.deepEqual(cm.holes(V.map), [], "a map without the keys has no holes");
+	assert.equal(cm.tableHoles(V.window.map).size, 0);
+	const code = cm.blank(out[0], cm.holes(J.map));
+	assert.equal(toHex(code), J.code_blanked);
+	assert.equal(toHex(out[0]), J.relocated[0], "blank leaves its input as it was");
+	const block = (pieces) => {
+		const b = new Uint8Array(J.block.length / 2).fill(0xFF);
+		pieces.forEach((d, i) => b.set(d, dst[i + 1] - J.block_at));
+		return b;
+	};
+	assert.equal(toHex(block(out.slice(1))), J.block);
+	assert.equal(toHex(block(out.slice(1).map((d, i) => cm.blank(d, th.get(src[i + 1]) || [])))), J.block_blanked);
+	// what changed in the code: the listed sites, the holes when blanked, nothing else
+	const sites = new Set([0x20, 0x24, 0x40, 0x50, 0x54, 0x58, 0x1E0, 0x1E8].flatMap((o) => [o, o + 1, o + 2, o + 3]));
+	const inHole = (i) => cm.holes(J.map).some(([o, n]) => o <= i && i < o + n);
+	code.forEach((b, i) => {
+		if (inHole(i)) assert.equal(b, 0xFF, `hole +${i}`);
+		else if (!sites.has(i)) assert.equal(b, parts[0][i], `+${i}`);
+	});
+	// a site planted for a layout holds what relocate then finds there (the simulated stock files are made this way)
+	const planted = parts.map((d) => d.slice());
+	for (const [win, off, r, have] of cm.layoutSites(J.map, wins, src, src)) {
+		planted[win].fill(0, off, off + 4);
+		cm.plantSite(planted[win], off, r, have);
+	}
+	assert.deepEqual(planted.map(toHex), J.windows.map(([, d]) => d));
+	// a value that lies in no window without its anchor: refused, as the loader before the key was
+	const bare = { ...J.map, table_refs: J.map.table_refs.map(({ anchor, ...r }) => r) };
+	assert.throws(() => cm.relocate(bare, wins, parts, src, dst), /lies in no codec window/);
+});

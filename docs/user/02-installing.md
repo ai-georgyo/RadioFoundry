@@ -20,7 +20,7 @@ firmware and has a migration chapter is covered in [Moving from the stock firmwa
 |---|---|
 | A computer with Windows, macOS or Linux, or an Android phone or tablet | Android: Chrome, and a USB OTG adapter for the cable ([FAQ](21-faq.md)) |
 | A Chromium-based browser | For the web installer |
-| Your radio's stock firmware file | The manufacturer's file, in a version the installer recognizes. Your radio's "Installing" section names it and where to find it. A radio installed through its processor's own bootloader needs none ([below](#radios-installed-through-the-processors-own-bootloader)) |
+| Your radio's stock firmware file | The manufacturer's file, in a version the installer recognizes. Your radio's "Installing" section names it and where to find it. A radio installed through its processor's own bootloader needs one only for DMR voice, where its Installing section names one ([below](#radios-installed-through-the-processors-own-bootloader)) |
 | The radio's USB or programming cable | The cable that came with the radio |
 
 The release firmware has everything except the AMBE codec. The installer either keeps the codec already in your radio,
@@ -203,12 +203,17 @@ before the first installation: it erases the original firmware for good.**
 
 | | On such a radio |
 |---|---|
-| Stock firmware file | None. There is no bootloader key, and no codec is taken from a file |
+| Stock firmware file | For DMR voice only, where your radio's Installing section names one: the installer takes the voice codec from it. There is no bootloader key |
 | Read protection | The processor of a radio on its original firmware is protected against reading. Its loader reads nothing and writes nothing until the protection is removed |
 | Removing the protection | Erases the processor's **whole program memory: the original firmware and the maker's bootloader**. Nothing of them can be backed up first, because nothing can be read |
 | Going back | The installer cannot put the original firmware back. Going back is the maker's own recovery procedure, with the maker's files and tools |
 | The loader itself | It is part of the processor and can't be erased. Whatever happens to the program memory, the radio's update mode keys still start it, and RadioFoundry or the maker's recovery can be written again |
 | The memory chip | The radio's separate memory chip (the original channels, settings and factory data) is not erased by any of this. The web installer offers its backup right after the installation |
+
+Removing the protection erases the voice codec too, so the first installation needs the stock firmware file for DMR
+voice: get it before you start. Without it the radio is installed without the codec: analog FM works, and DMR voice
+does not until you install again with the file. An update keeps the codec. After an installation that was
+interrupted, the installer writes the codec again, and asks for the file if it has no copy of the codec.
 
 Before the first installation, in this order:
 
@@ -229,19 +234,22 @@ The first installation takes two passes through the update mode:
    radio to leave USB).
 3. Switch the radio off and put it in update mode again. If it does not go off, take the battery off for a few
    seconds (your radio's section says whether this can happen).
-4. The installer writes RadioFoundry and starts it. If the radio shows nothing, switch it off and on.
+4. The installer writes RadioFoundry, with the voice codec if you gave it the stock firmware file, and starts it.
+   If the radio shows nothing, switch it off and on.
 5. The web installer offers a backup of the whole memory chip right after. Take it and keep that file: nothing is
    written to the chip until it is handed over after a full backup.
 
 From a terminal the same is `rfoundry flash IMAGE --unprotect`, with an image file (the web installer's build or its
 manual kit), or `--release latest` in place of the file for a radio that has release images (your radio's section
-says). Without `--unprotect`, rfoundry stops at a protected radio, changes nothing and says what the option does.
-`rfoundry detect` with the radio in update mode says whether it is protected. rfoundry writes the firmware only and
-takes no backup of the memory chip: take it afterwards with the web installer (**Back Up**, **Everything**) or with
-`rfoundry_debug.py storage claim --out DIR` ([below](#a-memory-chip-that-radiofoundry-must-be-given-first)).
+says). Where your radio's section names a stock firmware file, add `--stock FILE` for DMR voice, or `--codec none` to
+install without the codec. Without `--unprotect`, rfoundry stops at a protected radio, changes nothing and says what
+the option does. `rfoundry detect` with the radio in update mode says whether it is protected. rfoundry writes the
+firmware only and takes no backup of the memory chip: take it afterwards with the web installer (**Back Up**,
+**Everything**) or with `rfoundry_debug.py storage claim --out DIR`
+([below](#a-memory-chip-that-radiofoundry-must-be-given-first)).
 
 An update is one pass: the same update mode key, no erase and no question about it, because the protection is gone
-after the first installation.
+after the first installation. The voice codec stays in the radio.
 
 On some of these radios RadioFoundry can restart into the update mode by itself, so an update needs no key. Your
 radio's "Installing" section says whether it can, and whether this has been tried on a radio. Switch the radio on

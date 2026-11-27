@@ -213,7 +213,7 @@ references, 3 island pointers, 3 island references and 12 island calls into the 
 | code | 0x080E0004 (sector 11) | 0x10884 | 0xBAA2C858 (references to itself and the tables rewritten) |
 | tables | 0x080F0894 | 0xAFF8 | 0x04DF1EE4 (island pointers and the 12 island calls rewritten) |
 | small tables 1-4 | 0x080FB898, 0x080FB8C8, 0x080FB8E4, 0x080FB900 | as above | unchanged (0x7AAFE1D3, 0x33E82E70, 0xFFF0E930, 0xDA18C5EF) |
-| descriptor | 0x080FFF80 (end of sector 11) | 128 | its own (`platform/stm32f4/codec_desc.h`), tag 0x2032 |
+| descriptor | 0x080FFF80 (end of sector 11) | 128 | its own (`platform/stm32/codec_desc.h`), tag 0x2032 |
 
 The placed CRCs follow from the earlier layout's and the map (`codecmap.relocate_crcs`); no placed SHA-256 is listed,
 so a copy read from a radio is checked by taking it back to the original windows and their SHA-256s.
@@ -234,7 +234,7 @@ so a copy read from a radio is checked by taking it back to the original windows
   debug link (READ_MEM), in the original, the placed or the earlier placed layout, check it against the profile and
   save it on the computer (rfoundry's config directory, the browser's IndexedDB; `rfoundry/codecsave.py`,
   `site/static/js/flasher/codecsave.js`).
-* **Boot check, D002.032 (`platform/stm32f4/hrc/vocoder.c`, the profiles in `boards/md380/vocoder_md380.c`).** Once,
+* **Boot check, D002.032 (`platform/stm32/hrc/vocoder.c`, the profiles in `boards/md380/vocoder_md380.c`).** Once,
   before the first call: the descriptor (its own CRC, tag 0x2032, the code and every table window at the addresses
   and with the CRCs above), then the signature word 0x4FF0E92D at 0x080E0004, then the CRC-32 of every window (about
   112 KB). Otherwise the vocoder reports no codec and the radio is FM only. Entry points are offsets from the code
@@ -248,7 +248,7 @@ so a copy read from a radio is checked by taking it back to the original windows
   Releases before the one that added the 35.14 maps accept D002.032's tag only. A radio whose codec came from a 35.14
   file and is flashed with such a release, keeping the codec, finds no codec and is FM only. Going back to it needs the
   codec merged again from D002.032's file.
-* **Calls.** Through the generic veneer `platform/stm32f4/codec_call.c`, as on the DM-1701, with the init sequence and
+* **Calls.** Through the generic veneer `platform/stm32/codec_call.c`, as on the DM-1701, with the init sequence and
   per-frame calls above. One CCM block holds the encoder's state or the decoder's, never both
   ([codec-placement.md](codec-placement.md), "STM32 radios").
 
@@ -288,7 +288,7 @@ other access faults.
 * For a 1 kHz tone (30 frames) and a 300 frame stress run (noise, silence, full scale sweeps, injected bit errors,
   random frames, flags 8), the MD-380 codec's air bits and decoded PCM are bit-identical to the DM-1701 codec's. Their
   FEC decode results agree (0 and 4).
-* RadioFoundry's own `boards/md380/vocoder_md380.c` and `platform/stm32f4/codec_call.c`, compiled with the firmware
+* RadioFoundry's own `boards/md380/vocoder_md380.c` and `platform/stm32/codec_call.c`, compiled with the firmware
   flags, were run against the windows of the merged image that `make BOARD=md380` writes, with a deliberately
   misaligned caller stack. `present()` passes, and the encoded bits and decoded PCM over 30 frames are bit-identical
   to calling the codec directly.

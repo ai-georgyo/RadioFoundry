@@ -12,6 +12,7 @@
 #include "pins.h"
 #include "romentry_cs7000p.h"
 #include "hrc/dmr_glue.h"
+#include "hrc/vocoder.h"
 #include "gps_uart/gps_uart.h"
 #include "spi_flash/spi_flash.h"
 #include "periph/dac.h"
@@ -176,9 +177,13 @@ const board_t board = {
 #if CONFIG_DMR
 	.dmr = &stm32_hrc_dmr,
 	// The PCM stream is DMR-only code, so the beeps are too: without DMR, FM audio leaves by the modem's line out
-	// and the radio is silent otherwise. No vocoder: no codec route is known for this radio, so DMR voice is refused
-	// by the core and DMR data, the hotspot and FM are what runs
+	// and the radio is silent otherwise
 	.audio = &cs7000p_audio,
+	// The radio's own codec, which the merge on the user's machine places in sector 7 (vocoder_cs7000p.c). Absent
+	// until then: the core refuses DMR voice ("No codec: voice off"), and DMR data, the hotspot and FM are what
+	// runs. Present, DMR voice is keyed as DMR data is, so it waits for the owner's transmit arm's top stage
+	// (radio_cs7000p.c). Decode runs on one radio; encode has not run on one
+	.vocoder = &stm32_vocoder,
 #endif
 #if CONFIG_USB
 	.host_port = &usb_cdc_stream,

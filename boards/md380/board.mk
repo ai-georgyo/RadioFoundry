@@ -13,7 +13,7 @@ APP_BASE   := 0x0800C000
 # Bench knobs (docs/testing/md380-bringup.md), e.g. MD380_DEFS="-DMD380_PANEL_TYPE=1 -DMD380_KEEP_SWD"
 MD380_DEFS ?=
 MCU_DEFS   += $(MD380_DEFS)
-BOARD_DIRS := boards/md380 platform/stm32/hrc platform/stm32f4/hrc platform/stm32/spi_flash platform/stm32f4/fsmc_keypad drivers/rf/sky72310 drivers/rf/subaudio drivers/modem/hrc5000 drivers/modem/hrc_common drivers/display/st7735 drivers/flash/spi_nor \
+BOARD_DIRS := boards/md380 platform/stm32/hrc platform/stm32/spi_flash platform/stm32f4/fsmc_keypad drivers/rf/sky72310 drivers/rf/subaudio drivers/modem/hrc5000 drivers/modem/hrc_common drivers/display/st7735 drivers/flash/spi_nor \
 	drivers/gps/nmea_line drivers/gps/gps_rx platform/stm32/gps_uart
 # The 160x128 panel in 16 colors (display_md380.c): the 4 bpp frame buffer is 10240 B and 128 rows, not the 40 KB / 160 row
 # RGB565 default. A screen has at most 16 colors (core/ui/gfx.h); with CONFIG_FONT_AA the edge grays compete for them

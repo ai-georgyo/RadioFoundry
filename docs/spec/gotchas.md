@@ -865,8 +865,9 @@ one (13.15), and every configuration's size from `tools/ci.sh --steps firmware`.
 `common.ld`, and the opt-in `hrc/` (DMR glue, bus, PCM stream), `spi_flash/` and `gps_uart/`. A family directory
 (`platform/stm32f4`, `platform/stm32h7`) holds its clock, SPI and USB code and its halves of the shared files
 ([architecture.md](../dev/architecture.md#the-stm32-family-contract)). A path in an older note, issue or bring-up
-record that says `platform/stm32f4/<one of those>` means `platform/stm32/`. Not moved: the codec host
-(`codec_call.*`, `codec_desc.h`, `hrc/vocoder.*`), `fsmc_keypad/`, `stub_entry.c`, `mem_window.h`. Three things to
+record that says `platform/stm32f4/<one of those>` means `platform/stm32/`. The codec host (`codec_call.*`,
+`codec_desc.h`, `codec_cpu.h`, `hrc/vocoder.*`) is in `platform/stm32` for both families too. Not moved:
+`fsmc_keypad/`, `stub_entry.c`, `mem_window.h`. Three things to
 know when editing there. A comment edit in a file with a `configASSERT` must not add or remove a line: the assertion
 compiles `__LINE__` into the image (the two bytes that changed in each DMR image when the split moved two assertions
 into an included header, and a crash record of those assertions now carries the header's line numbers). The platform
@@ -881,6 +882,20 @@ handful of units to anything inlined there puts one command out of line and move
 down, on those images only. So: a size change of that order after a small edit to a debug link command is this, not
 the edit; compare the images of every board, not one; and `-fdump-ipa-inline` at the LTO link shows which call was
 left out. `dl_chip_optbytes` (`core/debuglink/dl_chip.h`) is written the way it is for this reason.
+
+**13.16 No code may set `CCR.UNALIGN_TRP` or `CCR.DIV_0_TRP` on an STM32 radio.** The stock codec loads words at
+unaligned addresses and divides without a test for zero, so it needs both trap bits of `SCB->CCR` at 0, their reset
+value ([codec-placement.md](codec-placement.md), "STM32 radios", Processor state). The build itself also loads words
+at unaligned addresses (no `-mno-unaligned-access`), so a set `UNALIGN_TRP` faults outside the codec as well. A
+fault tracer that wants a divide trap must leave it off while DMR voice can run. Where the bits are cleared:
+`codec_cpu_traps_off()` in `platform/stm32/codec_cpu.h` clears `UNALIGN_TRP` (bit 3) and `DIV_0_TRP` (bit 4) when
+one is set, and `present()` in `platform/stm32/hrc/vocoder.c` calls it once, the first time it runs, before the
+descriptor is read and before any codec call, with DSB and ISB when it wrote. The start-up (`main()` in
+`platform/stm32/main.c`, before the family's core set-up) calls the same function on every STM32 family: every image
+is entered by a bootloader's jump (the maker's bootloader, or the processor's ROM bootloader), not by a reset, and
+the bits are the build's concern as much as the codec's. Nothing checks again after that: a bit set after the first
+codec call is not caught. Both bits are 0 after a reset and nothing in the tree sets them, so on a radio whose
+bootloader leaves them clear neither clear changes behavior. Untested on a radio.
 
 ## 14. SFR (single frequency repeater)
 

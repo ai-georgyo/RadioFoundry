@@ -291,8 +291,7 @@ ifneq ($(TSHARK),)
 endif
 
 clean:
-	rm -f mdnsTest.pcap tftpTest.pcap tftpKeepTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_test.bin codec_desc_md380.bin \
-		codec_desc_md9600.bin codec_desc_md9600own.bin
+	rm -f mdnsTest.pcap tftpTest.pcap tftpKeepTest.pcap netTest.expert hrc7000_test_slot.bin codec_desc_*.bin
 	rm -rf gen
 	rm -f $(TESTS) dmrDataTest.out ipGatewayTest.pcap ipGatewayTest16.pcap ipGatewayTestShared.pcap ipGatewayTestAir440.pcap \
 		ipGatewayTest.expert
@@ -637,11 +636,12 @@ TESTS   += gpsPowerTest
 gpsPowerTest: gpsPowerTest.c $(ROOT)/drivers/gps/gps_rx/gps_power.c $(ROOT)/drivers/gps/gps_rx/gps_power.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ gpsPowerTest.c $(ROOT)/drivers/gps/gps_rx/gps_power.c
 
-# The STM32 codec descriptor (platform/stm32f4/codec_desc.h): its checks, and codec sectors 10 and 11 as
-# tools/codec_extract.py merges them (docs/spec/codec-placement.md)
+# The STM32 codec descriptor (platform/stm32/codec_desc.h): its checks, and codec sectors 10 and 11 as
+# tools/codec_extract.py merges them (docs/spec/codec-placement.md). And the processor state the codec needs
+# (platform/stm32/codec_cpu.h)
 TESTS   += codecDescTest
 
-codecDescTest: codecDescTest.c $(ROOT)/platform/stm32f4/codec_desc.h
+codecDescTest: codecDescTest.c $(ROOT)/platform/stm32/codec_desc.h $(ROOT)/platform/stm32/codec_cpu.h
 	$(CC) $(CFLAGS) -Wshadow -o $@ codecDescTest.c
 
 # The two-level analog keypad (drivers/input/adckeys) a hand microphone may use

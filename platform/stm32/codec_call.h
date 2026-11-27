@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 The RadioFoundry Authors
 // Call a function of a stock codec image that sits at a fixed address (docs/spec/gotchas.md 4.1, 4.4).
-#ifndef PLATFORM_STM32F4_CODEC_CALL_H
-#define PLATFORM_STM32F4_CODEC_CALL_H
+#ifndef PLATFORM_STM32_CODEC_CALL_H
+#define PLATFORM_STM32_CODEC_CALL_H
 
 #include <stdint.h>
 
